@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-module de.cuioss.template {
-    exports de.cuioss.template;
+module de.cuioss.sheriff.api {
+    exports de.cuioss.sheriff.api;
 
     requires static lombok;
 }
