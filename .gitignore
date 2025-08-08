@@ -1,0 +1,11 @@
+**/.settings
+**/target
+**/bin
+**/.idea
+**/src/main/gen
+*.iml
+*.classpath
+*.project
+**/.vscode
+.DS_Store
+.asciidoctorconfig.adoc
