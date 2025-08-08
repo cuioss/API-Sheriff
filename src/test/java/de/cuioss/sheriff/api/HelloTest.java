@@ -13,23 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.template;
+package de.cuioss.sheriff.api;
 
-import lombok.ToString;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/**
- * @author Oliver Wolff
- *
- */
-@ToString
-public class Hello {
+import org.junit.jupiter.api.Test;
 
-    /**
-     * @param name to be greeted
-     * @return the greeted String
-     */
-    public String hello(String name) {
-        return "Hello " + name;
+class HelloTest {
+
+    @Test
+    void test() {
+        assertEquals("Hello cui", new Hello().hello("cui"));
     }
 
 }
