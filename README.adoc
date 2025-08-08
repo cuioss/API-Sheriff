@@ -6,10 +6,10 @@ image:https://github.com/cuioss/api-sheriff/actions/workflows/maven.yml/badge.sv
 image:http://img.shields.io/:license-apache-blue.svg[License,link=http://www.apache.org/licenses/LICENSE-2.0.html]
 image:https://img.shields.io/maven-central/v/de.cuioss.sheriff.api/api-sheriff.svg?label=Maven%20Central["Maven Central", link="https://central.sonatype.com/artifact/de.cuioss.sheriff.api/api-sheriff"]
 
-https://sonarcloud.io/summary/new_code?id=cuioss_api-sheriff[image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_api-sheriff&metric=alert_status[Quality
+https://sonarcloud.io/summary/new_code?id=cuioss_API-Sheriff[image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sheriff&metric=alert_status[Quality
 Gate Status]]
-image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_api-sheriff&metric=ncloc[Lines of Code,link=https://sonarcloud.io/summary/new_code?id=cuioss_api-sheriff]
-image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_api-sheriff&metric=coverage[Coverage,link=https://sonarcloud.io/summary/new_code?id=cuioss_api-sheriff]
+image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sheriff&metric=ncloc[Lines of Code,link=https://sonarcloud.io/summary/new_code?id=cuioss_API-Sheriff]
+image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sheriff&metric=coverage[Coverage,link=https://sonarcloud.io/summary/new_code?id=cuioss_API-Sheriff]
 
 
 https://cuioss.github.io/cui-java-module-template/about.html[Generated Documentation on github-pages]
