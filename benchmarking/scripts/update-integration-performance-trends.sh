@@ -21,7 +21,7 @@ mkdir -p "$OUTPUT_DIR/badges"
 # Use separate tracking file for integration benchmarks
 TRACKING_FILE="$OUTPUT_DIR/data/integration-performance-tracking.json"
 # Try to download from the deployed GitHub Pages URL
-GITHUB_PAGES_URL="https://cuioss.github.io/api-sheriff/benchmarks/data/integration-performance-tracking.json"
+GITHUB_PAGES_URL="https://cuioss.github.io/cui-jwt/benchmarks/data/integration-performance-tracking.json"
 
 # Check if we already have a local tracking file with data
 if [ -f "$TRACKING_FILE" ]; then

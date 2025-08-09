@@ -1,0 +1,107 @@
+= JWT Performance Scoring System
+:source-highlighter: highlight.js
+
+== Overview
+
+A weighted performance score combining throughput, latency, and error resilience into a single metric.
+
+== Formula
+
+[source,text]
+----
+Performance Score = (Throughput × 0.57) + (Latency_Inverted × 0.40) + (Error_Resilience × 0.03)
+
+Where:
+- Throughput = Operations/second (concurrent load)
+- Latency_Inverted = 1,000,000 ÷ Average_Time_Microseconds
+- Error_Resilience = Operations/second (0% error scenario)
+----
+
+== Metrics
+
+=== Throughput (57% weight)
+
+* Measures: Token validations per second under concurrent load
+* Configuration: `@BenchmarkMode(Mode.Throughput)` with `@Threads(Threads.MAX)`
+* Target: >10,000 ops/sec (good), >50,000 ops/sec (excellent)
+
+=== Latency (40% weight)
+
+* Measures: Average single-threaded validation time
+* Configuration: `@BenchmarkMode(Mode.AverageTime)` with `@Threads(1)`
+* Target: <100μs (good), <50μs (excellent)
+
+=== Error Resilience (3% weight)
+
+* Measures: Performance stability with invalid tokens
+* Validates error handling doesn't degrade performance
+
+== Score Interpretation
+
+[cols="1,1,2", options="header"]
+|===
+|Score Range |Level |Description
+
+|> 40,000
+|Exceptional
+|High-scale production ready
+
+|30,000-40,000
+|Excellent
+|Most production scenarios
+
+|20,000-30,000
+|Good
+|Typical applications
+
+|10,000-20,000
+|Moderate
+|Low-medium load
+
+|< 10,000
+|Needs Improvement
+|Optimization required
+|===
+
+== Example Calculation
+
+[source,text]
+----
+Throughput: 45,000 ops/sec
+Average Time: 80 microseconds
+Error Resilience: 40,000 ops/sec
+
+Latency_Inverted = 1,000,000 ÷ 80 = 12,500 ops/sec
+Score = (45,000 × 0.57) + (12,500 × 0.40) + (40,000 × 0.03)
+      = 25,650 + 5,000 + 1,200 = 31,850
+----
+
+== Badge Format
+
+[source,text]
+----
+Performance Score: 32000 (45k ops/s, 0.15ms)
+                   ↑      ↑            ↑
+                   |      |            └─ Average validation time
+                   |      └─ Throughput (rounded)
+                   └─ Weighted score
+----
+
+== Usage
+
+* **Regression Detection**: Track performance over releases
+* **Optimization Tracking**: Measure improvement impact
+* **Capacity Planning**: Understand performance characteristics
+
+== Limitations
+
+* Environment dependent (hardware, JVM settings)
+* Based on synthetic test tokens
+* Single library performance only
+
+== Best Practices
+
+1. Focus on trends over absolute values
+2. Use consistent test environments
+3. Run multiple iterations for accuracy
+4. Consider context when interpreting results

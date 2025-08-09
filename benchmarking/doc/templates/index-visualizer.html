@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JWT Micro Benchmark Results</title>
+  <link rel="stylesheet" href="resources/common.css">
+  <style>
+    /* Page-specific styles */
+    .content {
+      height: 70vh;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .content iframe {
+      flex: 1;
+      min-height: 600px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>JWT Micro Benchmark Results</h1>
+      <p class="subtitle">Unit-level performance testing of JWT validation components</p>
+      <div class="navigation">
+        <!-- Navigation will be injected by JavaScript -->
+      </div>
+    </div>
+    
+    <div class="content">
+      <iframe id="jmh-visualizer"></iframe>
+      <div id="error-message" class="error" style="display: none;">
+        <h3>Error Loading Benchmark Results</h3>
+        <p>Could not load benchmark results. Please try one of these options:</p>
+        <ol>
+          <li>Visit <a href="https://jmh.morethan.io/" target="_blank">JMH Visualizer</a> directly and upload benchmark results</li>
+          <li>Check if <a href="data/jmh-result.json" target="_blank">benchmark results</a> are available</li>
+          <li>Refresh the page to try again</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+  
+  <script src="resources/navigation.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const iframe = document.getElementById('jmh-visualizer');
+      const errorMessage = document.getElementById('error-message');
+      
+      // Get the current URL path
+      const baseUrl = window.location.href.split('/').slice(0, -1).join('/');
+      // Construct the full URL to the JSON file
+      const jsonUrl = baseUrl + '/data/jmh-result.json';
+      
+      // Function to check if JSON file exists and is accessible
+      function checkJsonExists(url, callback) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('HEAD', url, true);
+        xhr.onload = function() {
+          callback(xhr.status >= 200 && xhr.status < 300);
+        };
+        xhr.onerror = function() {
+          callback(false);
+        };
+        xhr.send();
+      }
+      
+      // Check if the JSON file exists
+      checkJsonExists('data/jmh-result.json', function(exists) {
+        if (exists) {
+          // Set iframe source with the properly constructed URL
+          iframe.src = 'https://jmh.morethan.io/?source=' + encodeURIComponent(jsonUrl);
+          iframe.style.display = 'block';
+          errorMessage.style.display = 'none';
+        } else {
+          // Try with a constructed URL approach
+          iframe.src = 'https://jmh.morethan.io/?source=' + encodeURIComponent(jsonUrl);
+
+          // Add robust error handling for iframe loading
+          let iframeLoaded = false;
+
+          iframe.addEventListener('load', function() {
+            iframeLoaded = true;
+            iframe.style.display = 'block';
+            errorMessage.style.display = 'none';
+          });
+
+          iframe.addEventListener('error', function() {
+            iframe.style.display = 'none';
+            errorMessage.style.display = 'block';
+          });
+
+          // Fallback: if iframe hasn't loaded after 5 seconds, show error
+          setTimeout(function() {
+            if (!iframeLoaded) {
+              iframe.style.display = 'none';
+              errorMessage.style.display = 'block';
+            }
+          }, 5000);
+        }
+      });
+    });
+  </script>
+</body>
+</html>
