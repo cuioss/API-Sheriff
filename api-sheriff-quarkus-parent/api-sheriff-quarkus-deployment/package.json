@@ -10,4 +10,3 @@
     "lint": "echo 'No JavaScript to lint'"
   }
 }
-EOF < /dev/null

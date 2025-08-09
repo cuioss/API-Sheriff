@@ -39,6 +39,23 @@
     </properties>
 
     <dependencies>
+        <!-- API Sheriff library dependency -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff-library</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Quarkus dependencies for CDI -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+
         <!-- JMH dependencies -->
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
@@ -74,7 +91,7 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
-        
+
         <!-- Apache Commons IO for TeeOutputStream -->
         <dependency>
             <groupId>commons-io</groupId>
@@ -88,7 +105,7 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
-        
+
         <!-- Awaitility for better async testing -->
         <dependency>
             <groupId>org.awaitility</groupId>

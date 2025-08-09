@@ -36,6 +36,15 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- Quarkus BOM for Quarkus integration benchmark -->
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bom</artifactId>
+                <version>${version.quarkus}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <!-- JMH dependencies -->
             <dependency>
                 <groupId>org.openjdk.jmh</groupId>
@@ -48,7 +57,7 @@
                 <version>${version.jmh}</version>
                 <scope>provided</scope>
             </dependency>
-            
+
             <!-- Common benchmarking dependencies -->
             <dependency>
                 <groupId>com.google.code.gson</groupId>

@@ -35,7 +35,7 @@ import de.cuioss.sheriff.api.config.ApiGatewayConfig;
 
 /**
  * Unit tests for {@link ApiSheriff}.
- * 
+ *
  * @author API Sheriff Team
  */
 class ApiSheriffTest {
@@ -51,14 +51,14 @@ class ApiSheriffTest {
             .requestTimeout(Duration.ofSeconds(5))
             .corsEnabled(true)
             .build();
-        
+
         apiSheriff = new ApiSheriff(testConfig);
     }
 
     @Test
     void shouldCreateApiSheriffWithValidConfig() {
         assertDoesNotThrow(() -> new ApiSheriff(testConfig));
-        
+
         ApiSheriff sheriff = new ApiSheriff(testConfig);
         assertNotNull(sheriff);
         assertEquals(testConfig, sheriff.getConfiguration());
@@ -101,13 +101,13 @@ class ApiSheriffTest {
     void shouldRespectRateLimit() {
         String clientId = "client1";
         String endpoint = "/api/test";
-        
+
         // First 10 requests should be allowed (rate limit is 10)
         for (int i = 0; i < 10; i++) {
             assertTrue(apiSheriff.isRequestAllowed(clientId, endpoint),
                 "Request " + (i + 1) + " should be allowed");
         }
-        
+
         // 11th request should be denied
         assertFalse(apiSheriff.isRequestAllowed(clientId, endpoint),
             "Request 11 should be denied due to rate limiting");
@@ -116,13 +116,13 @@ class ApiSheriffTest {
     @Test
     void shouldAllowDifferentClientsIndependently() {
         String endpoint = "/api/test";
-        
+
         // Exhaust rate limit for client1
         for (int i = 0; i < 10; i++) {
             assertTrue(apiSheriff.isRequestAllowed("client1", endpoint));
         }
         assertFalse(apiSheriff.isRequestAllowed("client1", endpoint));
-        
+
         // client2 should still be allowed
         assertTrue(apiSheriff.isRequestAllowed("client2", endpoint));
     }
@@ -135,48 +135,42 @@ class ApiSheriffTest {
 
     @Test
     void shouldDetectInvalidRateLimit() {
-        ApiGatewayConfig invalidConfig = ApiGatewayConfig.builder()
-            .rateLimit(-1)
-            .timeWindow(Duration.ofSeconds(1))
-            .requestTimeout(Duration.ofSeconds(5))
-            .build();
-        
-        ApiSheriff sheriff = new ApiSheriff(invalidConfig);
-        Optional<String> validationResult = sheriff.validateConfiguration();
-        
-        assertTrue(validationResult.isPresent());
-        assertEquals("Rate limit must be greater than 0", validationResult.get());
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+            () -> ApiGatewayConfig.builder()
+                .rateLimit(-1)
+                .timeWindow(Duration.ofSeconds(1))
+                .requestTimeout(Duration.ofSeconds(5))
+                .build());
+
+        assertTrue(exception.getMessage().contains("Rate limit must be greater than 0"));
     }
 
     @Test
     void shouldDetectInvalidTimeWindow() {
-        ApiGatewayConfig invalidConfig = ApiGatewayConfig.builder()
-            .rateLimit(10)
-            .timeWindow(-1L)
-            .requestTimeout(Duration.ofSeconds(5))
-            .build();
-        
-        ApiSheriff sheriff = new ApiSheriff(invalidConfig);
-        Optional<String> validationResult = sheriff.validateConfiguration();
-        
-        assertTrue(validationResult.isPresent());
-        assertEquals("Time window must be greater than 0", validationResult.get());
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+            () -> ApiGatewayConfig.builder()
+                .rateLimit(10)
+                .timeWindow(-1L)
+                .requestTimeout(Duration.ofSeconds(5))
+                .build());
+
+        assertTrue(exception.getMessage().contains("Time window must be greater than 0"));
     }
 
     @Test
     void shouldResetClientState() {
         String clientId = "client1";
         String endpoint = "/api/test";
-        
+
         // Exhaust rate limit
         for (int i = 0; i < 10; i++) {
             assertTrue(apiSheriff.isRequestAllowed(clientId, endpoint));
         }
         assertFalse(apiSheriff.isRequestAllowed(clientId, endpoint));
-        
+
         // Reset client state
         assertDoesNotThrow(() -> apiSheriff.resetClientState(clientId));
-        
+
         // Should be allowed again after reset
         assertTrue(apiSheriff.isRequestAllowed(clientId, endpoint));
     }
@@ -193,7 +187,7 @@ class ApiSheriffTest {
     @Test
     void shouldReturnCorrectConfiguration() {
         ApiGatewayConfig returnedConfig = apiSheriff.getConfiguration();
-        
+
         assertNotNull(returnedConfig);
         assertEquals(testConfig, returnedConfig);
         assertEquals(10, returnedConfig.getRateLimit());
@@ -208,10 +202,10 @@ class ApiSheriffTest {
         String endpoint = "/api/concurrent";
         int threadCount = 5;
         int requestsPerThread = 3;
-        
+
         Thread[] threads = new Thread[threadCount];
         boolean[] results = new boolean[threadCount * requestsPerThread];
-        
+
         for (int i = 0; i < threadCount; i++) {
             final int threadIndex = i;
             threads[i] = new Thread(() -> {
@@ -221,17 +215,17 @@ class ApiSheriffTest {
                 }
             });
         }
-        
+
         // Start all threads
         for (Thread thread : threads) {
             thread.start();
         }
-        
+
         // Wait for all threads to complete
         for (Thread thread : threads) {
             thread.join();
         }
-        
+
         // Count allowed requests
         int allowedCount = 0;
         for (boolean result : results) {
@@ -239,7 +233,7 @@ class ApiSheriffTest {
                 allowedCount++;
             }
         }
-        
+
         // Should respect rate limit even with concurrent access
         assertTrue(allowedCount <= 10, "Should not exceed rate limit even with concurrent requests");
     }

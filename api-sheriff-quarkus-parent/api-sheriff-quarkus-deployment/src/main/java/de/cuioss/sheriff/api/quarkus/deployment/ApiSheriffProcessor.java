@@ -28,12 +28,13 @@ import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import de.cuioss.sheriff.api.ApiSheriff;
 import de.cuioss.sheriff.api.config.ApiGatewayConfig;
 import de.cuioss.sheriff.api.quarkus.ApiSheriffProducer;
+
 import de.cuioss.sheriff.api.security.RateLimiter;
 
 /**
  * Quarkus build step processor for API Sheriff extension.
  * This class configures the API Sheriff components for Quarkus applications during build time.
- * 
+ *
  * <p>The processor handles:</p>
  * <ul>
  *   <li>Feature registration for the API Sheriff extension</li>
@@ -41,12 +42,12 @@ import de.cuioss.sheriff.api.security.RateLimiter;
  *   <li>Native image configuration for GraalVM compilation</li>
  *   <li>Reflection registration for runtime class access</li>
  * </ul>
- * 
+ *
  * <h2>Build Time Configuration:</h2>
  * <p>This processor runs during Quarkus build time and prepares all necessary
  * components for runtime. It ensures that API Sheriff classes are properly
  * registered with CDI and configured for native image compilation.</p>
- * 
+ *
  * <h2>Native Image Support:</h2>
  * <p>The processor automatically registers classes that require reflection
  * access during native image execution, ensuring that the API Sheriff
@@ -96,20 +97,20 @@ public class ApiSheriffProcessor {
     @BuildStep
     void addReflectiveClasses(BuildProducer<ReflectiveClassBuildItem> reflectiveClass,
                               CombinedIndexBuildItem combinedIndex) {
-        
+
         // Register main API Sheriff classes for reflection
         reflectiveClass.produce(ReflectiveClassBuildItem.builder(ApiSheriff.class)
                 .constructors()
                 .methods()
                 .fields()
                 .build());
-        
+
         reflectiveClass.produce(ReflectiveClassBuildItem.builder(ApiGatewayConfig.class)
                 .constructors()
                 .methods()
                 .fields()
                 .build());
-        
+
         reflectiveClass.produce(ReflectiveClassBuildItem.builder(RateLimiter.class)
                 .constructors()
                 .methods()
@@ -129,12 +130,15 @@ public class ApiSheriffProcessor {
      * This build step performs any necessary runtime initialization for
      * API Sheriff components in the Quarkus application.
      *
+     * NOTE: Runtime initialization is handled by CDI producers.
+     * This method can be re-enabled with @Record annotation when
+     * the extension setup is properly configured.
+     *
      * @param beanContainer the bean container for accessing CDI beans
      */
     @BuildStep
-    @Record(ExecutionTime.RUNTIME_INIT)
     void initializeApiSheriff(BeanContainerBuildItem beanContainer) {
-        // Runtime initialization logic can be added here if needed
-        // For now, the CDI producers handle all initialization
+        // Runtime initialization logic is handled by CDI producers
+        // This method is temporarily simplified to avoid Recorder dependency issues
     }
 }
