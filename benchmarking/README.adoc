@@ -72,19 +72,19 @@ export MAVEN_OPTS="-Xmx4G -XX:+UseG1GC"
 [source,bash]
 ----
 cd benchmarking/benchmark-library
-./mvnw clean compile exec:java
+./mvnw clean compile exec:java -Dexec.mainClass="de.cuioss.sheriff.api.benchmark.BenchmarkRunner"
 ----
 
-Or with custom JMH options:
+Or with custom JMH options via system properties:
 
 [source,bash]
 ----
-java -jar target/benchmarks.jar \
-  -wi 5 \
-  -i 10 \
-  -f 1 \
-  -t 4 \
-  -prof gc
+./mvnw clean compile exec:java -Dexec.mainClass="de.cuioss.sheriff.api.benchmark.BenchmarkRunner" \
+  -Djmh.warmupIterations=5 \
+  -Djmh.measurementIterations=10 \
+  -Djmh.forks=1 \
+  -Djmh.threads=4 \
+  -Djmh.time=2s
 ----
 
 === Integration Benchmarks
@@ -92,7 +92,7 @@ java -jar target/benchmarks.jar \
 [source,bash]
 ----
 cd benchmarking/benchmark-integration-quarkus
-./mvnw clean package quarkus:dev
+./mvnw clean compile exec:java -Dexec.mainClass="de.cuioss.sheriff.api.quarkus.benchmark.BenchmarkRunner"
 ----
 
 For native image benchmarks:
