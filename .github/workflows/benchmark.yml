@@ -62,7 +62,12 @@ jobs:
           # Move micro benchmark results to expected location for upload
           if [ -d "benchmarking/benchmark-library/target/benchmark-results" ]; then
             echo "Moving micro benchmark results to upload location..."
-            mv benchmarking/benchmark-library/target/benchmark-results/* benchmark-results/ 2>/dev/null || true
+            cp -v benchmarking/benchmark-library/target/benchmark-results/* benchmark-results/ || echo "Failed to copy micro benchmark results"
+            ls -la benchmark-results/
+          else
+            echo "Warning: benchmarking/benchmark-library/target/benchmark-results directory not found!"
+            echo "Looking for result files:"
+            find benchmarking/benchmark-library -name "*.json" -type f
           fi
 
       - name: Set up Docker Buildx

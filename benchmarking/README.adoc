@@ -10,11 +10,7 @@ The benchmarking module provides thorough performance testing capabilities to en
 
 === benchmark-library
 Standalone JMH benchmarks for the core API Sheriff library components, focusing on:
-
-* Rate limiting performance under various loads
-* Configuration validation overhead
-* Memory allocation patterns
-* Thread safety and concurrent access performance
+now verify that the
 
 === benchmark-integration-quarkus
 Integration benchmarks testing API Sheriff within Quarkus applications, including:
