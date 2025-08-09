@@ -15,17 +15,24 @@
  */
 package de.cuioss.sheriff.api.integration;
 
-import jakarta.ws.rs.core.Application;
-import jakarta.ws.rs.ApplicationPath;
+import io.quarkus.runtime.Quarkus;
+import io.quarkus.runtime.QuarkusApplication;
+import io.quarkus.runtime.annotations.QuarkusMain;
 
 /**
- * JAX-RS application for API Sheriff integration tests.
- * This class configures the REST application context for integration testing
- * of the API Sheriff Quarkus extension.
+ * Test application for API Sheriff integration testing.
+ * <p>
+ * This application provides endpoints for testing API Sheriff functionality,
+ * health checks, and metrics in a containerized environment.
  *
  * @author API Sheriff Team
  */
-@ApplicationPath("/api")
-public class TestApplication extends Application {
-    // JAX-RS application configuration
+@QuarkusMain
+public class TestApplication implements QuarkusApplication {
+
+    @Override
+    public int run(String... args) throws Exception {
+        Quarkus.waitForExit();
+        return 0;
+    }
 }

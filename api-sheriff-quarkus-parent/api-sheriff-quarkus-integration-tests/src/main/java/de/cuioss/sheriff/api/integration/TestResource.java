@@ -23,6 +23,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import io.quarkus.runtime.annotations.RegisterForReflection;
 import de.cuioss.sheriff.api.ApiSheriff;
 
 /**
@@ -32,6 +33,8 @@ import de.cuioss.sheriff.api.ApiSheriff;
  */
 @Path("/test")
 @ApplicationScoped
+@RegisterForReflection
+@Produces(MediaType.APPLICATION_JSON)
 public class TestResource {
 
     @Inject
