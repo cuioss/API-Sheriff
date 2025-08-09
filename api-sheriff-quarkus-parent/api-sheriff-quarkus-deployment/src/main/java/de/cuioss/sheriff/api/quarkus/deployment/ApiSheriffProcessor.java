@@ -125,20 +125,5 @@ public class ApiSheriffProcessor {
                 .build());
     }
 
-    /**
-     * Initializes API Sheriff components during runtime initialization.
-     * This build step performs any necessary runtime initialization for
-     * API Sheriff components in the Quarkus application.
-     *
-     * NOTE: Runtime initialization is handled by CDI producers.
-     * This method can be re-enabled with @Record annotation when
-     * the extension setup is properly configured.
-     *
-     * @param beanContainer the bean container for accessing CDI beans
-     */
-    @BuildStep
-    void initializeApiSheriff(BeanContainerBuildItem beanContainer) {
-        // Runtime initialization logic is handled by CDI producers
-        // This method is temporarily simplified to avoid Recorder dependency issues
-    }
+
 }
