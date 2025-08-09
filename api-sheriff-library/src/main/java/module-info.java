@@ -15,8 +15,6 @@
  */
 module de.cuioss.sheriff.api {
     exports de.cuioss.sheriff.api;
-    exports de.cuioss.sheriff.api.config;
-    exports de.cuioss.sheriff.api.security;
 
     requires static lombok;
     requires de.cuioss.java.tools;

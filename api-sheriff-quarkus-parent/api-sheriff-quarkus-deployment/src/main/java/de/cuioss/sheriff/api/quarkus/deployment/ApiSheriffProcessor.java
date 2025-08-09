@@ -26,10 +26,7 @@ import io.quarkus.deployment.builditem.FeatureBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 
 import de.cuioss.sheriff.api.ApiSheriff;
-import de.cuioss.sheriff.api.config.ApiGatewayConfig;
 import de.cuioss.sheriff.api.quarkus.ApiSheriffProducer;
-
-import de.cuioss.sheriff.api.security.RateLimiter;
 
 /**
  * Quarkus build step processor for API Sheriff extension.
@@ -103,17 +100,6 @@ public class ApiSheriffProcessor {
                 .fields()
                 .build());
 
-        reflectiveClass.produce(ReflectiveClassBuildItem.builder(ApiGatewayConfig.class)
-                .constructors()
-                .methods()
-                .fields()
-                .build());
-
-        reflectiveClass.produce(ReflectiveClassBuildItem.builder(RateLimiter.class)
-                .constructors()
-                .methods()
-                .fields()
-                .build());
 
         // Register the producer class for CDI proxy generation
         reflectiveClass.produce(ReflectiveClassBuildItem.builder(ApiSheriffProducer.class)

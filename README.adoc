@@ -41,99 +41,54 @@ https://cuioss.github.io/api-sheriff/about.html[Generated Documentation on githu
 [.discrete]
 == What is it?
 
-API-Sheriff is a lightweight, high-performance API Gateway focused on security and ease of use. It provides robust API gateway capabilities with comprehensive security features, rate limiting, authentication, and authorization in multi-tenant environments.
+A template project demonstrating a multi-module Maven structure with Quarkus integration and comprehensive benchmarking.
 
 toc::[]
 
-=== Key Features
-
-* **Rate Limiting**: Thread-safe, configurable rate limiting with sliding window approach
-* **Security First**: Built-in security measures for API gateway scenarios
-* **Multi-tenant Support**: Per-client rate limiting and configuration
-* **Framework Integration**: Native Quarkus extension with CDI support
-* **High Performance**: Optimized for high-throughput scenarios with minimal overhead
-* **Configuration Driven**: Flexible configuration system with builder pattern
-* **Monitoring Ready**: Comprehensive logging and metrics support
-
-=== Use Cases
-
-* **API Gateway**: Protect your APIs from abuse and ensure fair usage
-* **Rate Limiting**: Control request rates per client or globally  
-* **Security Layer**: Add security controls to existing applications
-* **Multi-tenant Applications**: Separate rate limits and policies per tenant
-* **Microservices**: Lightweight security layer for microservice architectures
-
-=== Architecture
-
-The API-Sheriff library consists of several key components:
-
-* **api-sheriff-library**: Core library with rate limiting and security features
-* **api-sheriff-quarkus**: Quarkus extension for seamless integration
-* **benchmarking**: Performance testing and optimization tools
-
-=== Quick Start
-
-[source,java]
-----
-// Create configuration
-ApiGatewayConfig config = ApiGatewayConfig.builder()
-    .rateLimit(100)
-    .timeWindow(Duration.ofMinutes(1))
-    .requestTimeout(Duration.ofSeconds(30))
-    .corsEnabled(true)
-    .build();
-
-// Initialize API Sheriff
-ApiSheriff sheriff = new ApiSheriff(config);
-
-// Check if request is allowed
-if (sheriff.isRequestAllowed("client-123", "/api/users")) {
-    // Process request
-} else {
-    // Reject request - rate limit exceeded
-}
-----
-
-=== Quarkus Integration
-
-[source,java]
-----
-@ApplicationScoped
-public class ApiGatewayService {
-    
-    @Inject
-    ApiSheriff apiSheriff;
-    
-    public boolean checkRequest(String clientId, String endpoint) {
-        return apiSheriff.isRequestAllowed(clientId, endpoint);
-    }
-}
-----
-
-Configuration via `application.properties`:
-[source,properties]
-----
-api-sheriff.rate-limit=200
-api-sheriff.time-window=60
-api-sheriff.request-timeout=30
-api-sheriff.cors-enabled=true
-----
-
-=== Maven Coordinates
+== Maven Coordinates
 
 [source,xml]
 ----
-    <!-- Core Library -->
-    <dependency>
-        <groupId>de.cuioss.sheriff.api</groupId>
-        <artifactId>api-sheriff-library</artifactId>
-        <version>${api-sheriff.version}</version>
-    </dependency>
-    
-    <!-- Quarkus Extension -->
-    <dependency>
-        <groupId>de.cuioss.sheriff.api</groupId>
-        <artifactId>api-sheriff-quarkus</artifactId>
-        <version>${api-sheriff.version}</version>
-    </dependency>
+<dependency>
+    <groupId>de.cuioss.sheriff.api</groupId>
+    <artifactId>api-sheriff-library</artifactId>
+</dependency>
 ----
+
+== Additional Modules
+
+The project includes several additional modules that extend the core functionality:
+
+=== Quarkus Integration
+
+The Quarkus Extension provides seamless integration into Quarkus applications. It includes:
+
+* CDI producers for easy dependency injection
+* Configuration support via Quarkus properties
+* Native image support for GraalVM compilation
+
+[source,xml]
+----
+<dependency>
+    <groupId>de.cuioss.sheriff.api</groupId>
+    <artifactId>api-sheriff-quarkus</artifactId>
+</dependency>
+----
+
+=== Performance Benchmarking
+
+The project includes two complementary benchmarking modules:
+
+==== Micro-Benchmarks
+
+The Benchmark Library provides in-memory performance measurements using JMH (Java Microbenchmark Harness).
+
+==== Integration Benchmarks
+
+The Quarkus Integration Benchmarks provides end-to-end performance testing using containerized environments.
+
+xref:benchmarking/doc/performance-scoring.adoc[Understand Performance Metrics]
+
+== External Resources
+
+* https://cuioss.github.io/api-sheriff/about.html[Generated Documentation on GitHub Pages]

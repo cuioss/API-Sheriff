@@ -27,8 +27,6 @@ import de.cuioss.sheriff.api.ApiSheriff;
 
 /**
  * REST resource for testing API Sheriff integration in Quarkus applications.
- * This resource provides endpoints to test the API Sheriff functionality
- * including rate limiting, security checks, and health monitoring.
  *
  * @author API Sheriff Team
  */
@@ -56,15 +54,10 @@ public class TestResource {
                     .build();
             }
 
-            // Check if configuration is valid
-            var validationError = apiSheriff.validateConfiguration();
-            if (validationError.isPresent()) {
-                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity("{\"status\":\"DOWN\",\"reason\":\"Configuration invalid: " + validationError.get() + "\"}")
-                    .build();
-            }
-
-            return Response.ok("{\"status\":\"UP\",\"apiSheriff\":\"available\"}")
+            // Get status to verify it's working
+            String status = apiSheriff.getStatus();
+            
+            return Response.ok("{\"status\":\"UP\",\"apiSheriff\":\"" + status + "\"}")
                 .build();
 
         } catch (Exception e) {
