@@ -26,6 +26,8 @@ image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/b
 
 *Micro Benchmarks*
 
+// TODO: Re-enable when performance-badge.json is generated
+// image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/performance-badge.json[API Sheriff Performance Score,link=https://cuioss.github.io/api-sheriff/benchmarks/index-visualizer.html]
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/trend-badge.json[Performance Trend,link=https://cuioss.github.io/api-sheriff/benchmarks/performance-trends.html]
 link:https://cuioss.github.io/api-sheriff/benchmarks/index-visualizer.html[View Detailed Micro Benchmark Results]
 
