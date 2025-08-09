@@ -69,17 +69,18 @@ export MAVEN_OPTS="-Xmx4G -XX:+UseG1GC"
 
 === Library Benchmarks
 
-[source,bash]
-----
-cd benchmarking/benchmark-library
-./mvnw clean compile exec:java -Dexec.mainClass="de.cuioss.sheriff.api.benchmark.BenchmarkRunner"
-----
-
-Or with custom JMH options via system properties:
+Run micro benchmarks using the benchmark profile:
 
 [source,bash]
 ----
-./mvnw clean compile exec:java -Dexec.mainClass="de.cuioss.sheriff.api.benchmark.BenchmarkRunner" \
+./mvnw clean verify -Pbenchmark -pl benchmarking/benchmark-library
+----
+
+With custom JMH options via system properties:
+
+[source,bash]
+----
+./mvnw clean verify -Pbenchmark -pl benchmarking/benchmark-library \
   -Djmh.warmupIterations=5 \
   -Djmh.measurementIterations=10 \
   -Djmh.forks=1 \
@@ -87,20 +88,27 @@ Or with custom JMH options via system properties:
   -Djmh.time=2s
 ----
 
+For JFR profiling:
+
+[source,bash]
+----
+./mvnw clean verify -Pbenchmark-jfr -pl benchmarking/benchmark-library
+----
+
 === Integration Benchmarks
 
-[source,bash]
-----
-cd benchmarking/benchmark-integration-quarkus
-./mvnw clean compile exec:java -Dexec.mainClass="de.cuioss.sheriff.api.quarkus.benchmark.BenchmarkRunner"
-----
-
-For native image benchmarks:
+Run integration benchmarks with native Quarkus:
 
 [source,bash]
 ----
-./mvnw clean package -Pnative
-./target/benchmark-integration-quarkus-runner
+./mvnw clean verify -Pbenchmark-testing -pl benchmarking/benchmark-integration-quarkus
+----
+
+For JFR profiling with native image:
+
+[source,bash]
+----
+./mvnw clean verify -Pbenchmark-jfr -pl benchmarking/benchmark-integration-quarkus
 ----
 
 == Benchmark Configuration
