@@ -63,6 +63,11 @@ public class BenchmarkRunner {
     public static void main(String[] args) throws RunnerException {
         Options opt = new OptionsBuilder()
                 .include(BenchmarkRunner.class.getSimpleName())
+                .forks(1)
+                .warmupIterations(3)
+                .measurementIterations(5)
+                .resultFormat(org.openjdk.jmh.results.format.ResultFormatType.JSON)
+                .result("target/benchmark-results/benchmark-result.json")
                 .build();
 
         new Runner(opt).run();
