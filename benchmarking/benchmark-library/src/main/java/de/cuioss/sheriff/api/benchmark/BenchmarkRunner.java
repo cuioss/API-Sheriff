@@ -67,7 +67,7 @@ public class BenchmarkRunner {
                 .warmupIterations(3)
                 .measurementIterations(5)
                 .resultFormat(org.openjdk.jmh.results.format.ResultFormatType.JSON)
-                .result("target/benchmark-results/benchmark-result.json")
+                .result("target/benchmark-results/micro-benchmark-result.json")
                 .build();
 
         new Runner(opt).run();
