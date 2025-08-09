@@ -15,8 +15,6 @@
  */
 package de.cuioss.sheriff.api.integration;
 
-import io.quarkus.test.junit.QuarkusIntegrationTest;
-import io.restassured.RestAssured;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
@@ -30,8 +28,7 @@ import static org.hamcrest.Matchers.is;
  *
  * @author API Sheriff Team
  */
-@QuarkusIntegrationTest
-public class ApiSheriffIntegrationIT {
+public class ApiSheriffIntegrationIT extends BaseIntegrationTest {
 
     /**
      * Test that the health endpoint returns a successful response,
@@ -41,12 +38,12 @@ public class ApiSheriffIntegrationIT {
     public void testApiSheriffHealthEndpoint() {
         given()
             .when()
-                .get("/api/test/health")
+                .get("/test/health")
             .then()
                 .statusCode(200)
                 .contentType("application/json")
                 .body("status", is("UP"))
-                .body("apiSheriff", is("available"));
+                .body("apiSheriff", containsString("API Sheriff is operational"));
     }
 
     /**
@@ -56,7 +53,7 @@ public class ApiSheriffIntegrationIT {
     public void testInfoEndpoint() {
         given()
             .when()
-                .get("/api/test/info")
+                .get("/test/info")
             .then()
                 .statusCode(200)
                 .contentType("application/json")
