@@ -200,7 +200,7 @@
                         <configuration>
                             <!-- Configure JaCoCo to work with deployment tests -->
                             <includes>
-                                <include>de.cuioss.sheriff.api/quarkus/deployment/**</include>
+                                <include>de/cuioss/sheriff/api/quarkus/deployment/**</include>
                             </includes>
                             <!-- Ensure JaCoCo agent is properly attached to tests -->
                             <append>true</append>

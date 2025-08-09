@@ -80,10 +80,8 @@ public class ApiSheriffProcessor {
      */
     @BuildStep
     void addBeans(BuildProducer<AdditionalBeanBuildItem> additionalBeans) {
+        // Register only the producer class - it will handle bean creation
         additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(ApiSheriffProducer.class));
-        additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(ApiSheriff.class));
-        additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(ApiGatewayConfig.class));
-        additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(RateLimiter.class));
     }
 
     /**
