@@ -69,14 +69,17 @@ public class BenchmarkRunner {
      * @throws Exception if benchmark execution fails
      */
     public static void main(String[] args) throws Exception {
-        // Configure JMH options
+        // Configure JMH options using helper for system property configuration
         Options options = new OptionsBuilder()
-                .include(BenchmarkRunner.class.getSimpleName())
-                .forks(1)
-                .warmupIterations(3)
-                .measurementIterations(5)
-                .resultFormat(org.openjdk.jmh.results.format.ResultFormatType.JSON)
-                .result("target/benchmark-results/integration-benchmark-result.json")
+                .include(System.getProperty("jmh.include", "de\\.cuioss\\.sheriff\\.api\\.quarkus\\.benchmark\\..*"))
+                .forks(BenchmarkOptionsHelper.getForks(1))
+                .warmupIterations(BenchmarkOptionsHelper.getWarmupIterations(1))
+                .measurementIterations(BenchmarkOptionsHelper.getMeasurementIterations(2))
+                .measurementTime(BenchmarkOptionsHelper.getMeasurementTime("5s"))
+                .warmupTime(BenchmarkOptionsHelper.getWarmupTime("1s"))
+                .threads(BenchmarkOptionsHelper.getThreadCount(10))
+                .resultFormat(BenchmarkOptionsHelper.getResultFormat())
+                .result(BenchmarkOptionsHelper.getResultFile(getBenchmarkResultsDir() + "/integration-benchmark-result.json"))
                 .build();
 
         // Run the benchmarks
@@ -88,5 +91,14 @@ public class BenchmarkRunner {
         }
 
         System.out.println("Benchmark completed successfully with " + results.size() + " results");
+    }
+
+    /**
+     * Gets the benchmark results directory from system property or defaults to target/benchmark-results.
+     *
+     * @return the benchmark results directory path
+     */
+    private static String getBenchmarkResultsDir() {
+        return System.getProperty("benchmark.results.dir", "target/benchmark-results");
     }
 }
