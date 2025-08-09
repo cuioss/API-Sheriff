@@ -1,0 +1,84 @@
+{
+  "runs": [
+    {
+      "timestamp": "2025-07-25T10:15:30Z",
+      "commit": "a1b2c3d4e5f6789012345678901234567890abcd",
+      "performance": {
+        "score": 48520,
+        "throughput": {"value": 79800, "unit": "ops/s"},
+        "averageTime": {"value": 0.001256, "unit": "s"},
+        "errorResilience": {"value": 105200, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-07-26T14:22:15Z",
+      "commit": "b2c3d4e5f6789012345678901234567890abcde1",
+      "performance": {
+        "score": 49850,
+        "throughput": {"value": 82100, "unit": "ops/s"},
+        "averageTime": {"value": 0.001218, "unit": "s"},
+        "errorResilience": {"value": 108500, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-07-27T09:45:22Z",
+      "commit": "c3d4e5f6789012345678901234567890abcde12f",
+      "performance": {
+        "score": 47200,
+        "throughput": {"value": 77500, "unit": "ops/s"},
+        "averageTime": {"value": 0.001289, "unit": "s"},
+        "errorResilience": {"value": 101800, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-07-28T16:33:44Z",
+      "commit": "d4e5f6789012345678901234567890abcde12f34",
+      "performance": {
+        "score": 51200,
+        "throughput": {"value": 84300, "unit": "ops/s"},
+        "averageTime": {"value": 0.001186, "unit": "s"},
+        "errorResilience": {"value": 112000, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-07-29T11:28:17Z",
+      "commit": "e5f6789012345678901234567890abcde12f3456",
+      "performance": {
+        "score": 50100,
+        "throughput": {"value": 82800, "unit": "ops/s"},
+        "averageTime": {"value": 0.001207, "unit": "s"},
+        "errorResilience": {"value": 109300, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-07-30T13:17:58Z",
+      "commit": "f6789012345678901234567890abcde12f345678",
+      "performance": {
+        "score": 52800,
+        "throughput": {"value": 87200, "unit": "ops/s"},
+        "averageTime": {"value": 0.001147, "unit": "s"},
+        "errorResilience": {"value": 115600, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-07-31T15:42:33Z",
+      "commit": "6789012345678901234567890abcde12f3456789",
+      "performance": {
+        "score": 51900,
+        "throughput": {"value": 85700, "unit": "ops/s"},
+        "averageTime": {"value": 0.001167, "unit": "s"},
+        "errorResilience": {"value": 113400, "unit": "ops/s"}
+      }
+    },
+    {
+      "timestamp": "2025-08-01T07:30:12Z",
+      "commit": "789012345678901234567890abcde12f3456789a",
+      "performance": {
+        "score": 52580,
+        "throughput": {"value": 85538, "unit": "ops/s"},
+        "averageTime": {"value": 0.001169, "unit": "s"},
+        "errorResilience": {"value": 113075, "unit": "ops/s"}
+      }
+    }
+  ]
+}

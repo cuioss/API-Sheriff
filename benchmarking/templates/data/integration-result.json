@@ -1,0 +1,222 @@
+[
+  {
+    "jmhVersion": "1.37",
+    "benchmark": "de.cuioss.jwt.quarkus.benchmark.integration.HealthCheckBenchmark.measureHealthCheck",
+    "mode": "thrpt",
+    "threads": 50,
+    "forks": 1,
+    "jvm": "/opt/java/openjdk/bin/java",
+    "jvmArgs": [
+      "-Dquarkus.http.port=8080",
+      "-Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+    ],
+    "jdkVersion": "21.0.7",
+    "vmName": "OpenJDK 64-Bit Server VM",
+    "vmVersion": "21.0.7+6-LTS",
+    "warmupIterations": 2,
+    "warmupTime": "3 s",
+    "warmupBatchSize": 1,
+    "measurementIterations": 3,
+    "measurementTime": "5 s",
+    "measurementBatchSize": 1,
+    "primaryMetric": {
+      "score": 8542.856234567891,
+      "scoreError": 234.567891234567,
+      "scoreConfidence": [
+        8308.288343333324,
+        8777.424125802458
+      ],
+      "scorePercentiles": {
+        "0.0": 8234.567891234567,
+        "50.0": 8542.856234567891,
+        "90.0": 8851.144577901235,
+        "95.0": 8928.289749567902,
+        "99.0": 9005.434921234569,
+        "99.9": 9043.007507067902,
+        "99.99": 9050.580092901235,
+        "99.999": 9053.366385817902,
+        "99.9999": 9054.759532276235,
+        "100.0": 9056.152678734568
+      },
+      "scoreUnit": "ops/s",
+      "rawData": [
+        [
+          8234.567891234567,
+          8542.856234567891,
+          8851.144577901235
+        ]
+      ]
+    },
+    "secondaryMetrics": {},
+    "customData": {
+      "containerType": "native-quarkus",
+      "testType": "health-check",
+      "description": "Health check endpoint performance baseline"
+    }
+  },
+  {
+    "jmhVersion": "1.37",
+    "benchmark": "de.cuioss.jwt.quarkus.benchmark.integration.JwtValidationBenchmark.measureJwtValidation",
+    "mode": "thrpt",
+    "threads": 50,
+    "forks": 1,
+    "jvm": "/opt/java/openjdk/bin/java",
+    "jvmArgs": [
+      "-Dquarkus.http.port=8080",
+      "-Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+    ],
+    "jdkVersion": "21.0.7",
+    "vmName": "OpenJDK 64-Bit Server VM",
+    "vmVersion": "21.0.7+6-LTS",
+    "warmupIterations": 2,
+    "warmupTime": "3 s",
+    "warmupBatchSize": 1,
+    "measurementIterations": 3,
+    "measurementTime": "5 s",
+    "measurementBatchSize": 1,
+    "primaryMetric": {
+      "score": 3245.678912345678,
+      "scoreError": 123.456789123456,
+      "scoreConfidence": [
+        3122.222123222222,
+        3369.135701469134
+      ],
+      "scorePercentiles": {
+        "0.0": 3098.765432109876,
+        "50.0": 3245.678912345678,
+        "90.0": 3392.59239258148,
+        "95.0": 3443.827160493827,
+        "99.0": 3495.061928406174,
+        "99.9": 3520.679312362347,
+        "99.99": 3533.48800934032,
+        "99.999": 3540.391851829307,
+        "99.9999": 3543.844273073801,
+        "100.0": 3547.296694318294
+      },
+      "scoreUnit": "ops/s",
+      "rawData": [
+        [
+          3098.765432109876,
+          3245.678912345678,
+          3392.59239258148
+        ]
+      ]
+    },
+    "secondaryMetrics": {},
+    "customData": {
+      "containerType": "native-quarkus",
+      "testType": "jwt-validation",
+      "description": "JWT validation with Keycloak integration"
+    }
+  },
+  {
+    "jmhVersion": "1.37",
+    "benchmark": "de.cuioss.jwt.quarkus.benchmark.integration.HealthCheckBenchmark.measureHealthCheckLatency",
+    "mode": "avgt",
+    "threads": 50,
+    "forks": 1,
+    "jvm": "/opt/java/openjdk/bin/java",
+    "jvmArgs": [
+      "-Dquarkus.http.port=8080",
+      "-Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+    ],
+    "jdkVersion": "21.0.7",
+    "vmName": "OpenJDK 64-Bit Server VM",
+    "vmVersion": "21.0.7+6-LTS",
+    "warmupIterations": 2,
+    "warmupTime": "3 s",
+    "warmupBatchSize": 1,
+    "measurementIterations": 3,
+    "measurementTime": "5 s",
+    "measurementBatchSize": 1,
+    "primaryMetric": {
+      "score": 5.867123456789012,
+      "scoreError": 0.234567891234567,
+      "scoreConfidence": [
+        5.632555565554445,
+        6.101691347923579
+      ],
+      "scorePercentiles": {
+        "0.0": 5.432109876543209,
+        "50.0": 5.867123456789012,
+        "90.0": 6.302137037034815,
+        "95.0": 6.519643827157716,
+        "99.0": 6.737150617280618,
+        "99.9": 6.845904012342069,
+        "99.99": 6.90028071987227,
+        "99.999": 6.927469574307375,
+        "99.9999": 6.941064001524928,
+        "100.0": 6.95465842874248
+      },
+      "scoreUnit": "ms/op",
+      "rawData": [
+        [
+          5.432109876543209,
+          5.867123456789012,
+          6.302137037034815
+        ]
+      ]
+    },
+    "secondaryMetrics": {},
+    "customData": {
+      "containerType": "native-quarkus",
+      "testType": "health-check-latency",
+      "description": "Health check endpoint latency baseline"
+    }
+  },
+  {
+    "jmhVersion": "1.37",
+    "benchmark": "de.cuioss.jwt.quarkus.benchmark.integration.JwtValidationBenchmark.measureJwtValidationLatency",
+    "mode": "avgt",
+    "threads": 50,
+    "forks": 1,
+    "jvm": "/opt/java/openjdk/bin/java",
+    "jvmArgs": [
+      "-Dquarkus.http.port=8080",
+      "-Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+    ],
+    "jdkVersion": "21.0.7",
+    "vmName": "OpenJDK 64-Bit Server VM",
+    "vmVersion": "21.0.7+6-LTS",
+    "warmupIterations": 2,
+    "warmupTime": "3 s",
+    "warmupBatchSize": 1,
+    "measurementIterations": 3,
+    "measurementTime": "5 s",
+    "measurementBatchSize": 1,
+    "primaryMetric": {
+      "score": 15.432109876543209,
+      "scoreError": 0.876543210987654,
+      "scoreConfidence": [
+        14.555566665555555,
+        16.308653087530863
+      ],
+      "scorePercentiles": {
+        "0.0": 14.123456789012345,
+        "50.0": 15.432109876543209,
+        "90.0": 16.740762964074073,
+        "95.0": 17.39508950783395,
+        "99.0": 18.049416051593827,
+        "99.9": 18.376579323473765,
+        "99.99": 18.540160959413734,
+        "99.999": 18.621951777383719,
+        "99.9999": 18.662847186368711,
+        "100.0": 18.703742595353703
+      },
+      "scoreUnit": "ms/op",
+      "rawData": [
+        [
+          14.123456789012345,
+          15.432109876543209,
+          16.740762964074073
+        ]
+      ]
+    },
+    "secondaryMetrics": {},
+    "customData": {
+      "containerType": "native-quarkus",
+      "testType": "jwt-validation-latency",
+      "description": "JWT validation latency with Keycloak integration"
+    }
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "name": "api-sheriff-quarkus-deployment",
+  "version": "1.0.0-SNAPSHOT",
+  "description": "Deployment module for Quarkus integration for API Sheriff",
+  "private": true,
+  "scripts": {
+    "test:ci-strict": "echo 'No JavaScript tests to run'",
+    "format:check": "echo 'No JavaScript formatting to check'",
+    "validate:css": "echo 'No CSS to validate'",
+    "lint": "echo 'No JavaScript to lint'"
+  }
+}
+EOF < /dev/null

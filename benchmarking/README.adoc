@@ -1,0 +1,303 @@
+= API Sheriff Benchmarking
+
+Comprehensive performance testing and benchmarking suite for API Sheriff components, including both standalone library benchmarks and integration benchmarks for various frameworks.
+
+== Overview
+
+The benchmarking module provides thorough performance testing capabilities to ensure API Sheriff meets performance requirements across different deployment scenarios. It includes both micro-benchmarks for individual components and integration benchmarks for real-world usage patterns.
+
+== Modules
+
+=== benchmark-library
+Standalone JMH benchmarks for the core API Sheriff library components, focusing on:
+
+* Rate limiting performance under various loads
+* Configuration validation overhead
+* Memory allocation patterns
+* Thread safety and concurrent access performance
+
+=== benchmark-integration-quarkus
+Integration benchmarks testing API Sheriff within Quarkus applications, including:
+
+* CDI injection overhead
+* Configuration property loading performance
+* Native image performance characteristics
+* Real-world usage pattern simulation
+
+== Benchmark Categories
+
+=== Core Library Benchmarks
+
+==== Rate Limiting Performance
+- Single-threaded request processing
+- Multi-threaded concurrent access
+- Rate limit exceeded scenarios
+- Client state management operations
+
+==== Configuration Benchmarks
+- Configuration validation performance
+- Custom property access
+- Builder pattern overhead
+
+==== Memory Benchmarks
+- Object allocation patterns
+- Garbage collection impact
+- Memory usage scaling with client count
+
+=== Integration Benchmarks
+
+==== CDI Performance
+- Injection overhead comparison
+- Proxy call performance
+- Bean lookup costs
+
+==== Quarkus Specific
+- Application startup impact
+- Configuration loading performance
+- Native image execution characteristics
+
+== Running Benchmarks
+
+=== Prerequisites
+
+[source,bash]
+----
+# Ensure you have sufficient system resources
+# Recommended: 8GB+ RAM, dedicated CPU cores
+export MAVEN_OPTS="-Xmx4G -XX:+UseG1GC"
+----
+
+=== Library Benchmarks
+
+[source,bash]
+----
+cd benchmarking/benchmark-library
+./mvnw clean compile exec:java
+----
+
+Or with custom JMH options:
+
+[source,bash]
+----
+java -jar target/benchmarks.jar \
+  -wi 5 \
+  -i 10 \
+  -f 1 \
+  -t 4 \
+  -prof gc
+----
+
+=== Integration Benchmarks
+
+[source,bash]
+----
+cd benchmarking/benchmark-integration-quarkus
+./mvnw clean package quarkus:dev
+----
+
+For native image benchmarks:
+
+[source,bash]
+----
+./mvnw clean package -Pnative
+./target/benchmark-integration-quarkus-runner
+----
+
+== Benchmark Configuration
+
+=== JMH Parameters
+
+Common JMH configuration options:
+
+[cols="1,2,1"]
+|===
+|Parameter |Description |Default
+
+|Warmup Iterations
+|Number of warmup iterations
+|3
+
+|Measurement Iterations
+|Number of measurement iterations
+|5
+
+|Forks
+|Number of benchmark forks
+|1
+
+|Threads
+|Number of benchmark threads
+|1
+
+|Mode
+|Benchmark mode (Throughput/AverageTime)
+|Throughput
+|===
+
+=== Parameterized Tests
+
+Benchmarks support various parameters:
+
+==== Rate Limiting Parameters
+- `rateLimit`: 100, 1000, 10000 requests
+- `timeWindow`: 1, 5, 10 seconds  
+- `clientCount`: 1, 10, 100 concurrent clients
+
+==== Load Parameters
+- `concurrentThreads`: 1, 4, 8, 16 threads
+- `requestBurst`: 10, 100, 1000 requests per burst
+- `endpointVariation`: Different endpoint patterns
+
+== Benchmark Results Interpretation
+
+=== Throughput Benchmarks
+
+[source]
+----
+Benchmark                                  Mode  Cnt     Score     Error  Units
+BenchmarkRunner.benchmarkSingleThreaded  thrpt    5  2834.567 ± 45.123  ops/s
+BenchmarkRunner.benchmarkConcurrent      thrpt    5  8234.123 ± 89.456  ops/s
+----
+
+**Score**: Operations per second (higher is better)
+**Error**: Statistical margin of error
+**Units**: Operations per time unit
+
+=== Memory Benchmarks
+
+[source]
+----
+Benchmark                              Mode  Cnt    Score    Error   Units
+BenchmarkRunner.memoryAllocation      avgt    5   12.345 ±  0.123   ns/op
+
+Secondary metrics:
+·GC.alloc.rate                         avgt    5  234.567 ±  5.678  MB/sec
+·GC.count                              avgt    5    2.000 ±  0.000  counts
+----
+
+== Performance Targets
+
+=== Core Library Targets
+- **Throughput**: >5,000 ops/sec single-threaded
+- **Latency**: <1ms average request processing
+- **Memory**: <100MB heap for 10,000 concurrent clients
+- **Scaling**: Linear scaling up to 16 threads
+
+=== Integration Targets
+- **CDI Overhead**: <5% performance impact
+- **Startup Time**: <2 seconds additional startup
+- **Native Image**: >90% of JVM performance
+- **Configuration**: <10ms configuration loading
+
+== Continuous Benchmarking
+
+=== CI Integration
+
+[source,yaml]
+----
+# .github/workflows/benchmarks.yml
+name: Performance Benchmarks
+on:
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * *' # Daily at 2 AM
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Benchmarks
+        run: |
+          cd benchmarking
+          ./mvnw clean test -Pbenchmark
+----
+
+=== Performance Regression Detection
+
+Benchmarks include performance regression detection:
+
+[source,java]
+----
+// Fail if performance drops below threshold
+@Measurement(iterations = 5, time = 2)
+@BenchmarkMode(Mode.Throughput)
+@Fork(value = 1, jvmArgs = {"-Xmx2G"})
+public void benchmarkWithThreshold() {
+    // Test implementation
+    // CI will fail if throughput < baseline - 10%
+}
+----
+
+== Custom Benchmarks
+
+=== Adding New Benchmarks
+
+[source,java]
+----
+@Benchmark
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
+public long benchmarkCustomScenario() {
+    // Your benchmark implementation
+    return apiSheriff.customOperation();
+}
+----
+
+=== Benchmark Best Practices
+
+1. **Warm-up**: Always include adequate warm-up iterations
+2. **Isolation**: Use separate JVM forks for reliable results
+3. **Realistic Data**: Use representative test data
+4. **Multiple Metrics**: Measure both throughput and latency
+5. **Memory Profiling**: Include GC and allocation metrics
+6. **Repeatability**: Ensure consistent test conditions
+
+== Analysis and Reporting
+
+=== Performance Reports
+
+Benchmarks generate comprehensive performance reports:
+
+- JSON results for automated analysis
+- HTML reports with charts and graphs
+- CSV data for spreadsheet analysis
+- Performance trend tracking
+
+=== Profiling Integration
+
+Support for various profilers:
+
+[source,bash]
+----
+# JProfiler integration
+java -jar benchmarks.jar -prof jprofiler
+
+# Async profiler
+java -jar benchmarks.jar -prof async
+
+# GC profiling
+java -jar benchmarks.jar -prof gc
+----
+
+== Troubleshooting
+
+=== Common Issues
+
+**Out of Memory Errors**
+[source,bash]
+----
+export MAVEN_OPTS="-Xmx4G"
+# Or reduce benchmark parameters
+----
+
+**Inconsistent Results**
+- Ensure system is idle during benchmarks
+- Use dedicated benchmark environment
+- Increase measurement iterations
+
+**Native Image Issues**
+- Verify GraalVM version compatibility
+- Check reflection configuration
+- Review native image build logs

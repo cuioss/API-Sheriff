@@ -1,0 +1,34 @@
+# Simple Dockerfile for copying pre-built native executable
+# This approach is much faster as it avoids rebuilding the native image in Docker
+FROM quay.io/quarkus/quarkus-distroless-image:2.0
+
+LABEL org.opencontainers.image.title="API Sheriff Integration Tests - Distroless"
+LABEL org.opencontainers.image.description="Security-hardened Quarkus native application"
+LABEL org.opencontainers.image.vendor="CUI"
+LABEL org.opencontainers.image.version="1.0.0-SNAPSHOT"
+LABEL security.scan.required="true"
+LABEL security.distroless="true"
+LABEL performance.jfr.enabled="false"
+
+WORKDIR /app
+
+# Copy pre-built native executable from Maven target directory
+COPY --chmod=0755 api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/target/*-runner /app/application
+
+# Copy certificates and health check script  
+COPY --chmod=0755 api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/src/main/docker/health-check.sh /app/health-check.sh
+COPY --chmod=0644 api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/src/main/docker/certificates/localhost.crt /app/certificates/localhost.crt
+COPY --chmod=0600 api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/src/main/docker/certificates/localhost.key /app/certificates/localhost.key
+COPY --chmod=0644 api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/src/main/docker/certificates/localhost-truststore.p12 /app/certificates/localhost-truststore.p12
+
+EXPOSE 8443
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=10s CMD ["/app/health-check.sh"]
+USER nonroot
+
+# Optimized entrypoint for production
+ENTRYPOINT ["/app/application", \
+  "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12", \
+  "-Djavax.net.ssl.trustStorePassword=localhost-trust", \
+  "-Djavax.net.ssl.trustStoreType=PKCS12", \
+  "-Djdk.tls.rejectClientInitiatedRenegotiation=true", \
+  "-Djavax.net.ssl.sessionCacheSize=20480"]

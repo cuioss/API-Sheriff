@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Integration Benchmark Performance Trends</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="resources/common.css">
+  <style>
+    /* Page-specific styles for integration trends */
+    .chart-container {
+      margin: 30px 0;
+      padding: 20px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .chart-title {
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 15px;
+      color: #333;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin: 30px 0;
+    }
+    .metric-card {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    .metric-value {
+      font-size: 32px;
+      font-weight: bold;
+      color: #2c3e50;
+    }
+    .metric-label {
+      font-size: 14px;
+      color: #7f8c8d;
+      margin-top: 10px;
+    }
+    .trend-indicator {
+      font-size: 18px;
+      margin-top: 10px;
+    }
+    .trend-up { color: #27ae60; }
+    .trend-down { color: #e74c3c; }
+    .trend-stable { color: #95a5a6; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Integration Benchmark Performance Trends</h1>
+      <p class="subtitle">Performance metrics and trends for integration benchmarks over the last 10 runs</p>
+      <div class="navigation">
+        <a href="index-visualizer.html">Micro Benchmarks</a> |
+        <a href="integration-index.html">Integration JMH Analysis</a> |
+        <a href="performance-trends.html">Micro Trends</a> |
+        <strong>Integration Trends</strong>
+      </div>
+    </div>
+
+    <div id="loading" class="loading">
+      <p>Loading integration performance data...</p>
+    </div>
+
+    <div id="error" class="error-message" style="display: none;">
+      <h3>Unable to Load Integration Performance Data</h3>
+      <p>Could not fetch integration performance tracking data. Please ensure integration benchmark runs have been completed.</p>
+    </div>
+
+    <div id="content" style="display: none;">
+      <!-- Current Metrics -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-value" id="current-score">--</div>
+          <div class="metric-label">Performance Score</div>
+          <div class="trend-indicator" id="score-trend">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="current-throughput">--</div>
+          <div class="metric-label">Throughput (ops/s)</div>
+          <div class="trend-indicator" id="throughput-trend">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="current-latency">--</div>
+          <div class="metric-label">Average Latency (ms)</div>
+          <div class="trend-indicator" id="latency-trend">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="current-errors">--</div>
+          <div class="metric-label">Error Rate (%)</div>
+          <div class="trend-indicator" id="errors-trend">--</div>
+        </div>
+      </div>
+
+      <!-- Performance Score Chart -->
+      <div class="chart-container">
+        <div class="chart-title">Integration Performance Score Over Time</div>
+        <canvas id="scoreChart"></canvas>
+      </div>
+
+      <!-- Throughput Chart -->
+      <div class="chart-container">
+        <div class="chart-title">Integration Throughput Trends</div>
+        <canvas id="throughputChart"></canvas>
+      </div>
+
+      <!-- Latency Chart -->
+      <div class="chart-container">
+        <div class="chart-title">Integration Average Latency Trends</div>
+        <canvas id="latencyChart"></canvas>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Integration performance data is updated automatically with each benchmark run. Trends are calculated as percentage change between the first and last data points of the last 10 runs.</p>
+    </div>
+  </div>
+
+  <script>
+    async function loadPerformanceData() {
+      try {
+        // Try to load integration-specific tracking file first
+        let response = await fetch('data/integration-performance-tracking.json');
+        
+        // If integration-specific file doesn't exist, fall back to main tracking file
+        // but filter for integration benchmarks
+        if (!response.ok) {
+          response = await fetch('data/performance-tracking.json');
+        }
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch performance data');
+        }
+        
+        const data = await response.json();
+        displayPerformanceData(data);
+      } catch (error) {
+        console.error('Error loading integration performance data:', error);
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+
+    function calculateTrend(values) {
+      if (values.length < 2) return { slope: 0, direction: 'stable', percent: 0 };
+      
+      const first = values[0];
+      const last = values[values.length - 1];
+      const percentChange = ((last - first) / first) * 100;
+      
+      let direction = 'stable';
+      if (percentChange > 1) direction = 'up';
+      else if (percentChange < -1) direction = 'down';
+      
+      return { 
+        slope: percentChange, 
+        direction: direction,
+        percent: percentChange.toFixed(1)
+      };
+    }
+
+    function displayPerformanceData(data) {
+      document.getElementById('loading').style.display = 'none';
+      
+      if (!data.runs || data.runs.length === 0) {
+        document.getElementById('error').style.display = 'block';
+        return;
+      }
+      
+      document.getElementById('content').style.display = 'block';
+      
+      // Extract data for charts
+      const runs = data.runs.slice(-10); // Last 10 runs
+      const labels = runs.map(r => new Date(r.timestamp).toLocaleDateString());
+      const scores = runs.map(r => r.performance.score);
+      const throughputs = runs.map(r => r.performance.throughput.value);
+      const latencies = runs.map(r => r.performance.averageTime.value * 1000); // Convert to ms
+      
+      // Display current values (from latest run)
+      const latest = runs[runs.length - 1];
+      document.getElementById('current-score').textContent = latest.performance.score.toLocaleString();
+      document.getElementById('current-throughput').textContent = 
+        (latest.performance.throughput.value / 1000).toFixed(1) + 'k';
+      document.getElementById('current-latency').textContent = 
+        (latest.performance.averageTime.value * 1000).toFixed(1);
+      
+      // Calculate and display trends
+      const scoreTrend = calculateTrend(scores);
+      const throughputTrend = calculateTrend(throughputs);
+      const latencyTrend = calculateTrend(latencies);
+      
+      displayTrend('score-trend', scoreTrend, false);
+      displayTrend('throughput-trend', throughputTrend, false);
+      displayTrend('latency-trend', latencyTrend, true); // Reverse for latency
+      
+      // Create charts
+      createChart('scoreChart', labels, scores, 'Performance Score', '#3498db');
+      createChart('throughputChart', labels, throughputs, 'Throughput (ops/s)', '#2ecc71');
+      createChart('latencyChart', labels, latencies, 'Latency (ms)', '#e74c3c');
+    }
+
+    function displayTrend(elementId, trend, reverse = false) {
+      const element = document.getElementById(elementId);
+      const actualDirection = reverse ? 
+        (trend.direction === 'up' ? 'down' : trend.direction === 'down' ? 'up' : 'stable') : 
+        trend.direction;
+      
+      let symbol = '→';
+      let className = 'trend-stable';
+      
+      if (actualDirection === 'up') {
+        symbol = '↗';
+        className = 'trend-up';
+      } else if (actualDirection === 'down') {
+        symbol = '↘';
+        className = 'trend-down';
+      }
+      
+      element.textContent = `${symbol} ${Math.abs(trend.percent)}%`;
+      element.className = 'trend-indicator ' + className;
+    }
+
+    function createChart(canvasId, labels, data, label, color) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: label,
+            data: data,
+            borderColor: color,
+            backgroundColor: color + '20',
+            tension: 0.3,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: false
+            }
+          },
+          plugins: {
+            legend: {
+              display: false
+            }
+          }
+        }
+      });
+    }
+
+    // Load data on page load
+    loadPerformanceData();
+  </script>
+</body>
+</html>

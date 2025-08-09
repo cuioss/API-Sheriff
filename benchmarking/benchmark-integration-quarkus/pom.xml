@@ -1,0 +1,488 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.api</groupId>
+        <artifactId>benchmarking</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>benchmark-integration-quarkus</artifactId>
+    <packaging>jar</packaging>
+    <name>API Sheriff Quarkus Integration Benchmarks</name>
+    <description>JMH benchmarks for Quarkus integration testing against live services</description>
+
+    <properties>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.quarkus.benchmark</maven.jar.plugin.automatic.module.name>
+        <sonar.skip>true</sonar.skip>
+
+        <!-- Default benchmark runner -->
+        <benchmark.runner>de.cuioss.sheriff.api.quarkus.benchmark.BenchmarkRunner</benchmark.runner>
+
+        <!-- JMH Configuration Properties - Optimized for integration testing -->
+        <jmh.result.format>JSON</jmh.result.format>
+        <jmh.result.filePrefix>${benchmark.results.dir}/integration-benchmark-result</jmh.result.filePrefix>
+        <jmh.iterations>5</jmh.iterations>
+        <jmh.warmupIterations>1</jmh.warmupIterations>
+        <jmh.forks>2</jmh.forks>
+        <jmh.threads>24</jmh.threads>
+        <jmh.time>10s</jmh.time>
+        <jmh.warmupTime>1s</jmh.warmupTime>
+
+        <!-- Integration test service URLs - aligned with docker-compose.yml ports -->
+        <integration.service.url>https://localhost:10443</integration.service.url>
+        <keycloak.url>https://localhost:1443</keycloak.url>
+        <quarkus.metrics.url>https://localhost:10443</quarkus.metrics.url>
+    </properties>
+
+    <dependencies>
+        <!-- JMH dependencies -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+        </dependency>
+
+        <!-- CUI utilities -->
+        <dependency>
+            <groupId>de.cuioss</groupId>
+            <artifactId>cui-java-tools</artifactId>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- JSON processing -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+        </dependency>
+
+        <!-- HdrHistogram for accurate latency recording -->
+        <dependency>
+            <groupId>org.hdrhistogram</groupId>
+            <artifactId>HdrHistogram</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        
+        <!-- Apache Commons IO for TeeOutputStream -->
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+        </dependency>
+
+
+        <!-- JUnit for basic testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- Awaitility for better async testing -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Configure surefire for unit tests -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skipTests>false</skipTests>
+                    <argLine>-XX:+IgnoreUnrecognizedVMOptions -Djava.awt.headless=true</argLine>
+                </configuration>
+            </plugin>
+
+            <!-- Enable annotation processing for JMH -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>${version.jmh}</version>
+                        </path>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${version.lombok}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <release>21</release>
+                </configuration>
+            </plugin>
+
+            <!-- Execute benchmark tests when skip.benchmark is false -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>create-benchmark-dir</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skip.benchmark}</skip>
+                            <executable>mkdir</executable>
+                            <arguments>
+                                <argument>-p</argument>
+                                <argument>${benchmark.results.dir}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>run-benchmarks</id>
+                        <phase>integration-test</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skip.benchmark}</skip>
+                            <executable>java</executable>
+                            <arguments>
+                                <argument>-Djava.util.logging.manager=java.util.logging.LogManager</argument>
+                                <argument>-classpath</argument>
+                                <argument>${project.build.outputDirectory}${path.separator}${project.build.directory}/dependency/*</argument>
+                                <argument>-Djmh.result.format=${jmh.result.format}</argument>
+                                <argument>-Djmh.result.filePrefix=${jmh.result.filePrefix}</argument>
+                                <argument>-Djmh.iterations=${jmh.iterations}</argument>
+                                <argument>-Djmh.warmupIterations=${jmh.warmupIterations}</argument>
+                                <argument>-Djmh.forks=${jmh.forks}</argument>
+                                <argument>-Djmh.threads=${jmh.threads}</argument>
+                                <argument>-Djmh.time=${jmh.time}</argument>
+                                <argument>-Djmh.warmupTime=${jmh.warmupTime}</argument>
+                                <argument>-Dbenchmark.results.dir=${benchmark.results.dir}</argument>
+                                <argument>-Dintegration.service.url=${integration.service.url}</argument>
+                                <argument>-Dkeycloak.url=${keycloak.url}</argument>
+                                <argument>-Dquarkus.metrics.url=${quarkus.metrics.url}</argument>
+                                <argument>-Djava.util.logging.manager=java.util.logging.LogManager</argument>
+                                <argument>-Djava.util.logging.config.file=src/main/resources/benchmark-logging.properties</argument>
+                                <argument>-XX:+UnlockDiagnosticVMOptions</argument>
+                                <argument>-XX:+DebugNonSafepoints</argument>
+                                <argument>${benchmark.runner}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Build classpath for benchmark execution -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>copy-dependencies</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/dependency</outputDirectory>
+                            <overWriteReleases>false</overWriteReleases>
+                            <overWriteSnapshots>false</overWriteSnapshots>
+                            <overWriteIfNewer>true</overWriteIfNewer>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>benchmark-testing</id>
+            <properties>
+                <skip.benchmark>false</skip.benchmark>
+                <benchmark.results.dir>target/benchmark-results</benchmark.results.dir>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Build integration tests (using smart native build script) -->
+                            <execution>
+                                <id>maven-build-integration-tests</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>../../mvnw</executable>
+                                    <arguments>
+                                        <argument>compile</argument>
+                                        <argument>exec:exec@build-native-if-needed</argument>
+                                        <argument>exec:exec@docker-build-distroless</argument>
+                                        <argument>-Pintegration-tests</argument>
+                                        <argument>-DskipTests</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}/../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Start integration test containers (keep running for benchmarks) -->
+                            <execution>
+                                <id>start-integration-containers</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/scripts/start-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Metrics processing moved to BenchmarkRunner.java directly -->
+                            <!-- Generate HTTP metrics from benchmark results -->
+                            <execution>
+                                <id>generate-http-metrics</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>cd target &amp;&amp; java -cp "classes:dependency/*" de.cuioss.sheriff.api.quarkus.benchmark.metrics.MetricsPostProcessor benchmark-results || echo "Comprehensive metrics generation failed - continuing"</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Stop integration test containers -->
+                            <execution>
+                                <id>stop-integration-containers</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/scripts/stop-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <!-- Don't fail build if cleanup fails -->
+                                    <successCodes>
+                                        <successCode>0</successCode>
+                                        <successCode>1</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>rebuild-container</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Clean integration tests to force container rebuild -->
+                            <execution>
+                                <id>clean-integration-tests-for-rebuild</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>../../mvnw</executable>
+                                    <arguments>
+                                        <argument>clean</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}/../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>benchmark-jfr</id>
+            <properties>
+                <skip.benchmark>false</skip.benchmark>
+                <benchmark.results.dir>target/benchmark-results</benchmark.results.dir>
+                <jfr.enabled>true</jfr.enabled>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Create benchmark and JFR results directories -->
+                            <execution>
+                                <id>create-jfr-dirs</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>mkdir -p ${benchmark.results.dir}/jfr-recordings ${benchmark.results.dir}/jfr-reports</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <!-- Build JFR integration tests (without running containers) -->
+                            <execution>
+                                <id>maven-build-jfr-tests</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>cd ../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests &amp;&amp; ../../mvnw clean compile quarkus:build -Pintegration-tests -DskipTests &amp;&amp; DOCKERFILE=Dockerfile.native.jfr DOCKER_IMAGE_TAG=jfr DOCKER_BUILDKIT=1 docker compose build api-sheriff-integration-tests</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Start JFR integration test containers -->
+                            <execution>
+                                <id>start-jfr-containers</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>DOCKER_IMAGE_TAG=jfr DOCKERFILE=Dockerfile.native.jfr ../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/scripts/start-integration-container.sh</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Run benchmarks with JFR profiling enabled -->
+                            <execution>
+                                <id>run-benchmarks-jfr</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>java</executable>
+                                    <arguments>
+                                        <argument>-Djava.util.logging.manager=java.util.logging.LogManager</argument>
+                                        <argument>-classpath</argument>
+                                        <argument>${project.build.outputDirectory}${path.separator}${project.build.directory}/dependency/*</argument>
+                                        <argument>-Djmh.result.format=${jmh.result.format}</argument>
+                                        <argument>-Djmh.result.filePrefix=${jmh.result.filePrefix}</argument>
+                                        <argument>-Djmh.iterations=${jmh.iterations}</argument>
+                                        <argument>-Djmh.warmupIterations=${jmh.warmupIterations}</argument>
+                                        <argument>-Djmh.forks=${jmh.forks}</argument>
+                                        <argument>-Djmh.threads=${jmh.threads}</argument>
+                                        <argument>-Djmh.time=${jmh.time}</argument>
+                                        <argument>-Djmh.warmupTime=${jmh.warmupTime}</argument>
+                                        <argument>-Dbenchmark.results.dir=${benchmark.results.dir}</argument>
+                                        <argument>-Dintegration.service.url=${integration.service.url}</argument>
+                                        <argument>-Dkeycloak.url=${keycloak.url}</argument>
+                                        <argument>-Dquarkus.metrics.url=${quarkus.metrics.url}</argument>
+                                        <argument>-Djava.util.logging.manager=java.util.logging.LogManager</argument>
+                                        <argument>-Djava.util.logging.config.file=src/main/resources/benchmark-logging.properties</argument>
+                                        <argument>-XX:+UnlockDiagnosticVMOptions</argument>
+                                        <argument>-XX:+DebugNonSafepoints</argument>
+                                        <argument>-XX:StartFlightRecording=settings=profile,filename=${benchmark.results.dir}/jfr-recordings/benchmark.jfr,dumponexit=true</argument>
+                                        <argument>${benchmark.runner}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <!-- Verify JFR files from container volume mount -->
+                            <execution>
+                                <id>verify-jfr-files</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>echo "JFR files in ${benchmark.results.dir}/jfr-recordings:" &amp;&amp; ls -la ${benchmark.results.dir}/jfr-recordings/ || echo "No JFR directory found"</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <!-- Generate JFR reports -->
+                            <execution>
+                                <id>generate-jfr-reports</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>for jfr in ${benchmark.results.dir}/jfr-recordings/*.jfr; do if [ -f "$jfr" ] &amp;&amp; [ -s "$jfr" ]; then echo "Generating summary for $(basename "$jfr")"; jfr summary "$jfr" > "${benchmark.results.dir}/jfr-reports/$(basename "$jfr" .jfr)-summary.txt" || echo "Failed to generate summary for $(basename "$jfr")"; else echo "Skipping empty or non-existent file: $(basename "$jfr")"; fi; done</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <!-- Generate HTTP metrics from benchmark results (JFR profile) -->
+                            <execution>
+                                <id>generate-http-metrics-jfr</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>-c</argument>
+                                        <argument>cd target &amp;&amp; java -cp "classes:dependency/*" de.cuioss.sheriff.api.quarkus.benchmark.metrics.MetricsPostProcessor benchmark-results || echo "Comprehensive metrics generation failed - continuing"</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Stop integration test containers -->
+                            <execution>
+                                <id>stop-jfr-containers</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>../../api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/scripts/stop-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <!-- Don't fail build if cleanup fails -->
+                                    <successCodes>
+                                        <successCode>0</successCode>
+                                        <successCode>1</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

@@ -87,7 +87,7 @@ Execute in sequence before ANY commit:
     - All tests must pass
     - Tasks are complete ONLY after this succeeds
 
-3. **Run Integration Tests**: `./mvnw clean verify -Pintegration-tests -pl cui-jwt-quarkus-parent/cui-jwt-quarkus-integration-tests`
+3. **Run Integration Tests**: `./mvnw clean verify -Pintegration-tests -pl api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests`
     - Ensure all integration tests pass
     - Verify against the latest standards
 

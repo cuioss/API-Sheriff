@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.api</groupId>
+        <artifactId>api-sheriff-quarkus-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>api-sheriff-quarkus-integration-tests</artifactId>
+    <packaging>jar</packaging>
+    <name>API Sheriff Quarkus Integration Tests</name>
+    <description>Integration tests for the API Sheriff Quarkus extension including native container testing with HTTPS support</description>
+
+    <properties>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.quarkus.integration.tests</maven.jar.plugin.automatic.module.name>
+        <!-- Configure test execution - surefire skip, failsafe disabled by default -->
+        <skipITs>true</skipITs>
+
+        <!-- Native image build for integration tests - disabled by default -->
+        <quarkus.native.container-build>false</quarkus.native.container-build>
+        <quarkus.native.enabled>false</quarkus.native.enabled>
+
+        <!-- HTTPS configuration for testing (Docker external port) -->
+        <test.https.port>10443</test.https.port>
+
+        <!-- Skip Sonar analysis for integration tests -->
+        <sonar.skip>true</sonar.skip>
+    </properties>
+
+    <dependencies>
+        <!-- API Sheriff Extension Under Test -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff-quarkus</artifactId>
+        </dependency>
+        
+        <!-- API Sheriff Deployment Module for Quarkus Extension -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff-quarkus-deployment</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Quarkus Extensions for REST and Health -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-resteasy</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-resteasy-jackson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-health</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+
+        <!-- API Sheriff Test Utilities for test material -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff-library</artifactId>
+            <version>${project.version}</version>
+            <classifier>generators</classifier>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Dev UI Testing Dependencies -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-vertx-http-dev-ui-tests</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            
+            <!-- Execute Docker cleanup before Maven clean -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>stop-docker-containers</id>
+                        <phase>pre-clean</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>./scripts/stop-integration-container.sh</executable>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <arguments>
+                                <argument>--clean</argument>
+                            </arguments>
+                            <!-- Don't fail the build if containers aren't running -->
+                            <successCodes>
+                                <successCode>0</successCode>
+                                <successCode>1</successCode>
+                            </successCodes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Profile for running integration tests with distroless native image (no JFR) -->
+        <profile>
+            <id>integration-tests</id>
+            <properties>
+                <!-- Enable integration tests -->
+                <skipITs>false</skipITs>
+                
+                <!-- Container-based native build with optimized rebuild detection -->
+                <quarkus.native.container-build>true</quarkus.native.container-build>
+                <quarkus.native.enabled>true</quarkus.native.enabled>
+            </properties>
+            <build>
+                <plugins>
+                    
+                    <!-- Quarkus plugin (build only on-demand via script) -->
+                    <plugin>
+                        <groupId>io.quarkus</groupId>
+                        <artifactId>quarkus-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Override parent's default execution to prevent automatic native build -->
+                            <execution>
+                                <id>default</id>
+                                <phase>none</phase>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    
+                    <!-- Skip Unit Tests (Surefire) -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <skipTests>true</skipTests>
+                        </configuration>
+                    </plugin>
+
+                    <!-- Integration Test Configuration -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/integration/**/*IT.java</include>
+                                    </includes>
+                                    <systemPropertyVariables>
+                                        <test.https.port>${test.https.port}</test.https.port>
+                                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                                        <quarkus.native.enabled>false</quarkus.native.enabled>
+                                    </systemPropertyVariables>
+                                    <skipITs>${skipITs}</skipITs>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Docker build and application lifecycle -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Build native executable if needed -->
+                            <execution>
+                                <id>build-native-if-needed</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/build-native-if-needed.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Build Docker image (native executable must already exist) -->
+                            <execution>
+                                <id>docker-build-distroless</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>build</argument>
+                                        <argument>api-sheriff-integration-tests</argument>
+                                    </arguments>
+                                    <environmentVariables>
+                                        <DOCKERFILE>Dockerfile.native.distroless</DOCKERFILE>
+                                        <DOCKER_IMAGE_TAG>distroless</DOCKER_IMAGE_TAG>
+                                        <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Start application before integration tests -->
+                            <execution>
+                                <id>start-integration-app</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/start-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Stop application after integration tests -->
+                            <execution>
+                                <id>stop-integration-app</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/stop-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        
+        <!-- Profile for JFR profiling with UBI-based images -->
+        <profile>
+            <id>jfr</id>
+            <properties>
+                <!-- Enable integration tests -->
+                <skipITs>false</skipITs>
+                
+                <!-- JFR profile builds native executable with JFR support -->
+                <quarkus.native.enabled>true</quarkus.native.enabled>
+                <!-- Native build with JFR monitoring enabled -->
+                <quarkus.native.monitoring>jfr</quarkus.native.monitoring>
+                <quarkus.jfr.enabled>true</quarkus.jfr.enabled>
+            </properties>
+            <build>
+                <plugins>
+                    
+                    <!-- Quarkus plugin with JFR support (native build) -->
+                    <plugin>
+                        <groupId>io.quarkus</groupId>
+                        <artifactId>quarkus-maven-plugin</artifactId>
+                        <!-- Use parent configuration for native build -->
+                    </plugin>
+                    
+                    <!-- Skip Unit Tests (Surefire) -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <skipTests>true</skipTests>
+                        </configuration>
+                    </plugin>
+
+                    <!-- Integration Test Configuration for JFR -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/integration/**/*IT.java</include>
+                                    </includes>
+                                    <systemPropertyVariables>
+                                        <test.https.port>${test.https.port}</test.https.port>
+                                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                                        <quarkus.native.enabled>false</quarkus.native.enabled>
+                                    </systemPropertyVariables>
+                                    <skipITs>${skipITs}</skipITs>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Docker build and application lifecycle -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Build Docker image with native JFR support -->
+                            <execution>
+                                <id>docker-build-jfr</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>build</argument>
+                                        <argument>api-sheriff-integration-tests</argument>
+                                    </arguments>
+                                    <environmentVariables>
+                                        <DOCKERFILE>Dockerfile.native.jfr</DOCKERFILE>
+                                        <DOCKER_IMAGE_TAG>jfr</DOCKER_IMAGE_TAG>
+                                        <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Start application before integration tests -->
+                            <execution>
+                                <id>start-integration-app</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/start-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Stop application after integration tests -->
+                            <execution>
+                                <id>stop-integration-app</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/stop-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

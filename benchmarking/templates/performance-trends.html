@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JWT Validation Performance Trends</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="resources/common.css">
+  <style>
+    /* Page-specific styles for trends */
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>JWT Validation Performance Trends</h1>
+      <p class="subtitle">Performance metrics and trends over the last 10 benchmark runs</p>
+      <div class="navigation">
+        <!-- Navigation will be injected by JavaScript -->
+      </div>
+    </div>
+
+    <div id="loading" class="loading">
+      <p>Loading performance data...</p>
+    </div>
+
+
+    <div id="error" class="error-message" style="display: none;">
+      <h3>Unable to Load Performance Data</h3>
+      <p>Could not fetch performance tracking data. Please ensure benchmark runs have been completed.</p>
+    </div>
+
+    <div id="content" style="display: none;">
+      <!-- Current Metrics -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-value" id="current-score">--</div>
+          <div class="metric-label">Performance Score</div>
+          <div class="trend-indicator" id="score-trend">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="current-throughput">--</div>
+          <div class="metric-label">Throughput (ops/s)</div>
+          <div class="trend-indicator" id="throughput-trend">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="current-latency">--</div>
+          <div class="metric-label">Average Latency (s)</div>
+          <div class="trend-indicator" id="latency-trend">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="current-resilience">--</div>
+          <div class="metric-label">Error Resilience (ops/s)</div>
+          <div class="trend-indicator" id="resilience-trend">--</div>
+        </div>
+      </div>
+
+      <!-- Performance Score Chart -->
+      <div class="chart-container">
+        <div class="chart-title">Performance Score Over Time</div>
+        <canvas id="scoreChart"></canvas>
+      </div>
+
+      <!-- Throughput Chart -->
+      <div class="chart-container">
+        <div class="chart-title">Throughput Trends</div>
+        <canvas id="throughputChart"></canvas>
+      </div>
+
+      <!-- Latency Chart -->
+      <div class="chart-container">
+        <div class="chart-title">Average Latency Trends</div>
+        <canvas id="latencyChart"></canvas>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Performance data is updated automatically with each benchmark run. Trends are calculated as percentage change between the first and last data points of the last 10 runs.</p>
+    </div>
+  </div>
+
+  <script>
+    async function loadPerformanceData() {
+      try {
+        const response = await fetch('data/performance-tracking.json');
+        if (!response.ok) {
+          throw new Error('Failed to fetch performance data');
+        }
+        const data = await response.json();
+        displayPerformanceData(data);
+      } catch (error) {
+        console.error('Error loading performance data:', error);
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+
+    function calculateTrend(values) {
+      if (values.length < 2) return { slope: 0, direction: 'stable' };
+
+      const n = values.length;
+      const sumX = values.reduce((sum, _, i) => sum + i, 0);
+      const sumY = values.reduce((sum, val) => sum + val, 0);
+      const sumXY = values.reduce((sum, val, i) => sum + (i * val), 0);
+      const sumXX = values.reduce((sum, _, i) => sum + (i * i), 0);
+
+      const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+      let percentChange;
+      if (values[0] === 0) {
+        if (values[n-1] === 0) {
+          percentChange = 0;
+        } else {
+          percentChange = values[n-1] > 0 ? Infinity : -Infinity;
+        }
+      } else {
+        percentChange = ((values[n-1] - values[0]) / values[0]) * 100;
+      }
+
+      let direction = 'stable';
+      if (Math.abs(percentChange) > 2) {
+        direction = percentChange > 0 ? 'up' : 'down';
+      }
+
+      return { slope, direction, percentChange };
+    }
+
+    function formatTrend(trend, isLatency = false) {
+      const arrow = trend.direction === 'up' ? '↗' : 
+                   trend.direction === 'down' ? '↘' : '→';
+      const className = isLatency ? 
+        (trend.direction === 'down' ? 'trend-up' : trend.direction === 'up' ? 'trend-down' : 'trend-stable') :
+        (trend.direction === 'up' ? 'trend-up' : trend.direction === 'down' ? 'trend-down' : 'trend-stable');
+
+      // Handle Infinity values to align with calculate-trend-badge.sh approach
+      let percentageDisplay;
+      if (!isFinite(trend.percentChange)) {
+        percentageDisplay = ">9999";
+      } else {
+        percentageDisplay = Math.abs(trend.percentChange).toFixed(1);
+      }
+
+      return {
+        html: `<span class="${className}">${arrow} ${percentageDisplay}%</span>`,
+        className
+      };
+    }
+
+    function displayPerformanceData(trackingData) {
+      const runs = trackingData.runs || [];
+      if (runs.length === 0) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').style.display = 'block';
+        return;
+      }
+
+      const latest = runs[runs.length - 1];
+
+      // Calculate trends
+      const scores = runs.map(r => r.performance.score);
+      const throughputs = runs.map(r => r.performance.throughput.value);
+      const latencies = runs.map(r => r.performance.averageTime.value);
+      const resiliences = runs.map(r => r.performance.errorResilience.value);
+
+      const scoreTrend = calculateTrend(scores);
+      const throughputTrend = calculateTrend(throughputs);
+      const latencyTrend = calculateTrend(latencies);
+      const resilienceTrend = calculateTrend(resiliences);
+
+      // Update current metrics
+      document.getElementById('current-score').textContent = latest.performance.score.toLocaleString();
+      document.getElementById('current-throughput').textContent = (latest.performance.throughput.value / 1000).toFixed(1) + 'k';
+      document.getElementById('current-latency').textContent = latest.performance.averageTime.value.toFixed(2);
+      document.getElementById('current-resilience').textContent = (latest.performance.errorResilience.value / 1000).toFixed(1) + 'k';
+
+      // Update trend indicators
+      document.getElementById('score-trend').innerHTML = formatTrend(scoreTrend).html;
+      document.getElementById('throughput-trend').innerHTML = formatTrend(throughputTrend).html;
+      document.getElementById('latency-trend').innerHTML = formatTrend(latencyTrend, true).html;
+      document.getElementById('resilience-trend').innerHTML = formatTrend(resilienceTrend).html;
+
+      // Create charts
+      createChart('scoreChart', 'Performance Score', runs, r => r.performance.score, '#007bff');
+      createChart('throughputChart', 'Throughput (ops/s)', runs, r => r.performance.throughput.value, '#28a745');
+      createChart('latencyChart', 'Average Latency (s)', runs, r => r.performance.averageTime.value, '#ffc107');
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+    }
+
+    function createChart(canvasId, label, runs, valueExtractor, color) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      const data = runs.map(valueExtractor);
+      const labels = runs.map(r => new Date(r.timestamp).toISOString().split('T')[0]);
+
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: label,
+            data: data,
+            borderColor: color,
+            backgroundColor: color + '20',
+            fill: true,
+            tension: 0.4,
+            pointRadius: 6,
+            pointHoverRadius: 8,
+            borderWidth: 3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: false
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: false,
+              grid: {
+                color: '#e9ecef'
+              }
+            },
+            x: {
+              grid: {
+                color: '#e9ecef'
+              }
+            }
+          },
+          elements: {
+            point: {
+              backgroundColor: color,
+              borderColor: '#fff',
+              borderWidth: 2
+            }
+          }
+        }
+      });
+    }
+
+    // Load data when page loads
+    document.addEventListener('DOMContentLoaded', loadPerformanceData);
+  </script>
+  <script src="resources/navigation.js"></script>
+</body>
+</html>

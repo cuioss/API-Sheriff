@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.api</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>benchmarking</artifactId>
+    <packaging>pom</packaging>
+    <name>API Sheriff Benchmarking Parent</name>
+    <description>Parent module for all benchmarking related modules including library and integration benchmarks</description>
+
+    <modules>
+        <module>benchmark-library</module>
+        <module>benchmark-integration-quarkus</module>
+    </modules>
+
+    <properties>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.benchmarking</maven.jar.plugin.automatic.module.name>
+        <!-- JMH version for benchmarking -->
+        <version.jmh>1.37</version.jmh>
+        <!-- External dependency versions -->
+        <version.gson>2.10.1</version.gson>
+        <version.hdrhistogram>2.1.12</version.hdrhistogram>
+        <version.commons-io>2.15.1</version.commons-io>
+        <!-- Skip benchmarks by default -->
+        <skip.benchmark>true</skip.benchmark>
+        <!-- Default benchmark results directory -->
+        <benchmark.results.dir>target/benchmark-results</benchmark.results.dir>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- JMH dependencies -->
+            <dependency>
+                <groupId>org.openjdk.jmh</groupId>
+                <artifactId>jmh-core</artifactId>
+                <version>${version.jmh}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.openjdk.jmh</groupId>
+                <artifactId>jmh-generator-annprocess</artifactId>
+                <version>${version.jmh}</version>
+                <scope>provided</scope>
+            </dependency>
+            
+            <!-- Common benchmarking dependencies -->
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>${version.gson}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.hdrhistogram</groupId>
+                <artifactId>HdrHistogram</artifactId>
+                <version>${version.hdrhistogram}</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${version.commons-io}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Common plugin configurations for benchmarks -->
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>benchmark</id>
+            <properties>
+                <skip.benchmark>false</skip.benchmark>
+            </properties>
+        </profile>
+    </profiles>
+</project>

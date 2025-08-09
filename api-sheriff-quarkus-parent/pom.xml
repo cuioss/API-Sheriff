@@ -1,0 +1,334 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.api</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>api-sheriff-quarkus-parent</artifactId>
+    <packaging>pom</packaging>
+    <name>API Sheriff Quarkus Integration Parent</name>
+    <description>Parent module for Quarkus integration for API Sheriff, providing configuration, producers, and integration from SecurityEvents to Micrometer</description>
+
+    <modules>
+        <module>api-sheriff-quarkus</module>
+        <module>api-sheriff-quarkus-deployment</module>
+        <module>api-sheriff-quarkus-integration-tests</module>
+    </modules>
+
+    <properties>
+        <!--
+        Logging configuration:
+        - Use JBoss LogManager for tests (java.util.logging.manager=org.jboss.logmanager.LogManager)
+        - Configure logging.properties in each module's test resources
+        - Suppress JVM warnings with -XX:+IgnoreUnrecognizedVMOptions
+        -->
+        <junit-platform.version>1.13.1</junit-platform.version>
+        <version.weld-junit5>5.0.1.Final</version.weld-junit5>
+        <version.easymock>5.6.0</version.easymock>
+        <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
+        <argLine></argLine>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bom</artifactId>
+                <version>${version.quarkus}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>de.cuioss.sheriff.api</groupId>
+                <artifactId>bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- JUnit BOM is already imported by quarkus-bom -->
+            <!-- Explicitly override JUnit versions to ensure all components are compatible-->
+            <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-commons</artifactId>
+                <version>${junit-platform.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-engine</artifactId>
+                <version>${junit-platform.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-launcher</artifactId>
+                <version>${junit-platform.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <!-- Additional dependencies -->
+            <dependency>
+                <groupId>org.jboss.weld</groupId>
+                <artifactId>weld-junit5</artifactId>
+                <version>${version.weld-junit5}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-extension-processor</artifactId>
+                <version>${version.quarkus}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Internal module dependencies -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff-library</artifactId>
+        </dependency>
+
+        <!-- Quarkus dependencies -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-micrometer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-security</artifactId>
+        </dependency>
+
+        <!-- Other dependencies -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>de.cuioss.test</groupId>
+            <artifactId>cui-test-juli-logger</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>io.quarkus</groupId>
+                    <artifactId>quarkus-maven-plugin</artifactId>
+                    <version>${version.quarkus}</version>
+                    <extensions>true</extensions>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>build</goal>
+                                <goal>generate-code</goal>
+                                <goal>generate-code-tests</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <!-- Use release instead of source/target to properly handle modules -->
+                        <release>21</release>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                            <java.util.logging.config.file>${project.build.testOutputDirectory}/logging.properties</java.util.logging.config.file>
+                            <maven.home>${maven.home}</maven.home>
+                            <quarkus.test.arg-line>@{argLine}</quarkus.test.arg-line>
+                        </systemPropertyVariables>
+                        <useModulePath>false</useModulePath>
+                        <useFile>false</useFile>
+                        <trimStackTrace>false</trimStackTrace>
+                        <enableAssertions>true</enableAssertions>
+                        <!-- JaCoCo-compatible argLine (will be empty if JaCoCo not active) -->
+                        <argLine>@{argLine} -XX:+IgnoreUnrecognizedVMOptions -Djava.awt.headless=true</argLine>
+                        <!-- Stability configurations -->
+                        <forkedProcessTimeoutInSeconds>0</forkedProcessTimeoutInSeconds>
+                        <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
+                        <!-- Fix for class loading issues -->
+                        <useSystemClassLoader>false</useSystemClassLoader>
+                        <reuseForks>false</reuseForks>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                            <java.util.logging.config.file>${project.build.testOutputDirectory}/logging.properties</java.util.logging.config.file>
+                            <maven.home>${maven.home}</maven.home>
+                            <quarkus.test.arg-line>@{argLine}</quarkus.test.arg-line>
+                        </systemPropertyVariables>
+                        <useModulePath>false</useModulePath>
+                        <useFile>false</useFile>
+                        <trimStackTrace>false</trimStackTrace>
+                        <enableAssertions>true</enableAssertions>
+                        <argLine>@{argLine} -XX:+IgnoreUnrecognizedVMOptions -Djava.awt.headless=true</argLine>
+                        <!-- Fix for class loading issues -->
+                        <useSystemClassLoader>false</useSystemClassLoader>
+                        <reuseForks>false</reuseForks>
+                        <!-- Standardized IT naming patterns -->
+                        <includes>
+                            <include>**/*IT.java</include>
+                            <include>**/*IntegrationTest.java</include>
+                        </includes>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>integration-test</goal>
+                                <goal>verify</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <!-- No plugins in parent - all configurations inherited from pluginManagement -->
+    </build>
+
+    <profiles>
+        <profile>
+            <id>coverage</id>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>org.jacoco</groupId>
+                            <artifactId>jacoco-maven-plugin</artifactId>
+                            <executions>
+                                <execution>
+                                    <id>prepare-agent</id>
+                                    <goals>
+                                        <goal>prepare-agent</goal>
+                                    </goals>
+                                    <configuration>
+                                        <append>true</append>
+                                        <destFile>${project.build.directory}/jacoco.exec</destFile>
+                                    </configuration>
+                                </execution>
+                                <execution>
+                                    <id>prepare-agent-integration</id>
+                                    <goals>
+                                        <goal>prepare-agent-integration</goal>
+                                    </goals>
+                                    <configuration>
+                                        <destFile>${project.build.directory}/jacoco-it.exec</destFile>
+                                        <append>true</append>
+                                    </configuration>
+                                </execution>
+                                <execution>
+                                    <id>report</id>
+                                    <phase>test</phase>
+                                    <goals>
+                                        <goal>report</goal>
+                                    </goals>
+                                    <configuration>
+                                        <outputDirectory>${project.build.directory}/site/jacoco</outputDirectory>
+                                        <formats>
+                                            <format>XML</format>
+                                            <format>HTML</format>
+                                        </formats>
+                                    </configuration>
+                                </execution>
+                                <execution>
+                                    <id>report-integration</id>
+                                    <phase>post-integration-test</phase>
+                                    <goals>
+                                        <goal>report-integration</goal>
+                                    </goals>
+                                    <configuration>
+                                        <outputDirectory>${project.build.directory}/site/jacoco-it</outputDirectory>
+                                        <formats>
+                                            <format>XML</format>
+                                            <format>HTML</format>
+                                        </formats>
+                                    </configuration>
+                                </execution>
+                                <execution>
+                                    <id>merge-results</id>
+                                    <phase>verify</phase>
+                                    <goals>
+                                        <goal>merge</goal>
+                                    </goals>
+                                    <configuration>
+                                        <fileSets>
+                                            <fileSet>
+                                                <directory>${project.build.directory}</directory>
+                                                <includes>
+                                                    <include>*.exec</include>
+                                                </includes>
+                                            </fileSet>
+                                        </fileSets>
+                                        <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+                                    </configuration>
+                                </execution>
+                                <execution>
+                                    <id>report-merged</id>
+                                    <phase>verify</phase>
+                                    <goals>
+                                        <goal>report</goal>
+                                    </goals>
+                                    <configuration>
+                                        <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                                        <outputDirectory>${project.build.directory}/site/jacoco-merged</outputDirectory>
+                                        <formats>
+                                            <format>XML</format>
+                                            <format>HTML</format>
+                                        </formats>
+                                    </configuration>
+                                </execution>
+                            </executions>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                    </plugin>
+                </plugins>
+            </build>
+            <properties>
+                <!-- Multiple XML report paths for Sonar to pick up coverage from all modules -->
+                <sonar.coverage.jacoco.xmlReportPaths>
+                    ${project.build.directory}/site/jacoco/jacoco.xml,
+                    api-sheriff-quarkus/target/site/jacoco/jacoco.xml,
+                    api-sheriff-quarkus-deployment/target/site/jacoco/jacoco.xml,
+                    ../target/site/jacoco/jacoco.xml
+                </sonar.coverage.jacoco.xmlReportPaths>
+            </properties>
+        </profile>
+    </profiles>
+</project>

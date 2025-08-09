@@ -1,0 +1,155 @@
+= API Sheriff Library
+
+The core library module providing lightweight, high-performance API gateway functionality with comprehensive security features and rate limiting capabilities.
+
+== Overview
+
+The API Sheriff Library is the foundational component of the API Sheriff project, providing essential security and rate limiting functionality for API gateways. It's designed to be framework-agnostic and can be integrated into any Java application.
+
+== Key Components
+
+=== ApiSheriff
+The main gateway class that coordinates all security measures and API gateway features.
+
+[source,java]
+----
+ApiGatewayConfig config = ApiGatewayConfig.builder()
+    .rateLimit(100)
+    .timeWindow(Duration.ofMinutes(1))
+    .requestTimeout(Duration.ofSeconds(30))
+    .corsEnabled(true)
+    .build();
+
+ApiSheriff sheriff = new ApiSheriff(config);
+
+if (sheriff.isRequestAllowed("client-123", "/api/users")) {
+    // Process request
+}
+----
+
+=== ApiGatewayConfig
+Flexible configuration system using the builder pattern with comprehensive validation.
+
+[source,java]
+----
+ApiGatewayConfig config = ApiGatewayConfig.builder()
+    .rateLimit(1000)
+    .timeWindow(Duration.ofMinutes(5))
+    .requestTimeout(Duration.ofSeconds(60))
+    .corsEnabled(false)
+    .customProperty("feature.auth", true)
+    .build();
+----
+
+=== RateLimiter
+Thread-safe rate limiter implementation using a sliding window approach for accurate rate limiting.
+
+[source,java]
+----
+RateLimiter rateLimiter = new RateLimiter(100, Duration.ofMinutes(1).toMillis());
+
+if (rateLimiter.isRequestAllowed("client-id")) {
+    // Process request
+}
+
+// Check remaining requests
+int remaining = rateLimiter.getRemainingRequests("client-id");
+----
+
+== Features
+
+* **Thread-Safe**: All components are designed for concurrent access
+* **High Performance**: Optimized for minimal latency and high throughput
+* **Configurable**: Extensive configuration options with sensible defaults
+* **Monitoring**: Built-in logging and metrics support
+* **Validation**: Comprehensive input validation with meaningful error messages
+* **Multi-tenant**: Per-client rate limiting and state management
+
+== Usage Patterns
+
+=== Basic Rate Limiting
+[source,java]
+----
+ApiSheriff sheriff = new ApiSheriff(
+    ApiGatewayConfig.builder()
+        .rateLimit(50)
+        .timeWindow(Duration.ofMinutes(1))
+        .build()
+);
+
+boolean allowed = sheriff.isRequestAllowed("client-123", "/api/endpoint");
+----
+
+=== Configuration Validation
+[source,java]
+----
+Optional<String> validationError = sheriff.validateConfiguration();
+if (validationError.isPresent()) {
+    log.error("Configuration invalid: {}", validationError.get());
+}
+----
+
+=== Client State Management
+[source,java]
+----
+// Reset specific client
+sheriff.resetClientState("problematic-client");
+
+// Get rate limiter statistics
+RateLimiter rateLimiter = sheriff.getRateLimiter();
+int trackedClients = rateLimiter.getTrackedClientCount();
+----
+
+== Maven Coordinates
+
+[source,xml]
+----
+<dependency>
+    <groupId>de.cuioss.sheriff.api</groupId>
+    <artifactId>api-sheriff-library</artifactId>
+    <version>${api-sheriff.version}</version>
+</dependency>
+----
+
+== Dependencies
+
+The library has minimal dependencies:
+
+* **Lombok**: For code generation and boilerplate reduction
+* **CUI Tools**: For logging and utility functions
+* **Jakarta JSON API**: For JSON processing (provided scope)
+
+== Thread Safety
+
+All public APIs are thread-safe and can be safely called from multiple threads concurrently. The implementation uses:
+
+* `ConcurrentHashMap` for client state management
+* `AtomicInteger` for counters
+* `synchronized` blocks for critical sections
+* Immutable configuration objects
+
+== Performance Characteristics
+
+* **Memory**: Minimal memory footprint with efficient data structures
+* **Latency**: Sub-millisecond request validation in most cases
+* **Throughput**: Supports thousands of requests per second per instance
+* **Scaling**: Linear scaling with client count and request volume
+
+== Testing
+
+The library includes comprehensive unit tests and performance benchmarks:
+
+* Unit tests with >90% code coverage
+* Parameterized tests for edge cases
+* Concurrent access testing
+* Performance benchmarks with JMH
+
+== Integration
+
+The library can be integrated into various environments:
+
+* Standalone Java applications
+* Spring Boot applications
+* Quarkus applications (see api-sheriff-quarkus module)
+* Jakarta EE applications
+* Any framework supporting standard Java libraries

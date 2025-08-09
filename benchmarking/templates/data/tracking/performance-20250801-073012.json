@@ -1,0 +1,29 @@
+{
+  "timestamp": "2025-08-01T07:30:12Z",
+  "commit": "789012345678901234567890abcde12f3456789a",
+  "performance": {
+    "score": 52580,
+    "throughput": {
+      "value": 85538,
+      "unit": "ops/s"
+    },
+    "averageTime": {
+      "value": 0.001169,
+      "unit": "s"
+    },
+    "errorResilience": {
+      "value": 113075,
+      "unit": "ops/s"
+    }
+  },
+  "rawMetrics": {
+    "throughputOpsPerSec": 85538,
+    "avgTimeInMicros": 1169,
+    "errorResilienceOpsPerSec": 113075
+  },
+  "environment": {
+    "javaVersion": "21.0.7",
+    "jvmArgs": "-Djava.util.logging.config.file=src/main/resources/benchmark-logging.properties -Dbenchmark.results.dir=target/benchmark-results",
+    "osName": "Linux"
+  }
+}

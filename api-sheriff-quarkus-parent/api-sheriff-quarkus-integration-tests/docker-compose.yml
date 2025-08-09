@@ -1,0 +1,113 @@
+# JWT Integration Tests - Production-Grade Configuration
+# Purpose: Test with production-equivalent settings to catch issues early
+
+services:
+  keycloak:
+    # NOTE: Dependabot cannot automatically update this image version.
+    # Manual updates required. Check: https://quay.io/keycloak/keycloak
+    image: quay.io/keycloak/keycloak:26.2.5
+    command:
+      - start-dev
+      - --import-realm
+      - --https-certificate-file=/opt/keycloak/certificates/localhost.crt
+      - --https-certificate-key-file=/opt/keycloak/certificates/localhost.key
+      - --https-port=8443
+    ports:
+      - "1443:8443"  # External HTTPS port for Keycloak admin
+      - "1090:9000"  # External port for Keycloak management (health checks)
+    volumes:
+      - ./src/main/docker/keycloak:/opt/keycloak/data/import:ro
+      - ./src/main/docker/certificates:/opt/keycloak/certificates:ro
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      - KC_HEALTH_ENABLED=true
+      - KC_METRICS_ENABLED=true
+      - KC_LOG_LEVEL=INFO
+      # Hostname configuration v2 for well-known discovery endpoint (research-based)
+      - KC_HOSTNAME_STRICT=false
+      - KC_HTTP_ENABLED=false
+      - KC_HTTPS_PORT=8443
+      - KC_HOSTNAME=localhost
+      # External hostname for Docker container well-known discovery
+    networks:
+      - jwt-integration
+
+  api-sheriff-integration-tests:
+    # Use separate Dockerfiles for different variants
+    # For distroless: DOCKERFILE=Dockerfile.native.distroless DOCKER_IMAGE_TAG=distroless
+    # For JFR:       DOCKERFILE=Dockerfile.native.jfr DOCKER_IMAGE_TAG=jfr
+    image: "api-sheriff-integration-tests:${DOCKER_IMAGE_TAG:-distroless}"
+    build:
+      context: ../..
+      dockerfile: api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/src/main/docker/${DOCKERFILE:-Dockerfile.native.distroless}
+      cache_from:
+        - quay.io/quarkus/quarkus-distroless-image:2.0
+        - registry.access.redhat.com/ubi8/ubi-minimal:8.10
+        - quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-21
+
+    ports:
+      - "10443:8443"  # External test port for integration tests
+
+    environment:
+      # JVM SSL Session Cache Optimization for TLS Performance
+      # JFR configuration handled by image variant (distroless vs JFR-enabled)
+      - JAVA_OPTS_APPEND=-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Djdk.tls.rejectClientInitiatedRenegotiation=true -Djavax.net.ssl.sessionCacheSize=20480 -Djavax.net.ssl.sessionTimeout=300 -Djsse.enableSNIExtension=true -Djdk.tls.maxHandshakeMessageSize=65536 -Djdk.tls.maxCertificateChainLength=10 -Djdk.tls.useExtendedMasterSecret=true
+      - QUARKUS_LOG_LEVEL=INFO
+
+    depends_on:
+      - keycloak
+
+    volumes:
+      # Read-only certificate mount (production pattern)
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # JFR output volume - mount directly to benchmark target directory
+      - ../quarkus-integration-jmh/target/benchmark-results/jfr-recordings:/tmp/jfr-output:rw
+
+    # OWASP Security hardening (production-grade)
+    security_opt:
+      - no-new-privileges:true
+
+    # Drop all capabilities (principle of least privilege)
+    cap_drop:
+      - ALL
+
+    # Read-only filesystem with tmpfs for temporary files (production setting)
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+
+    # Resource limitations (DoS protection - production values)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+
+    # Health check using internal script (optimized for fast native startup)
+    healthcheck:
+      test: ["CMD", "/app/health-check.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Network isolation (production pattern)
+    networks:
+      - jwt-integration
+
+    # Production restart policy
+    restart: unless-stopped
+
+networks:
+  jwt-integration:
+    driver: bridge
+    # Control inter-container communication (production setting)
+    internal: false
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.driver.mtu: "1500"

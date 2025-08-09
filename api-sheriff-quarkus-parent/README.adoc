@@ -1,0 +1,273 @@
+= API Sheriff Quarkus Extension
+
+Native Quarkus extension providing seamless integration of API Sheriff functionality into Quarkus applications with CDI support, configuration binding, and native image compatibility.
+
+== Overview
+
+The API Sheriff Quarkus Extension provides first-class integration between API Sheriff and Quarkus, leveraging Quarkus's dependency injection, configuration management, and build-time optimizations for optimal performance and ease of use.
+
+== Modules
+
+=== api-sheriff-quarkus
+Runtime components including CDI producers and configuration binding.
+
+=== api-sheriff-quarkus-deployment
+Build-time components for Quarkus native image compilation and dependency injection setup.
+
+=== api-sheriff-quarkus-integration-tests
+Comprehensive integration tests for the Quarkus extension.
+
+== Features
+
+* **CDI Integration**: Automatic bean registration and dependency injection
+* **Configuration Binding**: Native Quarkus configuration property support
+* **Native Image Support**: Full GraalVM native image compatibility
+* **Build-time Optimization**: Quarkus build-time processing for optimal performance
+* **Health Checks**: Built-in health check support
+* **Metrics Integration**: MicroProfile Metrics support
+* **Hot Reload**: Development mode with hot reload support
+
+== Quick Start
+
+=== 1. Add Dependency
+
+[source,xml]
+----
+<dependency>
+    <groupId>de.cuioss.sheriff.api</groupId>
+    <artifactId>api-sheriff-quarkus</artifactId>
+    <version>${api-sheriff.version}</version>
+</dependency>
+----
+
+=== 2. Configure Application
+
+Add to your `application.properties`:
+
+[source,properties]
+----
+# Rate limiting configuration
+api-sheriff.rate-limit=200
+api-sheriff.time-window=60
+api-sheriff.request-timeout=30
+api-sheriff.cors-enabled=true
+----
+
+=== 3. Inject and Use
+
+[source,java]
+----
+@RestController
+@ApplicationScoped
+public class ApiGatewayResource {
+    
+    @Inject
+    ApiSheriff apiSheriff;
+    
+    @GET
+    @Path("/check/{clientId}")
+    public Response checkRequest(@PathParam("clientId") String clientId,
+                               @QueryParam("endpoint") String endpoint) {
+        
+        if (apiSheriff.isRequestAllowed(clientId, endpoint)) {
+            return Response.ok("Request allowed").build();
+        } else {
+            return Response.status(429).entity("Rate limit exceeded").build();
+        }
+    }
+}
+----
+
+== Configuration Properties
+
+All configuration properties are prefixed with `api-sheriff.`:
+
+[cols="1,1,2,1"]
+|===
+|Property |Type |Description |Default
+
+|`rate-limit`
+|Integer
+|Maximum requests per client within time window
+|100
+
+|`time-window`
+|Long
+|Time window in seconds for rate limiting
+|60
+
+|`request-timeout`
+|Long
+|Request timeout in seconds
+|30
+
+|`cors-enabled`
+|Boolean
+|Enable CORS support
+|false
+|===
+
+=== Environment Variables
+
+Configuration can also be provided via environment variables:
+
+[source,bash]
+----
+API_SHERIFF_RATE_LIMIT=500
+API_SHERIFF_TIME_WINDOW=120
+API_SHERIFF_REQUEST_TIMEOUT=45
+API_SHERIFF_CORS_ENABLED=true
+----
+
+== Advanced Usage
+
+=== Custom Configuration
+
+[source,java]
+----
+@ApplicationScoped
+public class CustomApiSheriffProducer {
+    
+    @Produces
+    @Alternative
+    @Priority(1000)
+    public ApiGatewayConfig customConfig() {
+        return ApiGatewayConfig.builder()
+            .rateLimit(1000)
+            .timeWindow(Duration.ofMinutes(5))
+            .customProperty("tenant.isolation", true)
+            .build();
+    }
+}
+----
+
+=== Integration with REST Endpoints
+
+[source,java]
+----
+@ApplicationScoped
+public class RateLimitingFilter implements ContainerRequestFilter {
+    
+    @Inject
+    ApiSheriff apiSheriff;
+    
+    @Override
+    public void filter(ContainerRequestContext context) throws IOException {
+        String clientId = extractClientId(context);
+        String endpoint = context.getUriInfo().getPath();
+        
+        if (!apiSheriff.isRequestAllowed(clientId, endpoint)) {
+            context.abortWith(
+                Response.status(429)
+                    .entity("Rate limit exceeded")
+                    .build()
+            );
+        }
+    }
+}
+----
+
+=== Health Checks
+
+[source,java]
+----
+@ApplicationScoped
+public class ApiSheriffHealthCheck implements HealthCheck {
+    
+    @Inject
+    ApiSheriff apiSheriff;
+    
+    @Override
+    public HealthCheckResponse call() {
+        Optional<String> validationError = apiSheriff.validateConfiguration();
+        
+        if (validationError.isEmpty()) {
+            return HealthCheckResponse.up("api-sheriff");
+        } else {
+            return HealthCheckResponse.down("api-sheriff")
+                .withData("error", validationError.get());
+        }
+    }
+}
+----
+
+== Development Mode
+
+The extension supports Quarkus development mode with hot reload:
+
+[source,bash]
+----
+./mvnw quarkus:dev
+----
+
+Configuration changes in `application.properties` will be automatically reloaded.
+
+== Native Image
+
+The extension is fully compatible with GraalVM native image compilation:
+
+[source,bash]
+----
+./mvnw clean package -Pnative
+----
+
+All necessary reflection and resource configurations are automatically handled by the build processor.
+
+== Testing
+
+=== Unit Testing
+
+[source,java]
+----
+@QuarkusTest
+class ApiSheriffExtensionTest {
+    
+    @Inject
+    ApiSheriff apiSheriff;
+    
+    @Test
+    void shouldInjectApiSheriff() {
+        assertNotNull(apiSheriff);
+        assertTrue(apiSheriff.isRequestAllowed("test-client", "/api/test"));
+    }
+}
+----
+
+=== Integration Testing
+
+[source,java]
+----
+@QuarkusTest
+class ApiGatewayIntegrationTest {
+    
+    @Test
+    void shouldRespectRateLimit() {
+        given()
+            .pathParam("clientId", "test-client")
+            .queryParam("endpoint", "/api/test")
+        .when()
+            .get("/check/{clientId}")
+        .then()
+            .statusCode(200);
+    }
+}
+----
+
+== Performance
+
+The Quarkus extension is optimized for:
+
+* **Startup Time**: Build-time dependency injection setup
+* **Memory Usage**: Minimal runtime overhead
+* **Native Image**: Full GraalVM native image support
+* **Hot Reload**: Fast development cycle iteration
+
+== Migration from Core Library
+
+If migrating from the core library to the Quarkus extension:
+
+1. Replace `api-sheriff-library` dependency with `api-sheriff-quarkus`
+2. Remove manual `ApiSheriff` instantiation
+3. Add `@Inject ApiSheriff` to your components
+4. Move configuration to `application.properties`
+5. Optional: Add health checks and metrics integration
