@@ -9,3 +9,7 @@
 **/.vscode
 .DS_Store
 .asciidoctorconfig.adoc
+
+# Benchmark data directories - these contain sample/test data
+benchmarking/doc/data/
+benchmarking/doc/templates/data/
