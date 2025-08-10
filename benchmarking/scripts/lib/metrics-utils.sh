@@ -79,7 +79,13 @@ calculate_performance_score() {
 detect_benchmark_type() {
     local result_file="$1"
     
-    if grep -q "JwtHealthBenchmark\|JwtValidationBenchmark\|JwtEchoBenchmark" "$result_file"; then
+    # Check for API-Sheriff benchmark patterns
+    if grep -q "de\\.cuioss\\.sheriff\\.api\\.quarkus\\.benchmark" "$result_file"; then
+        echo "integration"
+    elif grep -q "de\\.cuioss\\.sheriff\\.api\\.benchmark" "$result_file"; then
+        echo "micro"
+    # Legacy cui-jwt patterns
+    elif grep -q "JwtHealthBenchmark\|JwtValidationBenchmark\|JwtEchoBenchmark" "$result_file"; then
         echo "integration"
     elif grep -q "SimpleCoreValidationBenchmark\|SimpleErrorLoadBenchmark" "$result_file"; then
         echo "micro"
