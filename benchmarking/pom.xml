@@ -26,7 +26,7 @@
         <version.jmh>1.37</version.jmh>
         <!-- External dependency versions -->
         <version.gson>2.10.1</version.gson>
-        <version.hdrhistogram>2.1.12</version.hdrhistogram>
+        <version.hdrhistogram>2.2.2</version.hdrhistogram>
         <version.commons-io>2.15.1</version.commons-io>
         <!-- Skip benchmarks by default -->
         <skip.benchmark>true</skip.benchmark>
