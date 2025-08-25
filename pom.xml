@@ -51,7 +51,7 @@
         
         <!-- Non-maven plugin versions - use *.maven.plugin.version pattern -->
         <frontend.maven.plugin.version>1.15.1</frontend.maven.plugin.version>
-        <exec.maven.plugin.version>3.2.0</exec.maven.plugin.version>
+        <exec.maven.plugin.version>3.5.1</exec.maven.plugin.version>
         
         <!-- Configuration properties -->
         <frontend.node.version>v20.19.2</frontend.node.version>
