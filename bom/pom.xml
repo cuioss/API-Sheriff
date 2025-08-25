@@ -15,7 +15,7 @@
     <name>API Sheriff BOM</name>
     <description>Bill of Materials (BOM) for API Sheriff modules</description>
     <properties>
-        <version.jjwt>0.12.6</version.jjwt>
+        <version.jjwt>0.13.0</version.jjwt>
     </properties>
 
     <dependencyManagement>
