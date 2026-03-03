@@ -28,11 +28,10 @@
         - Configure logging.properties in each module's test resources
         - Suppress JVM warnings with -XX:+IgnoreUnrecognizedVMOptions
         -->
-        <junit-platform.version>1.13.1</junit-platform.version>
-        <version.weld-junit5>5.0.1.Final</version.weld-junit5>
+        <version.weld-junit5>5.0.3.Final</version.weld-junit5>
         <version.easymock>5.6.0</version.easymock>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
-        <argLine></argLine>
+        <argLine />
     </properties>
 
     <dependencyManagement>
@@ -46,29 +45,29 @@
             </dependency>
             <dependency>
                 <groupId>de.cuioss.sheriff.api</groupId>
-                <artifactId>bom</artifactId>
+                <artifactId>api-sheriff-bom</artifactId>
                 <version>${project.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!-- JUnit BOM is already imported by quarkus-bom -->
-            <!-- Explicitly override JUnit versions to ensure all components are compatible-->
+            <!-- Override JUnit Platform versions to match Jupiter (cui-java-parent provides
+                 version.junit.jupiter, but the Quarkus BOM pins older Platform versions) -->
             <dependency>
                 <groupId>org.junit.platform</groupId>
                 <artifactId>junit-platform-commons</artifactId>
-                <version>${junit-platform.version}</version>
+                <version>${version.junit.jupiter}</version>
                 <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>org.junit.platform</groupId>
                 <artifactId>junit-platform-engine</artifactId>
-                <version>${junit-platform.version}</version>
+                <version>${version.junit.jupiter}</version>
                 <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>org.junit.platform</groupId>
                 <artifactId>junit-platform-launcher</artifactId>
-                <version>${junit-platform.version}</version>
+                <version>${version.junit.jupiter}</version>
                 <scope>test</scope>
             </dependency>
             <!-- Additional dependencies -->

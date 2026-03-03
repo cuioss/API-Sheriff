@@ -1,138 +1,198 @@
-# CLAUDE.md
+# Claude Code Configuration
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+All AI development guidelines for this project are located in: **`agents.md`**
 
-## Project Overview
+This file contains:
+- Dev environment tips and build commands
+- Testing instructions and pre-commit validation
+- Code style and logging standards
+- Framework-specific standards (Quarkus, CDI)
+- OpenRewrite marker handling
+- Custom commands
 
-API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development phase. The project follows CUI (CUIoss) standards and is built using Maven with Java 21+.
+Please refer to `agents.md` for complete guidance when working on this API Sheriff project.
 
-## Build Commands
+- Use `.plan/temp/` for ALL temporary files (covered by `Write(.plan/**)` permission - avoids permission prompts)
 
-### Core Build Operations
-- **Build project**: `./mvnw clean install`
-- **Build without tests**: `./mvnw clean install -DskipTests`
-- **Run tests only**: `./mvnw test`
-- **Run single test**: `./mvnw test -Dtest=ClassName#methodName`
+## Git Workflow
 
-### Quality and Pre-Commit Process
-**CRITICAL**: Always run these commands before committing:
+All cuioss repositories have branch protection on `main`. Direct pushes to `main` are never allowed. Always use this workflow:
 
-1. **Quality verification** (fix all errors/warnings): 
+1. Create a feature branch: `git checkout -b <branch-name>`
+2. Commit changes: `git add <files> && git commit -m "<message>"`
+3. Push the branch: `git push -u origin <branch-name>`
+4. Create a PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
+5. Wait for CI + Gemini review (waits until checks complete): `gh pr checks --watch`
+6. **Handle Gemini review comments** — fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each:
+   - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment
+   - If disagree or out of scope: reply explaining why, then resolve the comment
+   - If uncertain (not 100% confident): **ask the user** before acting
+   - Every comment MUST get a reply (reason for fix or reason for not fixing) and MUST be resolved
+7. Do **NOT** enable auto-merge unless explicitly instructed. Wait for user approval.
+8. Return to main: `git checkout main && git pull`
+
+## Custom Commands
+
+### verifyCuiLoggingGuidelines
+
+Verify that the codebase complies with CUI logging standards by:
+
+1. **Analyze CUI logging standards** from `/Users/oliver/git/cui-llm-rules/standards/logging`
+2. **Scan for logging violations** in the api-sheriff-library module:
+   - Direct string usage in INFO/WARN/ERROR logging calls
+   - Missing LogRecord definitions for structured messages
+   - Incorrect parameter substitution patterns (should use '%s', not '{}' or '%d')
+   - Wrong exception parameter ordering (exception should come first)
+3. **Check LogRecord compliance**:
+   - All INFO/WARN/ERROR logs must use LogRecord constants
+   - Proper identifier ranges: INFO (001-099), WARN (100-199), ERROR (200-299)
+   - DSL-Style Constants Pattern with static imports
+4. **Validate documentation** in `doc/LogMessages.adoc` matches LogRecord definitions
+5. **Run logging-related tests** to verify LogAsserts work with LogRecord format
+6. **Generate compliance report** with:
+   - Compliance percentage
+   - List of violations found
+   - Recommendations for fixes
+   - Testing verification results
+
+**Usage:** When user says "verifyCuiLoggingGuidelines", execute this comprehensive logging standards audit.
+
+### fixOpenRewriteMarkers <module-path>
+
+Fix all OpenRewrite TODO markers in a module following CUI standards:
+
+**CRITICAL UNDERSTANDING**: Markers like `/*~~(TODO: INFO needs LogRecord)~~>*/` indicate **ACTUAL BUGS**, not just style issues.
+
+**Execution Steps**:
+
+1. **Locate All Markers**:
    ```bash
-   ./mvnw -Ppre-commit clean verify -DskipTests
+   grep -r "~~(TODO:" <module-path>/src --include="*.java"
    ```
-2. **Final verification** (must pass completely):
+   - Count markers: `grep -r "~~(TODO:" <module-path>/src --include="*.java" | wc -l`
+   - Group by type: INFO needs LogRecord, WARN needs LogRecord, placeholder mismatches, etc.
+
+2. **Analyze and Fix Each Marker**:
+
+   **Production Code (src/main/java)**:
+   - **Placeholder Mismatches**: Fix bugs like `LOGGER.info("value: %s", x, y)` (2 params, 1 placeholder)
+     - Add missing `%s` placeholders or remove extra parameters
+   - **Wrong Format Specifiers**: Change `%.2f`, `{:.2f}`, `{}`, `%d` → **ALWAYS use `%s`**
+   - **Missing LogRecords**: Create LogRecord constants for INFO/WARN/ERROR messages
+   - **Generic Exceptions**: Replace `Exception` with specific types (IOException, IllegalStateException)
+   - **RuntimeException**: Replace with specific exception types
+
+   **Test Code (src/test/java)**:
+   - **Diagnostic Logging** (performance tests, concurrency tests):
+     - Add class-level suppression comment:
+       ```java
+       // cui-rewrite:disable CuiLogRecordPatternRecipe
+       // This is a test/utility class that outputs diagnostic information for analysis
+       ```
+     - **NEVER create LogRecords for test diagnostic output**
+   - **Placeholder Mismatches**: Fix bugs even in tests (change to %s)
+   - **RuntimeException Throws**: Replace with AssertionError for test failures
+   - **Generic Exception Catches**: Replace with specific types + InterruptedException/BrokenBarrierException
+
+3. **Remove Markers After Fixing**:
+
+   **macOS (BSD sed)**:
    ```bash
-   ./mvnw clean install
+   find <module-path>/src -name "*.java" -exec sed -i '' 's|/\*~~(TODO: INFO needs LogRecord)~~>\*/||g; s|/\*~~(TODO: WARN needs LogRecord)~~>\*/||g; s|/\*~~(TODO: ERROR needs LogRecord)~~>\*/||g' {} +
    ```
 
-### CI/CD Commands
-- **Sonar analysis**: `./mvnw verify -Psonar sonar:sonar`
-- **Deploy snapshot**: `./mvnw -Prelease-snapshot,javadoc deploy`
-- **Coverage report**: `./mvnw clean verify -Pcoverage`
+   **Linux (GNU sed)**:
+   ```bash
+   find <module-path>/src -name "*.java" -exec sed -i 's|/\*~~(TODO: INFO needs LogRecord)~~>\*/||g; s|/\*~~(TODO: WARN needs LogRecord)~~>\*/||g; s|/\*~~(TODO: ERROR needs LogRecord)~~>\*/||g' {} +
+   ```
 
-## Project Structure
+   - Verify removal: `grep -r "~~(TODO:" <module-path>/src --include="*.java" | wc -l` (should be 0)
 
-```
-api-sheriff/
-├── src/
-│   ├── main/
-│   │   └── java/
-│   │       └── de/cuioss/sheriff/api/  # Main source code
-│   └── test/
-│       └── java/
-│           └── de/cuioss/sheriff/api/  # Test code
-├── doc/
-│   └── ai-rules.md                     # AI development guidelines
-├── pom.xml                              # Maven configuration
-└── lombok.config                        # Lombok configuration
-```
+4. **Verify Fixes**:
+   ```bash
+   cd <module-path> && ../mvnw -Ppre-commit clean verify
+   ```
+   - All tests must pass
+   - No compilation errors
+   - Markers may reappear if bugs not truly fixed
+   - If markers reappear, repeat steps 2-4
 
-## Critical Development Rules
+5. **Final Validation**:
+   - Run full test suite: `cd <module-path> && ../mvnw clean install`
+   - Confirm zero markers: `grep -r "~~(TODO:" <module-path>/src --include="*.java"`
+   - Verify test count matches previous successful run (no tests accidentally broken)
 
-### Pre-1.0 Project Rules (HIGHEST PRIORITY)
-- **NEVER deprecate code** - Remove it directly
-- **NEVER add @Deprecated annotations** - Delete unnecessary code immediately  
-- **NEVER enforce backward compatibility** - Make breaking changes freely
-- **Clean APIs aggressively** - Remove unused methods, classes, and patterns
-- **Focus on final API design** - Design for post-1.0 stability
+**Common Bugs to Watch For**:
+- `LOGGER.info("value %s", x, y)` → Missing placeholder for `y`
+- `LOGGER.info("avg %.2f ms", avg)` → Use `%s` not `%.2f`
+- `LOGGER.info("result {}", value)` → Use `%s` not `{}`
+- `catch (Exception e)` → Use specific exception types
+- `catch (RuntimeException e)` → Use IllegalArgumentException | IllegalStateException
+- Test logging creating LogRecords → Use suppression comment instead
 
-### CUI Standards Compliance
+**Critical Rules**:
+- **NEVER remove markers without fixing bugs**
+- **NEVER create LogRecords for test diagnostic logging**
+- **ALWAYS use `%s` for ALL string substitutions** (never `%.2f`, `{}`, `%d`)
+- **ALWAYS fix placeholder/parameter count mismatches**
+- **ALWAYS use specific exception types** (never Exception/RuntimeException)
 
-#### Logging
-- Use `de.cuioss.tools.logging.CuiLogger` (private static final LOGGER)
-- Exception parameter always comes first in logging methods
-- Use '%s' for string substitutions (not '{}' or '%d')
-- Document all log messages in doc/LogMessages.adoc
+**Usage:** When user says "fixOpenRewriteMarkers api-sheriff-library", execute this complete marker fixing workflow.
 
-#### Testing
-- Use JUnit 5 exclusively
-- Follow AAA pattern (Arrange-Act-Assert)
-- Minimum 80% code coverage required
-- Use cui-test-generator for test data generation
-- **Forbidden**: Mockito, PowerMock, Hamcrest
+### verifyAndCommit <module-name>
 
-#### Java Standards
-- Java 21+ features encouraged (records, switch expressions, text blocks)
-- Use Lombok annotations (@Builder, @Value, @NonNull, @UtilityClass)
-- Prefer immutable objects and final fields
-- Return empty collections instead of null
-- Use Optional for nullable return values
+Execute comprehensive quality verification and commit workflow for a specific module:
 
-#### Documentation
-- Every public API must have complete Javadoc
-- Use AsciiDoc format (.adoc) for documentation
-- Include @since tags with version information
-- Document thread-safety considerations
+1. **Quality Verification Build** (pre-commit profile):
+   ```bash
+   ./mvnw -Ppre-commit clean verify -pl <module-name>
+   ```
+   - Runs code quality checks (checkstyle, spotbugs, PMD)
+   - Performs static analysis
+   - Validates code formatting and style compliance
+   - **NO SHORTCUTS** - Fix ALL errors and warnings before proceeding
 
-## Dependency Management
+2. **Final Verification Build** (full integration):
+   ```bash
+   ./mvnw clean install -pl <module-name>
+   ```
+   - Runs complete build with all tests
+   - Validates full integration and functionality
+   - Ensures no regressions introduced
+   - This will take nearly 8 Minutes. Always wait for it to complete. 10 minutes on the outside
+   - **NO SHORTCUTS** - Fix ALL test failures and build errors
 
-Current minimal dependencies:
-- **lombok**: For boilerplate reduction
-- **junit-jupiter-api**: For testing
-- **Parent POM**: de.cuioss:cui-java-parent:1.1.4
+3. **Error Resolution Loop**:
+   - If ANY errors or warnings occur in either build, STOP and fix them
+   - Re-run the failed build command until it passes completely
+   - DO NOT proceed to next step until current step is 100% clean
+   - Apply fixes systematically and verify each fix
 
-**CRITICAL**: Never add dependencies without explicit user approval
+4. **Artifact Cleanup Verification**:
+   ```bash
+   find <module-name>/src/main/java -name "*.class" -type f
+   find <module-name>/src/test/java -name "*.class" -type f
+   find <module-name>/src -name "*.jar" -type f
+   find <module-name>/src -name "*.war" -type f
+   find <module-name>/src -name "target" -type d
+   ```
+   - Verify NO class files exist in source directories
+   - Verify NO jar/war files exist in source directories
+   - Verify NO target directories exist in source directories
+   - Ensure NO build artifacts contaminate source code
+   - Clean up any artifacts found before proceeding
+   - **FAIL BUILD** if any artifacts are found in src/ directories
 
-## Integration with IntelliJ IDEA
+5. **Git Commit**:
+   - Only proceed to commit when ALL steps pass completely
+   - Create descriptive commit message explaining the changes
+   - Include Co-Authored-By: Claude footer
 
-The project is configured for IntelliJ IDEA with:
-- MCP server integration for enhanced IDE features
-- Maven wrapper for consistent builds
-- EditorConfig for code formatting
+**Usage:** When user says "verifyAndCommit api-sheriff-library", execute this complete verification and commit workflow for the api-sheriff-library module.
 
-Use IntelliJ MCP tools when available:
-- `mcp__jetbrains__get_file_problems` for code analysis
-- `mcp__jetbrains__execute_terminal_command` for running commands
-- `mcp__jetbrains__search_in_files_by_text` for efficient code search
-
-## Security Considerations
-
-As a security-focused API Gateway:
-- All changes must consider security implications
-- Never expose sensitive data in logs
-- Follow OWASP security guidelines
-- Validate all inputs and outputs
-- Use secure defaults for all configurations
-
-## Common Tasks
-
-### Adding New Features
-1. Research existing patterns in the codebase
-2. Follow CUI standards for implementation
-3. Write comprehensive tests (80%+ coverage)
-4. Document public APIs with Javadoc
-5. Run pre-commit checks before committing
-
-### Fixing Issues
-1. Identify the issue using IDE diagnostics
-2. Apply fix following existing code patterns
-3. Add/update tests to prevent regression
-4. Verify with `./mvnw clean install`
-
-### Refactoring
-1. Ensure tests pass before starting
-2. Make incremental changes
-3. Run tests after each change
-4. Use IDE refactoring tools when available
-5. Clean up aggressively (pre-1.0 rule)
+**Critical Rules:**
+- **NEVER skip error fixes** - Every warning and error must be resolved
+- **NEVER use shortcuts** - Run complete verification cycles
+- **NEVER commit with failing builds** - Only commit when everything passes
+- **NEVER commit with source artifacts** - Source directories must be clean of .class files
+- **ALWAYS fix issues systematically** - Address root causes, not symptoms

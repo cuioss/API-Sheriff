@@ -6,8 +6,8 @@
     <parent>
         <groupId>de.cuioss</groupId>
         <artifactId>cui-java-parent</artifactId>
-        <version>1.1.4</version>
-        <relativePath/>
+        <version>1.4.4</version>
+        <relativePath />
     </parent>
     <groupId>de.cuioss.sheriff.api</groupId>
     <artifactId>api-sheriff-parent</artifactId>
@@ -42,38 +42,10 @@
     </issueManagement>
 
     <properties>
-        <!-- CUI dependency versions - use version.cui.* prefix -->
-        <version.cui.java.tools>2.5.1</version.cui.java.tools>
-        
-        <!-- External dependency versions - use version.* prefix -->
-        <version.jmh>1.37</version.jmh>
-        <version.quarkus>3.23.3</version.quarkus>
-        
-        <!-- Non-maven plugin versions - use *.maven.plugin.version pattern -->
-        <frontend.maven.plugin.version>1.15.1</frontend.maven.plugin.version>
-        <exec.maven.plugin.version>3.2.0</exec.maven.plugin.version>
-        
-        <!-- Configuration properties -->
-        <frontend.node.version>v20.19.2</frontend.node.version>
-        <frontend.npm.version>10.5.0</frontend.npm.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <version.quarkus>3.32.1</version.quarkus>
+        <frontend.node.version>v22.22.0</frontend.node.version>
+        <frontend.npm.version>10.9.2</frontend.npm.version>
     </properties>
 
-    <build>
-        <pluginManagement>
-            <plugins>
-                <!-- Exec Maven Plugin -->
-                <plugin>
-                    <groupId>org.codehaus.mojo</groupId>
-                    <artifactId>exec-maven-plugin</artifactId>
-                    <version>${exec.maven.plugin.version}</version>
-                </plugin>
-                <!-- Frontend Maven Plugin -->
-                <plugin>
-                    <groupId>com.github.eirslett</groupId>
-                    <artifactId>frontend-maven-plugin</artifactId>
-                    <version>${frontend.maven.plugin.version}</version>
-                </plugin>
-            </plugins>
-        </pluginManagement>
-    </build>
 </project>

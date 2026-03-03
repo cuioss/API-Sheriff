@@ -1,0 +1,29 @@
+=== BENCHMARK METADATA ===
+benchmark_name: healthCheck
+start_time: 1758797205
+start_time_iso: 2025-09-25T12:46:45+02:00
+=== WRK OUTPUT ===
+
+Loaded 100 tokens from environment
+Loaded 100 tokens from environment
+Loaded 100 tokens from environment
+Loaded 100 tokens from environment
+Loaded 100 tokens from environment
+Running 5s test @ https://localhost:10443/q/health/live/jwt/validate
+  4 threads and 20 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     4.51ms    6.70ms  41.04ms   87.50%
+    Req/Sec     2.14k   387.08     2.60k    89.00%
+  Latency Distribution
+     50%    1.69ms
+     75%    3.18ms
+     90%   14.60ms
+     99%   29.99ms
+  42606 requests in 5.01s, 11.01MB read
+Requests/sec:   8511.49
+Transfer/sec:      2.20MB
+
+=== BENCHMARK COMPLETE ===
+end_time: 1758797211
+end_time_iso: 2025-09-25T12:46:51+02:00
+duration_seconds: 6
