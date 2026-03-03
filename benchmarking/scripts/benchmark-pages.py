@@ -15,7 +15,6 @@ Usage in CI:
 
     # After all Maven benchmark runs:
     python3 benchmarking/scripts/benchmark-pages.py assemble \
-        --micro-results benchmarking/benchmark-core/target/benchmark-results/gh-pages-ready \
         --integration-results benchmarking/benchmark-integration-wrk/target/benchmark-results/gh-pages-ready \
         --previous-pages-dir previous-pages/api-sheriff/benchmarks \
         --output-dir gh-pages \
@@ -31,11 +30,6 @@ from pathlib import Path
 
 # Badge files produced by each benchmark type and their names in the root badges/ directory.
 _BADGE_MAPPING = {
-    "micro": {
-        "performance-badge.json": "performance-badge.json",
-        "trend-badge.json": "trend-badge.json",
-        "last-run-badge.json": "last-run-badge.json",
-    },
     "integration": {
         "integration-performance-badge.json": "integration-performance-badge.json",
         "integration-trend-badge.json": "integration-trend-badge.json",
@@ -43,7 +37,7 @@ _BADGE_MAPPING = {
     },
 }
 
-_BENCHMARK_TYPES = ("micro", "integration")
+_BENCHMARK_TYPES = ("integration",)
 _DEFAULT_MAX_HISTORY = 10
 
 

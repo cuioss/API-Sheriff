@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   benchmark:
-    name: Run JMH Benchmarks
+    name: Run Integration Benchmarks
     runs-on: ubuntu-latest
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
@@ -77,7 +77,6 @@ jobs:
           ref: main
           path: previous-pages
           sparse-checkout: |
-            api-sheriff/benchmarks/micro/history
             api-sheriff/benchmarks/integration/history
         continue-on-error: true
 
@@ -86,17 +85,6 @@ jobs:
           python3 benchmarking/scripts/benchmark-pages.py prepare-history \
             --previous-pages-dir previous-pages/api-sheriff/benchmarks \
             --output-dir "${GITHUB_WORKSPACE}/benchmark-history"
-
-      - name: Run Micro Benchmarks
-        run: |
-          # Run micro benchmarks using configuration from pom.xml
-          # Pass history directory as system property for trend calculation
-          ./mvnw --no-transfer-progress clean verify -pl benchmarking/benchmark-core -Pbenchmark \
-            -Dbenchmark.history.dir="${GITHUB_WORKSPACE}/benchmark-history/micro"
-
-          # Verify artifacts were generated
-          echo "Micro benchmark artifacts generated:"
-          ls -la benchmarking/benchmark-core/target/benchmark-results/
 
       - name: Run Integration Benchmarks with WRK
         run: |
@@ -112,7 +100,6 @@ jobs:
       - name: Assemble benchmark artifacts for deployment
         run: |
           python3 benchmarking/scripts/benchmark-pages.py assemble \
-            --micro-results benchmarking/benchmark-core/target/benchmark-results/gh-pages-ready \
             --integration-results benchmarking/benchmark-integration-wrk/target/benchmark-results/gh-pages-ready \
             --previous-pages-dir previous-pages/api-sheriff/benchmarks \
             --output-dir gh-pages \

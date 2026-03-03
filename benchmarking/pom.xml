@@ -16,14 +16,11 @@
     <description>Parent module for all benchmarking related modules including library and integration benchmarks</description>
 
     <modules>
-        <module>benchmark-core</module>
         <module>benchmark-integration-wrk</module>
     </modules>
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.benchmarking</maven.jar.plugin.automatic.module.name>
-        <!-- JMH version for benchmarking -->
-        <version.jmh>1.37</version.jmh>
         <!-- External dependency versions -->
         <version.gson>2.13.2</version.gson>
         <version.hdrhistogram>2.2.2</version.hdrhistogram>
@@ -38,17 +35,6 @@
 
     <dependencyManagement>
         <dependencies>
-            <dependency>
-                <groupId>org.openjdk.jmh</groupId>
-                <artifactId>jmh-core</artifactId>
-                <version>${version.jmh}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.openjdk.jmh</groupId>
-                <artifactId>jmh-generator-annprocess</artifactId>
-                <version>${version.jmh}</version>
-                <scope>provided</scope>
-            </dependency>
             <dependency>
                 <groupId>com.google.code.gson</groupId>
                 <artifactId>gson</artifactId>
