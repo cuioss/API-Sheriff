@@ -41,7 +41,7 @@ https://cuioss.github.io/api-sheriff/about.html[Generated Documentation on githu
 [.discrete]
 == What is it?
 
-A template project demonstrating a multi-module Maven structure with Quarkus integration and comprehensive benchmarking.
+A security-focused API Gateway with a lightweight approach, built with Quarkus.
 
 toc::[]
 
@@ -51,41 +51,23 @@ toc::[]
 ----
 <dependency>
     <groupId>de.cuioss.sheriff.api</groupId>
-    <artifactId>api-sheriff-library</artifactId>
+    <artifactId>api-sheriff</artifactId>
 </dependency>
 ----
 
-== Additional Modules
+== Modules
 
-The project includes several additional modules that extend the core functionality:
+=== API Sheriff
 
-=== Quarkus Integration
+The unified Quarkus application module containing the core library and CDI producers.
 
-The Quarkus Extension provides seamless integration into Quarkus applications. It includes:
+=== Integration Tests
 
-* CDI producers for easy dependency injection
-* Configuration support via Quarkus properties
-* Native image support for GraalVM compilation
-
-[source,xml]
-----
-<dependency>
-    <groupId>de.cuioss.sheriff.api</groupId>
-    <artifactId>api-sheriff-quarkus</artifactId>
-</dependency>
-----
+End-to-end integration tests with native container testing and HTTPS support.
 
 === Performance Benchmarking
 
-The project includes two complementary benchmarking modules:
-
-==== Micro-Benchmarks
-
-The Benchmark Library provides in-memory performance measurements using JMH (Java Microbenchmark Harness).
-
-==== Integration Benchmarks
-
-The Quarkus Integration Benchmarks provides end-to-end performance testing using containerized environments.
+Integration benchmarks using WRK HTTP load testing with containerized environments.
 
 xref:benchmarking/doc/performance-scoring.adoc[Understand Performance Metrics]
 

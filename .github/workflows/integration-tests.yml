@@ -20,9 +20,9 @@ jobs:
     with:
       report-name: api-sheriff-integration-tests
       maven-args-input: |
-        verify -Pintegration-tests -pl api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests -am
+        verify -Pintegration-tests -pl api-sheriff-integration-tests -am
       reports-folder: |
-        api-sheriff-quarkus-parent/api-sheriff-quarkus-integration-tests/target/failsafe-reports
+        api-sheriff-integration-tests/target/failsafe-reports
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

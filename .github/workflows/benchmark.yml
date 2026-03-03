@@ -57,14 +57,6 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Cache npm packages
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json', '**/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-npm-
-
       - name: Build api-sheriff
         run: |
           # Build all modules first to ensure artifacts are available for benchmarking

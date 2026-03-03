@@ -12,7 +12,7 @@ maven-build:
   enable-snapshot-deploy: true
   maven-profiles-snapshot: 'release-snapshot,javadoc'
   maven-profiles-release: 'release,javadoc'
-  npm-cache: true
+  npm-cache: false
 
 sonar:
   project-key: cuioss_API-Sheriff
