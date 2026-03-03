@@ -37,7 +37,7 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
 
 Verify that the codebase complies with CUI logging standards by:
 
-1. **Analyze CUI logging standards** from `/Users/oliver/git/cui-llm-rules/standards/logging`
+1. **Analyze CUI logging standards** from the `cui-llm-rules` repository (standards/logging directory)
 2. **Scan for logging violations** in the api-sheriff-library module:
    - Direct string usage in INFO/WARN/ERROR logging calls
    - Missing LogRecord definitions for structured messages

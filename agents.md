@@ -161,7 +161,7 @@ This project includes custom commands for common workflows:
 
 ### verifyCuiLoggingGuidelines
 Comprehensive logging standards audit:
-1. Analyze CUI logging standards from `/Users/oliver/git/cui-llm-rules/standards/logging`
+1. Analyze CUI logging standards from the `cui-llm-rules` repository (standards/logging directory)
 2. Scan for logging violations in api-sheriff-library module
 3. Check LogRecord compliance
 4. Validate documentation in `doc/LogMessages.adoc`
