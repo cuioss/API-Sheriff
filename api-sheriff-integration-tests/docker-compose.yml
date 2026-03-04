@@ -34,25 +34,29 @@ services:
       - jwt-integration
 
   api-sheriff:
-    # Use separate Dockerfiles for different variants
-    # For distroless: DOCKERFILE=Dockerfile.native.distroless DOCKER_IMAGE_TAG=distroless
-    # For JFR:       DOCKERFILE=Dockerfile.native.jfr DOCKER_IMAGE_TAG=jfr
+    # Production Dockerfiles from api-sheriff module — test instrumentation at compose level
+    # For distroless: DOCKERFILE=Dockerfile.native DOCKER_IMAGE_TAG=distroless (default)
+    # For JFR:        DOCKERFILE=Dockerfile.native.jfr DOCKER_IMAGE_TAG=jfr
     image: "api-sheriff:${DOCKER_IMAGE_TAG:-distroless}"
     build:
-      context: ..
-      dockerfile: api-sheriff-integration-tests/src/main/docker/${DOCKERFILE:-Dockerfile.native.distroless}
+      context: ../api-sheriff
+      dockerfile: src/main/docker/${DOCKERFILE:-Dockerfile.native}
       cache_from:
+        - quay.io/quarkus/quarkus-distroless-image:2.0
         - quay.io/quarkus/ubi9-quarkus-micro-image:2.0
-        - registry.access.redhat.com/ubi8/ubi-minimal:8.10
-        - quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-21
 
     ports:
       - "10443:8443"  # External test port for integration tests
 
+    # Test-specific TLS truststore flags (not baked into production image)
+    command:
+      - "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12"
+      - "-Djavax.net.ssl.trustStorePassword=localhost-trust"
+      - "-Djavax.net.ssl.trustStoreType=PKCS12"
+      - "-Djdk.tls.rejectClientInitiatedRenegotiation=true"
+      - "-Djavax.net.ssl.sessionCacheSize=20480"
+
     environment:
-      # JVM SSL Session Cache Optimization for TLS Performance
-      # JFR configuration handled by image variant (distroless vs JFR-enabled)
-      - JAVA_OPTS_APPEND=-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Djdk.tls.rejectClientInitiatedRenegotiation=true -Djavax.net.ssl.sessionCacheSize=20480 -Djavax.net.ssl.sessionTimeout=300 -Djsse.enableSNIExtension=true -Djdk.tls.maxHandshakeMessageSize=65536 -Djdk.tls.maxCertificateChainLength=10 -Djdk.tls.useExtendedMasterSecret=true
       - QUARKUS_LOG_LEVEL=INFO
       # Certificate paths (runtime override)
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -119,13 +123,8 @@ services:
           memory: 256M
           cpus: '1.0'
 
-    # Health check using internal script (optimized for fast native startup)
-    healthcheck:
-      test: ["CMD", "/app/health-check.sh"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # Health check: startup script handles readiness via external curl probe
+    # No Docker HEALTHCHECK — distroless has no shell; JFR variant has its own
 
     # Network isolation (production pattern)
     networks:

@@ -1,0 +1,35 @@
+# JFR-enabled Dockerfile for API Sheriff native executable
+# UBI micro base (has shell, needed for HEALTHCHECK and JFR output)
+# No baked-in certificates — mount TLS certs at runtime via volumes or secrets
+FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:7d6c45257b2c8a27b05ac544a1a713abc2d36371f01675fb4497fbb385ae2046
+
+LABEL org.opencontainers.image.title="API Sheriff - JFR"
+LABEL org.opencontainers.image.description="Security-focused API Gateway — Quarkus native executable with JFR profiling"
+LABEL org.opencontainers.image.version="1.0.0-SNAPSHOT"
+LABEL org.opencontainers.image.vendor="CUIoss"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"
+LABEL org.opencontainers.image.base.name="quay.io/quarkus/ubi9-quarkus-micro-image:2.0"
+LABEL security.scan.required="true"
+LABEL performance.jfr.enabled="true"
+
+WORKDIR /app
+
+# Copy pre-built native executable
+COPY --chown=1001:root --chmod=0755 target/*-runner /app/application
+
+# Create JFR output directory with proper permissions
+RUN mkdir -p /tmp/jfr-output && chmod 777 /tmp/jfr-output
+
+EXPOSE 8443
+
+# Port probe health check using bash /dev/tcp (available in UBI micro)
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+    CMD echo -n '' > /dev/tcp/127.0.0.1/8443 2>/dev/null || exit 1
+
+USER 1001
+
+# JFR-enabled entrypoint with profiling optimized for benchmarking
+ENTRYPOINT ["/app/application", "-Dquarkus.http.host=0.0.0.0", \
+  "-XX:+FlightRecorder", \
+  "-XX:StartFlightRecording=filename=/tmp/jfr-output/api-sheriff-profile.jfr,dumponexit=true,duration=240s,settings=profile"]

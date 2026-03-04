@@ -29,7 +29,7 @@ elif [[ -n "$DISTROLESS_IMAGE" ]]; then
     AVAILABLE_IMAGE="$DISTROLESS_IMAGE"
     IMAGE_TYPE="distroless"
     export DOCKER_IMAGE_TAG="distroless"
-    export DOCKERFILE="Dockerfile.native.distroless"
+    export DOCKERFILE="Dockerfile.native"
 else
     AVAILABLE_IMAGE=""
     IMAGE_TYPE="none"

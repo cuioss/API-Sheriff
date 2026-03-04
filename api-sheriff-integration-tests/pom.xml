@@ -196,7 +196,7 @@
                                         <argument>api-sheriff</argument>
                                     </arguments>
                                     <environmentVariables>
-                                        <DOCKERFILE>Dockerfile.native.distroless</DOCKERFILE>
+                                        <DOCKERFILE>Dockerfile.native</DOCKERFILE>
                                         <DOCKER_IMAGE_TAG>distroless</DOCKER_IMAGE_TAG>
                                         <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
                                     </environmentVariables>
