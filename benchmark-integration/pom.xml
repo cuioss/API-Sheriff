@@ -4,15 +4,17 @@
 
     <parent>
         <groupId>de.cuioss.sheriff.api</groupId>
-        <artifactId>benchmarking</artifactId>
+        <artifactId>api-sheriff-parent</artifactId>
         <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>benchmark-integration-wrk</artifactId>
-    <name>API Sheriff WRK-based Integration Benchmarks</name>
+    <artifactId>benchmark-integration</artifactId>
+    <name>API Sheriff Integration Benchmarks</name>
     <description>WRK-based HTTP benchmarks for API Sheriff endpoints with integration test infrastructure</description>
 
     <properties>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.benchmark.integration</maven.jar.plugin.automatic.module.name>
         <!-- Skip benchmarks by default (enable with -Pbenchmark) -->
         <skip.benchmark>true</skip.benchmark>
 
@@ -20,10 +22,10 @@
         <skip.container.lifecycle>false</skip.container.lifecycle>
 
         <!-- Scripts location -->
-        <integration.scripts.dir>${project.basedir}/../../api-sheriff-integration-tests/scripts</integration.scripts.dir>
+        <integration.scripts.dir>${project.basedir}/../api-sheriff-integration-tests/scripts</integration.scripts.dir>
 
         <!-- Docker compose directory for WRK benchmarks -->
-        <integration.compose.dir>${project.basedir}/../../api-sheriff-integration-tests</integration.compose.dir>
+        <integration.compose.dir>${project.basedir}/../api-sheriff-integration-tests</integration.compose.dir>
 
         <!-- Integration test service URLs (host access via published ports) -->
         <integration.service.url>https://localhost:10443</integration.service.url>
@@ -44,8 +46,14 @@
         <benchmark.history.dir>${wrk.results.dir}/history</benchmark.history.dir>
         <wrk.jwt.token_count>100</wrk.jwt.token_count>
 
-        <!-- benchmarking-common version -->
+        <!-- External dependency versions -->
         <version.benchmarking-common>0.4.1</version.benchmarking-common>
+        <version.gson>2.13.2</version.gson>
+        <version.hdrhistogram>2.2.2</version.hdrhistogram>
+        <version.commons-io>2.21.0</version.commons-io>
+
+        <!-- Sonar configuration: Skip analysis for benchmarking modules -->
+        <sonar.skip>true</sonar.skip>
     </properties>
 
     <dependencyManagement>
@@ -54,6 +62,21 @@
                 <groupId>de.cuioss.sheriff.oauth</groupId>
                 <artifactId>benchmarking-common</artifactId>
                 <version>${version.benchmarking-common}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.code.gson</groupId>
+                <artifactId>gson</artifactId>
+                <version>${version.gson}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.hdrhistogram</groupId>
+                <artifactId>HdrHistogram</artifactId>
+                <version>${version.hdrhistogram}</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${version.commons-io}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -93,6 +116,37 @@
     </dependencies>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <configuration>
+                        <skip>${skip.benchmark}</skip>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <executions>
+                        <execution>
+                            <id>copy-dependencies</id>
+                            <phase>package</phase>
+                            <goals>
+                                <goal>copy-dependencies</goal>
+                            </goals>
+                            <configuration>
+                                <outputDirectory>${project.build.directory}/dependency</outputDirectory>
+                                <overWriteReleases>false</overWriteReleases>
+                                <overWriteSnapshots>false</overWriteSnapshots>
+                                <overWriteIfNewer>true</overWriteIfNewer>
+                                <includeScope>runtime</includeScope>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <!-- Configure surefire for unit tests -->
             <plugin>
@@ -114,7 +168,6 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
-                <!-- Configuration inherited from parent pluginManagement -->
             </plugin>
         </plugins>
     </build>
@@ -140,7 +193,7 @@
                                 </goals>
                                 <configuration>
                                     <skip>${skip.container.lifecycle}</skip>
-                                    <executable>../../mvnw</executable>
+                                    <executable>../mvnw</executable>
                                     <arguments>
                                         <argument>compile</argument>
                                         <argument>exec:exec@build-native-if-needed</argument>
@@ -148,7 +201,7 @@
                                         <argument>-Pintegration-tests</argument>
                                         <argument>-DskipTests</argument>
                                     </arguments>
-                                    <workingDirectory>${project.basedir}/../../api-sheriff-integration-tests</workingDirectory>
+                                    <workingDirectory>${project.basedir}/../api-sheriff-integration-tests</workingDirectory>
                                 </configuration>
                             </execution>
 
@@ -214,11 +267,11 @@
                                 </goals>
                                 <configuration>
                                     <skip>${skip.container.lifecycle}</skip>
-                                    <executable>../../mvnw</executable>
+                                    <executable>../mvnw</executable>
                                     <arguments>
                                         <argument>clean</argument>
                                     </arguments>
-                                    <workingDirectory>${project.basedir}/../../api-sheriff-integration-tests</workingDirectory>
+                                    <workingDirectory>${project.basedir}/../api-sheriff-integration-tests</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>

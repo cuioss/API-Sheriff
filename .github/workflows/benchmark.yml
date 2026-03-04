@@ -74,7 +74,7 @@ jobs:
 
       - name: Prepare Historical Data for Benchmarks
         run: |
-          python3 benchmarking/scripts/benchmark-pages.py prepare-history \
+          python3 benchmark-integration/scripts/benchmark-pages.py prepare-history \
             --previous-pages-dir previous-pages/api-sheriff/benchmarks \
             --output-dir "${GITHUB_WORKSPACE}/benchmark-history"
 
@@ -82,17 +82,17 @@ jobs:
         run: |
           # Run WRK-based integration benchmarks with native image
           echo "Running WRK integration benchmarks with native Quarkus..."
-          ./mvnw --no-transfer-progress clean verify -pl benchmarking/benchmark-integration-wrk -Pbenchmark \
+          ./mvnw --no-transfer-progress clean verify -pl benchmark-integration -Pbenchmark \
             -Dbenchmark.history.dir="${GITHUB_WORKSPACE}/benchmark-history/integration"
 
           # Verify artifacts were generated
           echo "Integration benchmark artifacts generated:"
-          ls -la benchmarking/benchmark-integration-wrk/target/benchmark-results/
+          ls -la benchmark-integration/target/benchmark-results/
 
       - name: Assemble benchmark artifacts for deployment
         run: |
-          python3 benchmarking/scripts/benchmark-pages.py assemble \
-            --integration-results benchmarking/benchmark-integration-wrk/target/benchmark-results/gh-pages-ready \
+          python3 benchmark-integration/scripts/benchmark-pages.py assemble \
+            --integration-results benchmark-integration/target/benchmark-results/gh-pages-ready \
             --previous-pages-dir previous-pages/api-sheriff/benchmarks \
             --output-dir gh-pages \
             --commit-sha "${{ github.sha }}"

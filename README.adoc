@@ -34,7 +34,7 @@ image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/b
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-performance-badge.json[Integration Performance,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-index.html]
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-trend-badge.json[Integration Trend,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-performance-trends.html]
 
-xref:benchmarking/doc/performance-scoring.adoc[Understand Performance Metrics]
+xref:benchmark-integration/doc/performance-scoring.adoc[Understand Performance Metrics]
 
 https://cuioss.github.io/api-sheriff/about.html[Generated Documentation on github-pages]
 
@@ -69,7 +69,7 @@ End-to-end integration tests with native container testing and HTTPS support.
 
 Integration benchmarks using WRK HTTP load testing with containerized environments.
 
-xref:benchmarking/doc/performance-scoring.adoc[Understand Performance Metrics]
+xref:benchmark-integration/doc/performance-scoring.adoc[Understand Performance Metrics]
 
 == External Resources
 

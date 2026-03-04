@@ -63,7 +63,7 @@ public class TestResource {
             return Response.ok("{\"status\":\"UP\",\"apiSheriff\":\"" + status + "\"}")
                     .build();
 
-        } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/catch (Exception e) {
+        } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("{\"status\":\"DOWN\",\"error\":\"" + e.getMessage() + "\"}")
                     .build();

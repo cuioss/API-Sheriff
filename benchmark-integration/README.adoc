@@ -1,0 +1,21 @@
+= API Sheriff Integration Benchmarks
+
+WRK-based HTTP benchmarks for API Sheriff endpoints with integration test infrastructure.
+
+== Running Benchmarks
+
+[source,bash]
+----
+./mvnw clean verify -pl benchmark-integration -Pbenchmark
+----
+
+For quick runs (shorter duration, assumes containers already running):
+
+[source,bash]
+----
+./mvnw clean verify -pl benchmark-integration -Pbenchmark -Pquick
+----
+
+== Performance Scoring
+
+See the https://github.com/cuioss/OAuthSheriff/blob/main/benchmarking/doc/performance-scoring.adoc[JWT Performance Scoring System] documentation in the OAuthSheriff repository.

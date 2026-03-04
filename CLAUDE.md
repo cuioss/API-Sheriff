@@ -11,7 +11,7 @@ API Sheriff is a security-focused API Gateway with a lightweight approach, curre
 Multi-module Maven project:
 - `api-sheriff/` — Unified Quarkus application (core library + CDI producers)
 - `api-sheriff-integration-tests/` — Integration tests with native container testing
-- `benchmarking/` — Performance benchmarking (benchmark-integration-wrk for WRK HTTP load testing)
+- `benchmark-integration/` — WRK HTTP load testing benchmarks
 
 ## Build Commands
 
@@ -32,7 +32,7 @@ Multi-module Maven project:
 ./mvnw clean verify -Pintegration-tests -pl api-sheriff-integration-tests -am
 
 # Integration benchmarks (WRK)
-./mvnw clean verify -pl benchmarking/benchmark-integration-wrk -Pbenchmark
+./mvnw clean verify -pl benchmark-integration -Pbenchmark
 ```
 
 ### Pre-Commit Process

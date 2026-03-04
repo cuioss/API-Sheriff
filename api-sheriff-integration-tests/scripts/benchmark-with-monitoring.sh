@@ -375,7 +375,7 @@ echo ""
 
 # Start benchmark with JFR recording
 START_TIME=$(date +%s)
-$MAVEN_CMD verify -pl benchmarking/benchmark-integration-wrk -Pbenchmark > "$BENCHMARK_LOG" 2>&1 &
+$MAVEN_CMD verify -pl benchmark-integration -Pbenchmark > "$BENCHMARK_LOG" 2>&1 &
 BENCHMARK_PID=$!
 
 # Wait for containers to start
