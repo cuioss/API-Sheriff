@@ -203,6 +203,99 @@
                                 </configuration>
                             </execution>
 
+                            <!-- Pre-benchmark health check -->
+                            <execution>
+                                <id>pre-benchmark-health-check</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>${wrk.script.dir}/pre-benchmark-health-check.sh</argument>
+                                    </arguments>
+                                    <environmentVariables>
+                                        <INTEGRATION_SERVICE_URL>${integration.service.url}</INTEGRATION_SERVICE_URL>
+                                        <PROMETHEUS_URL>http://localhost:9090</PROMETHEUS_URL>
+                                        <KEYCLOAK_URL>https://localhost:1090</KEYCLOAK_URL>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run WRK health/live benchmark -->
+                            <execution>
+                                <id>run-wrk-health-live-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>${wrk.script.dir}/health_live_benchmark.sh</argument>
+                                    </arguments>
+                                    <outputFile>${wrk.output.dir}/wrk-health-live-results.txt</outputFile>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <WRK_THREADS>${wrk.threads}</WRK_THREADS>
+                                        <WRK_CONNECTIONS>${wrk.connections}</WRK_CONNECTIONS>
+                                        <WRK_DURATION>${wrk.duration}</WRK_DURATION>
+                                        <WRK_TIMEOUT>${wrk.timeout}</WRK_TIMEOUT>
+                                        <COMPOSE_DIR>${integration.compose.dir}</COMPOSE_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run WRK api/health benchmark -->
+                            <execution>
+                                <id>run-wrk-api-health-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>${wrk.script.dir}/api_health_benchmark.sh</argument>
+                                    </arguments>
+                                    <outputFile>${wrk.output.dir}/wrk-api-health-results.txt</outputFile>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <WRK_THREADS>${wrk.threads}</WRK_THREADS>
+                                        <WRK_CONNECTIONS>${wrk.connections}</WRK_CONNECTIONS>
+                                        <WRK_DURATION>${wrk.duration}</WRK_DURATION>
+                                        <WRK_TIMEOUT>${wrk.timeout}</WRK_TIMEOUT>
+                                        <COMPOSE_DIR>${integration.compose.dir}</COMPOSE_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Process WRK results and generate reports -->
+                            <execution>
+                                <id>process-wrk-results</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>java</goal>
+                                </goals>
+                                <configuration>
+                                    <mainClass>de.cuioss.sheriff.api.wrk.benchmark.WrkResultPostProcessor</mainClass>
+                                    <arguments>
+                                        <argument>${wrk.results.dir}</argument>
+                                    </arguments>
+                                    <systemProperties>
+                                        <systemProperty>
+                                            <key>quarkus.metrics.url</key>
+                                            <value>${quarkus.metrics.url}</value>
+                                        </systemProperty>
+                                        <systemProperty>
+                                            <key>prometheus.url</key>
+                                            <value>http://localhost:9090</value>
+                                        </systemProperty>
+                                    </systemProperties>
+                                </configuration>
+                            </execution>
+
                             <!-- Dump Keycloak container logs before stopping containers -->
                             <execution>
                                 <id>dump-keycloak-logs</id>

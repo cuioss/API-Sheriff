@@ -137,6 +137,29 @@ services:
     # Production restart policy
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=1h'
+      - '--web.enable-lifecycle'
+    networks:
+      - jwt-integration
+
+  wrk:
+    build:
+      context: ..
+      dockerfile: benchmark-integration/Dockerfile.wrk
+    networks:
+      - jwt-integration
+    profiles:
+      - benchmark
+    restart: "no"
+
 networks:
   jwt-integration:
     driver: bridge

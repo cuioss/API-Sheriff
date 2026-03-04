@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: 'quarkus-benchmark'
+    static_configs:
+      - targets: ['api-sheriff:8443']
+    metrics_path: '/q/metrics'
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
