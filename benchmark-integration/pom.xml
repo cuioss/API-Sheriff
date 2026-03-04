@@ -267,7 +267,7 @@
                                 </goals>
                                 <configuration>
                                     <skip>${skip.container.lifecycle}</skip>
-                                    <executable>../mvnw</executable>
+                                    <executable>./mvnw</executable>
                                     <arguments>
                                         <argument>clean</argument>
                                         <argument>-pl</argument>

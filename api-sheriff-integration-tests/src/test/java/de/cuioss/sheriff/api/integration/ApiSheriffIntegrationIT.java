@@ -38,7 +38,7 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
     void apiSheriffHealthEndpoint() {
         given()
                 .when()
-                .get("/test/health")
+                .get("/api/health")
                 .then()
                 .statusCode(200)
                 .contentType("application/json")
@@ -53,11 +53,11 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
     void infoEndpoint() {
         given()
                 .when()
-                .get("/test/info")
+                .get("/api/info")
                 .then()
                 .statusCode(200)
                 .contentType("application/json")
-                .body("message", containsString("API Sheriff Integration Test"))
+                .body("message", containsString("API Sheriff Gateway"))
                 .body("version", containsString("1.0.0-SNAPSHOT"));
     }
 

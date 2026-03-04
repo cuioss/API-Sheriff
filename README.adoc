@@ -71,6 +71,34 @@ Integration benchmarks using WRK HTTP load testing with containerized environmen
 
 xref:benchmark-integration/doc/performance-scoring.adoc[Understand Performance Metrics]
 
+== Deployment
+
+=== Production Docker Image
+
+Build the native executable and production Docker image:
+
+[source,bash]
+----
+# Build native executable
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
+
+# Build production Docker image
+docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:latest api-sheriff/
+----
+
+Run with TLS certificates mounted at runtime:
+
+[source,bash]
+----
+docker run -p 8443:8443 \
+  -v /path/to/certs:/certs:ro \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/certs/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/certs/server.key \
+  api-sheriff:latest
+----
+
+* Port `8443` — All endpoints (`/api/health`, `/api/info`, `/q/health`, `/q/metrics`)
+
 == External Resources
 
 * https://cuioss.github.io/api-sheriff/about.html[Generated Documentation on GitHub Pages]

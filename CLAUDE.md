@@ -33,6 +33,12 @@ Multi-module Maven project:
 
 # Integration benchmarks (WRK)
 ./mvnw clean verify -pl benchmark-integration -Pbenchmark
+
+# Build native executable
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
+
+# Build production Docker image
+docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:latest api-sheriff/
 ```
 
 ### Pre-Commit Process
