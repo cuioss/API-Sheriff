@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to generate Java truststore for JWT Quarkus integration testing
+# Script to generate Java truststore for API Sheriff integration testing
 # Creates truststore with localhost certificate for proper TLS validation
 
 set -e
@@ -9,7 +9,7 @@ CERT_DIR="${SCRIPT_DIR}"
 TRUSTSTORE_FILE="${CERT_DIR}/localhost-truststore.p12"
 TRUSTSTORE_PASSWORD="localhost-trust"
 
-echo "Generating Java truststore for JWT integration testing..."
+echo "Generating Java truststore for API Sheriff integration testing..."
 echo "Certificate directory: ${CERT_DIR}"
 
 # Check if certificate exists

@@ -1,17 +1,17 @@
 #!/bin/bash
-# Script to generate PEM certificates for JWT Quarkus integration testing
+# Script to generate PEM certificates for API Sheriff integration testing
 # Generates passwordless localhost certificates for secure container usage
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CERT_DIR="${SCRIPT_DIR}"
-CERT_DNAME="CN=localhost, OU=Integration Testing, O=CUI-JWT, L=Berlin, ST=Berlin, C=DE"
+CERT_DNAME="CN=localhost, OU=Integration Testing, O=API-Sheriff, L=Berlin, ST=Berlin, C=DE"
 CERT_VALIDITY=730
 TEMP_KEYSTORE="${CERT_DIR}/temp-keystore.p12"
 TEMP_PASSWORD="temp-$(date +%s)"
 
-echo "Generating PEM certificates for JWT integration testing..."
+echo "Generating PEM certificates for API Sheriff integration testing..."
 echo "Certificate directory: ${CERT_DIR}"
 
 # Clean up existing certificates
@@ -25,7 +25,7 @@ keytool -genkeypair \
   -keysize 2048 \
   -validity ${CERT_VALIDITY} \
   -dname "${CERT_DNAME}" \
-  -ext san=dns:localhost,dns:keycloak,ip:127.0.0.1,ip:0.0.0.0 \
+  -ext san=dns:localhost,dns:keycloak,dns:api-sheriff,ip:127.0.0.1,ip:0.0.0.0 \
   -keystore "${TEMP_KEYSTORE}" \
   -storetype PKCS12 \
   -storepass "${TEMP_PASSWORD}" \
@@ -64,6 +64,6 @@ echo "  - localhost.key: Private key in PEM format (restricted access)"
 echo ""
 echo "Certificate valid for ${CERT_VALIDITY} days (2 years)"
 echo "Subject: ${CERT_DNAME}"
-echo "SAN: dns:localhost,dns:keycloak,ip:127.0.0.1,ip:0.0.0.0"
+echo "SAN: dns:localhost,dns:keycloak,dns:api-sheriff,ip:127.0.0.1,ip:0.0.0.0"
 echo ""
 echo "Security: No passwords required - file permissions provide security"

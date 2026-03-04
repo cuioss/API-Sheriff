@@ -31,7 +31,7 @@ services:
       - KC_HOSTNAME=localhost
       # External hostname for Docker container well-known discovery
     networks:
-      - jwt-integration
+      - api-sheriff
 
   api-sheriff:
     # Production Dockerfiles from api-sheriff module — test instrumentation at compose level
@@ -48,16 +48,7 @@ services:
     ports:
       - "10443:8443"  # External test port for integration tests
 
-    # Test-specific TLS truststore flags (not baked into production image)
-    command:
-      - "-Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12"
-      - "-Djavax.net.ssl.trustStorePassword=localhost-trust"
-      - "-Djavax.net.ssl.trustStoreType=PKCS12"
-      - "-Djdk.tls.rejectClientInitiatedRenegotiation=true"
-      - "-Djavax.net.ssl.sessionCacheSize=20480"
-
     environment:
-      - QUARKUS_LOG_LEVEL=INFO
       # File logging to mounted target directory
       - LOG_FILE_PATH=/logs/quarkus.log
       # Certificate paths (runtime override)
@@ -65,11 +56,11 @@ services:
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
-      # JWT Issuer Configuration — default issuer (static key, disabled for Docker tests)
+      # Issuer: default (disabled for container tests)
       - API_SHERIFF_ISSUERS_DEFAULT_ISSUER__IDENTIFIER=https://test-auth.example.com
       - API_SHERIFF_ISSUERS_DEFAULT_ENABLED=false
       - API_SHERIFF_ISSUERS_DEFAULT_JWKS_FILE__PATH=classpath:test-jwks.json
-      # JWT Issuer Configuration — Keycloak issuer (well-known discovery)
+      # Issuer: Keycloak (well-known discovery)
       - API_SHERIFF_ISSUERS_KEYCLOAK_ENABLED=true
       - API_SHERIFF_ISSUERS_KEYCLOAK_ISSUER__IDENTIFIER=https://keycloak:8443/realms/benchmark
       - API_SHERIFF_ISSUERS_KEYCLOAK_JWKS_HTTP_WELL__KNOWN__URL=https://keycloak:8443/realms/benchmark/.well-known/openid-configuration
@@ -77,7 +68,7 @@ services:
       - API_SHERIFF_ISSUERS_KEYCLOAK_KEYCLOAK_MAPPERS_DEFAULT__ROLES_ENABLED=false
       - API_SHERIFF_ISSUERS_KEYCLOAK_KEYCLOAK_MAPPERS_DEFAULT__GROUPS_ENABLED=false
       - API_SHERIFF_ISSUERS_KEYCLOAK_CLAIM__SUB__OPTIONAL=true
-      # JWT Issuer Configuration — Integration issuer (direct JWKS URL)
+      # Issuer: integration (direct JWKS URL)
       - API_SHERIFF_ISSUERS_INTEGRATION_ENABLED=true
       - API_SHERIFF_ISSUERS_INTEGRATION_ISSUER__IDENTIFIER=https://keycloak:8443/realms/integration
       - API_SHERIFF_ISSUERS_INTEGRATION_JWKS_HTTP_URL=https://keycloak:8443/realms/integration/protocol/openid-connect/certs
@@ -132,7 +123,7 @@ services:
 
     # Network isolation (production pattern)
     networks:
-      - jwt-integration
+      - api-sheriff
 
     # Production restart policy
     restart: unless-stopped
@@ -148,24 +139,18 @@ services:
       - '--storage.tsdb.retention.time=1h'
       - '--web.enable-lifecycle'
     networks:
-      - jwt-integration
+      - api-sheriff
 
   wrk:
     build:
       context: ..
       dockerfile: benchmark-integration/Dockerfile.wrk
     networks:
-      - jwt-integration
+      - api-sheriff
     profiles:
       - benchmark
     restart: "no"
 
 networks:
-  jwt-integration:
+  api-sheriff:
     driver: bridge
-    # Control inter-container communication (production setting)
-    internal: false
-    driver_opts:
-      com.docker.network.bridge.enable_icc: "true"
-      com.docker.network.bridge.enable_ip_masquerade: "true"
-      com.docker.network.driver.mtu: "1500"
