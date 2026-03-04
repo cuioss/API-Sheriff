@@ -56,6 +56,11 @@ else
 fi
 
 
+# Set LOG_TARGET_DIR to project's target directory for Quarkus file logging
+export LOG_TARGET_DIR="${LOG_TARGET_DIR:-${PROJECT_DIR}/target}"
+mkdir -p "${LOG_TARGET_DIR}"
+echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
+
 # Start with Docker Compose (includes Keycloak)
 echo "🐳 Starting Docker containers (Quarkus $MODE + Keycloak)..."
 (cd "${PROJECT_DIR}" && docker compose -f "$COMPOSE_FILE" up -d)

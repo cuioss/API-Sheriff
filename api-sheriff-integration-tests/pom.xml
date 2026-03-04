@@ -212,6 +212,25 @@
                                 <configuration>
                                     <executable>./scripts/start-integration-container.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
+                                    <environmentVariables>
+                                        <!-- Pass target directory for Quarkus file logging -->
+                                        <LOG_TARGET_DIR>${project.build.directory}</LOG_TARGET_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Dump Keycloak container logs before stopping containers -->
+                            <execution>
+                                <id>dump-keycloak-logs</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/dump-keycloak-logs.sh</executable>
+                                    <arguments>
+                                        <argument>target</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
                             </execution>
                             <!-- Stop application after integration tests -->
@@ -321,6 +340,25 @@
                                 </goals>
                                 <configuration>
                                     <executable>./scripts/start-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <environmentVariables>
+                                        <!-- Pass target directory for Quarkus file logging -->
+                                        <LOG_TARGET_DIR>${project.build.directory}</LOG_TARGET_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Dump Keycloak container logs before stopping containers -->
+                            <execution>
+                                <id>dump-keycloak-logs</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/dump-keycloak-logs.sh</executable>
+                                    <arguments>
+                                        <argument>target</argument>
+                                    </arguments>
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
                             </execution>

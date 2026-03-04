@@ -239,6 +239,22 @@
                                 </configuration>
                             </execution>
 
+                            <!-- Dump Keycloak container logs before stopping containers -->
+                            <execution>
+                                <id>dump-keycloak-logs</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skip.container.lifecycle}</skip>
+                                    <executable>${integration.scripts.dir}/dump-keycloak-logs.sh</executable>
+                                    <arguments>
+                                        <argument>${wrk.results.dir}</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
                             <!-- Stop integration test containers -->
                             <execution>
                                 <id>stop-integration-containers</id>

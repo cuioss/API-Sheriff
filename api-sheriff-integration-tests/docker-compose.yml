@@ -58,6 +58,8 @@ services:
 
     environment:
       - QUARKUS_LOG_LEVEL=INFO
+      # File logging to mounted target directory
+      - LOG_FILE_PATH=/logs/quarkus.log
       # Certificate paths (runtime override)
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -97,6 +99,8 @@ services:
     volumes:
       # Read-only certificate mount (production pattern)
       - ./src/main/docker/certificates:/app/certificates:ro
+      # Mount target directory for log files (defaults to ./target)
+      - ${LOG_TARGET_DIR:-./target}:/logs:rw
       # JFR output volume for profiling recordings
       - ./target/jfr-recordings:/tmp/jfr-output:rw
 
