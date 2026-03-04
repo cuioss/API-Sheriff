@@ -15,33 +15,25 @@
  */
 package de.cuioss.sheriff.api;
 
-import io.quarkus.runtime.annotations.RegisterForReflection;
-import de.cuioss.tools.logging.CuiLogger;
+import io.quarkus.runtime.Quarkus;
+import io.quarkus.runtime.QuarkusApplication;
+import io.quarkus.runtime.annotations.QuarkusMain;
 
 /**
- * Main API Sheriff class.
- * Placeholder for the main functionality of the API Sheriff library.
+ * Main entry point for the API Sheriff gateway application.
+ * <p>
+ * This application provides the security-focused API Gateway with REST endpoints,
+ * health checks, and metrics in a containerized environment.
  *
  * @author API Sheriff Team
+ * @since 1.0
  */
-@RegisterForReflection
-public class ApiSheriff {
+@QuarkusMain
+public class ApiSheriffApplication implements QuarkusApplication {
 
-    private static final CuiLogger LOGGER = new CuiLogger(ApiSheriff.class);
-
-    /**
-     * Creates a new ApiSheriff instance.
-     */
-    public ApiSheriff() {
-        LOGGER.debug("ApiSheriff initialized");
-    }
-
-    /**
-     * Placeholder method for main functionality.
-     *
-     * @return a status message
-     */
-    public String getStatus() {
-        return "API Sheriff is operational";
+    @Override
+    public int run(String... args) throws Exception {
+        Quarkus.waitForExit();
+        return 0;
     }
 }

@@ -1,11 +1,12 @@
 #!/bin/bash
-# Start JWT Integration Tests using Docker Compose
+# Start API Sheriff Integration Tests using Docker Compose
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ROOT_DIR="$(dirname "$PROJECT_DIR")"
+APP_TARGET_DIR="${ROOT_DIR}/api-sheriff/target"
 
 echo "🚀 Starting API Sheriff Integration Tests with Docker Compose"
 echo "Project directory: ${PROJECT_DIR}"
@@ -14,10 +15,10 @@ echo "Root directory: ${ROOT_DIR}"
 cd "${PROJECT_DIR}"
 
 # Check build approach - Native executable + Docker copy vs Docker build
-RUNNER_FILE=$(find target/ -name "*-runner" -type f 2>/dev/null | head -n 1)
+RUNNER_FILE=$(find "${APP_TARGET_DIR}" -name "*-runner" -type f 2>/dev/null | head -n 1)
 # Detect image type - prefer JFR if available, fallback to distroless
-JFR_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff-integration-tests:jfr$" || true)
-DISTROLESS_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff-integration-tests:distroless$" || true)
+JFR_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff:jfr$" || true)
+DISTROLESS_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^api-sheriff:distroless$" || true)
 
 if [[ -n "$JFR_IMAGE" ]]; then
     AVAILABLE_IMAGE="$JFR_IMAGE"
@@ -47,10 +48,10 @@ elif [[ "$IMAGE_EXISTS" == "true" ]]; then
     MODE="native (Docker-built) - $IMAGE_TYPE"
 else
     echo "❌ Neither native executable nor Docker image found"
-    echo "Expected: target/*-runner file and api-sheriff-integration-tests image"
+    echo "Expected: api-sheriff/target/*-runner file and api-sheriff image"
     echo "Available images:"
     docker images | grep api-sheriff || echo "  No api-sheriff images found"
-    echo "Run: mvnw verify -Pintegration-tests -pl api-sheriff-integration-tests"
+    echo "Run: mvnw verify -Pintegration-tests -pl api-sheriff-integration-tests -am"
     exit 1
 fi
 
@@ -88,7 +89,7 @@ for i in {1..30}; do
     fi
     if [ $i -eq 30 ]; then
         echo "❌ Quarkus service failed to start within 30 seconds"
-        echo "Check logs with: docker compose logs api-sheriff-integration-tests"
+        echo "Check logs with: docker compose logs api-sheriff"
         exit 1
     fi
     echo "⏳ Waiting for Quarkus... (attempt $i/30)"
@@ -96,13 +97,13 @@ for i in {1..30}; do
 done
 
 # Extract native startup time from logs
-NATIVE_STARTUP=$(docker compose logs api-sheriff-integration-tests 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
+NATIVE_STARTUP=$(docker compose logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
 if [ ! -z "$NATIVE_STARTUP" ]; then
     echo "⚡ Native app startup: ${NATIVE_STARTUP}s (application only)"
 fi
 
 # Show actual image size
-IMAGE_SIZE=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep api-sheriff-integration-tests | awk '{print $2}' | head -1)
+IMAGE_SIZE=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep "api-sheriff:" | grep -v integration | awk '{print $2}' | head -1)
 if [ ! -z "$IMAGE_SIZE" ]; then
     echo "📦 Image size: ${IMAGE_SIZE} (native image)"
 fi

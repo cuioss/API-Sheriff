@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.api.integration;
+package de.cuioss.sheriff.api.gateway;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -27,59 +27,53 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
 import de.cuioss.sheriff.api.ApiSheriff;
 
 /**
- * REST resource for testing API Sheriff integration in Quarkus applications.
+ * REST resource for the API Sheriff gateway providing health and info endpoints.
  *
  * @author API Sheriff Team
+ * @since 1.0
  */
-@Path("/test")
+@Path("/api")
 @ApplicationScoped
 @RegisterForReflection
 @Produces(MediaType.APPLICATION_JSON)
-public class TestResource {
+public class GatewayResource {
 
     @Inject
     ApiSheriff apiSheriff;
 
     /**
      * Health check endpoint to verify that API Sheriff is properly configured.
-     * 
+     *
      * @return Response indicating the health status of API Sheriff
      */
     @GET
     @Path("/health")
     @Produces(MediaType.APPLICATION_JSON)
     public Response health() {
-        try {
-            // Verify that ApiSheriff is properly injected and configured
-            if (apiSheriff == null) {
-                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                        .entity("{\"status\":\"DOWN\",\"reason\":\"ApiSheriff not available\"}")
-                        .build();
-            }
-
-            // Get status to verify it's working
-            String status = apiSheriff.getStatus();
-
-            return Response.ok("{\"status\":\"UP\",\"apiSheriff\":\"" + status + "\"}")
-                    .build();
-
-        } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception e) {
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity("{\"status\":\"DOWN\",\"error\":\"" + e.getMessage() + "\"}")
+        // Verify that ApiSheriff is properly injected and configured
+        if (apiSheriff == null) {
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity("{\"status\":\"DOWN\",\"reason\":\"ApiSheriff not available\"}")
                     .build();
         }
+
+        // Get status to verify it's working
+        String status = apiSheriff.getStatus();
+
+        return Response.ok("{\"status\":\"UP\",\"apiSheriff\":\"" + status + "\"}")
+                .build();
     }
 
     /**
-     * Test endpoint for basic API Sheriff functionality.
-     * 
-     * @return Response with test information
+     * Info endpoint for basic API Sheriff status.
+     *
+     * @return Response with application information
      */
     @GET
     @Path("/info")
     @Produces(MediaType.APPLICATION_JSON)
     public Response info() {
-        return Response.ok("{\"message\":\"API Sheriff Integration Test\",\"version\":\"1.0.0-SNAPSHOT\"}")
+        return Response.ok("{\"message\":\"API Sheriff Gateway\",\"version\":\"1.0.0-SNAPSHOT\"}")
                 .build();
     }
 }

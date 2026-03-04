@@ -13,26 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.api.integration;
-
-import io.quarkus.runtime.Quarkus;
-import io.quarkus.runtime.QuarkusApplication;
-import io.quarkus.runtime.annotations.QuarkusMain;
 
 /**
- * Test application for API Sheriff integration testing.
+ * Gateway REST endpoints for the API Sheriff application.
  * <p>
- * This application provides endpoints for testing API Sheriff functionality,
- * health checks, and metrics in a containerized environment.
+ * This package contains the JAX-RS resources that serve as the external API
+ * for the API Sheriff gateway, including health and info endpoints.
  *
- * @author API Sheriff Team
+ * @since 1.0
  */
-@QuarkusMain
-public class TestApplication implements QuarkusApplication {
-
-    @Override
-    public int run(String... args) throws Exception {
-        Quarkus.waitForExit();
-        return 0;
-    }
-}
+package de.cuioss.sheriff.api.gateway;

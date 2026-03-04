@@ -15,11 +15,12 @@
  */
 package de.cuioss.sheriff.api.quarkus;
 
-import de.cuioss.sheriff.api.ApiSheriff;
-import de.cuioss.tools.logging.CuiLogger;
-import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
+
+import io.quarkus.runtime.annotations.RegisterForReflection;
+import de.cuioss.sheriff.api.ApiSheriff;
+import de.cuioss.tools.logging.CuiLogger;
 
 /**
  * CDI producer for API Sheriff components.

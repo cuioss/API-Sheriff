@@ -59,11 +59,11 @@ toc::[]
 
 === API Sheriff
 
-The unified Quarkus application module containing the core library and CDI producers.
+The deployable Quarkus application module — core library, CDI producers, REST endpoints, and native executable target.
 
 === Integration Tests
 
-End-to-end integration tests with native container testing and HTTPS support.
+Integration test coordinator — Docker infrastructure, native container builds, and IT suites with HTTPS support.
 
 === Performance Benchmarking
 

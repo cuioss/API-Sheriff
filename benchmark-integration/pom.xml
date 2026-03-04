@@ -184,7 +184,7 @@
                         <groupId>org.codehaus.mojo</groupId>
                         <artifactId>exec-maven-plugin</artifactId>
                         <executions>
-                            <!-- Build integration tests (using smart native build script) -->
+                            <!-- Build native executable and Docker image via integration-tests module -->
                             <execution>
                                 <id>maven-build-integration-tests</id>
                                 <phase>pre-integration-test</phase>
@@ -258,7 +258,7 @@
                                 </configuration>
                             </execution>
 
-                            <!-- Clean integration tests to force container rebuild -->
+                            <!-- Clean api-sheriff and integration-tests to force container rebuild -->
                             <execution>
                                 <id>clean-integration-tests-for-rebuild</id>
                                 <phase>clean</phase>
@@ -270,8 +270,10 @@
                                     <executable>../mvnw</executable>
                                     <arguments>
                                         <argument>clean</argument>
+                                        <argument>-pl</argument>
+                                        <argument>api-sheriff,api-sheriff-integration-tests</argument>
                                     </arguments>
-                                    <workingDirectory>${project.basedir}/../api-sheriff-integration-tests</workingDirectory>
+                                    <workingDirectory>${project.basedir}/..</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>

@@ -13,16 +13,12 @@
     <artifactId>api-sheriff-integration-tests</artifactId>
     <packaging>jar</packaging>
     <name>API Sheriff Integration Tests</name>
-    <description>Integration tests for API Sheriff including native container testing with HTTPS support</description>
+    <description>Integration test coordinator for API Sheriff — builds native containers and runs IT suites</description>
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.integration.tests</maven.jar.plugin.automatic.module.name>
-        <!-- Configure test execution - surefire skip, failsafe disabled by default -->
+        <!-- Configure test execution - failsafe disabled by default -->
         <skipITs>true</skipITs>
-
-        <!-- Native image build for integration tests - disabled by default -->
-        <quarkus.native.container-build>false</quarkus.native.container-build>
-        <quarkus.native.enabled>false</quarkus.native.enabled>
 
         <!-- HTTPS configuration for testing (Docker external port) -->
         <test.https.port>10443</test.https.port>
@@ -32,52 +28,10 @@
     </properties>
 
     <dependencies>
-        <!-- API Sheriff Under Test -->
+        <!-- API Sheriff application (reactor dependency) -->
         <dependency>
             <groupId>de.cuioss.sheriff.api</groupId>
             <artifactId>api-sheriff</artifactId>
-        </dependency>
-
-        <!-- Quarkus dependencies (previously inherited from quarkus-parent) -->
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-arc</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-micrometer</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-security</artifactId>
-        </dependency>
-
-        <!-- Quarkus Extensions for REST and Health -->
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-resteasy</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-resteasy-jackson</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-smallrye-health</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
-        </dependency>
-
-        <!-- Other dependencies -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
         </dependency>
 
         <!-- API Sheriff Test Utilities for test material -->
@@ -126,6 +80,17 @@
 
     <build>
         <plugins>
+            <!-- Disable Quarkus build for this module (app is api-sheriff) -->
+            <plugin>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default</id>
+                        <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
 
             <!-- Execute Docker cleanup before Maven clean -->
             <plugin>
@@ -157,33 +122,14 @@
     </build>
 
     <profiles>
-        <!-- Profile for running integration tests with distroless native image (no JFR) -->
+        <!-- Profile for running integration tests with native image -->
         <profile>
             <id>integration-tests</id>
             <properties>
-                <!-- Enable integration tests -->
                 <skipITs>false</skipITs>
-
-                <!-- Container-based native build with optimized rebuild detection -->
-                <quarkus.native.container-build>true</quarkus.native.container-build>
-                <quarkus.native.enabled>true</quarkus.native.enabled>
             </properties>
             <build>
                 <plugins>
-
-                    <!-- Quarkus plugin (build only on-demand via script) -->
-                    <plugin>
-                        <groupId>io.quarkus</groupId>
-                        <artifactId>quarkus-maven-plugin</artifactId>
-                        <executions>
-                            <!-- Override parent's default execution to prevent automatic native build -->
-                            <execution>
-                                <id>default</id>
-                                <phase>none</phase>
-                            </execution>
-                        </executions>
-                    </plugin>
-
                     <!-- Skip Unit Tests (Surefire) -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
@@ -210,7 +156,6 @@
                                     <systemPropertyVariables>
                                         <test.https.port>${test.https.port}</test.https.port>
                                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                                        <quarkus.native.enabled>false</quarkus.native.enabled>
                                     </systemPropertyVariables>
                                     <skipITs>${skipITs}</skipITs>
                                 </configuration>
@@ -223,7 +168,7 @@
                         <groupId>org.codehaus.mojo</groupId>
                         <artifactId>exec-maven-plugin</artifactId>
                         <executions>
-                            <!-- Build native executable if needed -->
+                            <!-- Build native executable if needed (targets api-sheriff module) -->
                             <execution>
                                 <id>build-native-if-needed</id>
                                 <phase>pre-integration-test</phase>
@@ -248,7 +193,7 @@
                                     <arguments>
                                         <argument>compose</argument>
                                         <argument>build</argument>
-                                        <argument>api-sheriff-integration-tests</argument>
+                                        <argument>api-sheriff</argument>
                                     </arguments>
                                     <environmentVariables>
                                         <DOCKERFILE>Dockerfile.native.distroless</DOCKERFILE>
@@ -291,25 +236,10 @@
         <profile>
             <id>jfr</id>
             <properties>
-                <!-- Enable integration tests -->
                 <skipITs>false</skipITs>
-
-                <!-- JFR profile builds native executable with JFR support -->
-                <quarkus.native.enabled>true</quarkus.native.enabled>
-                <!-- Native build with JFR monitoring enabled -->
-                <quarkus.native.monitoring>jfr</quarkus.native.monitoring>
-                <quarkus.jfr.enabled>true</quarkus.jfr.enabled>
             </properties>
             <build>
                 <plugins>
-
-                    <!-- Quarkus plugin with JFR support (native build) -->
-                    <plugin>
-                        <groupId>io.quarkus</groupId>
-                        <artifactId>quarkus-maven-plugin</artifactId>
-                        <!-- Use parent configuration for native build -->
-                    </plugin>
-
                     <!-- Skip Unit Tests (Surefire) -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
@@ -336,7 +266,6 @@
                                     <systemPropertyVariables>
                                         <test.https.port>${test.https.port}</test.https.port>
                                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                                        <quarkus.native.enabled>false</quarkus.native.enabled>
                                     </systemPropertyVariables>
                                     <skipITs>${skipITs}</skipITs>
                                 </configuration>
@@ -349,6 +278,18 @@
                         <groupId>org.codehaus.mojo</groupId>
                         <artifactId>exec-maven-plugin</artifactId>
                         <executions>
+                            <!-- Build native executable if needed (targets api-sheriff module) -->
+                            <execution>
+                                <id>build-native-if-needed</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/build-native-if-needed.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
                             <!-- Build Docker image with native JFR support -->
                             <execution>
                                 <id>docker-build-jfr</id>
@@ -362,7 +303,7 @@
                                     <arguments>
                                         <argument>compose</argument>
                                         <argument>build</argument>
-                                        <argument>api-sheriff-integration-tests</argument>
+                                        <argument>api-sheriff</argument>
                                     </arguments>
                                     <environmentVariables>
                                         <DOCKERFILE>Dockerfile.native.jfr</DOCKERFILE>
