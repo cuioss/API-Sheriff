@@ -43,9 +43,6 @@
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <version.quarkus>3.32.1</version.quarkus>
-        <version.jjwt>0.13.0</version.jjwt>
-        <version.weld-junit5>5.0.3.Final</version.weld-junit5>
-        <version.easymock>5.6.0</version.easymock>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
     </properties>
@@ -72,25 +69,6 @@
                 <version>${version.cui.parent}</version>
                 <type>pom</type>
                 <scope>import</scope>
-            </dependency>
-            <!-- JJWT dependencies -->
-            <dependency>
-                <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt-api</artifactId>
-                <version>${version.jjwt}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt-impl</artifactId>
-                <version>${version.jjwt}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>io.jsonwebtoken</groupId>
-                <artifactId>jjwt-jackson</artifactId>
-                <version>${version.jjwt}</version>
-                <scope>test</scope>
             </dependency>
             <!-- Internal modules -->
             <dependency>
@@ -124,13 +102,6 @@
                 <groupId>org.junit.platform</groupId>
                 <artifactId>junit-platform-launcher</artifactId>
                 <version>${version.junit.jupiter}</version>
-                <scope>test</scope>
-            </dependency>
-            <!-- Additional dependencies -->
-            <dependency>
-                <groupId>org.jboss.weld</groupId>
-                <artifactId>weld-junit5</artifactId>
-                <version>${version.weld-junit5}</version>
                 <scope>test</scope>
             </dependency>
         </dependencies>
