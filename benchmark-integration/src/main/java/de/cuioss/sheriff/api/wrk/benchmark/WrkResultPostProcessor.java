@@ -49,14 +49,6 @@ public class WrkResultPostProcessor {
 
     // File naming constants
     public static final String WRK_OUTPUT_FILE_SUFFIX = "-results.txt";
-    public static final String WRK_HEALTH_OUTPUT_FILE = "wrk-health-results.txt";
-    public static final String WRK_JWT_OUTPUT_FILE = "wrk-jwt-results.txt";
-    public static final String BENCHMARK_NAME_HEALTH = "healthCheck";
-    public static final String BENCHMARK_NAME_JWT = "jwtValidation";
-    public static final String PROMETHEUS_METRICS_DIR = "prometheus";
-    public static final String GH_PAGES_DATA_DIR = "gh-pages-ready/data";
-    public static final String HEALTH_METRICS_FILE = BENCHMARK_NAME_HEALTH + "-metrics.json";
-    public static final String JWT_METRICS_FILE = BENCHMARK_NAME_JWT + "-metrics.json";
 
     private final WrkBenchmarkConverter converter = new WrkBenchmarkConverter();
     private final ReportGenerator reportGenerator = new ReportGenerator();

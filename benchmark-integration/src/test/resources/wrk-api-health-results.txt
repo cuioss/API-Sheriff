@@ -1,15 +1,10 @@
 === BENCHMARK METADATA ===
-benchmark_name: jwt-validation
+benchmark_name: gatewayHealth
 start_time: 1758797251
 start_time_iso: 2025-09-25T12:47:31+02:00
 === WRK OUTPUT ===
 
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Running 5s test @ https://localhost:10443/jwt/validate
+Running 5s test @ https://api-sheriff:8443/api/health
   4 threads and 20 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
     Latency     4.33ms    6.30ms  42.53ms   87.28%

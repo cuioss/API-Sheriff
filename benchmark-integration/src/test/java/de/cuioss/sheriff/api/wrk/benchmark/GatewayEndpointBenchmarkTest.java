@@ -24,13 +24,11 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static de.cuioss.sheriff.api.wrk.benchmark.WrkResultPostProcessor.BENCHMARK_NAME_HEALTH;
-import static de.cuioss.sheriff.api.wrk.benchmark.WrkResultPostProcessor.WRK_HEALTH_OUTPUT_FILE;
 import static org.junit.jupiter.api.Assertions.*;
 
 
 /**
- * Tests WRK output parsing for the {@code /api/health} and {@code /api/info}
+ * Tests WRK output parsing for the {@code /q/health/live} and {@code /api/health}
  * gateway endpoints. Uses synthetic WRK output to validate the parsing pipeline
  * without requiring running containers.
  *
@@ -50,16 +48,16 @@ class GatewayEndpointBenchmarkTest {
     }
 
     @Test
-    void parseGatewayHealthBenchmark() throws Exception {
-        // Arrange — synthetic WRK output for /api/health gateway endpoint
+    void parseHealthLiveBenchmark() throws Exception {
+        // Arrange — synthetic WRK output for /q/health/live endpoint
         String wrkOutput = """
                 === BENCHMARK METADATA ===
-                benchmark_name: healthCheck
+                benchmark_name: healthLiveCheck
                 start_time: 1700000000
                 start_time_iso: 2023-11-14T22:13:20Z
                 === WRK OUTPUT ===
 
-                Running 30s test @ https://localhost:10443/api/health
+                Running 30s test @ https://api-sheriff:8443/q/health/live
                   4 threads and 50 connections
                   Thread Stats   Avg      Stdev     Max   +/- Stdev
                     Latency   650.00us  300.00us   8.00ms   92.00%
@@ -81,7 +79,7 @@ class GatewayEndpointBenchmarkTest {
 
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
-        Files.writeString(wrkDir.resolve(WRK_HEALTH_OUTPUT_FILE), wrkOutput);
+        Files.writeString(wrkDir.resolve("wrk-health-live-results.txt"), wrkOutput);
 
         // Act
         Path outputDir = tempDir.resolve("output");
@@ -94,7 +92,7 @@ class GatewayEndpointBenchmarkTest {
         JsonObject json = JsonParser.parseString(Files.readString(jsonFile)).getAsJsonObject();
         JsonObject benchmark = json.getAsJsonArray("benchmarks").get(0).getAsJsonObject();
 
-        assertEquals(BENCHMARK_NAME_HEALTH, benchmark.get("name").getAsString());
+        assertEquals("healthLiveCheck", benchmark.get("name").getAsString());
         assertTrue(benchmark.has("score"), "Benchmark should have score");
         assertTrue(benchmark.has("scoreUnit"), "Benchmark should have scoreUnit");
 
@@ -108,16 +106,16 @@ class GatewayEndpointBenchmarkTest {
     }
 
     @Test
-    void parseGatewayInfoBenchmark() throws Exception {
-        // Arrange — synthetic WRK output for /api/info endpoint using health output file
+    void parseApiHealthBenchmark() throws Exception {
+        // Arrange — synthetic WRK output for /api/health endpoint
         String wrkOutput = """
                 === BENCHMARK METADATA ===
-                benchmark_name: healthCheck
+                benchmark_name: gatewayHealth
                 start_time: 1700000000
                 start_time_iso: 2023-11-14T22:13:20Z
                 === WRK OUTPUT ===
 
-                Running 30s test @ https://localhost:10443/api/info
+                Running 30s test @ https://api-sheriff:8443/api/health
                   4 threads and 50 connections
                   Thread Stats   Avg      Stdev     Max   +/- Stdev
                     Latency   700.00us  350.00us   9.00ms   91.00%
@@ -139,7 +137,7 @@ class GatewayEndpointBenchmarkTest {
 
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
-        Files.writeString(wrkDir.resolve(WRK_HEALTH_OUTPUT_FILE), wrkOutput);
+        Files.writeString(wrkDir.resolve("wrk-api-health-results.txt"), wrkOutput);
 
         // Act
         Path outputDir = tempDir.resolve("output");
@@ -152,6 +150,7 @@ class GatewayEndpointBenchmarkTest {
         JsonObject json = JsonParser.parseString(Files.readString(jsonFile)).getAsJsonObject();
         JsonObject benchmark = json.getAsJsonArray("benchmarks").get(0).getAsJsonObject();
 
+        assertEquals("gatewayHealth", benchmark.get("name").getAsString());
         assertFalse(benchmark.get("score").getAsString().isEmpty(), "Score should not be empty");
 
         JsonObject percentiles = benchmark.getAsJsonObject("percentiles");

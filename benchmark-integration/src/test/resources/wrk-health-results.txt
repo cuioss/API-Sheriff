@@ -1,15 +1,10 @@
 === BENCHMARK METADATA ===
-benchmark_name: healthCheck
+benchmark_name: healthLiveCheck
 start_time: 1758797205
 start_time_iso: 2025-09-25T12:46:45+02:00
 === WRK OUTPUT ===
 
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Loaded 100 tokens from environment
-Running 5s test @ https://localhost:10443/q/health/live/jwt/validate
+Running 5s test @ https://api-sheriff:8443/q/health/live
   4 threads and 20 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
     Latency     4.51ms    6.70ms  41.04ms   87.50%

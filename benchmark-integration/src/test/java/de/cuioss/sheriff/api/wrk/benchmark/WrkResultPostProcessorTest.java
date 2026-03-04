@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static de.cuioss.sheriff.api.wrk.benchmark.WrkResultPostProcessor.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -51,9 +50,9 @@ class WrkResultPostProcessorTest {
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
         Path healthSource = Path.of("src/test/resources/wrk-health-results.txt");
-        Path jwtSource = Path.of("src/test/resources/wrk-jwt-results.txt");
-        Files.copy(healthSource, wrkDir.resolve(WRK_HEALTH_OUTPUT_FILE));
-        Files.copy(jwtSource, wrkDir.resolve(WRK_JWT_OUTPUT_FILE));
+        Path apiHealthSource = Path.of("src/test/resources/wrk-api-health-results.txt");
+        Files.copy(healthSource, wrkDir.resolve("wrk-health-results.txt"));
+        Files.copy(apiHealthSource, wrkDir.resolve("wrk-api-health-results.txt"));
 
         // Process results
         Path outputDir = tempDir.resolve("output");
@@ -64,11 +63,11 @@ class WrkResultPostProcessorTest {
     }
 
     @Test
-    void parseWrkHealthOutput() throws Exception {
+    void parseHealthLiveOutput() throws Exception {
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
         Path sourceFile = Path.of("src/test/resources/wrk-health-results.txt");
-        Path targetFile = wrkDir.resolve(WRK_HEALTH_OUTPUT_FILE);
+        Path targetFile = wrkDir.resolve("wrk-health-results.txt");
         Files.copy(sourceFile, targetFile);
 
         Path outputDir = tempDir.resolve("output");
@@ -89,7 +88,7 @@ class WrkResultPostProcessorTest {
 
         assertTrue(json.has("benchmarks"));
         JsonObject healthBenchmark = json.getAsJsonArray("benchmarks").get(0).getAsJsonObject();
-        assertEquals(BENCHMARK_NAME_HEALTH, healthBenchmark.get("name").getAsString());
+        assertEquals("healthLiveCheck", healthBenchmark.get("name").getAsString());
         assertTrue(healthBenchmark.has("mode"));
         assertTrue(healthBenchmark.has("score"));
         assertTrue(healthBenchmark.has("scoreUnit"));
@@ -111,11 +110,11 @@ class WrkResultPostProcessorTest {
     }
 
     @Test
-    void parseWrkJwtOutput() throws Exception {
+    void parseApiHealthOutput() throws Exception {
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
-        Path sourceFile = Path.of("src/test/resources/wrk-jwt-results.txt");
-        Path targetFile = wrkDir.resolve(WRK_JWT_OUTPUT_FILE);
+        Path sourceFile = Path.of("src/test/resources/wrk-api-health-results.txt");
+        Path targetFile = wrkDir.resolve("wrk-api-health-results.txt");
         Files.copy(sourceFile, targetFile);
 
         Path outputDir = tempDir.resolve("output");
@@ -125,23 +124,23 @@ class WrkResultPostProcessorTest {
         String jsonContent = Files.readString(jsonFile);
         JsonObject json = JsonParser.parseString(jsonContent).getAsJsonObject();
 
-        JsonObject jwtBenchmark = null;
+        JsonObject apiHealthBenchmark = null;
         var benchmarks = json.getAsJsonArray("benchmarks");
         for (int i = 0; i < benchmarks.size(); i++) {
             var bench = benchmarks.get(i).getAsJsonObject();
             String benchName = bench.get("name").getAsString();
-            if (BENCHMARK_NAME_JWT.equals(benchName) || "jwt-validation".equals(benchName)) {
-                jwtBenchmark = bench;
+            if ("gatewayHealth".equals(benchName)) {
+                apiHealthBenchmark = bench;
                 break;
             }
         }
 
-        assertNotNull(jwtBenchmark, "JWT Validation benchmark should be present");
-        assertTrue(jwtBenchmark.has("mode"));
-        assertTrue(jwtBenchmark.has("score"));
-        assertTrue(jwtBenchmark.has("scoreUnit"));
+        assertNotNull(apiHealthBenchmark, "Gateway Health benchmark should be present");
+        assertTrue(apiHealthBenchmark.has("mode"));
+        assertTrue(apiHealthBenchmark.has("score"));
+        assertTrue(apiHealthBenchmark.has("scoreUnit"));
 
-        JsonObject percentiles = jwtBenchmark.getAsJsonObject("percentiles");
+        JsonObject percentiles = apiHealthBenchmark.getAsJsonObject("percentiles");
         assertTrue(percentiles.has("50.0"));
         assertTrue(percentiles.has("75.0"));
         assertTrue(percentiles.has("90.0"));
@@ -199,7 +198,7 @@ class WrkResultPostProcessorTest {
 
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
-        Path testFile = wrkDir.resolve(WRK_HEALTH_OUTPUT_FILE);
+        Path testFile = wrkDir.resolve("wrk-format-test-results.txt");
         Files.writeString(testFile, wrkOutput);
 
         Path outputDir = tempDir.resolve("output");
