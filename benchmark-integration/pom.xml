@@ -46,52 +46,16 @@
         <benchmark.history.dir>${wrk.results.dir}/history</benchmark.history.dir>
         <wrk.jwt.token_count>100</wrk.jwt.token_count>
 
-        <!-- External dependency versions -->
-        <version.benchmarking-common>0.4.1</version.benchmarking-common>
-        <version.gson>2.13.2</version.gson>
-        <version.hdrhistogram>2.2.2</version.hdrhistogram>
-        <version.commons-io>2.21.0</version.commons-io>
-
         <!-- Sonar configuration: Skip analysis for benchmarking modules -->
         <sonar.skip>true</sonar.skip>
     </properties>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>de.cuioss.sheriff.oauth</groupId>
-                <artifactId>benchmarking-common</artifactId>
-                <version>${version.benchmarking-common}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.google.code.gson</groupId>
-                <artifactId>gson</artifactId>
-                <version>${version.gson}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.hdrhistogram</groupId>
-                <artifactId>HdrHistogram</artifactId>
-                <version>${version.hdrhistogram}</version>
-            </dependency>
-            <dependency>
-                <groupId>commons-io</groupId>
-                <artifactId>commons-io</artifactId>
-                <version>${version.commons-io}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
     <dependencies>
-        <!-- Core benchmark common utilities -->
+        <!-- Core benchmark common utilities (gson, HdrHistogram, commons-io are transitive) -->
         <dependency>
             <groupId>de.cuioss.sheriff.oauth</groupId>
             <artifactId>benchmarking-common</artifactId>
-        </dependency>
-
-        <!-- Gson for JSON processing -->
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
+            <version>${version.oauth-sheriff}</version>
         </dependency>
 
         <!-- CUI Java Tools for logging -->
