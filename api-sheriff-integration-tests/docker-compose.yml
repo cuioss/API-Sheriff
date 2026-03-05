@@ -44,6 +44,7 @@ services:
 
     ports:
       - "10443:8443"  # External test port for integration tests
+      - "19000:9000"  # Management interface (health/metrics, plain HTTP)
 
     environment:
       # File logging to mounted target directory
@@ -86,8 +87,7 @@ services:
           memory: 256M
           cpus: '1.0'
 
-    # Health check: startup script handles readiness via external curl probe
-    # No Docker HEALTHCHECK — distroless has no shell
+    # Health check: startup script probes management interface (port 9000, plain HTTP)
 
     # Network isolation (production pattern)
     networks:

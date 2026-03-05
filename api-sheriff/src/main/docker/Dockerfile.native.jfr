@@ -21,7 +21,7 @@ COPY --chown=1001:root --chmod=0755 target/*-runner /app/application
 # Create JFR output directory with proper permissions
 RUN mkdir -p /tmp/jfr-output && chmod 777 /tmp/jfr-output
 
-EXPOSE 8443
+EXPOSE 8443 9000
 
 # Port probe health check using bash /dev/tcp (available in UBI micro)
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \

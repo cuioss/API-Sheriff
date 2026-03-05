@@ -62,11 +62,12 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
     }
 
     /**
-     * Test that the Quarkus health check endpoint is available.
+     * Test that the Quarkus health check endpoint is available on the management interface.
      */
     @Test
     void quarkusHealthEndpoint() {
         given()
+                .baseUri(managementBaseUri())
                 .when()
                 .get("/q/health")
                 .then()
@@ -75,11 +76,12 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
     }
 
     /**
-     * Test that metrics endpoint is available (from Micrometer integration).
+     * Test that metrics endpoint is available on the management interface.
      */
     @Test
     void metricsEndpoint() {
         given()
+                .baseUri(managementBaseUri())
                 .when()
                 .get("/q/metrics")
                 .then()

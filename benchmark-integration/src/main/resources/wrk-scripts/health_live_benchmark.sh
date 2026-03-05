@@ -9,7 +9,7 @@ WRK_TIMEOUT="${WRK_TIMEOUT:-2s}"
 COMPOSE_DIR="${COMPOSE_DIR:?COMPOSE_DIR must be set}"
 
 BENCHMARK_NAME="healthLiveCheck"
-TARGET_URL="https://api-sheriff:8443/q/health/live"
+TARGET_URL="http://api-sheriff:9000/q/health/live"
 
 echo "=== BENCHMARK METADATA ==="
 echo "benchmark_name: ${BENCHMARK_NAME}"

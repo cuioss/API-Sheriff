@@ -16,9 +16,9 @@ if [[ -z "$RUNNER_FILE" ]]; then
     echo "🔨 Native executable not found, building it now..."
     echo "This will take approximately 2 minutes..."
 
-    # Build native executable using Quarkus Maven plugin on api-sheriff module
+    # Build native executable with full lifecycle (ensures resources/augmentation)
     cd "${ROOT_DIR}"
-    ./mvnw --no-transfer-progress -Pnative quarkus:build -pl api-sheriff
+    ./mvnw --no-transfer-progress clean package -Pnative -pl api-sheriff -DskipTests
 
     # Verify it was created
     RUNNER_FILE=$(find "${APP_TARGET_DIR}" -name "*-runner" -type f 2>/dev/null | head -n 1)

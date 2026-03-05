@@ -81,7 +81,7 @@ done
 echo "⏳ Waiting for Quarkus service to be ready..."
 START_TIME=$(date +%s)
 for i in {1..30}; do
-    if curl -k -s https://localhost:10443/q/health/live > /dev/null 2>&1; then
+    if curl -sf http://localhost:19000/q/health/live > /dev/null 2>&1; then
         END_TIME=$(date +%s)
         TOTAL_TIME=$((END_TIME - START_TIME))
         echo "✅ Quarkus service is ready!"
@@ -113,12 +113,12 @@ echo ""
 echo "🎉 API Sheriff Integration Benchmark Environment is running!"
 echo ""
 echo "📱 Application URLs:"
-echo "  🔍 Health Check:   https://localhost:10443/q/health"
-echo "  📊 Metrics:        https://localhost:10443/q/metrics"
+echo "  🔍 Health Check:   http://localhost:19000/q/health"
+echo "  📊 Metrics:        http://localhost:19000/q/metrics"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"
 echo ""
 echo "🧪 Quick test commands:"
-echo "  curl -k https://localhost:10443/q/health/live"
+echo "  curl -sf http://localhost:19000/q/health/live"
 echo "  curl -k https://localhost:1090/health/ready"
 echo ""
 echo "🛑 To stop: ./scripts/stop-integration-container.sh"

@@ -3,6 +3,7 @@
 set -e
 
 INTEGRATION_SERVICE_URL="${INTEGRATION_SERVICE_URL:?INTEGRATION_SERVICE_URL must be set}"
+MANAGEMENT_URL="${MANAGEMENT_URL:?MANAGEMENT_URL must be set}"
 PROMETHEUS_URL="${PROMETHEUS_URL:?PROMETHEUS_URL must be set}"
 KEYCLOAK_URL="${KEYCLOAK_URL:?KEYCLOAK_URL must be set}"
 
@@ -31,7 +32,7 @@ check_service() {
 
 echo "=== Pre-Benchmark Health Check ==="
 
-check_service "Quarkus (health/live)" "${INTEGRATION_SERVICE_URL}/q/health/live"
+check_service "Quarkus (health/live)" "${MANAGEMENT_URL}/q/health/live"
 check_service "Prometheus" "${PROMETHEUS_URL}/-/ready"
 check_service "Keycloak" "${KEYCLOAK_URL}/health/ready"
 

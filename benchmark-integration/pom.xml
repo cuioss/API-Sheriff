@@ -29,8 +29,9 @@
 
         <!-- Integration test service URLs (host access via published ports) -->
         <integration.service.url>https://localhost:10443</integration.service.url>
+        <integration.management.url>http://localhost:19000</integration.management.url>
         <keycloak.url>https://localhost:1443</keycloak.url>
-        <quarkus.metrics.url>https://localhost:10443</quarkus.metrics.url>
+        <quarkus.metrics.url>http://localhost:19000</quarkus.metrics.url>
 
         <!-- WRK Configuration Properties -->
         <wrk.duration>60s</wrk.duration>
@@ -217,6 +218,7 @@
                                     </arguments>
                                     <environmentVariables>
                                         <INTEGRATION_SERVICE_URL>${integration.service.url}</INTEGRATION_SERVICE_URL>
+                                        <MANAGEMENT_URL>${integration.management.url}</MANAGEMENT_URL>
                                         <PROMETHEUS_URL>http://localhost:9090</PROMETHEUS_URL>
                                         <KEYCLOAK_URL>https://localhost:1090</KEYCLOAK_URL>
                                     </environmentVariables>

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.BeforeAll;
 public abstract class BaseIntegrationTest {
 
     private static final String DEFAULT_TEST_PORT = "10443";
+    private static final String DEFAULT_MANAGEMENT_PORT = "19000";
 
     @BeforeAll
     static void setUpBaseIntegrationTest() {
@@ -41,5 +42,17 @@ public abstract class BaseIntegrationTest {
 
         // cui-rewrite:disable CuiLoggerStandardsRecipe
         System.out.println("Integration tests configured for HTTPS port: " + testPort);
+    }
+
+    /**
+     * Returns the management interface base URI (plain HTTP, port 19000).
+     * Health and metrics endpoints are served on the management port
+     * when {@code quarkus.management.enabled=true}.
+     *
+     * @return management base URI for health/metrics endpoints
+     */
+    static String managementBaseUri() {
+        String managementPort = System.getProperty("test.management.port", DEFAULT_MANAGEMENT_PORT);
+        return "http://localhost:" + managementPort;
     }
 }
