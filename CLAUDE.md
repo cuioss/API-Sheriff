@@ -114,16 +114,17 @@ As a security-focused API Gateway:
 
 ## Git Workflow
 
-All cuioss repositories have branch protection on `main`. Always:
+All cuioss repositories have branch protection on `main`. Direct pushes to `main` are never allowed. Always use this workflow:
 
-1. Create feature branch: `git checkout -b <branch-name>`
-2. Commit and push: `git push -u origin <branch-name>`
-3. Create PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
-4. Wait for CI + Gemini review: `gh pr checks --watch`
-5. **Handle Gemini review comments** — fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments`:
-   - Valid and fixable: fix, commit, push, reply explaining, resolve
-   - Disagree/out of scope: reply explaining why, resolve
-   - Uncertain: **ask the user**
-   - Every comment MUST get a reply and MUST be resolved
-6. Do **NOT** enable auto-merge unless explicitly instructed
-7. Return to main: `git checkout main && git pull`
+1. Create a feature branch: `git checkout -b <branch-name>`
+2. Commit changes: `git add <files> && git commit -m "<message>"`
+3. Push the branch: `git push -u origin <branch-name>`
+4. Create a PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
+5. Wait for CI + Gemini review (waits until checks complete): `gh pr checks --watch`
+6. **Handle Gemini review comments** — fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each:
+   - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment
+   - If disagree or out of scope: reply explaining why, then resolve the comment
+   - If uncertain (not 100% confident): **ask the user** before acting
+   - Every comment MUST get a reply (reason for fix or reason for not fixing) and MUST be resolved
+7. Do **NOT** enable auto-merge unless explicitly instructed. Wait for user approval.
+8. Return to main: `git checkout main && git pull`
