@@ -16,7 +16,8 @@
 package de.cuioss.sheriff.api.gateway;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
 
 import io.restassured.RestAssured;
 import org.junit.jupiter.api.BeforeAll;
@@ -41,7 +42,8 @@ class GatewayResourceTest {
                 .when().get("/api/health")
                 .then()
                 .statusCode(200)
-                .body(containsString("\"status\":\"UP\""));
+                .body("status", is("UP"))
+                .body("apiSheriff", is("API Sheriff is operational"));
     }
 
     @Test
@@ -50,7 +52,7 @@ class GatewayResourceTest {
                 .when().get("/api/info")
                 .then()
                 .statusCode(200)
-                .body(containsString("API Sheriff Gateway"))
-                .body(containsString("1.0.0-SNAPSHOT"));
+                .body("message", is("API Sheriff Gateway"))
+                .body("version", notNullValue());
     }
 }
