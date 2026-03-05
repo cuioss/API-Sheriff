@@ -1,0 +1,150 @@
+= API Sheriff -- Project Manifest
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+API Sheriff is a security-focused API Gateway providing a unified, stateless entry point for public APIs.
+It enforces authentication, path-based filtering (WAF), and configurable request limits -- all driven by immutable, distributed configuration.
+
+== Mandatory Requirements
+
+=== Unified API Entry Point
+
+A single access point for all public APIs under the `/api` path.
+
+=== Authentication Endpoints
+
+Dedicated endpoints for authentication and token management:
+
+* `/auth` -- Authentication
+* `/token` -- Token integration
+
+=== Authentication Enforcement
+
+All requests to `/api` must carry a valid access token.
+The gateway enforces the presence and validity of the token before forwarding the request.
+
+=== Web Application Firewall (WAF) via Path White-Listing
+
+Implicit URL/path filtering through white-listing of permitted paths.
+
+Configurable upper limits must be enforced for:
+
+[cols="1,2"]
+|===
+| Constraint | Description
+
+| Request body size
+| Maximum allowed body size
+
+| Parameter key count
+| Maximum number of query/form parameter keys
+
+| Parameter key length
+| Maximum length of individual parameter keys
+
+| Parameter value count
+| Maximum number of values per parameter key
+
+| Parameter value length
+| Maximum length of individual parameter values
+|===
+
+=== No Load Balancing
+
+Load balancing is explicitly out of scope.
+It will be handled uniformly by the Kubernetes infrastructure.
+
+=== Immutable, Static Endpoint Configuration
+
+All endpoint routing and forwarding rules are configured statically and delivered as immutable configuration artifacts.
+
+=== Distributed Configuration
+
+Configuration follows the distributed repository pattern with two modes:
+
+Static mode:: Endpoints and rules are fully defined in the static configuration.
+Dynamic mode:: Each downstream endpoint publishes its own gateway configuration at a well-known path (`/api/gateway-config.json`).
+Only the base endpoints need static configuration; all other rules are discovered dynamically.
+
+=== Stateless Design
+
+The gateway operates without server-side state.
+
+NOTE: Future BFF (Backend-for-Frontend) scenarios may introduce controlled exceptions to this rule.
+
+=== Backend-for-Frontend (BFF) Support
+
+If feasible, the gateway should support the BFF pattern for JavaScript client architectures.
+
+=== Full HTTP/2 and WebSocket Support
+
+Complete support for HTTP/2 and WebSocket protocols is required.
+
+=== Forwarded Header Support (RFC 7239)
+
+Full compliance with https://datatracker.ietf.org/doc/html/rfc7239[RFC 7239 -- Forwarded HTTP Extension].
+
+=== Path Mapping Example
+
+[source]
+----
+/auth  -> <idp>/auth/realms/<realm>/protocol/openid-connect/auth
+/token -> <idp>/auth/realms/<realm>/protocol/openid-connect/token
+/api   -> <backend>/api
+----
+
+== Planned (Post-MVP)
+
+[cols="1,3"]
+|===
+| Feature | Description
+
+| Logging / Auditing
+| Integration of structured logging and audit trails
+
+| Quotas / Rate Limiting
+| Management and enforcement of request quotas and rate limits
+
+| API Key Management
+| Issuing, validating, and revoking API keys
+
+| Service Locator Integration
+| Integration with the ServiceLocator for dynamic service discovery
+
+| Distributed Tracing
+| Request tracing across services (e.g., OpenTelemetry)
+|===
+
+== Optional / Nice-to-Have
+
+[cols="1,3"]
+|===
+| Feature | Description
+
+| External TLS Termination
+| TLS termination at the gateway edge
+
+| No Database Dependency
+| Ideally operates without any database
+
+| Reactive Architecture
+| Non-blocking, reactive request processing
+
+| HTTP/3
+| Support for QUIC-based HTTP/3
+
+| gRPC
+| gRPC proxying and/or transcoding
+
+| OpenAPI-driven Configuration
+| Generate gateway configuration from OpenAPI specifications (possibly via a dedicated tool / UI)
+
+| Metrics / Prometheus
+| Statistics exposed as Prometheus metrics -- no database required
+
+| Brute-Force Protection
+| Basic protection against brute-force attacks
+|===
