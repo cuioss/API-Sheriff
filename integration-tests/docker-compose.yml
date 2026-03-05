@@ -5,7 +5,7 @@ services:
   keycloak:
     # NOTE: Dependabot cannot automatically update this image version.
     # Manual updates required. Check: https://quay.io/keycloak/keycloak
-    image: quay.io/keycloak/keycloak:26.2.5
+    image: quay.io/keycloak/keycloak:26.5.4@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4
     command:
       - start-dev
       - --import-realm
