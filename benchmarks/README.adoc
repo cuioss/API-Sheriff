@@ -6,14 +6,14 @@ WRK-based HTTP benchmarks for API Sheriff endpoints with integration test infras
 
 [source,bash]
 ----
-./mvnw clean verify -pl benchmark-integration -Pbenchmark
+./mvnw clean verify -pl benchmarks -Pbenchmark
 ----
 
 For quick runs (shorter duration, assumes containers already running):
 
 [source,bash]
 ----
-./mvnw clean verify -pl benchmark-integration -Pbenchmark -Pquick
+./mvnw clean verify -pl benchmarks -Pbenchmark -Pquick
 ----
 
 == Performance Scoring

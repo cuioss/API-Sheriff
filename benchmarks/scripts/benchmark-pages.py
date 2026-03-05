@@ -9,13 +9,13 @@ Subcommands:
 
 Usage in CI:
     # Before Maven benchmark runs:
-    python3 benchmark-integration/scripts/benchmark-pages.py prepare-history \
+    python3 benchmarks/scripts/benchmark-pages.py prepare-history \
         --previous-pages-dir previous-pages/api-sheriff/benchmarks \
         --output-dir "$GITHUB_WORKSPACE/benchmark-history"
 
     # After all Maven benchmark runs:
-    python3 benchmark-integration/scripts/benchmark-pages.py assemble \
-        --integration-results benchmark-integration/target/benchmark-results/gh-pages-ready \
+    python3 benchmarks/scripts/benchmark-pages.py assemble \
+        --integration-results benchmarks/target/benchmark-results/gh-pages-ready \
         --previous-pages-dir previous-pages/api-sheriff/benchmarks \
         --output-dir gh-pages \
         --commit-sha "$COMMIT_SHA"

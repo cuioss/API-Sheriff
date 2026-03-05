@@ -9,7 +9,7 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>benchmark-integration</artifactId>
+    <artifactId>benchmarks</artifactId>
     <name>API Sheriff Integration Benchmarks</name>
     <description>WRK-based HTTP benchmarks for API Sheriff endpoints with integration test infrastructure</description>
 

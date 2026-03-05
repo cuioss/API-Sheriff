@@ -112,7 +112,7 @@ services:
   wrk:
     build:
       context: ..
-      dockerfile: benchmark-integration/Dockerfile.wrk
+      dockerfile: benchmarks/Dockerfile.wrk
     networks:
       - api-sheriff
     profiles:
