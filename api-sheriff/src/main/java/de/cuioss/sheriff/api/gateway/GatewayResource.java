@@ -38,8 +38,17 @@ import de.cuioss.sheriff.api.ApiSheriff;
 @Produces(MediaType.APPLICATION_JSON)
 public class GatewayResource {
 
+    private final ApiSheriff apiSheriff;
+
+    /**
+     * Creates a new GatewayResource with the given ApiSheriff instance.
+     *
+     * @param apiSheriff the ApiSheriff instance to use
+     */
     @Inject
-    ApiSheriff apiSheriff;
+    public GatewayResource(ApiSheriff apiSheriff) {
+        this.apiSheriff = apiSheriff;
+    }
 
     /**
      * Health check endpoint to verify that API Sheriff is properly configured.
@@ -50,14 +59,6 @@ public class GatewayResource {
     @Path("/health")
     @Produces(MediaType.APPLICATION_JSON)
     public Response health() {
-        // Verify that ApiSheriff is properly injected and configured
-        if (apiSheriff == null) {
-            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity("{\"status\":\"DOWN\",\"reason\":\"ApiSheriff not available\"}")
-                    .build();
-        }
-
-        // Get status to verify it's working
         String status = apiSheriff.getStatus();
 
         return Response.ok("{\"status\":\"UP\",\"apiSheriff\":\"" + status + "\"}")
