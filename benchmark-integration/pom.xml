@@ -22,10 +22,10 @@
         <skip.container.lifecycle>false</skip.container.lifecycle>
 
         <!-- Scripts location -->
-        <integration.scripts.dir>${project.basedir}/../api-sheriff-integration-tests/scripts</integration.scripts.dir>
+        <integration.scripts.dir>${project.basedir}/../integration-tests/scripts</integration.scripts.dir>
 
         <!-- Docker compose directory for WRK benchmarks -->
-        <integration.compose.dir>${project.basedir}/../api-sheriff-integration-tests</integration.compose.dir>
+        <integration.compose.dir>${project.basedir}/../integration-tests</integration.compose.dir>
 
         <!-- Integration test service URLs (host access via published ports) -->
         <integration.service.url>https://localhost:10443</integration.service.url>
@@ -166,7 +166,7 @@
                                         <argument>-Pintegration-tests</argument>
                                         <argument>-DskipTests</argument>
                                     </arguments>
-                                    <workingDirectory>${project.basedir}/../api-sheriff-integration-tests</workingDirectory>
+                                    <workingDirectory>${project.basedir}/../integration-tests</workingDirectory>
                                 </configuration>
                             </execution>
 
@@ -346,7 +346,7 @@
                                     <arguments>
                                         <argument>clean</argument>
                                         <argument>-pl</argument>
-                                        <argument>api-sheriff,api-sheriff-integration-tests</argument>
+                                        <argument>api-sheriff,integration-tests</argument>
                                     </arguments>
                                     <workingDirectory>${project.basedir}/..</workingDirectory>
                                 </configuration>

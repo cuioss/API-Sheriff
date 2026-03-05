@@ -22,7 +22,7 @@
     <url>https://github.com/cuioss/api-sheriff/</url>
     <modules>
         <module>api-sheriff</module>
-        <module>api-sheriff-integration-tests</module>
+        <module>integration-tests</module>
         <module>benchmark-integration</module>
     </modules>
     <scm>

@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # Configuration
-KEYCLOAK_CONTAINER_NAME="api-sheriff-integration-tests-keycloak-1"
+KEYCLOAK_CONTAINER_NAME="integration-tests-keycloak-1"
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 KEYCLOAK_LOG_FILENAME="keycloak-logs-${TIMESTAMP}.txt"
 

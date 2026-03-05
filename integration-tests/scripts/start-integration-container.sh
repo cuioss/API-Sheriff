@@ -47,7 +47,7 @@ else
     echo "Expected: api-sheriff/target/*-runner file and api-sheriff image"
     echo "Available images:"
     docker images | grep api-sheriff || echo "  No api-sheriff images found"
-    echo "Run: mvnw verify -Pintegration-tests -pl api-sheriff-integration-tests -am"
+    echo "Run: mvnw verify -Pintegration-tests -pl integration-tests -am"
     exit 1
 fi
 
