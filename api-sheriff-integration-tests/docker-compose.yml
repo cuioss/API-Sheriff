@@ -34,13 +34,10 @@ services:
       - api-sheriff
 
   api-sheriff:
-    # Production Dockerfiles from api-sheriff module — test instrumentation at compose level
-    # For distroless: DOCKERFILE=Dockerfile.native DOCKER_IMAGE_TAG=distroless (default)
-    # For JFR:        DOCKERFILE=Dockerfile.native.jfr DOCKER_IMAGE_TAG=jfr
-    image: "api-sheriff:${DOCKER_IMAGE_TAG:-distroless}"
+    image: "api-sheriff:distroless"
     build:
       context: ../api-sheriff
-      dockerfile: src/main/docker/${DOCKERFILE:-Dockerfile.native}
+      dockerfile: src/main/docker/Dockerfile.native
       cache_from:
         - quay.io/quarkus/quarkus-distroless-image:2.0
         - quay.io/quarkus/ubi9-quarkus-micro-image:2.0
@@ -65,8 +62,6 @@ services:
       - ./src/main/docker/certificates:/app/certificates:ro
       # Mount target directory for log files (defaults to ./target)
       - ${LOG_TARGET_DIR:-./target}:/logs:rw
-      # JFR output volume for profiling recordings
-      - ./target/jfr-recordings:/tmp/jfr-output:rw
 
     # OWASP Security hardening (production-grade)
     security_opt:
@@ -92,7 +87,7 @@ services:
           cpus: '1.0'
 
     # Health check: startup script handles readiness via external curl probe
-    # No Docker HEALTHCHECK — distroless has no shell; JFR variant has its own
+    # No Docker HEALTHCHECK — distroless has no shell
 
     # Network isolation (production pattern)
     networks:

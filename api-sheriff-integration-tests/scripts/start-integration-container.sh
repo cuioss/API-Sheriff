@@ -23,13 +23,11 @@ DISTROLESS_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^ap
 if [[ -n "$JFR_IMAGE" ]]; then
     AVAILABLE_IMAGE="$JFR_IMAGE"
     IMAGE_TYPE="jfr"
-    export DOCKER_IMAGE_TAG="jfr"
-    export DOCKERFILE="Dockerfile.native.jfr"
+    COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.jfr.yml"
 elif [[ -n "$DISTROLESS_IMAGE" ]]; then
     AVAILABLE_IMAGE="$DISTROLESS_IMAGE"
     IMAGE_TYPE="distroless"
-    export DOCKER_IMAGE_TAG="distroless"
-    export DOCKERFILE="Dockerfile.native"
+    COMPOSE_CMD="docker compose -f docker-compose.yml"
 else
     AVAILABLE_IMAGE=""
     IMAGE_TYPE="none"
@@ -40,11 +38,9 @@ IMAGE_EXISTS=$([ ! -z "$AVAILABLE_IMAGE" ] && echo "true" || echo "false")
 if [[ -n "$RUNNER_FILE" ]] && [[ "$IMAGE_EXISTS" == "true" ]]; then
     echo "📦 Using Maven-built native executable: $(basename "$RUNNER_FILE")"
     echo "🐳 Docker image: $AVAILABLE_IMAGE ($IMAGE_TYPE mode)"
-    COMPOSE_FILE="docker-compose.yml"
     MODE="native (Maven-built + Docker copy) - $IMAGE_TYPE"
 elif [[ "$IMAGE_EXISTS" == "true" ]]; then
     echo "📦 Using Docker-built native image: $AVAILABLE_IMAGE ($IMAGE_TYPE mode)"
-    COMPOSE_FILE="docker-compose.yml"
     MODE="native (Docker-built) - $IMAGE_TYPE"
 else
     echo "❌ Neither native executable nor Docker image found"
@@ -63,7 +59,7 @@ echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
 # Start with Docker Compose (includes Keycloak)
 echo "🐳 Starting Docker containers (Quarkus $MODE + Keycloak)..."
-(cd "${PROJECT_DIR}" && docker compose -f "$COMPOSE_FILE" up -d)
+(cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d)
 
 # Wait for Keycloak to be ready first
 echo "⏳ Waiting for Keycloak to be ready..."

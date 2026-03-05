@@ -1,35 +1,42 @@
 #!/bin/bash
-# Stop JWT Integration Tests Docker containers
+# Stop API Sheriff Integration Tests Docker containers
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo "🛑 Stopping JWT Integration Tests Docker containers"
+echo "🛑 Stopping API Sheriff Integration Tests Docker containers"
 
 cd "${PROJECT_DIR}"
 
-# Use the docker-compose.yml file (only file available)
-COMPOSE_FILE="docker-compose.yml"
-MODE="native"
+# Detect if JFR image is running to use matching compose files
+JFR_RUNNING=$(docker ps --format "{{.Image}}" | grep "^api-sheriff:jfr$" || true)
+
+if [[ -n "$JFR_RUNNING" ]]; then
+    COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.jfr.yml"
+    MODE="jfr"
+else
+    COMPOSE_CMD="docker compose -f docker-compose.yml"
+    MODE="distroless"
+fi
 
 # Stop and remove containers
 echo "📦 Stopping Docker containers ($MODE mode)..."
-docker compose -f "$COMPOSE_FILE" down
+$COMPOSE_CMD down
 
 # Optional: Clean up images and volumes
 if [ "$1" = "--clean" ]; then
     echo "🧹 Cleaning up Docker images and volumes..."
-    docker compose -f "$COMPOSE_FILE" down --volumes --rmi all
+    $COMPOSE_CMD down --volumes --rmi all
 fi
 
-echo "✅ JWT Integration Tests stopped successfully"
+echo "✅ API Sheriff Integration Tests stopped successfully"
 
 # Show final status
-if docker compose -f "$COMPOSE_FILE" ps | grep -q "Up"; then
+if $COMPOSE_CMD ps | grep -q "Up"; then
     echo "⚠️  Some containers are still running:"
-    docker compose -f "$COMPOSE_FILE" ps
+    $COMPOSE_CMD ps
 else
     echo "✅ All containers are stopped"
 fi

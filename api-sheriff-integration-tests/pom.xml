@@ -189,8 +189,6 @@
                                         <argument>api-sheriff</argument>
                                     </arguments>
                                     <environmentVariables>
-                                        <DOCKERFILE>Dockerfile.native</DOCKERFILE>
-                                        <DOCKER_IMAGE_TAG>distroless</DOCKER_IMAGE_TAG>
                                         <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
                                     </environmentVariables>
                                 </configuration>
@@ -314,12 +312,14 @@
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                     <arguments>
                                         <argument>compose</argument>
+                                        <argument>-f</argument>
+                                        <argument>docker-compose.yml</argument>
+                                        <argument>-f</argument>
+                                        <argument>docker-compose.jfr.yml</argument>
                                         <argument>build</argument>
                                         <argument>api-sheriff</argument>
                                     </arguments>
                                     <environmentVariables>
-                                        <DOCKERFILE>Dockerfile.native.jfr</DOCKERFILE>
-                                        <DOCKER_IMAGE_TAG>jfr</DOCKER_IMAGE_TAG>
                                         <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
                                     </environmentVariables>
                                 </configuration>
