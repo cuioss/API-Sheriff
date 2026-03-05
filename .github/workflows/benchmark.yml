@@ -8,8 +8,9 @@ on:
     tags: [ "*" ]
   workflow_dispatch:
 
-# Declare default permissions as read only
-permissions: read-all
+# Declare default permissions as read only (principle of least privilege)
+permissions:
+  contents: read
 
 # Prevent concurrent benchmark runs to avoid interference
 concurrency:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   benchmark:
-    name: Run JMH Benchmarks
+    name: Run Integration Benchmarks
     runs-on: ubuntu-latest
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
@@ -30,130 +31,96 @@ jobs:
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.12.0
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
         with:
           egress-policy: audit
 
+      - name: Create GitHub App token for deployment
+        id: app-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }},cuioss.github.io
+          owner: cuioss
+
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0  # Fetch all history for proper versioning
+          persist-credentials: false  # Prevent token from overriding app token during deploy
 
       - name: Set up JDK 21
-        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           java-version: '21'
           distribution: 'temurin'
           cache: maven
 
-      - name: Build api-sheriff-library
+      - name: Build api-sheriff
         run: |
-          # Build library module first to ensure test artifact is available for benchmarking
+          # Build all modules first to ensure artifacts are available for benchmarking
           ./mvnw --no-transfer-progress clean install -DskipTests
 
-      - name: Run Micro Benchmarks
+      - name: Fetch Previous History
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: cuioss/cuioss.github.io
+          ref: main
+          path: previous-pages
+          sparse-checkout: |
+            api-sheriff/benchmarks/integration/history
+        continue-on-error: true
+
+      - name: Prepare Historical Data for Benchmarks
         run: |
-          # Create directory for benchmark results
-          mkdir -p benchmark-results
+          python3 benchmarks/scripts/benchmark-pages.py prepare-history \
+            --previous-pages-dir previous-pages/api-sheriff/benchmarks \
+            --output-dir "${GITHUB_WORKSPACE}/benchmark-history"
 
-          # Run micro benchmarks using configuration from pom.xml
-          ./mvnw --no-transfer-progress clean verify -pl benchmarking/benchmark-library -Pbenchmark
-
-          # Move micro benchmark results to expected location for upload
-          if [ -d "benchmarking/benchmark-library/target/benchmark-results" ]; then
-            echo "Moving micro benchmark results to upload location..."
-            cp -v benchmarking/benchmark-library/target/benchmark-results/* benchmark-results/ || echo "Failed to copy micro benchmark results"
-            ls -la benchmark-results/
-          else
-            echo "Warning: benchmarking/benchmark-library/target/benchmark-results directory not found!"
-            echo "Looking for result files:"
-            find benchmarking/benchmark-library -name "*.json" -type f
-          fi
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.7.1
-
-      - name: Run Integration Benchmarks
+      - name: Run Integration Benchmarks with WRK
         run: |
-          # Run integration benchmarks with native image using profile that includes container startup
-          echo "🚀 Running integration benchmarks with native Quarkus..."
-          ./mvnw --no-transfer-progress clean verify -pl benchmarking/benchmark-integration-quarkus -Pbenchmark-testing -DskipTests
-          
-          # Check what was actually created
-          echo "📁 Checking benchmark-integration-quarkus/target directory structure:"
-          ls -la benchmarking/benchmark-integration-quarkus/target/ || echo "Target directory not found"
-          
-          echo "📁 Checking benchmark-integration-quarkus/target/benchmark-results directory:"
-          ls -la benchmarking/benchmark-integration-quarkus/target/benchmark-results/ || echo "Benchmark results directory not found"
-          
-          echo "🔍 Finding all JSON files in benchmark-integration-quarkus:"
-          find benchmarking/benchmark-integration-quarkus -name "*.json" -type f | head -20
+          # Run WRK-based integration benchmarks with native image
+          echo "Running WRK integration benchmarks with native Quarkus..."
+          ./mvnw --no-transfer-progress clean verify -pl benchmarks -Pbenchmark \
+            -Dbenchmark.history.dir="${GITHUB_WORKSPACE}/benchmark-history/integration"
 
-          # Move integration benchmark results to expected location for upload
-          if [ -d "benchmarking/benchmark-integration-quarkus/target/benchmark-results" ]; then
-            echo "Moving integration benchmark results to upload location..."
-            # Copy ALL json files from benchmark-results directory
-            for file in benchmarking/benchmark-integration-quarkus/target/benchmark-results/*.json; do
-              if [ -f "$file" ]; then
-                echo "Copying: $(basename "$file")"
-                cp "$file" benchmark-results/
-              fi
-            done
-          else
-            echo "❌ Directory benchmarking/benchmark-integration-quarkus/target/benchmark-results does not exist!"
-          fi
+          # Verify artifacts were generated
+          echo "Integration benchmark artifacts generated:"
+          ls -la benchmarks/target/benchmark-results/
 
-          # Add timestamp to results
-          echo "{ \"timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\", \"commit\": \"${{ github.sha }}\" }" > benchmark-results/metadata.json
-
-          # Verify that benchmark results were generated
-          echo "📊 Final contents of benchmark-results directory:"
-          ls -la benchmark-results/
-          echo "🔍 Searching for any benchmark-result files in entire workspace:"
-          find . -name "*benchmark-result*.json" -type f || echo "No benchmark result files found anywhere"
+      - name: Assemble benchmark artifacts for deployment
+        run: |
+          python3 benchmarks/scripts/benchmark-pages.py assemble \
+            --integration-results benchmarks/target/benchmark-results/gh-pages-ready \
+            --previous-pages-dir previous-pages/api-sheriff/benchmarks \
+            --output-dir gh-pages \
+            --commit-sha "${{ github.sha }}"
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: benchmark-results
-          path: benchmark-results/
+          path: gh-pages/
           retention-days: 90  # Keep results for 90 days
 
-      - name: Process All Benchmarks
-        run: |
-          # Get current date for badge timestamp in Berlin time
-          TIMESTAMP=$(TZ='Europe/Berlin' date +"%Y-%m-%d")
-          TIMESTAMP_WITH_TIME=$(TZ='Europe/Berlin' date +"%Y-%m-%d %H:%M %Z")
-
-          # Create gh-pages directory
-          mkdir -p gh-pages
-
-          # Process all benchmarks using orchestration script
-          bash benchmarking/scripts/process-all-benchmarks.sh \
-            benchmark-results \
-            benchmarking/doc/templates \
-            gh-pages \
-            "${{ github.sha }}" \
-            "$TIMESTAMP" \
-            "$TIMESTAMP_WITH_TIME"
-
-          echo "📊 Benchmark processing completed"
-          
-          # Display processing results for debugging
-          if [ -f "gh-pages/processing-results.json" ]; then
-            echo "📋 Processing Summary:"
-            jq -r '
-              "🔬 Micro Benchmarks: " + .processing.micro.status + " - " + .processing.micro.message,
-              "🔗 Integration Benchmarks: " + .processing.integration.status + " - " + .processing.integration.message,
-              "❌ Errors: " + (.errors | length | tostring)
-            ' gh-pages/processing-results.json
-          fi
+      - name: Checkout cuioss.github.io for deployment
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: cuioss/cuioss.github.io
+          path: _pages-deploy
+          sparse-checkout: api-sheriff/benchmarks
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Deploy to cuioss.github.io
-        uses: JamesIves/github-pages-deploy-action@6c2d9db40f9296374acc17b90404b6e8864128c8 # v4.7.3
-        with:
-          folder: gh-pages
-          repository-name: cuioss/cuioss.github.io
-          target-folder: api-sheriff/benchmarks
-          branch: main
-          token: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+        run: |
+          TARGET_DIR="_pages-deploy/api-sheriff/benchmarks"
+          rm -rf "$TARGET_DIR"
+          mkdir -p "$TARGET_DIR"
+          cp -r gh-pages/* "$TARGET_DIR/"
+          cd _pages-deploy
+          git config user.name "cuioss-release-bot[bot]"
+          git config user.email "cuioss-release-bot[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet || git commit -m "Deploy benchmark results from ${{ github.sha }}"
+          git push

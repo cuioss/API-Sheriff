@@ -34,14 +34,14 @@ image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/b
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-performance-badge.json[Integration Performance,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-index.html]
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-trend-badge.json[Integration Trend,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-performance-trends.html]
 
-xref:benchmarking/doc/performance-scoring.adoc[Understand Performance Metrics]
+xref:benchmarks/doc/performance-scoring.adoc[Understand Performance Metrics]
 
 https://cuioss.github.io/api-sheriff/about.html[Generated Documentation on github-pages]
 
 [.discrete]
 == What is it?
 
-A template project demonstrating a multi-module Maven structure with Quarkus integration and comprehensive benchmarking.
+A security-focused API Gateway with a lightweight approach, built with Quarkus.
 
 toc::[]
 
@@ -51,43 +51,53 @@ toc::[]
 ----
 <dependency>
     <groupId>de.cuioss.sheriff.api</groupId>
-    <artifactId>api-sheriff-library</artifactId>
+    <artifactId>api-sheriff</artifactId>
 </dependency>
 ----
 
-== Additional Modules
+== Modules
 
-The project includes several additional modules that extend the core functionality:
+=== API Sheriff
 
-=== Quarkus Integration
+The deployable Quarkus application module — core library, CDI producers, REST endpoints, and native executable target.
 
-The Quarkus Extension provides seamless integration into Quarkus applications. It includes:
+=== Integration Tests
 
-* CDI producers for easy dependency injection
-* Configuration support via Quarkus properties
-* Native image support for GraalVM compilation
-
-[source,xml]
-----
-<dependency>
-    <groupId>de.cuioss.sheriff.api</groupId>
-    <artifactId>api-sheriff-quarkus</artifactId>
-</dependency>
-----
+Integration test coordinator — Docker infrastructure, native container builds, and IT suites with HTTPS support.
 
 === Performance Benchmarking
 
-The project includes two complementary benchmarking modules:
+Integration benchmarks using WRK HTTP load testing with containerized environments.
 
-==== Micro-Benchmarks
+xref:benchmarks/doc/performance-scoring.adoc[Understand Performance Metrics]
 
-The Benchmark Library provides in-memory performance measurements using JMH (Java Microbenchmark Harness).
+== Deployment
 
-==== Integration Benchmarks
+=== Production Docker Image
 
-The Quarkus Integration Benchmarks provides end-to-end performance testing using containerized environments.
+Build the native executable and production Docker image:
 
-xref:benchmarking/doc/performance-scoring.adoc[Understand Performance Metrics]
+[source,bash]
+----
+# Build native executable
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
+
+# Build production Docker image
+docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:latest api-sheriff/
+----
+
+Run with TLS certificates mounted at runtime:
+
+[source,bash]
+----
+docker run -p 8443:8443 \
+  -v /path/to/certs:/certs:ro \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/certs/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/certs/server.key \
+  api-sheriff:latest
+----
+
+* Port `8443` — All endpoints (`/api/health`, `/api/info`, `/q/health`, `/q/metrics`)
 
 == External Resources
 

@@ -1,0 +1,13 @@
+# Docker Compose override for JFR profiling
+# Usage: docker compose -f docker-compose.yml -f docker-compose.jfr.yml up -d
+
+services:
+  api-sheriff:
+    image: "api-sheriff:jfr"
+    build:
+      context: ../api-sheriff
+      dockerfile: src/main/docker/Dockerfile.native.jfr
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      - ${LOG_TARGET_DIR:-./target}:/logs:rw
+      - ./target/jfr-recordings:/tmp/jfr-output:rw

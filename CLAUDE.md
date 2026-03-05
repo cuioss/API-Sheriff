@@ -1,138 +1,129 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development phase. The project follows CUI (CUIoss) standards and is built using Maven with Java 21+.
+API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development. Built with Maven, Java 21+, and Quarkus 3.32.1. Follows CUI (CUIoss) standards.
+
+## Project Structure
+
+Multi-module Maven project:
+- `api-sheriff/` — Deployable Quarkus application (core library, CDI producers, REST endpoints, native executable)
+- `integration-tests/` — Integration test coordinator (Docker infrastructure, IT suites, scripts)
+- `benchmarks/` — WRK HTTP load testing benchmarks
 
 ## Build Commands
 
-### Core Build Operations
-- **Build project**: `./mvnw clean install`
-- **Build without tests**: `./mvnw clean install -DskipTests`
-- **Run tests only**: `./mvnw test`
-- **Run single test**: `./mvnw test -Dtest=ClassName#methodName`
+```bash
+# Full build with tests
+./mvnw clean install
 
-### Quality and Pre-Commit Process
-**CRITICAL**: Always run these commands before committing:
+# Build without tests
+./mvnw clean install -DskipTests
 
-1. **Quality verification** (fix all errors/warnings): 
+# Single module
+./mvnw clean install -pl <module-name>
+
+# Single test
+./mvnw test -Dtest=ClassName#methodName
+
+# Integration tests
+./mvnw clean verify -Pintegration-tests -pl integration-tests -am
+
+# Integration benchmarks (WRK)
+./mvnw clean verify -pl benchmarks -Pbenchmark
+
+# Build native executable
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
+
+# Build production Docker image
+docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:latest api-sheriff/
+```
+
+### Pre-Commit Process
+
+**CRITICAL** — run before every commit:
+
+1. Quality verification (fix ALL errors/warnings):
    ```bash
    ./mvnw -Ppre-commit clean verify -DskipTests
    ```
-2. **Final verification** (must pass completely):
+2. Full verification (must pass completely):
    ```bash
    ./mvnw clean install
    ```
 
-### CI/CD Commands
-- **Sonar analysis**: `./mvnw verify -Psonar sonar:sonar`
-- **Deploy snapshot**: `./mvnw -Prelease-snapshot,javadoc deploy`
-- **Coverage report**: `./mvnw clean verify -Pcoverage`
+## Pre-1.0 Rules (HIGHEST PRIORITY)
 
-## Project Structure
+- **NEVER deprecate code** — remove it directly
+- **NEVER add @Deprecated** — delete unnecessary code immediately
+- **NEVER enforce backward compatibility** — make breaking changes freely
+- **Clean APIs aggressively** — remove unused methods, classes, patterns
 
-```
-api-sheriff/
-├── src/
-│   ├── main/
-│   │   └── java/
-│   │       └── de/cuioss/sheriff/api/  # Main source code
-│   └── test/
-│       └── java/
-│           └── de/cuioss/sheriff/api/  # Test code
-├── doc/
-│   └── ai-rules.md                     # AI development guidelines
-├── pom.xml                              # Maven configuration
-└── lombok.config                        # Lombok configuration
-```
+## Code Standards
 
-## Critical Development Rules
+- Java 21+ features encouraged (records, sealed classes, pattern matching, text blocks)
+- Lombok: `@Builder`, `@Value`, `@NonNull`, `@ToString`, `@EqualsAndHashCode`
+- Prefer immutable objects, final fields, empty collections over null, Optional for nullable returns
+- Indentation: 4 spaces, LF line endings, UTF-8
 
-### Pre-1.0 Project Rules (HIGHEST PRIORITY)
-- **NEVER deprecate code** - Remove it directly
-- **NEVER add @Deprecated annotations** - Delete unnecessary code immediately  
-- **NEVER enforce backward compatibility** - Make breaking changes freely
-- **Clean APIs aggressively** - Remove unused methods, classes, and patterns
-- **Focus on final API design** - Design for post-1.0 stability
+### Logging
 
-### CUI Standards Compliance
+- Logger: `de.cuioss.tools.logging.CuiLogger` (private static final LOGGER)
+- Format: always `%s` for substitution (NEVER `{}`, `%.2f`, `%d`)
+- Structured: `de.cuioss.tools.logging.LogRecord` for INFO/WARN/ERROR
+- Ranges: INFO (001-099), WARN (100-199), ERROR (200-299)
+- Exception parameter always comes first
+- Document in `doc/LogMessages.adoc`
 
-#### Logging
-- Use `de.cuioss.tools.logging.CuiLogger` (private static final LOGGER)
-- Exception parameter always comes first in logging methods
-- Use '%s' for string substitutions (not '{}' or '%d')
-- Document all log messages in doc/LogMessages.adoc
+### Testing
 
-#### Testing
-- Use JUnit 5 exclusively
-- Follow AAA pattern (Arrange-Act-Assert)
-- Minimum 80% code coverage required
-- Use cui-test-generator for test data generation
+- JUnit 5 exclusively, AAA pattern (Arrange-Act-Assert)
+- Minimum 80% coverage
+- CUI Test Generator for test data (`@GeneratorsSource` preferred)
 - **Forbidden**: Mockito, PowerMock, Hamcrest
 
-#### Java Standards
-- Java 21+ features encouraged (records, switch expressions, text blocks)
-- Use Lombok annotations (@Builder, @Value, @NonNull, @UtilityClass)
-- Prefer immutable objects and final fields
-- Return empty collections instead of null
-- Use Optional for nullable return values
+### Javadoc
 
-#### Documentation
-- Every public API must have complete Javadoc
-- Use AsciiDoc format (.adoc) for documentation
-- Include @since tags with version information
-- Document thread-safety considerations
+- Every public/protected class and method documented
+- Include `@since` tags, thread-safety notes, usage examples
+- Every package must have `package-info.java`
 
-## Dependency Management
+## OpenRewrite Markers
 
-Current minimal dependencies:
-- **lombok**: For boilerplate reduction
-- **junit-jupiter-api**: For testing
-- **Parent POM**: de.cuioss:cui-java-parent:1.1.4
+Markers like `/*~~(TODO: INFO needs LogRecord)~~>*/` indicate **actual bugs**:
+- Fix placeholder/parameter mismatches, wrong format specifiers
+- Create LogRecord constants for production INFO/WARN/ERROR logs
+- Replace generic Exception/RuntimeException with specific types
+- For test diagnostic logging: add `// cui-rewrite:disable CuiLogRecordPatternRecipe` suppression
+- **Never commit code with markers present**
 
-**CRITICAL**: Never add dependencies without explicit user approval
-
-## Integration with IntelliJ IDEA
-
-The project is configured for IntelliJ IDEA with:
-- MCP server integration for enhanced IDE features
-- Maven wrapper for consistent builds
-- EditorConfig for code formatting
-
-Use IntelliJ MCP tools when available:
-- `mcp__jetbrains__get_file_problems` for code analysis
-- `mcp__jetbrains__execute_terminal_command` for running commands
-- `mcp__jetbrains__search_in_files_by_text` for efficient code search
-
-## Security Considerations
+## Security
 
 As a security-focused API Gateway:
 - All changes must consider security implications
 - Never expose sensitive data in logs
-- Follow OWASP security guidelines
-- Validate all inputs and outputs
-- Use secure defaults for all configurations
+- Follow OWASP guidelines, validate all inputs/outputs
+- Use secure defaults
 
-## Common Tasks
+## Dependency Management
 
-### Adding New Features
-1. Research existing patterns in the codebase
-2. Follow CUI standards for implementation
-3. Write comprehensive tests (80%+ coverage)
-4. Document public APIs with Javadoc
-5. Run pre-commit checks before committing
+- **Parent POM**: `de.cuioss:cui-java-parent:1.4.4`
+- **CRITICAL**: Never add dependencies without explicit user approval
 
-### Fixing Issues
-1. Identify the issue using IDE diagnostics
-2. Apply fix following existing code patterns
-3. Add/update tests to prevent regression
-4. Verify with `./mvnw clean install`
+## Git Workflow
 
-### Refactoring
-1. Ensure tests pass before starting
-2. Make incremental changes
-3. Run tests after each change
-4. Use IDE refactoring tools when available
-5. Clean up aggressively (pre-1.0 rule)
+All cuioss repositories have branch protection on `main`. Always:
+
+1. Create feature branch: `git checkout -b <branch-name>`
+2. Commit and push: `git push -u origin <branch-name>`
+3. Create PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
+4. Wait for CI + Gemini review: `gh pr checks --watch`
+5. **Handle Gemini review comments** — fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments`:
+   - Valid and fixable: fix, commit, push, reply explaining, resolve
+   - Disagree/out of scope: reply explaining why, resolve
+   - Uncertain: **ask the user**
+   - Every comment MUST get a reply and MUST be resolved
+6. Do **NOT** enable auto-merge unless explicitly instructed
+7. Return to main: `git checkout main && git pull`

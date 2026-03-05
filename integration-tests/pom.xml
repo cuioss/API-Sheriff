@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.api</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>integration-tests</artifactId>
+    <packaging>jar</packaging>
+    <name>API Sheriff Integration Tests</name>
+    <description>Integration test coordinator for API Sheriff — builds native containers and runs IT suites</description>
+
+    <properties>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.integration.tests</maven.jar.plugin.automatic.module.name>
+        <!-- Configure test execution - failsafe disabled by default -->
+        <skipITs>true</skipITs>
+
+        <!-- HTTPS configuration for testing (Docker external port) -->
+        <test.https.port>10443</test.https.port>
+
+        <!-- Skip Sonar analysis for integration tests -->
+        <sonar.skip>true</sonar.skip>
+    </properties>
+
+    <dependencies>
+        <!-- API Sheriff application (reactor dependency) -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff</artifactId>
+        </dependency>
+
+        <!-- API Sheriff Test Utilities for test material -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.api</groupId>
+            <artifactId>api-sheriff</artifactId>
+            <version>${project.version}</version>
+            <classifier>generators</classifier>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>de.cuioss.test</groupId>
+            <artifactId>cui-test-juli-logger</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Disable Quarkus build for this module (app is api-sheriff) -->
+            <plugin>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default</id>
+                        <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Execute Docker cleanup before Maven clean -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>stop-docker-containers</id>
+                        <phase>pre-clean</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>./scripts/stop-integration-container.sh</executable>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <arguments>
+                                <argument>--clean</argument>
+                            </arguments>
+                            <!-- Don't fail the build if containers aren't running -->
+                            <successCodes>
+                                <successCode>0</successCode>
+                                <successCode>1</successCode>
+                            </successCodes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Profile for running integration tests with native image -->
+        <profile>
+            <id>integration-tests</id>
+            <properties>
+                <skipITs>false</skipITs>
+            </properties>
+            <build>
+                <plugins>
+                    <!-- Skip Unit Tests (Surefire) -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <skipTests>true</skipTests>
+                        </configuration>
+                    </plugin>
+
+                    <!-- Integration Test Configuration -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/integration/**/*IT.java</include>
+                                    </includes>
+                                    <systemPropertyVariables>
+                                        <test.https.port>${test.https.port}</test.https.port>
+                                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                                    </systemPropertyVariables>
+                                    <skipITs>${skipITs}</skipITs>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Docker build and application lifecycle -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Build native executable if needed (targets api-sheriff module) -->
+                            <execution>
+                                <id>build-native-if-needed</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/build-native-if-needed.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Build Docker image (native executable must already exist) -->
+                            <execution>
+                                <id>docker-build-distroless</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>build</argument>
+                                        <argument>api-sheriff</argument>
+                                    </arguments>
+                                    <environmentVariables>
+                                        <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Start application before integration tests -->
+                            <execution>
+                                <id>start-integration-app</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/start-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <environmentVariables>
+                                        <!-- Pass target directory for Quarkus file logging -->
+                                        <LOG_TARGET_DIR>${project.build.directory}</LOG_TARGET_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Dump Keycloak container logs before stopping containers -->
+                            <execution>
+                                <id>dump-keycloak-logs</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/dump-keycloak-logs.sh</executable>
+                                    <arguments>
+                                        <argument>target</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Stop application after integration tests -->
+                            <execution>
+                                <id>stop-integration-app</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/stop-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Profile for JFR profiling with UBI-based images -->
+        <profile>
+            <id>jfr</id>
+            <properties>
+                <skipITs>false</skipITs>
+            </properties>
+            <build>
+                <plugins>
+                    <!-- Skip Unit Tests (Surefire) -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <skipTests>true</skipTests>
+                        </configuration>
+                    </plugin>
+
+                    <!-- Integration Test Configuration for JFR -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/integration/**/*IT.java</include>
+                                    </includes>
+                                    <systemPropertyVariables>
+                                        <test.https.port>${test.https.port}</test.https.port>
+                                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                                    </systemPropertyVariables>
+                                    <skipITs>${skipITs}</skipITs>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Docker build and application lifecycle -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Build native executable if needed (targets api-sheriff module) -->
+                            <execution>
+                                <id>build-native-if-needed</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/build-native-if-needed.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Build Docker image with native JFR support -->
+                            <execution>
+                                <id>docker-build-jfr</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>-f</argument>
+                                        <argument>docker-compose.yml</argument>
+                                        <argument>-f</argument>
+                                        <argument>docker-compose.jfr.yml</argument>
+                                        <argument>build</argument>
+                                        <argument>api-sheriff</argument>
+                                    </arguments>
+                                    <environmentVariables>
+                                        <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Start application before integration tests -->
+                            <execution>
+                                <id>start-integration-app</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/start-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <environmentVariables>
+                                        <!-- Pass target directory for Quarkus file logging -->
+                                        <LOG_TARGET_DIR>${project.build.directory}</LOG_TARGET_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Dump Keycloak container logs before stopping containers -->
+                            <execution>
+                                <id>dump-keycloak-logs</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/dump-keycloak-logs.sh</executable>
+                                    <arguments>
+                                        <argument>target</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Stop application after integration tests -->
+                            <execution>
+                                <id>stop-integration-app</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/stop-integration-container.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

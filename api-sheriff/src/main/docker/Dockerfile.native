@@ -1,0 +1,25 @@
+# Production Dockerfile for API Sheriff native executable
+# Distroless: no shell, no package manager — minimal attack surface
+# No baked-in certificates — mount TLS certs at runtime via volumes or secrets
+# Health probes via management interface (port 9000, plain HTTP)
+FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:0278fd70d9627df836295570da0fd22034ea664efc12a834a0532cea7556a87b
+
+LABEL org.opencontainers.image.title="API Sheriff"
+LABEL org.opencontainers.image.description="Security-focused API Gateway — Quarkus native executable"
+LABEL org.opencontainers.image.version="1.0.0-SNAPSHOT"
+LABEL org.opencontainers.image.vendor="CUIoss"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"
+LABEL org.opencontainers.image.base.name="quay.io/quarkus/quarkus-distroless-image:2.0"
+LABEL security.scan.required="true"
+LABEL security.distroless="true"
+
+WORKDIR /app
+
+# Copy pre-built native executable
+COPY --chmod=0755 target/*-runner /app/application
+
+EXPOSE 8443 9000
+USER nonroot
+
+ENTRYPOINT ["/app/application", "-Dquarkus.http.host=0.0.0.0"]
