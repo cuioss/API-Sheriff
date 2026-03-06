@@ -1,0 +1,357 @@
+= Kong Gateway -- Fact Sheet
+:toc:
+:toclevels: 2
+:sectnums:
+
+== Project Identity
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| Official Name
+| Kong Gateway
+
+| Website
+| https://konghq.com
+
+| GitHub (OSS)
+| https://github.com/Kong/kong
+
+| Company
+| Kong Inc.
+
+| First Release
+| 2015 (originally "Mashape")
+|===
+
+== License
+
+[cols="1,3"]
+|===
+| Edition | License
+
+| Kong OSS (up to 3.9.x)
+| Apache License 2.0
+
+| Kong Gateway Enterprise (3.10+)
+| Proprietary / Commercial subscription
+|===
+
+IMPORTANT: Starting with version 3.10 (March 2025), Kong removed the "free mode" from the Enterprise image.
+The OSS edition (Apache 2.0) is frozen at version 3.9.1.
+Running `kong/kong-gateway:3.10+` without a valid license results in an expired-license state, not a functional OSS gateway.
+
+== Technology Stack
+
+[cols="1,3"]
+|===
+| Component | Technology
+
+| Primary Language
+| Lua (~89% of codebase)
+
+| Runtime
+| OpenResty (Nginx + LuaJIT)
+
+| Web Server
+| Nginx (embedded via OpenResty)
+
+| Plugin Languages
+| Lua (native), Go, JavaScript
+
+| Database
+| PostgreSQL (Cassandra support removed in 3.4)
+|===
+
+== Current Version (as of March 2026)
+
+[cols="1,2,2"]
+|===
+| Edition | Version | Notes
+
+| Kong OSS (final)
+| 3.9.1
+| June 2025; no further OSS releases planned
+
+| Kong Enterprise (latest)
+| 3.13.0.1
+| February 2026
+
+| Kong Enterprise LTS
+| 3.10.x
+| Supported until March 2028
+|===
+
+Release cadence: 4 minor versions per year (March, June, September, December) since March 2025.
+
+== Community Activity
+
+[cols="1,2"]
+|===
+| Metric | Value
+
+| GitHub Stars
+| ~42,900
+
+| Contributors
+| ~394
+
+| Downloads
+| 300M+ (claimed by Kong Inc.)
+|===
+
+NOTE: Kong's marketing pages claim "62K+ stars", which may include all Kong-related repositories combined.
+The main `Kong/kong` repository shows ~42.9k stars.
+
+== Architecture
+
+* *Proxy model:* Reverse proxy built on Nginx/OpenResty
+* *Plugin architecture:* Request lifecycle hooks -- plugins inject logic at various phases (access, header_filter, body_filter, log, etc.)
+* *Control Plane / Data Plane separation:* Supported since Kong 2.x; CP pushes configuration, DP handles traffic
+* *Plugin execution:* Plugins run in-process via LuaJIT (high performance, low overhead)
+
+== Core Features
+
+[cols="1,3"]
+|===
+| Category | Features
+
+| Authentication
+| Basic Auth, Key Auth, OAuth 2.0, JWT, HMAC, LDAP, OIDC (**Enterprise**), Mutual TLS
+
+| Rate Limiting
+| Basic rate limiting (OSS), advanced rate limiting with token-based limits (**Enterprise**)
+
+| Load Balancing
+| Round-robin, consistent hashing, least connections, active and passive health checks
+
+| Traffic Control
+| Request size limiting, request termination, proxy caching, circuit breaker (via plugins)
+
+| Transformations
+| Request/response transformation, correlation ID injection
+
+| Security
+| IP restriction, bot detection, CORS, ACL
+
+| WAF
+| Injection/XSS/JSON/XML threat protection (**Enterprise only**); third-party WAF plugins available (Wallarm, open-appsec)
+
+| Observability
+| Prometheus, Datadog, StatsD, OpenTelemetry, logging (file, HTTP, TCP, UDP, syslog, Kafka)
+
+| AI Gateway
+| Multi-LLM proxying, AI rate limiting, prompt engineering (3.10+, **Enterprise**)
+|===
+
+== Protocol Support
+
+[cols="1,2"]
+|===
+| Protocol | Status
+
+| HTTP/1.1
+| Fully supported
+
+| HTTP/2
+| Supported (with TLS since early versions; without TLS since 3.6)
+
+| HTTP/3 (QUIC)
+| *Not supported* (depends on OpenResty adopting Nginx's experimental HTTP/3 module)
+
+| WebSocket
+| Fully supported
+
+| gRPC
+| Natively supported (proxying, gRPC-Web, gRPC-Gateway plugins)
+
+| TCP/UDP (L4)
+| Supported via stream proxy
+|===
+
+== Configuration Model
+
+[cols="1,3"]
+|===
+| Mode | Description
+
+| Database-backed
+| PostgreSQL stores configuration; Admin API for CRUD operations
+
+| DB-less / Declarative
+| YAML or JSON config file loaded at startup; no database needed
+
+| Hybrid
+| Control plane uses database; data planes are DB-less, receiving config from CP
+
+| Admin API
+| RESTful API for imperative configuration management
+
+| decK (CLI tool)
+| Declarative configuration management, suitable for GitOps/CI/CD
+|===
+
+== Deployment Model
+
+[cols="1,2"]
+|===
+| Target | Support
+
+| Docker
+| Official images on Docker Hub
+
+| Kubernetes
+| Kong Ingress Controller (KIC), Gateway API conformance, Helm charts
+
+| Linux packages
+| Debian, Ubuntu, RHEL, CentOS, Amazon Linux
+
+| Cloud-managed
+| Kong Konnect (SaaS control plane with self-hosted data planes)
+|===
+
+== Stateless Design
+
+*Primarily stateless.* Data plane nodes receive configuration from the control plane or declarative config file and keep state in memory.
+They can be horizontally scaled without shared state.
+
+In DB-less mode, the entire deployment is stateless.
+Rate limiting counters may require shared storage (Redis or database) for cluster-wide consistency.
+
+== Token Mediation / BFF Support
+
+Evaluated against https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps]:
+
+[cols="1,1,2"]
+|===
+| Variant | Supported? | Notes
+
+| Token-Mediating Backend (encrypted cookie)
+| *Yes* (*Enterprise only*)
+| Kong's OIDC plugin (via lua-resty-openidc / lua-resty-session) supports this as the *default* mode.
+
+| BFF Proxy (server-side session)
+| *Yes* (*Enterprise only*)
+| By switching `session_storage` to `redis` or `memcache`, tokens are stored server-side.
+|===
+
+Kong's OIDC plugin (*Enterprise only*) makes Kong a full *OIDC Relying Party (confidential client)*:
+
+. Kong is registered with the IdP using `config.client_id` and `config.client_secret` (required configuration).
+. When an unauthenticated request arrives, Kong redirects the browser (HTTP 302) to the IdP's authorization endpoint, including PKCE `code_challenge`.
+. The user authenticates at the IdP.
+. The IdP redirects back to Kong at the configured `redirect_uri`.
+. Kong exchanges the authorization code for tokens by calling the IdP's token endpoint *server-to-server*, authenticating with its client credentials.
+. Kong validates the tokens (cryptographic signature, expiry).
+. Tokens are encrypted (AES-256-GCM via lua-resty-session) into an `HttpOnly` session cookie.
+. On subsequent requests, Kong decrypts the cookie and forwards the access token upstream as `Authorization: Bearer`.
+
+Underlying library: lua-resty-session (same foundation as APISIX).
+Configuration: `config.session_storage = "cookie"` (default), `config.auth_methods = ["authorization_code", "session"]`.
+
+IMPORTANT: This capability is *Enterprise only*. The OSS edition (frozen at 3.9.1) does not include the OIDC plugin.
+The community plugin `nokia/kong-oidc` (also based on `lua-resty-openidc`) provides similar functionality for Kong OSS, but is not officially supported.
+
+=== Automatic Token Refresh
+
+*Yes* (*Enterprise only*). The `refresh_tokens` parameter (default: `true`) enables the plugin to refresh "(soon to be) expired access tokens if the plugin has a refresh_token available."
+
+* Transparent to the client in session mode (no redirect during normal requests).
+* Refresh token is stored in the encrypted session cookie alongside the access token.
+* If the refresh token has expired, the session is destroyed (`unauthorized_destroy_session = true` by default) and the client must re-authenticate.
+
+=== Step-Up Authentication (RFC 9470)
+
+*Not supported.* The OIDC plugin does not parse upstream `WWW-Authenticate` headers for `insufficient_user_authentication`, `acr_values`, `max_age`, or `scope` challenges.
+It cannot trigger re-authorization with elevated authentication levels or additional scopes based on upstream responses.
+There are no open issues or feature requests for RFC 9470 support.
+
+== Forwarded Header / RFC 7239
+
+*RFC 7239 (`Forwarded` header): Not supported.* This is a known limitation tracked since 2015 (https://github.com/Kong/kong/issues/270[GitHub issue #270]).
+The underlying Nginx `ngx_http_realip_module` does not support RFC 7239.
+
+Legacy `X-Forwarded-*` headers (`X-Forwarded-For`, `-Proto`, `-Host`, `-Port`, `-Path`) are fully supported from trusted sources.
+
+== Strengths
+
+* Extremely high performance (Nginx/LuaJIT foundation, sub-millisecond plugin overhead)
+* Massive plugin ecosystem (200+ plugins in Kong Hub)
+* Kubernetes-native with Gateway API conformance
+* Flexible deployment (DB-less, hybrid, traditional)
+* Strong community and wide adoption (~42.9k stars)
+* Mature project (since 2015)
+* Control Plane / Data Plane separation
+
+== Weaknesses
+
+* *Open-core model tightening:* OSS edition frozen at 3.9.1; 3.10+ requires Enterprise license
+* No RFC 7239 support
+* No HTTP/3 support
+* No native request aggregation (limits BFF use cases)
+* Many production-critical features are Enterprise-only (OIDC, vault, RBAC, advanced rate limiting, WAF)
+* Memory consumption can be high with many plugins or large configurations
+* Enterprise pricing criticized as expensive
+
+== Open-Source vs. Open-Core
+
+Kong is *open-core*, and the open-core boundary has shifted significantly since March 2025.
+
+[cols="1,1,1"]
+|===
+| Feature | OSS (Apache 2.0, up to 3.9.1) | Enterprise (3.10+)
+
+| Core gateway proxy
+| Yes
+| Yes
+
+| Admin API
+| Yes
+| Yes
+
+| Kong Manager (GUI)
+| No
+| Yes
+
+| OIDC Authentication
+| No
+| Yes
+
+| RBAC / Workspaces
+| No
+| Yes
+
+| Secrets Management / Vault
+| No
+| Yes
+
+| Developer Portal
+| No
+| Yes
+
+| Advanced Rate Limiting
+| No
+| Yes
+
+| WAF protections
+| No
+| Yes
+
+| ~29 additional enterprise plugins
+| No
+| Yes
+|===
+
+As of 3.10, Kong has effectively ended active OSS development.
+The Apache 2.0 code remains at 3.9.1 but receives no new features.
+
+== Sources
+
+* https://github.com/Kong/kong[Kong/kong GitHub Repository]
+* https://developer.konghq.com/gateway/[Kong Gateway Official Docs]
+* https://developer.konghq.com/gateway/changelog/[Kong Gateway Changelog]
+* https://github.com/Kong/kong/issues/270[RFC 7239 Feature Request -- Issue #270]
+* https://github.com/Kong/kong/discussions/8983[HTTP/3 QUIC Discussion]
+* https://github.com/Kong/kong/discussions/9167[Kong OSS vs Enterprise Discussion]
+* https://endoflife.date/kong-gateway[Kong Gateway endoflife.date]

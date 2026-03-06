@@ -1,0 +1,387 @@
+= Gravitee API Management -- Fact Sheet
+:toc:
+:toclevels: 2
+:sectnums:
+
+== Project Identity
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| Official Name
+| Gravitee API Management (APIM)
+
+| Website
+| https://www.gravitee.io/
+
+| GitHub
+| https://github.com/gravitee-io/gravitee-api-management
+
+| Company
+| Gravitee (founded ~2015-2016 in Lille, France; HQ in London/Denver)
+
+| Employees
+| ~150-178
+|===
+
+== License
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| License
+| Apache License 2.0
+
+| Model
+| *Open-core.* Single distribution bundles CE and EE features (since 3.18.x). EE features require a license key.
+|===
+
+== Technology Stack
+
+[cols="1,3"]
+|===
+| Component | Technology
+
+| Primary Language
+| Java (~67%), TypeScript (~26% -- management UI)
+
+| Runtime
+| Eclipse Vert.x (reactive, non-blocking) on Netty
+
+| Java Version
+| Java 17+
+
+| Config Database
+| MongoDB (default) or PostgreSQL (JDBC)
+
+| Analytics Database
+| Elasticsearch (5.x-9.2.x) or OpenSearch (up to 3.x)
+
+| Rate-Limit Store
+| MongoDB, JDBC, or Redis
+
+| UI Framework
+| Angular
+|===
+
+== Current Version (as of March 2026)
+
+[cols="1,2"]
+|===
+| Field | Value
+
+| Latest Major
+| APIM 4.10 (released ~January 2026)
+
+| Latest LTS Patch
+| 4.6.9
+
+| Release Cadence
+| Major releases every ~2-3 months; patch releases more frequently
+|===
+
+== Community Activity
+
+[cols="1,2"]
+|===
+| Metric | Value
+
+| GitHub Stars
+| ~389 (main mono-repo)
+
+| Contributors
+| 119
+
+| Release Tags
+| 779
+|===
+
+NOTE: The relatively low star count is partly because Gravitee was historically split across many repositories and consolidated later.
+
+== Architecture
+
+* *Proxy model:* Smart reverse proxy with policy chains on request and response phases
+* *Engine:* Reactive, non-blocking I/O via Vert.x/Netty with zero-copy buffer management
+* *Components:*
+** APIM Gateway -- runtime proxy enforcing policies
+** Management API -- RESTful backend for configuration
+** Management Console -- web UI for API producers
+** Developer Portal -- web UI for API consumers
+** Config Database (MongoDB/PostgreSQL)
+** Analytics Database (Elasticsearch/OpenSearch)
+* *Plugin system:* Extensible via policies, reporters, resources, repositories, entrypoints, endpoints
+* *API Definition versions:* v2 (traditional HTTP proxy) and v4 (event-native, supports async protocols)
+
+== Core Features
+
+[cols="1,3"]
+|===
+| Category | Features
+
+| Authentication
+| OAuth2, JWT, API Key, mTLS, OpenID Connect, Basic Auth
+
+| Rate Limiting
+| Rate Limit, Quota, Spike Arrest policies (CE)
+
+| Load Balancing
+| Round Robin, Weighted Round Robin, Random, health checks, failover
+
+| IP Filtering
+| Yes (CE)
+
+| Transformations
+| Headers, body, query params
+
+| Service Discovery
+| HashiCorp Consul integration
+
+| CORS
+| Yes
+
+| Caching
+| Redis-based (**Enterprise**), basic in-memory (CE)
+
+| Analytics
+| Built-in dashboards, Elasticsearch-based analytics
+
+| Developer Portal
+| Self-service API catalog, subscription management
+
+| WAF
+| *No native WAF.* External WAF recommended.
+
+| LLM Proxy
+| OpenAI-compatible interface routing to multiple providers (4.10+, **Enterprise**)
+|===
+
+== Protocol Support
+
+[cols="1,2,1"]
+|===
+| Protocol | Status | Edition
+
+| HTTP/1.1
+| Fully supported
+| CE
+
+| HTTP/2
+| Supported (via ALPN, requires TLS)
+| CE
+
+| HTTP/3 (QUIC)
+| *Not supported*
+| --
+
+| WebSocket
+| Supported (WS and WSS)
+| CE
+
+| gRPC
+| Supported (proxied like any backend)
+| CE
+
+| SSE
+| Supported
+| *EE only*
+
+| Kafka
+| Protocol mediation to HTTP/WS/Webhook/SSE
+| *EE only*
+
+| MQTT 5
+| As endpoint
+| *EE only*
+
+| RabbitMQ (AMQP)
+| As endpoint
+| *EE only*
+
+| Solace
+| As endpoint
+| *EE only*
+|===
+
+IMPORTANT: All event-native / async protocol support (Kafka, MQTT, Solace, RabbitMQ, SSE, Webhook entrypoints) is Enterprise Edition only.
+
+== Configuration Model
+
+[cols="1,3"]
+|===
+| Aspect | Details
+
+| Static Config
+| `gravitee.yaml` (read at startup)
+
+| API Definitions
+| Stored in MongoDB/PostgreSQL, managed via Management API or Console UI
+
+| Dynamic Updates
+| API definitions synced dynamically from database to gateway; no restart needed
+
+| Kubernetes
+| Gravitee Kubernetes Operator (GKO) supports CRD-based API definitions (since 3.19.0)
+|===
+
+== Deployment Model
+
+[cols="1,2"]
+|===
+| Model | Details
+
+| Standalone / VM
+| ZIP distribution, runs on any JVM
+
+| Docker
+| Official Docker images
+
+| Kubernetes
+| Official Helm charts, Kubernetes Operator (GKO)
+
+| SaaS / Managed
+| Gravitee-managed cloud (**Enterprise**)
+
+| Hybrid
+| Gateway self-hosted, management plane in cloud (**Enterprise**)
+|===
+
+== Stateless Design
+
+*Stateful by design.* The gateway requires:
+
+* A config database (MongoDB/PostgreSQL)
+* An analytics database (Elasticsearch/OpenSearch)
+* Optionally Redis for distributed rate limiting and sync
+
+With Redis Distributed Sync (4.10+), the gateway can continue serving APIs from Redis during database outages.
+However, it is *not* a stateless proxy.
+
+== Token Mediation / BFF Support
+
+Evaluated against https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps]:
+
+[cols="1,1,2"]
+|===
+| Variant | Supported? | Notes
+
+| Token-Mediating Backend (encrypted cookie)
+| No
+| The APIM gateway validates tokens but does not initiate OAuth flows as a confidential client.
+
+| BFF Proxy (server-side session)
+| No
+| The APIM gateway does not manage token sessions for browser-based SPAs.
+|===
+
+The APIM gateway does *not* act as an OIDC Relying Party -- it does not register with the IdP as a confidential client, does not redirect browsers to the IdP, and does not exchange authorization codes for tokens.
+The APIM gateway only performs token *validation* (JWT signature verification or OAuth2 introspection on already-acquired tokens).
+
+Gravitee Access Management (AM) is a separate product that acts as a full OAuth2/OIDC *provider* (like Keycloak), but this is an identity provider -- not the API gateway performing token mediation.
+
+A community forum post from 2023 explicitly asks for BFF/Token Handler functionality and received zero answers.
+
+=== Automatic Token Refresh
+
+*Not supported* at the APIM gateway level. The gateway validates tokens via introspection but does not automatically refresh them.
+Gravitee Access Management (AM) as an IdP supports the `refresh_token` grant, but the client must explicitly invoke it.
+
+=== Step-Up Authentication (RFC 9470)
+
+*Not supported* at the APIM gateway level. The gateway does not parse upstream `WWW-Authenticate` headers for `insufficient_user_authentication`, `acr_values`, `max_age`, or `scope` challenges.
+It cannot trigger re-authorization with elevated authentication levels or additional scopes based on upstream responses.
+
+Gravitee AM supports MFA step-up at the *login* level (triggering additional factors based on policy rules), but this is at the IdP level, not the API gateway level.
+A https://github.com/gravitee-io/issues/issues/4031[GitHub issue #4031] requests FAPI ACR claim support, indicating this is not yet implemented.
+
+== Forwarded Header / RFC 7239
+
+*No RFC 7239 support found.* The gateway handles legacy `X-Forwarded-*` headers but there is no evidence of standardized `Forwarded` header generation or parsing per RFC 7239.
+
+== Strengths
+
+* Unique event-native architecture with Kafka/MQTT/Solace protocol mediation (EE)
+* Full API lifecycle management (design, publish, secure, monitor, monetize)
+* Reactive Vert.x/Netty engine for high-throughput non-blocking I/O
+* Flexible deployment (self-hosted, hybrid, SaaS)
+* Comprehensive policy engine (50+ built-in policies)
+* Built-in developer portal
+* Kubernetes Operator for CRD-based GitOps
+* Gartner Magic Quadrant Leader (2025)
+
+== Weaknesses
+
+* *Open-core:* All async/event-native features, many reporters, Redis caching are Enterprise-only
+* Low community signal (~389 GitHub stars)
+* No HTTP/3 support
+* No native WAF
+* No BFF support
+* No RFC 7239 support
+* Heavy infrastructure requirements (MongoDB/PostgreSQL + Elasticsearch minimum)
+* Management UI criticized as weak by some users
+* Limited GraphQL support (no federation)
+
+== Open-Source vs. Enterprise
+
+[cols="1,1,1"]
+|===
+| Feature | Community (CE) | Enterprise (EE)
+
+| HTTP Proxy APIs (v2, v4)
+| Yes
+| Yes
+
+| Event-native APIs (Kafka, MQTT, etc.)
+| No
+| Yes
+
+| OAuth2, JWT, API Key, mTLS
+| Yes
+| Yes
+
+| Rate Limiting, Quota
+| Yes
+| Yes
+
+| Data Logging Masking
+| No
+| Yes
+
+| GeoIP Filtering
+| No
+| Yes
+
+| Audit Trail
+| No
+| Yes
+
+| Custom Roles
+| No
+| Yes
+
+| Hybrid / SaaS Deployment
+| No
+| Yes
+
+| Alert Engine
+| No
+| Yes
+
+| Redis Cache Resource
+| No
+| Yes
+
+| AI/LLM Proxy
+| No
+| Yes
+|===
+
+== Sources
+
+* https://github.com/gravitee-io/gravitee-api-management[Gravitee GitHub Repository]
+* https://documentation.gravitee.io/apim/4.7/overview/architecture[Gravitee Architecture Documentation]
+* https://documentation.gravitee.io/apim/readme/enterprise-edition[Enterprise Edition Features]
+* https://documentation.gravitee.io/platform-overview/gravitee-platform/gravitee-offerings-ce-vs-ee[CE vs EE Comparison]
+* https://documentation.gravitee.io/platform-overview/gravitee-platform/release-schedule[Release Schedule]
+* https://www.gravitee.io/platform/api-gateway[API Gateway Product Page]

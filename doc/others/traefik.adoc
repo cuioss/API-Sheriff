@@ -1,0 +1,339 @@
+= Traefik Proxy -- Fact Sheet
+:toc:
+:toclevels: 2
+:sectnums:
+
+== Project Identity
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| Official Name
+| Traefik Proxy
+
+| Website
+| https://traefik.io/traefik
+
+| GitHub
+| https://github.com/traefik/traefik
+
+| License
+| MIT
+
+| Company
+| Traefik Labs (commercial entity behind Traefik Hub)
+
+| First Release
+| 2015
+|===
+
+== License
+
+[cols="1,3"]
+|===
+| Edition | License
+
+| Traefik Proxy
+| MIT (fully open-source)
+
+| Traefik Hub
+| Commercial (API gateway management, JWT/OIDC built-in, API portal)
+
+| Model
+| *Open-core.* Traefik Proxy is fully open-source. Traefik Hub adds commercial management features.
+|===
+
+== Technology Stack
+
+[cols="1,3"]
+|===
+| Component | Technology
+
+| Primary Language
+| Go
+
+| Runtime
+| Single Go binary, no external dependencies
+
+| Configuration
+| TOML or YAML files (static + dynamic), Docker labels, Kubernetes CRDs
+
+| Plugin System
+| Yaegi-based Go interpreter (plugins run without recompilation)
+|===
+
+== Current Version (as of March 2026)
+
+[cols="1,2"]
+|===
+| Field | Value
+
+| Latest Stable
+| v3.6.9 (February 2026)
+
+| Release Cadence
+| Frequent patch releases (every few weeks)
+|===
+
+== Community Activity
+
+[cols="1,2"]
+|===
+| Metric | Value
+
+| GitHub Stars
+| ~62,000
+
+| Contributors
+| 700+
+|===
+
+NOTE: Traefik has the largest community of any open-source reverse proxy / API gateway by GitHub stars.
+
+== Architecture
+
+* *Type:* Edge router / reverse proxy with API gateway capabilities
+* *Design:* Single binary, no external dependencies
+* *Service discovery:* Automatic provider-based discovery (Docker, Kubernetes, Consul, file, etc.)
+* *Middleware chain:* Request passes through configurable middleware stack (rate limiting, headers, auth, etc.)
+* *Entrypoints:* Listens on defined ports, routes to services via rules
+* *Let's Encrypt:* Built-in automatic TLS certificate management
+
+== Core Features
+
+[cols="1,3"]
+|===
+| Category | Features
+
+| Authentication
+| ForwardAuth middleware (delegates to external auth service). *No built-in JWT/OAuth validation* in open-source. Community plugin `traefik-jwt-plugin` available. Traefik Hub (commercial) has native JWT/OIDC.
+
+| Rate Limiting
+| Built-in RateLimit middleware (token bucket algorithm)
+
+| Routing
+| Powerful rule-based routing (PathPrefix, Host, Headers, Query, ClientIP, etc.)
+
+| Load Balancing
+| Round-robin, weighted (built-in, but API Sheriff explicitly excludes load balancing)
+
+| Security
+| IP allowlist/blocklist, headers middleware (HSTS, XSS protection, content-type sniffing), CORS via headers
+
+| Circuit Breaker
+| Built-in
+
+| Retry
+| Built-in with configurable attempts
+
+| Observability
+| Prometheus, Datadog, StatsD, OpenTelemetry, access logs
+
+| TLS
+| Automatic Let's Encrypt, custom certificates, mTLS
+
+| WAF
+| *Not built-in.* No native WAF capability.
+|===
+
+== Protocol Support
+
+[cols="1,2"]
+|===
+| Protocol | Status
+
+| HTTP/1.1
+| Fully supported
+
+| HTTP/2
+| Fully supported
+
+| HTTP/3 (QUIC)
+| *Natively supported* -- one of the few gateways with production HTTP/3
+
+| WebSocket
+| Fully supported (transparent, no extra config)
+
+| gRPC
+| Fully supported (native)
+
+| TCP/UDP
+| Supported (L4 routing)
+|===
+
+NOTE: Traefik is the only evaluated gateway with production-ready HTTP/3 and native WebSocket + gRPC in the open-source edition.
+
+== Configuration Model
+
+[cols="1,3"]
+|===
+| Aspect | Details
+
+| Static Config
+| TOML or YAML file, CLI flags, or environment variables (defines entrypoints, providers, logging)
+
+| Dynamic Config
+| File provider (TOML/YAML, hot-reloaded), Docker labels, Kubernetes CRDs/Ingress, Consul Catalog, etcd, Redis, ZooKeeper
+
+| Database
+| *None required.* Fully file-based or provider-based.
+
+| Hot Reload
+| Dynamic config changes are applied without restart
+|===
+
+== Deployment Model
+
+[cols="1,2"]
+|===
+| Model | Support
+
+| Single Binary
+| Yes (Go binary, ~100 MB)
+
+| Docker
+| Official Docker image
+
+| Kubernetes
+| Helm charts, CRDs, Kubernetes Gateway API conformance
+
+| Standalone
+| Yes -- just binary + config file
+|===
+
+== Stateless Design
+
+*Stateless.* No database, no Redis, no external state store required.
+Each instance is self-contained.
+Let's Encrypt certificate state can optionally use distributed storage (Consul, etcd, Redis, etc.) for multi-instance setups.
+
+== Token Mediation / BFF Support
+
+Evaluated against https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps]:
+
+[cols="1,1,2"]
+|===
+| Variant | Supported? | Notes
+
+| Token-Mediating Backend (encrypted cookie)
+| *Yes* (Enterprise/Hub or OSS via plugins)
+| Traefik Enterprise/Hub has a built-in OIDC middleware with encrypted cookie sessions (default). Traefik OSS achieves this via community plugins.
+
+| BFF Proxy (server-side session)
+| *Yes* (Enterprise/Hub or OSS via plugins)
+| By switching to KV storage (Consul, etcd, Redis, ZooKeeper), tokens are stored server-side.
+|===
+
+*Traefik Enterprise / Traefik Hub (commercial):* The built-in OIDC middleware makes Traefik a full *OIDC Relying Party (confidential client)*:
+
+. Traefik is registered with the IdP using `clientID` and `clientSecret` (required configuration).
+. When an unauthenticated request arrives, Traefik redirects the browser (HTTP 302) to the IdP's authorization endpoint (discovered via the configured `issuer` URL).
+. The user authenticates at the IdP.
+. The IdP redirects back to Traefik at the configured `redirect` URL.
+. Traefik exchanges the authorization code for tokens by calling the IdP's token endpoint *server-to-server*, authenticating with its client credentials.
+. Tokens are encrypted into `HttpOnly` cookies.
+. On subsequent requests, Traefik decrypts the cookie and forwards the access token upstream via configurable `forwardHeaders` (e.g., `Authorization: Bearer`).
+
+Stateless by default (cookie-only), with optional KV storage (Consul, etcd, Redis, ZooKeeper) for large tokens.
+
+*Traefik OSS (MIT):* No built-in OIDC middleware, but multiple community plugins provide the same pattern:
+
+* https://github.com/sevensolutions/traefik-oidc-auth[traefik-oidc-auth] -- OIDC relying party with encrypted cookie sessions and configurable bearer token forwarding
+* https://github.com/lukaszraczylo/traefikoidc[traefikoidc] -- Similar pattern with `sessionEncryptionKey` for encrypted cookies
+* https://github.com/thomseddon/traefik-forward-auth[traefik-forward-auth] -- ForwardAuth-based, stateless, passes token upstream
+
+NOTE: The OSS community plugins are not officially maintained by Traefik Labs.
+Their maturity, security, and long-term support vary.
+
+=== Automatic Token Refresh
+
+*Yes* (*Enterprise/Hub only*). The OIDC middleware has a `session.refresh` configuration option.
+When enabled, the middleware automatically refreshes the access token using the refresh token before it expires, transparently to the client.
+
+=== Step-Up Authentication (RFC 9470)
+
+*Not supported.* The OIDC middleware does not parse upstream `WWW-Authenticate` headers for `insufficient_user_authentication`, `acr_values`, `max_age`, or `scope` challenges.
+It cannot trigger re-authorization with elevated authentication levels or additional scopes based on upstream responses.
+Scopes are configured statically (`scopes`, `overrideScopes`).
+
+== Forwarded Header / RFC 7239
+
+Traefik has *no native RFC 7239 (`Forwarded` header) support*.
+
+Legacy `X-Forwarded-*` headers are fully supported and configurable:
+
+* `X-Forwarded-For` -- client IP chain
+* `X-Forwarded-Host` -- original host
+* `X-Forwarded-Proto` -- original protocol
+* `X-Forwarded-Port` -- original port
+
+Trusted IP ranges can be configured to prevent header spoofing.
+
+== Strengths
+
+* *Simplest deployment:* Single binary + config file, zero external dependencies
+* *Largest community:* ~62k GitHub stars, 700+ contributors
+* *Full protocol support:* HTTP/1.1, HTTP/2, HTTP/3, WebSocket, gRPC -- all in open-source
+* MIT license (permissive)
+* Automatic service discovery (Docker, Kubernetes, Consul, etc.)
+* Built-in Let's Encrypt auto-TLS
+* Mature and battle-tested (since 2015)
+* Excellent documentation
+
+== Weaknesses
+
+* *No built-in JWT/OAuth validation* in open-source (requires community plugin or ForwardAuth to external service)
+* No native WAF
+* No BFF / request aggregation
+* No RFC 7239 support
+* Some advanced API gateway features (API keys, transformations, developer portal) only in commercial Traefik Hub
+* Not designed as a dedicated API gateway -- it is an edge router / reverse proxy with gateway capabilities
+* ForwardAuth pattern adds latency (extra hop to auth service per request)
+
+== Open-Source vs. Commercial
+
+[cols="1,1,1"]
+|===
+| Feature | Traefik Proxy (MIT) | Traefik Hub (Commercial)
+
+| Reverse proxy / routing
+| Yes
+| Yes
+
+| Rate limiting
+| Yes
+| Yes
+
+| HTTP/2, HTTP/3, WebSocket, gRPC
+| Yes
+| Yes
+
+| JWT / OIDC auth
+| Plugin only
+| Yes (native)
+
+| API Key management
+| No
+| Yes
+
+| API Portal
+| No
+| Yes
+
+| OpenAPI integration
+| No
+| Yes
+
+| Access control policies
+| Basic (IP, ForwardAuth)
+| Advanced (RBAC, claims-based)
+|===
+
+== Sources
+
+* https://github.com/traefik/traefik[Traefik GitHub Repository]
+* https://doc.traefik.io/traefik/[Traefik Documentation]
+* https://traefik.io/blog/traefik-proxy-3-6-ramequin[Traefik v3.6 Release]
+* https://doc.traefik.io/traefik/middlewares/http/ratelimit/[RateLimit Middleware Docs]
+* https://doc.traefik.io/traefik/middlewares/http/forwardauth/[ForwardAuth Middleware Docs]

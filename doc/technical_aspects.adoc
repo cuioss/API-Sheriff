@@ -1,0 +1,274 @@
+= API Sheriff -- Technical Aspects
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+This document describes the CUI libraries and frameworks used by API Sheriff, covering HTTP client communication, security validation, OAuth token handling, logging, and testing.
+
+== Downstream API Communication
+
+Library: **cui-http**
+
+=== HttpAdapter & HttpHandler
+
+`HttpAdapter` provides an async-first API for HTTP methods (`get()`, `post()`, `put()`, `delete()`) backed by `CompletableFuture`.
+`HttpHandler` is a builder-based HTTP client wrapper with automatic SSL context creation, thread-safe after construction.
+
+Composable adapters add cross-cutting concerns:
+
+* `ResilientHttpAdapter` -- non-blocking retry with exponential backoff
+* `ETagAwareHttpAdapter` -- HTTP caching via ETag / 304 Not Modified
+
+=== HttpResult Pattern
+
+`HttpResult<T>` is a sealed interface with two record types:
+
+* `HttpResult.Success<T>` -- carries content, ETag, and HTTP status
+* `HttpResult.Failure<T>` -- carries error message, cause, fallback content, `HttpErrorCategory`, ETag, and status
+
+`HttpErrorCategory` classifies errors: `NETWORK_ERROR`, `SERVER_ERROR`, `CLIENT_ERROR`, `INVALID_CONTENT`, `CONFIGURATION_ERROR`.
+
+Usage follows exhaustive pattern matching (switch expressions) or simple `isSuccess()` checks.
+The `map()` method transforms content while preserving metadata.
+Failures may carry fallback content for graceful degradation with cached data.
+
+== HTTP Security Validation
+
+Library: **cui-http** (security module)
+
+=== Validation Framework
+
+`HttpSecurityValidator` is the functional interface for input validation (String in, String out, throws on violation).
+
+Dedicated validation pipelines:
+
+[cols="1,2"]
+|===
+| Pipeline | Scope
+
+| `URLPathValidationPipeline`
+| Path traversal, directory traversal patterns, CVE exploits
+
+| `HTTPHeaderValidationPipeline`
+| Header injection, CRLF attacks
+
+| `URLParameterValidationPipeline`
+| Query parameters, form data
+|===
+
+Each pipeline executes a sequence of stages:
+
+. `DecodingStage` -- URL percent-decoding, UTF-8 overlong encoding detection
+. `NormalizationStage` -- Unicode normalization
+. `CharacterValidationStage` -- Dangerous character detection
+. `LengthValidationStage` -- Buffer overflow prevention
+. `PatternMatchingStage` -- Known attack pattern detection
+
+Configuration via `SecurityConfiguration` with sensible defaults (path length 4096, parameter count 100, header count 50, cookie count 20, body size 5 MB).
+
+=== Attack Pattern Test Databases
+
+The test artifact provides curated real-world attack pattern databases for parameterized testing:
+
+* **CVE-based**: `ApacheCVEAttackDatabase`, `IISCVEAttackDatabase`, `NginxCVEAttackDatabase`
+* **Standards-based**: `OWASPTop10AttackDatabase`, `ModSecurityCRSAttackDatabase`, `OWASPZAPAttackDatabase`
+* **Specialized**: `HomographAttackDatabase`, `IPv6AttackDatabase`, `ProtocolHandlerAttackDatabase`, `IDNAttackDatabase`
+* **Legitimate patterns**: `LegitimatePathPatternsDatabase`, `EdgeCaseValidURLsDatabase` -- ensuring valid inputs pass
+
+Each database provides `AttackTestCase` records with attack string, expected failure type, description, and rationale.
+
+== OAuth Token Handling
+
+Library: **OAuthSheriff**
+
+=== Purpose
+
+Comprehensive JWT validation for multi-issuer OAuth/OpenID Connect environments with a focus on offline validation.
+Tokens are validated entirely offline using periodically fetched JWKS keys -- no synchronous calls to identity providers required.
+
+=== Core Components
+
+[cols="1,2"]
+|===
+| Component | Description
+
+| `TokenValidator`
+| Main facade orchestrating validation pipelines with caching and metrics. Pre-creates per-issuer validators at construction time.
+
+| `AccessTokenContent`
+| Type-safe access token representation with `getScopes()`, `getRoles()`, `getGroups()`, `providesScopes()`, and missing-scope reporting.
+
+| `IdTokenContent`
+| OIDC ID token for authentication flows.
+
+| `RefreshTokenContent`
+| Refresh token with minimal validation.
+
+| `IssuerConfig`
+| Per-identity-provider configuration: issuer, audience, JWKS source, DPoP settings, signature algorithms, custom claim mappers.
+
+| `IssuerConfigResolver`
+| Manages multiple issuer configurations.
+|===
+
+=== Validation Pipeline
+
+Layered fail-fast approach:
+
+. `TokenStringValidator` -- null, blank, size checks
+. Token parsing (DSL-JSON, not reflection-based)
+. Issuer resolution via `IssuerConfigResolver`
+. `TokenHeaderValidator` -- algorithm and key ID verification
+. Cache lookup (after minimal parsing, before expensive cryptography)
+. `TokenSignatureValidator` -- JWS signature against JWKS keys
+. `TokenClaimValidator` -- issuer, audience, expiration, not-before
+
+Additional capabilities:
+
+* `DpopProofValidator` -- sender-constrained token validation with replay protection
+* `AccessTokenCache` -- high-performance cache with configurable eviction
+* `SecurityEventCounter` -- thread-safe tracking of suspicious patterns
+
+== Logging
+
+=== Production Logging
+
+Library: **cui-java-tools** (`de.cuioss.tools.logging`)
+
+`CuiLogger` wraps JUL with structured logging support.
+
+[source,java]
+----
+private static final CuiLogger LOGGER = new CuiLogger(MyClass.class);
+----
+
+Structured messages use `LogRecord` / `LogRecordModel`:
+
+[source,java]
+----
+private static final LogRecord TOKEN_VALIDATED =
+    LogRecordModel.builder()
+        .prefix("AUTH")
+        .identifier(1)
+        .message("Token validated for user %s")
+        .build();
+
+LOGGER.info(TOKEN_VALIDATED.format(username));
+// Output: AUTH-001: Token validated for user john.doe
+----
+
+Conventions:
+
+* Always `%s` for substitution
+* Exception parameter always first: `LOGGER.error(exception, "Failed for %s", id)`
+* Identifier ranges: INFO 001-099, WARN 100-199, ERROR 200-299
+* Lazy evaluation via `Supplier<String>` for expensive debug messages
+
+=== Log Testing
+
+Library: **cui-test-juli-logger**
+
+[source,java]
+----
+@EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+class MyServiceTest {
+
+    @Test
+    void shouldLogOnSuccess() {
+        // ... execute ...
+        LogAsserts.assertSingleLogMessagePresent(
+            TestLogLevel.INFO, "AUTH-001: Token validated for user john.doe");
+    }
+
+    @Test
+    void shouldLogOnFailure() {
+        // ... execute ...
+        LogAsserts.assertLogMessagePresentContaining(
+            TestLogLevel.ERROR, "Failed", IOException.class);
+    }
+}
+----
+
+Key components:
+
+* `@EnableTestLogger` -- JUnit 5 annotation configuring log capture with per-logger level control
+* `TestLogHandler` -- captures `LogRecord` instances in a thread-safe list
+* `LogAsserts` -- fluent assertions: presence, absence, singularity, substring matching, throwable filtering
+
+== HTTP Unit Testing
+
+Library: **cui-test-mockwebserver-junit5**
+
+JUnit 5 extension wrapping OkHttp's MockWebServer for testing HTTP/HTTPS interactions.
+
+[source,java]
+----
+@EnableMockWebServer
+class DownstreamClientTest {
+
+    @Test
+    void shouldHandleSuccessResponse(MockWebServer server, URIBuilder uriBuilder) {
+        server.enqueue(new MockResponse().setBody("{\"status\":\"ok\"}"));
+        var uri = uriBuilder.addPathSegment("api").addPathSegment("data").build();
+        // call downstream client with uri, assert HttpResult
+    }
+}
+----
+
+Key components:
+
+* `@EnableMockWebServer` -- activates extension; options for `useHttps` and `manualStart`
+* `URIBuilder` -- fluent builder for test request URIs (path segments, query parameters)
+* `MockWebServer` and `SSLContext` -- auto-injected into test method parameters
+* `ModuleDispatcherElement` -- interface for modular request dispatching with per-HTTP-method handlers
+* `BaseAllAcceptDispatcher` -- default positive responses (GET: 200, POST: 201, PUT/DELETE: 204)
+* `@MockResponseConfig` -- declarative response setup via annotation (path, method, status, content)
+
+== Integration Testing
+
+Framework: **RestAssured** (already in place)
+
+REST Assured is used for integration tests against the running Quarkus application.
+Tests are executed via Maven Failsafe plugin with the `integration-tests` profile:
+
+[source,bash]
+----
+./mvnw clean verify -Pintegration-tests -pl integration-tests -am
+----
+
+== Library Summary
+
+[cols="2,2,1"]
+|===
+| Concern | Library | Artifact
+
+| Downstream HTTP calls
+| cui-http
+| `de.cuioss:cui-http`
+
+| HTTP security validation
+| cui-http (security)
+| `de.cuioss:cui-http`
+
+| OAuth token validation
+| OAuthSheriff
+| `de.cuioss:oauth-sheriff-core`
+
+| Logging (production)
+| cui-java-tools
+| `de.cuioss:cui-java-tools`
+
+| Logging (test)
+| cui-test-juli-logger
+| `de.cuioss:cui-test-juli-logger`
+
+| HTTP unit testing
+| cui-test-mockwebserver-junit5
+| `de.cuioss:cui-test-mockwebserver-junit5`
+
+| Integration testing
+| REST Assured
+| `io.rest-assured:rest-assured`
+|===

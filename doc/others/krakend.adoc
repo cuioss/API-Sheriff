@@ -1,0 +1,364 @@
+= KrakenD API Gateway -- Fact Sheet
+:toc:
+:toclevels: 2
+:sectnums:
+
+== Project Identity
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| Official Name
+| KrakenD API Gateway
+
+| Website
+| https://www.krakend.io/
+
+| GitHub (CE)
+| https://github.com/krakend/krakend-ce
+
+| Core Framework
+| Lura Project (donated to the Linux Foundation in 2021)
+
+| Founded
+| 2016, Barcelona, Spain
+
+| Company
+| KrakenD (incorporated 2021)
+|===
+
+== License
+
+[cols="1,3"]
+|===
+| Edition | License
+
+| Community Edition (CE)
+| Apache License 2.0
+
+| Enterprise Edition (EE)
+| Proprietary commercial license
+
+| Model
+| *Open-core.* Same binary for both editions; Enterprise features activate via a license file. Without the license file, it runs as Community Edition.
+|===
+
+== Technology Stack
+
+[cols="1,3"]
+|===
+| Component | Technology
+
+| Primary Language
+| Go (~85% of CE codebase)
+
+| Core Framework
+| Lura Project (Linux Foundation)
+
+| Extensibility
+| Go plugins, Lua scripting, Martian DSL, Google CEL
+|===
+
+== Current Version (as of March 2026)
+
+[cols="1,2"]
+|===
+| Edition | Version
+
+| Community Edition
+| v2.13.1 (February 18, 2026)
+
+| Enterprise Edition
+| v2.12.5 (February 25, 2026)
+|===
+
+== Community Activity
+
+[cols="1,2"]
+|===
+| Metric | Value
+
+| GitHub Stars (CE)
+| ~2,600
+
+| Contributors (CE)
+| ~25-36
+
+| Total Commits (CE)
+| ~1,091
+
+| Forks
+| ~490
+|===
+
+== Architecture
+
+* *Type:* Layer 7 API Gateway, reverse proxy, and API aggregator
+* *Design:* Stateless, declarative, immutable infrastructure
+* *No database required:* Operates without any external datastore; uses ~100 MB RAM under high traffic
+* *Cluster mode:* Every node operates independently; no coordination or centralized persistence needed
+* *Scaling:* True linear horizontal scalability with no single point of failure
+* *Proxy model:* Sits between clients and backends; aggregates, transforms, and filters responses from multiple microservices
+
+== Core Features (Community Edition)
+
+[cols="1,3"]
+|===
+| Category | Features
+
+| Authentication
+| JWT validation, OpenID Connect, OAuth 2.0 (client credentials), token signing, token revocation (bloom filter), mTLS
+
+| Rate Limiting
+| Endpoint-level, proxy/backend-level, spike arrest, burst handling (*per-node only in CE*)
+
+| Circuit Breaker
+| Built-in
+
+| Load Balancing
+| Built-in
+
+| Bot Detection
+| Built-in
+
+| Security
+| TLS 1.3, zero-trust parameter forwarding, CORS, clickjacking protection, XSS protection, MIME-sniffing prevention, HSTS
+
+| BFF / Aggregation
+| Multi-API aggregation, data merging, filtering, grouping, renaming, flatmap
+
+| Caching
+| HTTP cache headers for CDN, cached responses
+
+| Validation
+| JSON Schema request validation, CEL-based conditional validation
+
+| Transformation
+| Automatic output encoding (XML, JSON, RSS), data manipulation
+
+| Observability
+| OpenTelemetry, Prometheus, Grafana, Jaeger, Zipkin, Datadog, InfluxDB, ELK
+
+| Connectivity
+| AMQP/RabbitMQ, Kafka, NATS, Lambda, Azure Service Bus, GCP PubSub
+
+| Traffic Management
+| Traffic shadowing/mirroring, granular timeouts, concurrent parallel calls
+|===
+
+== Protocol Support
+
+[cols="1,2,1"]
+|===
+| Protocol | Status | Edition
+
+| HTTP/1.1
+| Fully supported
+| CE
+
+| HTTP/2 (over TLS)
+| Supported
+| CE
+
+| HTTP/2 cleartext (h2c)
+| Supported
+| CE
+
+| HTTP/3 (QUIC)
+| *No evidence of support*
+| --
+
+| gRPC (protocol translation)
+| Basic translation
+| CE
+
+| gRPC (client/server)
+| Full support
+| *EE only*
+
+| WebSocket
+| Multiplexer and direct
+| *EE only*
+
+| GraphQL
+| Supported
+| CE
+
+| SOAP
+| Supported
+| *EE only*
+
+| SSE (Server-Sent Events)
+| Supported
+| *EE only*
+|===
+
+IMPORTANT: WebSocket and full gRPC support are Enterprise-only features.
+This is a significant distinction from gateways that include these in their open-source editions.
+
+== Configuration Model
+
+[cols="1,3"]
+|===
+| Aspect | Details
+
+| Type
+| Declarative, static, file-based
+
+| Formats
+| JSON, YAML, TOML, HCL
+
+| Dynamic Reload
+| Hot-reload in development; production requires restart/rolling update
+
+| Database
+| None -- no database at all
+
+| GitOps
+| First-class support; configuration is version-controlled
+
+| Tooling
+| KrakenD Designer (visual GUI), IDE autocompletion, syntax validation
+
+| Extended Config (EE)
+| `$ref` support, nested directories, multi-format mixing
+|===
+
+== Deployment Model
+
+[cols="1,2"]
+|===
+| Option | Supported
+
+| Standalone Binary
+| Yes
+
+| Docker
+| Yes (official Docker Hub image)
+
+| Kubernetes
+| Yes
+
+| AWS Marketplace
+| Yes
+|===
+
+== Stateless Design
+
+*Stateless.* This is a core architectural principle.
+No database, no coordination between nodes, no centralized state.
+Each node is self-contained with its configuration file.
+
+Exception: Enterprise Edition offers Redis-backed stateful rate limiting for cross-node coordination.
+
+== Token Mediation / BFF Support
+
+Evaluated against https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps]:
+
+[cols="1,1,2"]
+|===
+| Variant | Supported? | Notes
+
+| Token-Mediating Backend (encrypted cookie)
+| No
+| KrakenD does not initiate OAuth authorization code flows. It validates tokens only.
+
+| BFF Proxy (server-side session)
+| No
+| KrakenD does not manage token sessions.
+|===
+
+The gateway does *not* act as an OIDC Relying Party -- it does not register with the IdP as a confidential client, does not redirect browsers to the IdP, and does not exchange authorization codes for tokens.
+
+KrakenD supports JWT *validation* (including reading JWTs from cookies via `cookie_key`) and the OAuth *client credentials* grant (machine-to-machine), but it does *not* support the authorization code flow.
+It cannot redirect browsers to an IdP, handle callbacks, or exchange authorization codes.
+This is confirmed by https://github.com/krakend/krakend-ce/issues/348[GitHub issue #348] and https://github.com/krakend/krakend-ce/issues/459[#459].
+
+NOTE: KrakenD's "BFF" positioning refers to *API aggregation* (merging responses from multiple backends), not OAuth token mediation.
+
+=== Automatic Token Refresh
+
+*Not supported* for user tokens. KrakenD never holds user refresh tokens since it does not support the authorization code flow.
+For machine-to-machine *client credentials* tokens, KrakenD automatically refreshes ~10 seconds before expiry.
+
+=== Step-Up Authentication (RFC 9470)
+
+*Not supported.* KrakenD does not parse upstream `WWW-Authenticate` headers for `insufficient_user_authentication`, `acr_values`, `max_age`, or `scope` challenges.
+It validates JWT claims/scopes but has no mechanism to react to upstream challenges by triggering re-authorization.
+
+== Forwarded Header / RFC 7239
+
+[cols="1,2"]
+|===
+| Header | Support
+
+| `X-Forwarded-For`
+| Always sent automatically, non-overridable
+
+| `X-Forwarded-Host`
+| Always sent automatically, non-overridable
+
+| `X-Forwarded-Via`
+| Sent when `User-Agent` is in `input_headers`
+
+| RFC 7239 `Forwarded`
+| *No evidence of support.* Legacy `X-Forwarded-*` headers only.
+|===
+
+== Strengths
+
+* Extreme performance (Go, stateless, ~100 MB RAM)
+* True stateless architecture (no database dependency, linear horizontal scaling)
+* Strong BFF/aggregation (purpose-built for aggregating microservice responses)
+* Declarative GitOps model (configuration-as-code, no programming required)
+* Linux Foundation backing (core Lura framework under open governance)
+* Comprehensive observability (native support for all major telemetry stacks)
+* Zero-trust security model (headers and parameters not forwarded by default)
+* Predictable Enterprise pricing (not tied to API count or throughput)
+
+== Weaknesses
+
+* *Open-core limitations:* WebSocket, gRPC client/server, SOAP, SSE, wildcard routes, URL rewrite, API keys, and basic auth are all Enterprise-only
+* No HTTP/3 support
+* No RFC 7239 support
+* Static configuration only (no runtime dynamic configuration without restart)
+* Smaller community (~2.6k stars vs Kong ~42.9k or APISIX ~16.3k)
+* No admin UI (KrakenD Designer is a config tool, not a runtime admin dashboard)
+* Stateful rate limiting is Enterprise-only (CE rate limiting is per-node only)
+* Configuration files can become verbose with duplication
+
+== Open-Source vs. Enterprise
+
+[cols="1,1"]
+|===
+| Feature Category | Enterprise-Only Examples
+
+| Protocols
+| WebSocket, gRPC client/server, SOAP, SSE, streaming
+
+| Auth
+| API keys, basic auth (.htpasswd), NTLM, multiple IdPs per endpoint
+
+| Routing
+| Wildcard routes, URL rewrite, virtual hosts, conditional routing
+
+| Rate Limiting
+| Redis-backed cross-node, tiered/subscription-based, IP filtering
+
+| Transforms
+| Go templates for request/response, JMESPath, regex replacements
+
+| Security
+| FIPS-140-2, Security Policies Engine (ABAC/RBAC)
+
+| Config
+| OpenAPI import/export, end-to-end testing tools
+|===
+
+== Sources
+
+* https://github.com/krakend/krakend-ce[KrakenD CE GitHub Repository]
+* https://www.krakend.io/[KrakenD Official Website]
+* https://www.krakend.io/docs/[KrakenD Documentation]
+* https://www.lura.dev/[Lura Project (Linux Foundation)]

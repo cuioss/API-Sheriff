@@ -1,0 +1,252 @@
+= API Sheriff -- Project Manifest
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+API Sheriff is a security-focused API Gateway providing a unified, stateless entry point for public APIs.
+It enforces authentication, path-based filtering (WAF), and configurable request limits -- all driven by immutable, distributed configuration.
+
+== Mandatory Requirements
+
+=== Unified API Entry Point
+
+A single access point for all public APIs under the `/api` path.
+
+=== Authentication Endpoints
+
+Dedicated endpoints for authentication and token management:
+
+* `/auth` -- Authentication
+* `/token` -- Token integration
+
+=== Authentication Enforcement
+
+All requests to `/api` must carry a valid access token.
+The gateway enforces the presence and validity of the token before forwarding the request.
+
+=== Web Application Firewall (WAF) via Path White-Listing
+
+Implicit URL/path filtering through white-listing of permitted paths.
+
+Configurable upper limits must be enforced for:
+
+[cols="1,2"]
+|===
+| Constraint | Description
+
+| Request body size
+| Maximum allowed body size
+
+| Parameter key count
+| Maximum number of query/form parameter keys
+
+| Parameter key length
+| Maximum length of individual parameter keys
+
+| Parameter value count
+| Maximum number of values per parameter key
+
+| Parameter value length
+| Maximum length of individual parameter values
+|===
+
+=== Simple, Self-Contained Deployment
+
+The gateway must be deployable as a single process or container without mandatory external services.
+No database, message broker, key-value store, or coordination service (e.g., Redis, etcd, PostgreSQL) may be required for basic operation.
+
+Configuration is provided via static files.
+The gateway starts, reads its configuration, and serves traffic -- nothing else needed.
+
+=== No Load Balancing
+
+Load balancing is explicitly out of scope.
+It will be handled uniformly by the Kubernetes infrastructure.
+
+=== Immutable, Static Endpoint Configuration
+
+All endpoint routing and forwarding rules are configured statically and delivered as immutable configuration artifacts.
+
+=== Distributed Configuration
+
+Configuration follows the distributed repository pattern with two modes:
+
+Static mode:: Endpoints and rules are fully defined in the static configuration.
+Dynamic mode:: Each downstream endpoint publishes its own gateway configuration at a well-known path (`/api/gateway-config.json`).
+Only the base endpoints need static configuration; all other rules are discovered dynamically.
+
+=== Stateless Design
+
+The gateway operates without server-side state.
+
+NOTE: The BFF proxy variant (see below) may introduce controlled exceptions to this rule.
+The token-mediating backend variant preserves statelessness fully.
+
+=== OIDC Relying Party (Confidential Client)
+
+The gateway acts as a full *OIDC Relying Party* (confidential client) as defined in https://openid.net/specs/openid-connect-core-1_0.html[OpenID Connect Core 1.0]:
+
+* The gateway is registered with the Identity Provider (IdP) with its own `client_id` and `client_secret`.
+* The gateway itself redirects the browser to the IdP's authorization endpoint (HTTP 302).
+* The IdP's callback (`redirect_uri`) points back to the gateway.
+* The gateway exchanges the authorization code for tokens by calling the IdP's token endpoint *server-to-server*, authenticating with its client credentials.
+* Upstream services never interact with the IdP -- they receive already-authenticated requests with injected `Authorization: Bearer` headers.
+
+=== Token Mediation for Browser-Based Apps
+
+The gateway supports secure token acquisition for browser-based SPAs as defined in https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps].
+
+Two variants are acceptable for how tokens are stored and transported after acquisition:
+
+==== Variant A: Token-Mediating Backend (preferred)
+
+Inspired by https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html#name-token-mediating-backend[Section 6.3], using encrypted cookie transport.
+
+After the gateway acquires tokens as the OIDC confidential client:
+
+* The access token is *encrypted* (e.g., AES-256-GCM) and delivered to the browser as an `HttpOnly`, `Secure` cookie.
+* JavaScript cannot access the token (XSS-safe).
+* On subsequent API calls through the gateway, the gateway *decrypts* the cookie, extracts the access token, and injects it as an `Authorization: Bearer` header into the upstream request.
+
+This variant is *stateless* -- the encrypted cookie carries all session state, so the gateway requires no server-side session storage, no Redis, no database.
+All gateway instances only need the same encryption key.
+
+==== Variant B: BFF Proxy
+
+As defined in https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html#name-backend-for-frontend-bff-pr[Section 6.2].
+
+After the gateway acquires tokens as the OIDC confidential client:
+
+* Tokens are stored *server-side* (e.g., in Redis or memory) and never exposed to the browser.
+* The browser session is maintained via `HttpOnly`, `Secure` cookies containing only an opaque session ID.
+* When the SPA calls an API through the gateway, the gateway looks up the stored access token and injects it into the upstream request.
+
+This variant is *stateful* (requires server-side session/token storage) but provides an additional layer of isolation since even the encrypted token never leaves the server.
+
+=== Transparent Token Refresh
+
+The gateway must handle token lifecycle transparently:
+
+* When the access token is near expiry (configurable threshold), the gateway proactively refreshes it using the stored refresh token by calling the IdP's token endpoint.
+* The refreshed access token replaces the previous one in the encrypted cookie (Variant A) or server-side store (Variant B).
+* This happens transparently during a normal API request -- the client is unaware of the refresh.
+* If the refresh token itself has expired or been revoked, the gateway initiates a new authorization code flow (redirecting the browser to the IdP).
+
+=== Step-Up Authentication (RFC 9470)
+
+The gateway must support the step-up authentication challenge protocol as defined in https://www.rfc-editor.org/rfc/rfc9470.html[RFC 9470 -- OAuth 2.0 Step Up Authentication Challenge Protocol] and the `scope` challenge parameter from https://www.rfc-editor.org/rfc/rfc6750.html[RFC 6750].
+
+When an upstream service responds with `401 Unauthorized` and a `WWW-Authenticate` challenge, the gateway parses the challenge parameters and handles the step-up transparently.
+The mechanism is identical regardless of whether the challenge demands a higher authentication level (`acr_values`), a more recent authentication (`max_age`), or additional scopes (`scope`).
+
+==== Step 1: Silent token acquisition attempt
+
+The gateway first attempts to satisfy the challenge *without user interaction*:
+
+* Parse the `WWW-Authenticate` header for `acr_values`, `max_age`, and `scope` parameters.
+* Use the refresh token to request a new access token from the IdP's token endpoint, including the required parameters.
+* If the IdP can satisfy the requirements without user interaction (e.g., 2FA was performed recently, or the requested scopes were already consented to), the IdP issues a new token silently.
+* The gateway updates the encrypted cookie (or server-side store) and retries the upstream request with the new token.
+
+==== Step 2: Browser redirect (fallback)
+
+If the silent refresh fails (e.g., the IdP requires user interaction such as 2FA, consent for new scopes, or re-authentication):
+
+* The gateway redirects the browser to the IdP's authorization endpoint, including the `acr_values`, `max_age`, and `scope` parameters from the upstream challenge.
+* After the user completes the required step (2FA, consent, re-login), the IdP redirects back to the gateway with a new authorization code.
+* The gateway exchanges the code for new tokens and retries the original request.
+
+==== Examples
+
+[cols="1,2,2"]
+|===
+| Challenge Parameter | Example | Gateway Action
+
+| `acr_values`
+| `acr_values="urn:example:mfa"` -- upstream requires multi-factor authentication
+| Refresh / re-authorize with `acr_values=urn:example:mfa`
+
+| `max_age`
+| `max_age=300` -- upstream requires authentication within the last 5 minutes
+| Refresh / re-authorize with `max_age=300`
+
+| `scope`
+| `scope="payment:write"` -- upstream requires additional OAuth scope
+| Refresh / re-authorize with expanded `scope` set
+
+| Combined
+| `acr_values="urn:example:mfa" max_age=300 scope="payment:write"`
+| Refresh / re-authorize with all parameters combined
+|===
+
+=== Full HTTP/2 and WebSocket Support
+
+Complete support for HTTP/2 and WebSocket protocols is required.
+
+=== Forwarded Header Support (RFC 7239)
+
+Full compliance with https://datatracker.ietf.org/doc/html/rfc7239[RFC 7239 -- Forwarded HTTP Extension].
+
+=== Path Mapping Example
+
+[source]
+----
+/auth  -> <idp>/auth/realms/<realm>/protocol/openid-connect/auth
+/token -> <idp>/auth/realms/<realm>/protocol/openid-connect/token
+/api   -> <backend>/api
+----
+
+== Planned (Post-MVP)
+
+[cols="1,3"]
+|===
+| Feature | Description
+
+| Logging / Auditing
+| Integration of structured logging and audit trails
+
+| Quotas / Rate Limiting
+| Management and enforcement of request quotas and rate limits
+
+| API Key Management
+| Issuing, validating, and revoking API keys
+
+| Service Locator Integration
+| Integration with the ServiceLocator for dynamic service discovery
+
+| Distributed Tracing
+| Request tracing across services (e.g., OpenTelemetry)
+|===
+
+== Optional / Nice-to-Have
+
+[cols="1,3"]
+|===
+| Feature | Description
+
+| External TLS Termination
+| TLS termination at the gateway edge
+
+| No Database Dependency
+| Ideally operates without any database
+
+| Reactive Architecture
+| Non-blocking, reactive request processing
+
+| HTTP/3
+| Support for QUIC-based HTTP/3
+
+| gRPC
+| gRPC proxying and/or transcoding
+
+| OpenAPI-driven Configuration
+| Generate gateway configuration from OpenAPI specifications (possibly via a dedicated tool / UI)
+
+| Metrics / Prometheus
+| Statistics exposed as Prometheus metrics -- no database required
+
+| Brute-Force Protection
+| Basic protection against brute-force attacks
+|===
