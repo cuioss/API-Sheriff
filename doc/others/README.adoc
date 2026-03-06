@@ -1,0 +1,206 @@
+commit = API Gateway Landscape -- Competitive Analysis
+:toc:
+:toclevels: 2
+:sectnums:
+
+This directory contains fact sheets and analysis of existing open-source API gateways, evaluated against the link:../manifest.adoc[API Sheriff Project Manifest].
+
+== Documents
+
+=== Fact Sheets (evaluated)
+
+[cols="1,2,1"]
+|===
+| Document | Gateway | Highlight
+
+| link:apache-apisix.adoc[Apache APISIX]
+| Apache Software Foundation, Lua/OpenResty, Apache 2.0
+| Most feature-complete OSS edition; OIDC RP + token mediation included
+
+| link:traefik.adoc[Traefik Proxy]
+| Traefik Labs, Go, MIT
+| Simplest deployment; only gateway with production HTTP/3
+
+| link:krakend.adoc[KrakenD]
+| KrakenD / Linux Foundation (Lura), Go, Apache 2.0
+| True stateless, API aggregation; WebSocket/gRPC enterprise-only
+
+| link:kong.adoc[Kong Gateway]
+| Kong Inc., Lua/OpenResty, Apache 2.0 (OSS frozen at 3.9.1)
+| Largest ecosystem; OSS development ended March 2025
+
+| link:tyk.adoc[Tyk Gateway]
+| Tyk Technologies, Go, MPL 2.0
+| Full-featured OSS gateway engine; requires Redis
+
+| link:gravitee.adoc[Gravitee APIM]
+| Gravitee, Java/Vert.x, Apache 2.0
+| Unique event-native architecture; heavy infrastructure
+|===
+
+=== Other Documents
+
+[cols="1,2"]
+|===
+| Document | Description
+
+| link:excluded.adoc[Excluded Gateways]
+| Gateways considered but not evaluated (dormant, proprietary, wrong scope, or framework-only)
+
+| link:../manifest.adoc[Project Manifest]
+| API Sheriff requirements driving this analysis
+|===
+
+== Top Three Contenders
+
+Based on the evaluation, three gateways stand out as the closest matches:
+
+. *Apache APISIX* -- link:apache-apisix.adoc[Fact Sheet]
+. *Traefik Proxy* -- link:traefik.adoc[Fact Sheet]
+. *KrakenD* -- link:krakend.adoc[Fact Sheet]
+
+The remaining three (link:kong.adoc[Kong], link:tyk.adoc[Tyk], link:gravitee.adoc[Gravitee]) were excluded from the top tier due to OSS edition limitations (Kong frozen at 3.9.1), mandatory external dependencies (Tyk requires Redis), or heavy infrastructure requirements (Gravitee requires MongoDB + Elasticsearch).
+
+== Feature Comparison
+
+Legend: *Y* = supported, *P* = partial, *N* = not supported, *EE* = enterprise only
+
+=== Mandatory Requirements
+
+[cols="3,1,1,1"]
+|===
+| Requirement | APISIX | Traefik | KrakenD
+
+| Simple, self-contained deployment (no external deps)
+| P ^1^
+| *Y*
+| *Y*
+
+| Stateless design
+| *Y*
+| *Y*
+| *Y*
+
+| Immutable, static configuration
+| *Y* ^2^
+| *Y*
+| *Y*
+
+| Path-based routing
+| *Y*
+| *Y*
+| *Y*
+
+| Authentication enforcement (token validation)
+| *Y*
+| P ^3^
+| *Y*
+
+| WAF / path white-listing with parameter limits
+| P ^4^
+| *N*
+| P ^5^
+
+| HTTP/2
+| *Y*
+| *Y*
+| *Y*
+
+| WebSocket
+| *Y*
+| *Y*
+| *EE*
+
+| RFC 7239 Forwarded header
+| *N*
+| *N*
+| *N*
+
+| OIDC Relying Party (confidential client)
+| *Y*
+| *EE* ^6^
+| *N*
+
+| Token mediation (encrypted cookie)
+| *Y*
+| *EE* ^6^
+| *N*
+
+| Transparent token refresh
+| *Y*
+| *EE*
+| *N*
+
+| Step-up authentication (RFC 9470)
+| *N*
+| *N*
+| *N*
+|===
+
+^1^ Standalone file mode works without etcd; full dynamic config requires etcd. +
+^2^ Via standalone YAML/JSON mode (no etcd). +
+^3^ JWT validation requires community plugin or ForwardAuth to external service (OSS). Native in Enterprise/Hub. +
+^4^ WAF via third-party integrations (Coraza WASM, Chaitin SafeLine); not built-in. +
+^5^ JSON Schema request validation and bot detection (CE); no full WAF. +
+^6^ Traefik OSS has community plugins (e.g., traefik-oidc-auth) but these are not officially supported.
+
+=== Planned / Optional Requirements
+
+[cols="3,1,1,1"]
+|===
+| Requirement | APISIX | Traefik | KrakenD
+
+| Rate limiting
+| *Y*
+| *Y*
+| *Y* (per-node CE)
+
+| HTTP/3
+| P (experimental)
+| *Y*
+| *N*
+
+| gRPC
+| *Y*
+| *Y*
+| *EE*
+
+| Distributed tracing (OpenTelemetry)
+| *Y*
+| *Y*
+| *Y*
+
+| Prometheus metrics
+| *Y*
+| *Y*
+| *Y*
+
+| TLS termination
+| *Y*
+| *Y*
+| *Y*
+|===
+
+== Key Gaps (no gateway covers)
+
+[cols="1,2"]
+|===
+| Requirement | Status
+
+| RFC 7239 Forwarded header
+| Not supported by any evaluated gateway. All use legacy `X-Forwarded-*` headers only.
+
+| Step-up authentication (RFC 9470)
+| Not supported by any evaluated gateway. No gateway parses upstream `WWW-Authenticate` challenges to trigger re-authorization.
+
+| Distributed configuration (dynamic discovery via `/api/gateway-config.json`)
+| Not natively supported by any evaluated gateway. Custom implementation required.
+|===
+
+== Recommendation
+
+*Apache APISIX* covers the most manifest requirements in its open-source edition, particularly OIDC Relying Party, token mediation, and automatic token refresh -- features that are enterprise-only in Kong and Traefik.
+
+However, *no existing gateway* satisfies all mandatory requirements.
+The strongest gaps are RFC 7239, RFC 9470 step-up authentication, and the distributed configuration discovery pattern -- all of which require custom implementation regardless of the chosen base.
+This confirms the rationale for building API Sheriff as a purpose-built gateway.

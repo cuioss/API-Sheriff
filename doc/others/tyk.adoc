@@ -1,0 +1,338 @@
+RE= Tyk API Gateway -- Fact Sheet
+:toc:
+:toclevels: 2
+:sectnums:
+
+== Project Identity
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| Official Name
+| Tyk API Gateway
+
+| Website
+| https://tyk.io/
+
+| GitHub
+| https://github.com/TykTechnologies/tyk
+
+| First Release
+| 2014
+|===
+
+== License
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| License
+| *Dual-licensed:* MPL 2.0 (Mozilla Public License v2.0) for all code except the `ee/` folder; the `ee/` folder is under a separate commercial license
+
+| Model
+| *Open-core*
+|===
+
+== Technology Stack
+
+[cols="1,3"]
+|===
+| Component | Technology
+
+| Primary Language
+| Go (Golang)
+
+| HTTP Server
+| Go native HTTP server (no Nginx/Envoy/HAProxy dependency)
+
+| Required Dependency
+| Redis (for distributed rate limiting, token/session storage)
+
+| Optional Storage
+| MongoDB or PostgreSQL (for Dashboard/Self-Managed mode)
+
+| Plugin Languages
+| Go, Python, JavaScript, Lua, any gRPC-capable language
+|===
+
+== Current Version (as of March 2026)
+
+[cols="1,2"]
+|===
+| Field | Value
+
+| Latest Stable
+| 5.11.1 (February 2026)
+
+| Current LTS
+| 5.8 LTS (full support until June 2026)
+
+| Total Releases
+| 291 (on GitHub)
+
+| Release Cadence
+| Stable patches roughly monthly; alpha/RC builds frequently
+|===
+
+== Community Activity
+
+[cols="1,2"]
+|===
+| Metric | Value
+
+| GitHub Stars
+| ~10,700
+
+| Forks
+| ~1,200
+
+| Contributors
+| 134
+
+| Open Issues
+| ~169
+|===
+
+== Architecture
+
+* *Proxy model:* Native Go reverse proxy -- built from scratch on Go's HTTP server, no external proxy dependency
+* *Core components:* Gateway (traffic proxy), Dashboard (UI/management -- commercial), Pump (metrics export)
+* *Middleware chain:* Extensible plugin architecture; middleware pipeline processes requests through configurable stages
+* *Plugin system:* Rich plugins via Go, Python, JavaScript, Lua, or any gRPC-capable language
+* *API definition:* JSON-based; supports Tyk OAS (OpenAPI compliant) and Tyk Classic formats
+* *GraphQL:* Native engine (not just proxying -- includes schema stitching and federation)
+
+== Core Features
+
+[cols="1,3"]
+|===
+| Category | Features
+
+| Authentication
+| OIDC, JWT, Bearer Tokens, Basic Auth, Client Certificates (mTLS), HMAC, OAuth 2.0
+
+| Rate Limiting
+| Distributed Rate Limiter (DRL, token bucket, no Redis) + Redis-based rate limiter; API-level and key-level
+
+| Quotas
+| Per-key and per-API quotas
+
+| Load Balancing
+| Native round-robin with weighting support; gRPC round-robin
+
+| Transformations
+| Content mediation, body/header transforms, SOAP-to-REST conversion
+
+| Security
+| IP allow/block lists, certificate pinning
+
+| Analytics
+| Built-in (detailed with Dashboard; basic in OSS)
+
+| Caching
+| Response caching supported
+
+| Circuit Breaker
+| Supported
+
+| WAF
+| *Not built-in* -- no native Web Application Firewall
+
+| API Versioning
+| Built-in version management
+
+| OpenAPI Import
+| Swagger/OAS 2.0 and OAS 3.0 import to scaffold APIs
+|===
+
+== Protocol Support
+
+[cols="1,2"]
+|===
+| Protocol | Status
+
+| HTTP/1.1
+| Fully supported
+
+| HTTP/2
+| Supported (client-to-gateway and gateway-to-upstream, configurable)
+
+| HTTP/3 (QUIC)
+| *Not supported*
+
+| WebSocket
+| Supported (transparent connection upgrade, since v2.2)
+
+| gRPC
+| Fully supported including client/server/bidirectional streaming; h2c support
+
+| TCP
+| Raw TCP proxying supported
+
+| GraphQL
+| Native engine with federation and schema stitching
+
+| SOAP
+| Proxying and SOAP-to-REST mediation
+|===
+
+== Configuration Model
+
+[cols="1,3"]
+|===
+| Aspect | Details
+
+| Gateway Config
+| `tyk.conf` JSON file
+
+| API Definitions
+| JSON files in `/apps` directory (OSS) or database-backed via MongoDB/PostgreSQL (Self-Managed)
+
+| Dynamic Reload
+| Supported by default; APIs can be hot-reloaded without restart
+
+| Static-Only Mode
+| Optional: can disable dynamic reload to load only at startup
+
+| Management API
+| REST API on the gateway for CRUD operations on API definitions
+
+| Kubernetes
+| Tyk Operator provides CRD-based declarative configuration
+|===
+
+== Deployment Model
+
+[cols="1,2"]
+|===
+| Model | Support
+
+| Standalone / Bare Metal
+| Linux amd64, i386, arm64
+
+| Docker
+| Official Docker images (`tykio/tyk-gateway`)
+
+| Kubernetes / Helm
+| Official Helm charts (`tyk-oss`, `tyk-single-dc`, `tyk-hybrid`)
+
+| Tyk Cloud
+| SaaS offering (managed by Tyk)
+
+| Hybrid
+| Gateway on-prem / edge, control plane in cloud
+|===
+
+IMPORTANT: In OSS mode, multiple gateway replicas do *not* sync API definitions automatically.
+The docs explicitly warn against running `ReplicaCount > 1` for OSS gateways without the Dashboard/control plane.
+
+== Stateless Design
+
+*Stateful at the system level.* Redis is mandatory for rate limiting, token/session storage, and distributed coordination.
+Individual gateway nodes are stateless proxies, but the system cannot operate without Redis.
+
+== Token Mediation / BFF Support
+
+Evaluated against https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps]:
+
+[cols="1,1,2"]
+|===
+| Variant | Supported? | Notes
+
+| Token-Mediating Backend (encrypted cookie)
+| No
+| The gateway does not act as an OIDC relying party and does not encrypt tokens into cookies.
+
+| BFF Proxy (server-side session)
+| No
+| The gateway does not manage token sessions for browser-based SPAs.
+|===
+
+The gateway does *not* act as an OIDC Relying Party -- it does not register with the IdP, does not redirect browsers to the IdP, and does not exchange authorization codes for tokens.
+
+The *Tyk Identity Broker (TIB)* is a separate component that can initiate OAuth authorization code flows with external IdPs.
+However, TIB brokers the initial authentication and hands off a Tyk-issued token to the client -- it does *not* encrypt the bearer token into an HttpOnly cookie or perform cookie-to-bearer mediation on subsequent requests.
+
+Since Tyk 5.7.0, the dedicated OIDC auth option in the gateway was deprecated in favor of pure JWT validation, moving further away from acting as a confidential client.
+
+=== Automatic Token Refresh
+
+*Not supported.* The gateway validates tokens but expects the client to handle refresh token flows.
+Tyk supports the `refresh_token` grant type as an OAuth2 *server*, but the client must explicitly call it.
+
+=== Step-Up Authentication (RFC 9470)
+
+*Not supported.* The gateway does not parse upstream `WWW-Authenticate` headers for `insufficient_user_authentication`, `acr_values`, `max_age`, or `scope` challenges.
+It cannot trigger re-authorization with elevated authentication levels or additional scopes based on upstream responses.
+
+== Forwarded Header / RFC 7239
+
+*No evidence of RFC 7239 support.* Documentation only references `X-Forwarded-For` with `xff_depth` configuration for anti-spoofing.
+The standardized `Forwarded` header is not mentioned.
+
+== Strengths
+
+* High performance (built in Go, no external proxy dependency)
+* Full-featured OSS gateway (auth, rate limiting, transforms, GraphQL all included)
+* Multi-protocol (REST, GraphQL native engine, gRPC, WebSocket, TCP, SOAP)
+* Flexible plugin system (Go, Python, JS, Lua, gRPC)
+* Good documentation (developer-first)
+* Kubernetes-native (Tyk Operator with CRDs)
+* Multi-cloud / no vendor lock-in
+
+== Weaknesses
+
+* Operational complexity (Gateway + Redis mandatory; Dashboard + MongoDB/PostgreSQL for enterprise)
+* OSS scaling limitation (multiple nodes don't sync without commercial Dashboard)
+* Smaller community than Kong (~10.7k vs ~42.9k stars)
+* No WAF
+* No HTTP/3
+* No RFC 7239 support
+* Dashboard requires license for commercial use
+
+== Open-Source vs. Enterprise
+
+[cols="1,1,1"]
+|===
+| Feature | OSS (MPL 2.0) | Enterprise (Commercial)
+
+| Gateway engine (proxy, auth, rate limiting, transforms, GraphQL, plugins)
+| Yes
+| Yes
+
+| Dashboard (management UI)
+| No (for commercial use)
+| Yes
+
+| Developer Portal
+| No
+| Yes
+
+| Multi-node coordination/sync
+| No
+| Yes
+
+| MDCB (Multi Data Center Bridge)
+| No
+| Yes
+
+| Tyk Cloud (managed service)
+| No
+| Yes
+|===
+
+The gateway itself is genuinely full-featured under MPL 2.0.
+The commercial lock is on management, multi-node orchestration, and developer portal -- not on gateway traffic-processing features.
+
+== Sources
+
+* https://github.com/TykTechnologies/tyk[Tyk GitHub Repository]
+* https://github.com/TykTechnologies/tyk/releases[Tyk GitHub Releases]
+* https://github.com/TykTechnologies/tyk/blob/master/LICENSE.md[Tyk LICENSE.md]
+* https://tyk.io/docs/developer-support/release-notes/gateway[Tyk Gateway Release Notes]
+* https://tyk.io/docs/tyk-oss-gateway[Tyk OSS Documentation]
+* https://tyk.io/open-source-api-gateway/[Tyk Open Source Overview]
+* https://tyk.io/pricing/[Tyk Pricing]
+* https://tyk.io/docs/developer-support/release-types/long-term-support[Tyk LTS Releases]

@@ -1,0 +1,317 @@
+= Apache APISIX -- Fact Sheet
+:toc:
+:toclevels: 2
+:sectnums:
+
+== Project Identity
+
+[cols="1,3"]
+|===
+| Field | Value
+
+| Official Name
+| Apache APISIX
+
+| Website
+| https://apisix.apache.org/
+
+| GitHub
+| https://github.com/apache/apisix
+
+| License
+| Apache License 2.0
+
+| ASF Status
+| Apache Software Foundation Top-Level Project
+
+| Commercial Entity
+| API7.ai (founded by APISIX creators, offers "API7 Enterprise")
+|===
+
+== Technology Stack
+
+[cols="1,3"]
+|===
+| Component | Technology
+
+| Primary Language
+| Lua (~80% of codebase)
+
+| Runtime
+| OpenResty (Nginx + LuaJIT)
+
+| Configuration Store
+| etcd (default); standalone file/API modes available without etcd
+
+| Plugin Languages
+| Lua (native), Go, Java, Python, Node.js (via Plugin Runners); WASM (Rust, TinyGo) since v2.11
+|===
+
+== Current Version (as of March 2026)
+
+[cols="1,2"]
+|===
+| Field | Value
+
+| Latest Stable
+| 3.15.0 (released 2026-02-05)
+
+| Previous
+| 3.14.1 (2024-10-16)
+
+| Release Cadence
+| ~2-4 minor releases per year; patch releases as needed
+
+| Related
+| APISIX Ingress Controller 2.0 (released 2025-12-19; etcd-free, Gateway API support)
+|===
+
+== Community Activity
+
+[cols="1,2"]
+|===
+| Metric | Value
+
+| GitHub Stars
+| ~16,300
+
+| Forks
+| ~2,800
+
+| Contributors
+| 491
+|===
+
+== Architecture
+
+* *Proxy model:* Reverse proxy based on Nginx's network layer; routing done entirely in Lua using a radix-tree (implemented in C for performance)
+* *Control plane / Data plane split:* Supports combined and separated (decoupled) deployment
+* *Dynamic configuration:* Data plane nodes watch etcd for changes and apply them within milliseconds
+* *Plugin execution:* Plugins run in defined phases (rewrite, access, balancer, header_filter, body_filter, log); deterministic order by priority number
+* *Performance:* Claims 140,000+ QPS single-instance; single-core QPS of 18k with average latency under 0.2ms (project benchmarks, not independently verified)
+
+== Core Features (78 plugins)
+
+[cols="1,3"]
+|===
+| Category | Features
+
+| Authentication (11 plugins)
+| key-auth, jwt-auth, basic-auth, hmac-auth, ldap-auth, openid-connect, authz-keycloak, authz-casdoor, authz-casbin, cas-auth, forward-auth
+
+| Security (8 plugins)
+| CORS, IP restriction, UA restriction, referer restriction, consumer restriction, URI blocker, CSRF protection
+
+| Traffic Control (11 plugins)
+| limit-req, limit-conn, limit-count, proxy-cache, proxy-mirror, api-breaker (circuit breaking), traffic-split (canary/blue-green), request-validation
+
+| WAF
+| Not built-in natively; integrations available: Chaitin SafeLine WAF (built-in plugin since v3.5), Coraza WAF (WASM-based, OWASP CRS), open-appsec (ML-based)
+
+| Load Balancing
+| Round-robin, weighted, consistent hashing, least connections, EWMA
+
+| Service Discovery
+| Consul, Nacos, Eureka, Kubernetes, DNS-based
+
+| Observability (23 plugins)
+| Prometheus, OpenTelemetry, Zipkin, SkyWalking, Datadog; loggers for Kafka, Elasticsearch, ClickHouse, Splunk, Google Cloud Logging, Syslog
+
+| Transformations
+| Request/response rewrite, gRPC transcoding, gRPC-web, fault injection, mocking
+
+| Serverless
+| AWS Lambda, Azure Functions, Apache OpenWhisk, workflow
+
+| AI Gateway (v3.14+)
+| LLM proxy (OpenAI, DeepSeek, Claude, Gemini, Mistral), AI rate limiting (token-based), prompt guard
+|===
+
+== Protocol Support
+
+[cols="1,2"]
+|===
+| Protocol | Status
+
+| HTTP/1.1
+| Fully supported
+
+| HTTP/2
+| Fully supported (upstream and downstream)
+
+| HTTP/3 (QUIC)
+| *Experimental only* -- client-to-APISIX only; upstream HTTP/3 not supported; known CVEs; not production-ready
+
+| WebSocket
+| Fully supported
+
+| gRPC
+| Fully supported (proxying + transcoding via `grpc-transcode` plugin; `grpc-web` plugin)
+
+| TCP/UDP (L4)
+| Supported (stream proxy)
+
+| MQTT
+| Supported via `mqtt-proxy` plugin
+
+| Kafka
+| Supported via `kafka-proxy` plugin
+|===
+
+== Configuration Model
+
+[cols="1,3"]
+|===
+| Mode | Description
+
+| Dynamic (default)
+| Via Admin REST API; persisted in etcd; changes propagate in milliseconds via etcd watch
+
+| Standalone file
+| YAML/JSON in `conf/apisix.yaml`; hot-reloaded every 1 second; no etcd needed
+
+| Standalone API
+| Full config replaced atomically via API; in-memory only; includes `/validate` endpoint; no etcd needed
+
+| Dashboard
+| Separate project (`apache/apisix-dashboard`); web UI for route/plugin management
+|===
+
+== Deployment Modes
+
+[cols="1,3"]
+|===
+| Mode | Description
+
+| Traditional
+| Data plane + control plane co-located; etcd required
+
+| Decoupled
+| Data plane and control plane on separate instances; shared etcd
+
+| Standalone
+| No etcd; file-driven or API-driven configuration
+
+| Kubernetes
+| Helm chart or APISIX Ingress Controller (Gateway API compatible); Ingress Controller 2.0 is etcd-free
+
+| Docker
+| Official images on Docker Hub (`apache/apisix`)
+|===
+
+== Stateless Design
+
+*Stateless data plane.* APISIX nodes hold no persistent state; all configuration is sourced from etcd (or file/API in standalone mode).
+This enables horizontal scaling and container orchestration.
+
+== Token Mediation / BFF Support
+
+Evaluated against https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-13.html[IETF draft-ietf-oauth-browser-based-apps]:
+
+[cols="1,1,2"]
+|===
+| Variant | Supported? | Notes
+
+| Token-Mediating Backend (encrypted cookie)
+| *Yes* (open-source)
+| The `openid-connect` plugin supports this as the *default* mode (`session.storage = "cookie"`).
+
+| BFF Proxy (server-side session)
+| *Yes* (open-source)
+| By switching `session.storage` to `"redis"`, tokens are stored server-side.
+|===
+
+The `openid-connect` plugin makes APISIX a full *OIDC Relying Party (confidential client)*:
+
+. APISIX is registered with the IdP using `client_id` and `client_secret` (required configuration).
+. When an unauthenticated request arrives, APISIX redirects the browser (HTTP 302) to the IdP's authorization endpoint (discovered via the `discovery` URL).
+. The user authenticates at the IdP.
+. The IdP redirects back to APISIX at the callback URL (`<original_uri>/.apisix/redirect`).
+. APISIX exchanges the authorization code for tokens by calling the IdP's token endpoint *server-to-server*, authenticating with its client credentials (method configurable via `token_endpoint_auth_method`).
+. Tokens are encrypted (AES-256-GCM via lua-resty-session) into an `HttpOnly` session cookie.
+. On subsequent requests, APISIX decrypts the cookie and forwards the access token upstream via `X-Access-Token` header (or `Authorization: Bearer` when `access_token_in_authorization_header = true`).
+
+Underlying library: `lua-resty-openidc` + `lua-resty-session`.
+Session contents are configurable via `session_contents` (access_token, id_token, user claims).
+
+NOTE: This is available in the *open-source edition* (Apache 2.0), making APISIX the only evaluated gateway offering stateless token mediation as a full OIDC Relying Party without a commercial license.
+
+=== Automatic Token Refresh
+
+*Yes.* The `renew_access_token_on_expiry` parameter (default: `true`) enables silent renewal of the access token when it expires, provided a refresh token is stored in the session.
+
+* Transparent to the client (no redirect during normal requests).
+* `access_token_expires_leeway` (default: `0` seconds) allows triggering renewal a configurable number of seconds *before* actual expiry.
+* Refresh token is stored alongside the access token in the encrypted session cookie.
+* If the refresh token itself has expired, the user is redirected to the IdP for full re-authentication.
+
+NOTE: Some users have reported issues with `renew_access_token_on_expiry` in `bearer_only` mode (https://github.com/apache/apisix/discussions/12018[GitHub #12018]).
+
+=== Step-Up Authentication (RFC 9470)
+
+*Not supported.* The `openid-connect` plugin does not parse upstream `WWW-Authenticate` headers for `insufficient_user_authentication`, `acr_values`, `max_age`, or `scope` challenges.
+It cannot trigger re-authorization with elevated authentication levels or additional scopes based on upstream responses.
+There are no open issues or feature requests for RFC 9470 support.
+
+== Forwarded Header / RFC 7239
+
+*No native RFC 7239 support.* APISIX handles legacy `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-Port` headers.
+The `real-ip` plugin reads client IP from trusted proxies' headers.
+There is no plugin or built-in mechanism for the standardized `Forwarded` header per RFC 7239.
+
+== Strengths
+
+* High performance (Nginx + LuaJIT foundation, very low latency)
+* Fully dynamic configuration (no restarts; millisecond propagation via etcd watch)
+* Rich plugin ecosystem (78 built-in plugins)
+* Multi-language plugin support (Lua, Go, Java, Python, Node.js, WASM)
+* Cloud-native (stateless data plane, Kubernetes-native ingress controller)
+* Active ASF project (16.3k stars, 491 contributors)
+* AI Gateway capabilities (LLM proxying, token-based rate limiting since 2025)
+* Protocol breadth (HTTP/1.1, HTTP/2, gRPC, WebSocket, MQTT, TCP/UDP, Kafka)
+* All 78 plugins included in open-source edition
+
+== Weaknesses
+
+* etcd dependency in traditional mode adds operational complexity
+* Lua as primary language has a smaller developer pool than Go/Java
+* HTTP/3 still experimental (client-side only, known CVEs)
+* No native RFC 7239 support
+* Dashboard project has had slower development than the core gateway
+* Documentation gaps for some advanced topics
+* Inherits some Nginx limitations
+
+== Open-Source vs. Enterprise
+
+The gateway itself is *genuinely open source* under Apache 2.0 with all 78 plugins included.
+
+API7 Enterprise (commercial offering by API7.ai) adds:
+
+[cols="1"]
+|===
+| Enterprise-Only Features
+
+| RBAC and workspace management
+| Gateway groups (multi-tenancy)
+| API portal with monetization
+| GraphQL rate limiting and proxy cache
+| SOAP protocol conversion
+| Secrets management (Vault integration)
+| OAS validator
+| GDPR/FIPS/SOC2 compliance
+| 99.9% SLA and dedicated support
+|===
+
+No core proxy or routing features are withheld from the open-source edition.
+
+== Sources
+
+* https://github.com/apache/apisix[Apache APISIX GitHub Repository]
+* https://apisix.apache.org/[Apache APISIX Official Website]
+* https://apisix.apache.org/plugins/[APISIX Plugin Hub]
+* https://apisix.apache.org/docs/apisix/deployment-modes/[Deployment Modes Documentation]
+* https://apisix.apache.org/docs/apisix/http3/[HTTP/3 Documentation]
+* https://apisix.apache.org/blog/2026/02/05/release-apache-apisix-3.15.0/[APISIX 3.15.0 Release Notes]
+* https://api7.ai/apisix-vs-enterprise[API7 Enterprise vs APISIX Comparison]
+* https://apisix.apache.org/blog/2022/08/17/backend-for-frontend-demo/[APISIX BFF Demo]
+* https://endoflife.date/apache-apisix[Apache APISIX endoflife.date]
