@@ -1,4 +1,4 @@
-commit = API Gateway Landscape -- Competitive Analysis
+= API Gateway Landscape -- Competitive Analysis
 :toc:
 :toclevels: 2
 :sectnums:

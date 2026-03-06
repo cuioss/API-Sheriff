@@ -1,4 +1,4 @@
-RE= Tyk API Gateway -- Fact Sheet
+= Tyk API Gateway -- Fact Sheet
 :toc:
 :toclevels: 2
 :sectnums:
