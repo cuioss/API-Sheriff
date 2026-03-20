@@ -43,7 +43,7 @@
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <version.quarkus>3.32.4</version.quarkus>
-        <version.oauth-sheriff>0.4.1</version.oauth-sheriff>
+        <version.oauth-sheriff>0.5.0</version.oauth-sheriff>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
     </properties>
