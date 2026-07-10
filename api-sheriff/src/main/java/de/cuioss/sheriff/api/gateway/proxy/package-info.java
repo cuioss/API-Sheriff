@@ -13,27 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.api;
-
-import io.quarkus.runtime.Quarkus;
-import io.quarkus.runtime.QuarkusApplication;
-import io.quarkus.runtime.annotations.QuarkusMain;
-
 /**
- * Main entry point for the API Sheriff gateway application.
+ * Interim minimal reverse-proxy edge for the API Sheriff gateway.
  * <p>
- * This application provides the security-focused API Gateway with REST endpoints,
- * health checks, and metrics in a containerized environment.
+ * A single catch-all Vert.x route ({@link de.cuioss.sheriff.api.gateway.proxy.ProxyRoute})
+ * forwards requests matching a configured path prefix
+ * ({@link de.cuioss.sheriff.api.gateway.proxy.ProxyConfiguration}) to an upstream
+ * URL, executing the blocking forward on a virtual thread. This is the outermost
+ * shell only: it is kept as the edge and has its internals replaced by the real
+ * request pipeline in Plan 03.
  *
- * @author API Sheriff Team
  * @since 1.0
  */
-@QuarkusMain
-public class ApiSheriffApplication implements QuarkusApplication {
-
-    @Override
-    public int run(String... args) throws Exception {
-        Quarkus.waitForExit();
-        return 0;
-    }
-}
+package de.cuioss.sheriff.api.gateway.proxy;

@@ -6,7 +6,7 @@
     <parent>
         <groupId>de.cuioss</groupId>
         <artifactId>cui-java-parent</artifactId>
-        <version>1.4.5</version>
+        <version>1.5.0</version>
         <relativePath />
     </parent>
     <groupId>de.cuioss.sheriff.api</groupId>
@@ -76,14 +76,6 @@
                 <groupId>de.cuioss.sheriff.api</groupId>
                 <artifactId>api-sheriff</artifactId>
                 <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>de.cuioss.sheriff.api</groupId>
-                <artifactId>api-sheriff</artifactId>
-                <version>${project.version}</version>
-                <type>test-jar</type>
-                <classifier>generators</classifier>
-                <scope>test</scope>
             </dependency>
             <!-- Override JUnit Platform versions to match Jupiter (cui-java-parent provides
                  version.junit.jupiter, but the Quarkus BOM pins older Platform versions) -->

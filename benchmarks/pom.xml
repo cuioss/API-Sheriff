@@ -45,7 +45,6 @@
 
         <!-- Benchmark history directory for trend analysis -->
         <benchmark.history.dir>${wrk.results.dir}/history</benchmark.history.dir>
-        <wrk.jwt.token_count>100</wrk.jwt.token_count>
 
         <!-- Sonar configuration: Skip analysis for benchmarking modules -->
         <sonar.skip>true</sonar.skip>
@@ -183,6 +182,8 @@
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                     <environmentVariables>
                                         <LOG_TARGET_DIR>${wrk.results.dir}</LOG_TARGET_DIR>
+                                        <!-- Overlay the static nginx backend and repoint the gateway upstream -->
+                                        <BENCHMARK_MODE>true</BENCHMARK_MODE>
                                     </environmentVariables>
                                 </configuration>
                             </execution>
@@ -262,6 +263,30 @@
                                         <argument>${wrk.script.dir}/api_health_benchmark.sh</argument>
                                     </arguments>
                                     <outputFile>${wrk.output.dir}/wrk-api-health-results.txt</outputFile>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <WRK_THREADS>${wrk.threads}</WRK_THREADS>
+                                        <WRK_CONNECTIONS>${wrk.connections}</WRK_CONNECTIONS>
+                                        <WRK_DURATION>${wrk.duration}</WRK_DURATION>
+                                        <WRK_TIMEOUT>${wrk.timeout}</WRK_TIMEOUT>
+                                        <COMPOSE_DIR>${integration.compose.dir}</COMPOSE_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run WRK proxied-static benchmark (wrk -> gateway -> nginx) -->
+                            <execution>
+                                <id>run-wrk-proxied-static-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>${wrk.script.dir}/proxied_static_benchmark.sh</argument>
+                                    </arguments>
+                                    <outputFile>${wrk.output.dir}/wrk-proxied-static-results.txt</outputFile>
                                     <timeout>240000</timeout>
                                     <environmentVariables>
                                         <WRK_THREADS>${wrk.threads}</WRK_THREADS>

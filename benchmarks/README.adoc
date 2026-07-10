@@ -1,6 +1,33 @@
 = API Sheriff Integration Benchmarks
 
-WRK-based HTTP benchmarks for API Sheriff endpoints with integration test infrastructure.
+WRK-based HTTP benchmarks for API Sheriff, run against the native container over
+the integration-test infrastructure.
+
+== Benchmarks
+
+[cols="1,2,3", options="header"]
+|===
+|Name |Path |What it measures
+
+|`healthLiveCheck`
+|`http://api-sheriff:9000/q/health/live`
+|Management-interface liveness throughput — the plain-HTTP baseline with no TLS or routing.
+
+|`gatewayHealth`
+|`https://api-sheriff:8443/api/health`
+|The RESTEasy health endpoint over HTTPS — baseline HTTPS request-handling overhead.
+
+|`proxiedStatic`
+|`https://api-sheriff:8443/proxy/static`
+|Proxy overhead: `wrk -> gateway -> nginx`. The gateway forwards `/proxy/*` to a fast
+ static nginx backend (`access_log off`, fixed payload) so the backend never saturates
+ before the gateway does. The delta versus `gatewayHealth` is the cost of the proxy hop.
+|===
+
+For the proxied-static run the container topology is overlaid with
+`docker-compose.benchmark.yml`, which adds the `nginx-static` backend and repoints
+the gateway's proxy upstream at it (the integration tests instead point it at the
+`go-httpbin` echo backend).
 
 == Running Benchmarks
 
@@ -16,6 +43,6 @@ For quick runs (shorter duration, assumes containers already running):
 ./mvnw clean verify -pl benchmarks -Pbenchmark -Pquick
 ----
 
-== Performance Scoring
-
-See the https://github.com/cuioss/OAuthSheriff/blob/main/benchmarking/doc/performance-scoring.adoc[JWT Performance Scoring System] documentation in the OAuthSheriff repository.
+Results are written to `target/benchmark-results/` and post-processed by
+`WrkResultPostProcessor` into the report artifacts consumed by the benchmark
+pages pipeline.

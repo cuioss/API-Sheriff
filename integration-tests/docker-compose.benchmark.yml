@@ -1,0 +1,21 @@
+# Benchmark-only overlay (merged on top of docker-compose.yml).
+# Adds the fast static nginx backend and repoints the gateway's proxy upstream
+# at it, so the proxied-static benchmark measures proxy overhead without a
+# JSON-serializing backend (go-httpbin) polluting the numbers.
+services:
+  nginx-static:
+    image: nginx:alpine
+    ports:
+      - "18081:8080"  # published only for the host-side readiness probe
+    volumes:
+      - ./nginx/nginx-static.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
+  api-sheriff:
+    environment:
+      # Override the IT upstream (go-httpbin) with the static backend for benchmarks
+      - SHERIFF_PROXY_UPSTREAM_URL=http://nginx-static:8080
+    depends_on:
+      - nginx-static

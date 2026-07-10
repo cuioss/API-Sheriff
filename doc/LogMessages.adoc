@@ -1,0 +1,41 @@
+= Log Messages for API Sheriff
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+== Overview
+
+This document provides a reference for all structured log messages emitted by the
+API Sheriff gateway. Structured messages carry the `ApiSheriff` prefix and a stable
+numeric identifier, so they are greppable and assertable.
+
+=== Log Message Format
+
+All messages follow the format: `ApiSheriff-[identifier]: [message]`
+
+The log message levels follow these identifier ranges:
+
+* INFO Level: 1-99
+* WARN Level: 100-199
+* ERROR Level: 200-299
+
+Note: Only log level INFO and above are documented in this file. `DEBUG` / `TRACE`
+diagnostics use the logger directly and are not catalogued.
+
+== INFO Level (001-099)
+
+[cols="1,1,2,2", options="header"]
+|===
+|ID |Component |Message |Description
+|ApiSheriff-001 |PROXY |Proxy route registered: path-prefix='%s' upstream='%s' |Logged once at startup when the catch-all proxy route is registered on the data plane
+|===
+
+== WARN Level (100-199)
+
+[cols="1,1,2,2", options="header"]
+|===
+|ID |Component |Message |Description
+|ApiSheriff-100 |PROXY |Proxy request to upstream '%s' failed: %s |Logged when forwarding a request to the configured upstream fails; the gateway responds with 502
+|===

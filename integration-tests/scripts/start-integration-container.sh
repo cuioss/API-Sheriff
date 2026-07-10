@@ -33,6 +33,12 @@ else
     IMAGE_TYPE="none"
 fi
 
+# Benchmark mode: overlay the static nginx backend and repoint the gateway upstream
+if [[ "${BENCHMARK_MODE:-false}" == "true" ]] && [[ -n "$COMPOSE_CMD" ]]; then
+    COMPOSE_CMD="$COMPOSE_CMD -f docker-compose.benchmark.yml"
+    echo "🏁 Benchmark mode: overlaying static nginx backend (docker-compose.benchmark.yml)"
+fi
+
 IMAGE_EXISTS=$([ ! -z "$AVAILABLE_IMAGE" ] && echo "true" || echo "false")
 
 if [[ -n "$RUNNER_FILE" ]] && [[ "$IMAGE_EXISTS" == "true" ]]; then
@@ -76,6 +82,40 @@ for i in {1..60}; do
     echo "⏳ Waiting for Keycloak... (attempt $i/60)"
     sleep 1
 done
+
+# Wait for the go-httpbin upstream backend (proxy target) to be ready
+echo "⏳ Waiting for go-httpbin upstream to be ready..."
+for i in {1..30}; do
+    if curl -sf http://localhost:18080/status/200 > /dev/null 2>&1; then
+        echo "✅ go-httpbin upstream is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "❌ go-httpbin upstream failed to start within 30 seconds"
+        echo "Check logs with: docker compose logs go-httpbin"
+        exit 1
+    fi
+    echo "⏳ Waiting for go-httpbin... (attempt $i/30)"
+    sleep 1
+done
+
+# Wait for the static nginx backend (benchmark mode only)
+if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
+    echo "⏳ Waiting for nginx-static backend to be ready..."
+    for i in {1..30}; do
+        if curl -sf http://localhost:18081/ > /dev/null 2>&1; then
+            echo "✅ nginx-static backend is ready!"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            echo "❌ nginx-static backend failed to start within 30 seconds"
+            echo "Check logs with: docker compose logs nginx-static"
+            exit 1
+        fi
+        echo "⏳ Waiting for nginx-static... (attempt $i/30)"
+        sleep 1
+    done
+fi
 
 # Wait for Quarkus service to be ready and measure startup time
 echo "⏳ Waiting for Quarkus service to be ready..."
