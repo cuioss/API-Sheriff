@@ -9,8 +9,9 @@ Turn the existing scaffolding into a verified, clean foundation: a Quarkus modul
 one real gateway thing end-to-end (a minimal pass-through proxy to a routable upstream), an
 integration-test setup that exercises it against a real upstream target container, a
 benchmark that measures proxy overhead, and *all builds green -- locally and on CI*. The
-structure follows the sibling project `/Users/oliver/git/TokenSheriff`; stale scaffolding
-copied from it is removed.
+structure follows the sibling project https://github.com/cuioss/TokenSheriff[TokenSheriff]
+(assumed checked out next to this repository as `../TokenSheriff`); stale scaffolding copied
+from it is removed.
 
 == Required Reading (before implementation)
 
@@ -19,7 +20,7 @@ copied from it is removed.
 . link:../variants/01-base-gateway.adoc[Variant 1] -- the target the minimal proxy grows into.
 . link:../adr/0001-java25-runtime-baseline.adoc[ADR-0001] -- compile at 21, *run* the
   container/native image on a JDK 25 line (Mandrel builder pin).
-. In `/Users/oliver/git/TokenSheriff`: `agents.md` (dev guidelines), the root and
+. In the TokenSheriff checkout (`../TokenSheriff`): `agents.md` (dev guidelines), the root and
   `token-sheriff-quarkus-parent` poms (profile/plugin conventions),
   `token-sheriff-quarkus-integration-tests/` (compose + scripts + IT layout),
   `benchmarking/` (WRK suite, `benchmarking-common` report engine,
