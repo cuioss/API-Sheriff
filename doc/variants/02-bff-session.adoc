@@ -143,7 +143,9 @@ When the stored access token is within the configured leeway of expiry, the gate
 it through the engine using the stored refresh token (with rotation), transparently during a
 normal API request.
 On refresh-token reuse detection the token family is revoked; on refresh failure the session
-is destroyed and the browser is re-driven through the login flow. See
+is destroyed and the request is handled as unauthenticated -- a *navigation* request is
+re-driven through the login flow, while an API/XHR request receives `401`
+`application/problem+json` (the same content negotiation as `require: session`). See
 link:../configuration.adoc[`oidc.session.refresh`].
 
 == Step-Up Authentication (RFC 9470)

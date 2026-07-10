@@ -61,7 +61,10 @@ and the gateway holds no per-user state.
   authentication and is rejected.
 
 | Cookie attributes
-| `HttpOnly` (JavaScript cannot read it -- XSS-safe), `Secure`, `SameSite=Lax`, `__Host-` prefix.
+| `HttpOnly` (JavaScript can never *read* the token -- direct exfiltration is prevented, but
+  an XSS payload running on the page can still *issue* authenticated requests, and encryption
+  does not prevent *replay* of a stolen cookie before it expires), `Secure`, `SameSite=Lax`,
+  `__Host-` prefix.
 
 | Key management
 | A single server-side symmetric key, provided by environment indirection
@@ -176,6 +179,8 @@ The only material difference from the link:02-bff-session.adoc[session-based] co
 == Properties
 
 * *Stateless* -- no server-side store; encrypted cookie carries the state.
-* *XSS-safe* -- `HttpOnly` cookie; the token is never accessible to JavaScript.
+* *No token exfiltration via script* -- `HttpOnly` cookie; the token is never readable by
+  JavaScript (XSS on the page can still drive authenticated requests -- hence the fixed CSRF
+  defence and short token lifetimes).
 * *Self-contained* -- instances share only the encryption key.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
