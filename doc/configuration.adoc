@@ -1,0 +1,406 @@
+= API Sheriff -- Configuration Model
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Principles
+
+Configuration is *static, file-based, and immutable*. It is read once at startup, validated
+in full, frozen into immutable value objects, and never mutated at runtime. The gateway
+refuses to boot on invalid configuration.
+
+Two structural principles shape the layout:
+
+* *Endpoint config is portable; topology is environment-specific.* Route definitions never name
+  a concrete host. They reference an abstract alias (`APP1`, `KEYCLOAK`, ...); a separate
+  topology file binds each alias to a real location. Moving a deployment changes only the
+  topology, never the endpoint files.
+* *Zero-trust and deny-by-default* throughout: nothing is forwarded, routed, or trusted unless
+  it is explicitly configured.
+
+The model draws the best of the evaluated competitors (see link:features-analysis.adoc[Feature Analysis]):
+
+* *Endpoint-centric routes* with per-route timeout and circuit breaker -- from KrakenD.
+* *Composable, bounded matchers* (path, method, host, header) -- from Traefik.
+* *Validated-then-immutable, atomic config* -- from APISIX standalone mode + KrakenD GitOps.
+* *Zero-trust forwarding* (deny-by-default allowlists) -- from KrakenD.
+* *Alias -> URL indirection with env override* -- 12-factor "config in the environment"; the
+  single-URL alias and decompose-on-read model follow Kong / Spring / Traefik (see
+  link:adr/0004-topology-indirection.adoc[ADR-0004]).
+
+The schema is intentionally declarative; there is no rule language and no runtime mutation API.
+
+== Configuration Layout
+
+Configuration is three kinds of artifact:
+
+[cols="1,3"]
+|===
+| Artifact | Purpose
+
+| `gateway.yaml`
+| *Global* settings: schema version, TLS, security-response headers, filter defaults, the
+  `forwarded`-header policy, and the `oidc` block (BFF variants). No routes.
+
+| `endpoints/*.yaml`
+| *One file per endpoint* -- a service / host / app, or a logical group. Each file binds to one
+  `base_url` *alias* and declares the routes for that endpoint. These files are
+  *environment-independent* -- they never contain a real host.
+
+| `topology.properties`
+| Maps each `base_url` alias to a concrete location (one URL per alias). Overridable per alias by
+  an environment variable. This is the *only* file that changes between environments.
+|===
+
+[source,text]
+----
+conf/
+  gateway.yaml              # global settings
+  endpoints/
+    app1.yaml               # base_url: APP1     -> routes for /api/orders ...
+    keycloak.yaml           # base_url: KEYCLOAK -> routes for /auth, /token
+  topology.properties       # APP1=..., KEYCLOAK=...   (env vars override)
+----
+
+== Loading, Resolution and Validation
+
+* `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
+  startup.
+* Each endpoint's `base_url` alias is *resolved* against the topology (env var wins over the file,
+  see link:#_topology[Topology]); the resolved URL is *decomposed once* into
+  `{scheme, host, port, base-path}` (the Kong "accept URL, store components" model).
+* The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias,
+  a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
+* Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
+  commit. Topology values may be literal (they are locations, not secrets) but are still
+  overridable by env.
+* On any validation error the process exits non-zero and logs the offending file/alias -- it does
+  not start a degraded gateway.
+
+[[_distributed_configuration]]
+=== Configuration Mode -- Static Only (initial scope)
+
+*API Sheriff supports only Static mode initially* -- see link:adr/0002-initial-scope.adoc[ADR-0002].
+The manifest's dynamic `/api/gateway-config.json` discovery is deferred; `metadata.config_version`
+is retained now only as an audit stamp.
+
+== Gateway Configuration (`gateway.yaml`)
+
+[source,yaml]
+----
+version: 1                         # config schema version; unknown values are refused
+
+metadata:
+  config_version: "2026-07-10.1"   # audit stamp only (see "Configuration Mode")
+
+tls:
+  mode: terminate                  # terminate | passthrough (per-SNI passthrough allowed)
+  min_version: "1.3"
+  alpn: [h2, http/1.1]             # HTTP/2 (also carries gRPC) + HTTP/1.1
+  mtls:
+    enabled: false
+    client_ca: /etc/sheriff/ca.pem
+
+security_headers:                  # response-header middleware (global default)
+  hsts: { max_age: 31536000, include_subdomains: true }
+  content_type_nosniff: true
+  frame_deny: true
+
+security_defaults:                 # default inbound filter profile; overridable per route
+  profile: strict                  # default | strict | lenient  (maps to cui-http presets)
+
+forwarded:                         # accept both on input, unify, emit configurable output
+  trusted_proxies: [10.0.0.0/8]    # MANDATORY allowlist; empty => trust only the TCP peer
+  accept: { forwarded: true, x_forwarded: true }   # parse both RFC 7239 and X-Forwarded-*
+  emit: x-forwarded                # x-forwarded (default) | rfc7239 | both
+  obfuscate_by: true               # when emitting Forwarded, use by=_id (hide internal topology)
+
+oidc:                              # only used by the BFF variants (2 and 3)
+  issuer: https://idp.example.com/realms/main
+  client_id: api-sheriff
+  client_secret: ${SHERIFF_CLIENT_SECRET}
+  scopes: [openid, profile]
+  redirect_uri: https://gw.example.com/auth/callback
+  session:
+    mode: cookie                   # cookie (Variant 3) | server (Variant 2)
+    cookie_name: __Host-sheriff
+    encryption_key: ${SHERIFF_SESSION_KEY}   # Variant 3 only (AES-256-GCM)
+    ttl_seconds: 3600
+    refresh:
+      enabled: true
+      leeway_seconds: 30           # refresh this long before expiry
+      on_failure: reauthenticate   # reauthenticate | reject
+  step_up:                         # RFC 9470
+    enabled: true
+    honor_upstream_challenge: true
+----
+
+== Endpoint Configuration Files (`endpoints/*.yaml`)
+
+One file per endpoint (service / host / app) or logical group. The file binds to a single
+`base_url` alias and lists its routes. *No concrete host appears here* -- the alias is resolved
+from the topology at startup.
+
+[source,yaml]
+----
+# endpoints/app1.yaml
+endpoint:
+  id: app1
+  base_url: APP1                   # alias; resolved from topology.properties / env
+  routes:                          # ordered; first match wins; no match => 404
+    - id: orders-api
+      protocol: http               # http | grpc | graphql | websocket (see "Protocols")
+      match:
+        path_prefix: /api/orders
+        methods: [GET, POST]
+        host: api.example.com
+        headers:                   # optional header matchers (presence or exact value)
+          - { name: X-Tenant, present: true }
+      auth:
+        require: bearer            # none | bearer | session
+        required_scopes: [orders.read]
+      security_filter:             # "basic filtering -- NOT a WAF"; see below
+        profile: strict
+        allowed_paths: [/api/orders, /api/orders/{id}]
+        max_header_count: 50
+        max_header_bytes: 8192
+        max_query_params: 20
+        max_param_value_bytes: 2048
+        max_body_bytes: 1048576
+      forward:                     # zero-trust: only what is listed crosses upstream
+        headers_allow: [accept, content-type]
+        query_allow: [page, size]
+        set_headers:
+          authorization: "Bearer ${auth.access_token}"   # injected mediated token
+      upstream:
+        path: /orders              # appended to the resolved base_url of APP1
+        connect_timeout_ms: 2000
+        read_timeout_ms: 5000
+        retry: { max_attempts: 3, idempotent_only: true }
+        circuit_breaker: { failures: 5, reset_ms: 30000 }
+      rate_limit: { requests_per_second: 100, burst: 20 }   # per-node, in-memory only
+----
+
+The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
+the `KEYCLOAK` alias:
+
+[source,yaml]
+----
+# endpoints/keycloak.yaml
+endpoint:
+  id: keycloak
+  base_url: KEYCLOAK
+  routes:
+    - id: auth
+      match: { path_prefix: /auth }
+      upstream: { path: /realms/main/protocol/openid-connect/auth }
+    - id: token
+      match: { path_prefix: /token }
+      upstream: { path: /realms/main/protocol/openid-connect/token }
+----
+
+[[_topology]]
+== Topology (`topology.properties`)
+
+Each `base_url` alias maps to *one URL* -- the concrete location of the current installation. A URL
+is the majority idiom for a human-authored, env-overridden target (12-factor resource handle;
+Traefik `url`, Spring `uri`, Nginx `proxy_pass`); the gateway decomposes it once on load into its
+components. See link:adr/0004-topology-indirection.adoc[ADR-0004].
+
+[source,properties]
+----
+# topology.properties  (the ONLY file that changes between environments)
+APP1=https://app1.internal:8443/app1
+KEYCLOAK=https://kc.internal:8443
+----
+
+=== Environment-variable override (takes precedence)
+
+Any alias may be overridden by an environment variable `TOPOLOGY_<ALIAS>`, which *wins over* the
+file. This lets an operator relocate a backend without touching any file:
+
+[source,bash]
+----
+TOPOLOGY_APP1=https://app1.mycompany.com
+----
+
+Precedence, highest first: `TOPOLOGY_<ALIAS>` env var -> `topology.properties` entry. An alias
+referenced by an endpoint file that resolves to neither is a *boot failure*.
+
+=== Resolution semantics
+
+* The resolved value is a full URL (`scheme://host[:port][/base-path]`), validated and decomposed
+  once into `{scheme, host, port, base-path}`.
+* A route's upstream target is `resolved(base_url) + route.upstream.path` (base-path and route path
+  are joined with exactly one `/`).
+* Component overrides (e.g. changing only the port) are intentionally *not* supported initially; the
+  whole URL is the unit of override. A `TOPOLOGY_<ALIAS>_PORT`-style escape hatch may be added later
+  if a real partial-override need appears (Kong's component model) -- see
+  link:adr/0004-topology-indirection.adoc[ADR-0004].
+
+== Field Reference
+
+=== `tls`
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `mode: terminate`
+| The gateway terminates TLS (new certificate), decrypts, and can apply all L7 features
+  (filtering, routing, auth, mediation). Required for the BFF variants and for L7 gRPC/WebSocket.
+
+| `mode: passthrough`
+| The gateway forwards the encrypted TCP stream based on TLS SNI without decrypting. L7 features
+  are *not available* on a passthrough route -- the payload is opaque. Termination and passthrough
+  coexist (passthrough selected per SNI/host).
+
+| `min_version`
+| Minimum negotiated TLS version for terminated connections; `1.3` recommended, `1.2` floor.
+
+| `alpn`
+| Advertised ALPN protocols. `h2` also carries gRPC ("gRPCS" when TLS-terminated).
+
+| `mtls.*`
+| Require and verify client certificates against the given CA (terminate mode only).
+|===
+
+[[_protocols]]
+=== `protocol`
+
+Each route declares the protocol it serves. All four are supported *from the start*
+(link:adr/0002-initial-scope.adoc[ADR-0002]); HTTP/3 is deferred.
+
+[cols="1,3"]
+|===
+| Value | Handling
+
+| `http`
+| HTTP/1.1 and HTTP/2 request/response. The default. All filtering, auth, and forwarding apply.
+
+| `graphql`
+| A single POST endpoint over standard HTTP; routed/forwarded like `http`. The basic filter does
+  *not* parse GraphQL query ASTs (not a WAF) -- no query-depth/cost limits; it caps `max_body_bytes`
+  and applies path/header checks. Query-cost limiting is a possible future addition.
+
+| `grpc`
+| gRPC over HTTP/2 (h2 / h2c), incl. "gRPCS" when TLS-terminated. The gateway proxies the HTTP/2
+  stream; auth + header injection apply to the request. Protobuf frames are not inspected.
+
+| `websocket`
+| An HTTP/1.1 Upgrade (or HTTP/2 WebSocket) proxied bidirectionally. Auth is enforced on the
+  handshake; the stream is then relayed. The filter applies to the handshake, not to frames.
+|===
+
+[[_security_filtering]]
+=== `security_filter`
+
+The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature matching. Maps onto
+`cui-http`'s `SecurityConfiguration` and pipelines:
+
+[cols="2,2,2"]
+|===
+| Config field | cui-http mapping | Notes
+
+| `profile`
+| `SecurityConfiguration.strict()` / `defaults()` / `lenient()`
+| Baseline preset; the limits below override it.
+
+| `max_body_bytes`
+| `maxBodySize`
+| DoS guard.
+
+| `max_header_count` / `max_query_params`
+| `maxHeaderCount` / `maxParameterCount` (`RequestCollectionValidator`)
+| Hash-collision / resource-exhaustion guards.
+
+| `max_header_bytes` / `max_param_value_bytes`
+| `maxHeaderValueLength` / `maxParameterValueLength`
+| Per-item length caps.
+
+| (path safety)
+| `URLPathValidationPipeline`
+| Traversal / encoding / character / pattern checks; tuned by the profile.
+|===
+
+*Whitelisting.* `cui-http` has no path allow-list knob, so URL/parameter whitelisting is enforced at
+the gateway layer: `allowed_paths` (a request whose validated, normalized path matches no entry is
+rejected -- the manifest's "WAF via path white-listing"), plus `forward.query_allow` /
+`forward.headers_allow` (only listed items reach upstream). Header-name and content-type allow/block
+are wired from `cui-http` `allowedHeaderNames` / `blockedHeaderNames` / `allowedContentTypes`.
+
+=== `auth`
+
+[cols="1,3"]
+|===
+| Value | Behaviour
+
+| `require: none`  | No authentication (e.g. `/health`).
+| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation`; enforce `required_scopes`. link:variants/01-base-gateway.adoc[Variant 1].
+| `require: session`| Require a valid mediated OIDC session; inject the token upstream. The BFF variants; an unauthenticated browser is redirected into the auth-code flow.
+|===
+
+=== `forward`
+
+Deny-by-default. `headers_allow` / `query_allow` are allowlists; `set_headers` injects
+gateway-controlled headers (the mediated `Authorization: Bearer` and the forwarding header per the
+`forwarded` policy). Anything not listed is not forwarded.
+
+=== `upstream`
+
+The target is `resolved(endpoint.base_url) + upstream.path`. `connect_timeout_ms` / `read_timeout_ms`
+map to `cui-http` `HttpHandler`; `retry` maps to `ResilientHttpAdapter` + `RetryConfig`
+(`idempotent_only` retries only GET/PUT/DELETE); `circuit_breaker` is enforced in-process
+(stateless, per node). The upstream host is never written literally here -- only the alias-relative
+`path`.
+
+[[_forwarded_headers]]
+=== `forwarded`
+
+API Sheriff accepts *both* forwarding-header families on input, normalizes them into one internal
+model behind a trusted-proxy allowlist, and emits a *configurable* canonical output that defaults to
+`X-Forwarded-*`. RFC 7239 `Forwarded` emission is opt-in and additive. The rationale (why
+`X-Forwarded-*` is the sane default and why RFC 7239 adoption is poor across the industry) is in
+link:adr/0003-forwarded-headers.adoc[ADR-0003].
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `trusted_proxies`
+| *Mandatory* CIDR allowlist of upstream proxies. Forwarding headers are trusted *only* when the
+  immediate TCP peer is in this list; otherwise they are ignored and the real TCP peer
+  (`remote_addr`) is used. Never trust-all (`0.0.0.0/0`) -- that is the canonical footgun.
+
+| `accept.forwarded` / `accept.x_forwarded`
+| Which inbound header families to parse (both by default). Parsing is spec-correct
+  (quoted-strings, `;` vs `,`, IPv6 brackets, ports, obfuscated `_`-nodes), not naive comma-split.
+
+| `emit`
+| Canonical output: `x-forwarded` (default), `rfc7239`, or `both`. When `rfc7239`/`both`, the
+  `Forwarded` header is emitted strictly encoded (quoting, IPv6 bracketing) *in addition to*
+  `X-Forwarded-*` -- never instead of it.
+
+| `obfuscate_by`
+| When emitting `Forwarded`, use an obfuscated `by=_id` so internal topology is not leaked.
+|===
+
+*Trust model (summary).* Start from the unspoofable TCP peer, walk the appended chain right-to-left
+accepting entries only from allow-listed hops; the first entry from a non-trusted hop is the real
+client. At an *untrusted* boundary, strip inbound forwarding headers and regenerate; at a *trusted*
+hop, append. This defuses "`Forwarded` header sabotage" and the too-broad-trust bug that breaks
+IP-based rate limiting. Full model in link:adr/0003-forwarded-headers.adoc[ADR-0003].
+
+== Configuration Validation Rules (summary)
+
+* `version` must be a known value.
+* Every route has a unique `id` (across all endpoint files) and a resolvable `endpoint.base_url`.
+* Every `base_url` alias resolves via `TOPOLOGY_<ALIAS>` or `topology.properties` to a well-formed
+  URL; otherwise boot fails.
+* A route with `auth.require: session` requires an `oidc` block.
+* `tls.mode: passthrough` routes may not declare `security_filter`, `forward.set_headers`, `auth`,
+  or an L7 `protocol` (gRPC/WebSocket/GraphQL) -- these require a terminated connection.
+* `forwarded.trusted_proxies` must be present (may be empty = trust only the TCP peer); a non-empty
+  `0.0.0.0/0` is rejected as unsafe.
+* Secrets in `oidc` must be `${ENV_VAR}` references, not literals.
+* `session.mode: cookie` requires `session.encryption_key`; `session.mode: server` does not.

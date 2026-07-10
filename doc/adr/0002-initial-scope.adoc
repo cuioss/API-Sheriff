@@ -1,0 +1,61 @@
+= ADR-0002 -- Initial Protocol and Configuration Scope
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+The link:../archive/manifest.adoc[manifest] lists a broad protocol and configuration surface, marking
+some items mandatory and others optional/nice-to-have. Two scope decisions need to be fixed so
+the design documents and the configuration model agree:
+
+. *Which protocols ship from the start.* The manifest mandates HTTP/2 and WebSocket and lists
+  gRPC and HTTP/3 as optional. Product direction has since changed: gRPC and GraphQL are
+  required from day one.
+. *Which configuration mode ships from the start.* The manifest describes both a *Static* mode
+  and a *Dynamic* discovery mode (`/api/gateway-config.json`). Only static is wanted initially.
+
+== Decision
+
+=== Protocols -- from the start
+
+* *HTTP/1.1, HTTP/2, WebSocket, gRPC (incl. gRPCS), and GraphQL* are all in scope from the
+  first release.
+* gRPC rides on HTTP/2 and GraphQL on standard HTTP POST, so both are largely covered by the
+  core HTTP transport; only handshake/streaming specifics (WebSocket upgrade, gRPC streaming)
+  need protocol-aware handling. See link:../architecture.adoc#_protocol_support[Architecture --
+  Protocol Support] and the per-route `protocol` field in
+  link:../configuration.adoc#_protocols[Configuration -- Protocols].
+* *HTTP/3 / QUIC is deferred* -- production JVM support is thin and only Traefik ships it
+  production-ready among the evaluated competitors. Revisit once Quarkus/JDK support matures.
+* The basic security filter operates on HTTP metadata only. It does not inspect protobuf frames
+  (gRPC) or parse GraphQL query ASTs (no query depth/cost limiting) -- consistent with the
+  "not a WAF" boundary.
+
+=== Configuration -- Static mode only
+
+* API Sheriff ships with *Static mode only*: routes and rules fully defined in local YAML,
+  validated at startup, frozen immutable.
+* The manifest's *Dynamic* discovery mode is *deferred*. The `metadata.config_version` field is
+  retained now as an audit stamp so the model need not change when discovery is added later; no
+  runtime behaviour depends on it today. It remains a documented
+  link:../features-analysis.adoc#_differentiators[differentiator] to revisit.
+
+== Consequences
+
+* The configuration schema is smaller and fully static -- no discovery client, no polling, no
+  well-known endpoint to secure at launch.
+* gRPC and GraphQL support is mostly a consequence of first-class HTTP/2 handling rather than a
+  separate proxy engine, keeping the surface lean.
+* Deferring HTTP/3 and dynamic config keeps the initial security-review surface small, in line
+  with the lightweight, security-focused posture (link:../features-analysis.adoc[Feature Analysis]).
+
+== Relationship to the Manifest
+
+This ADR narrows the manifest's optional/mandatory lists for the initial release. It does *not*
+change BFF behaviour -- for all BFF concerns the authoritative source is
+`TokenSheriff/doc/client`, which governs over the manifest (see
+link:../variants/README.adoc[Variants] and link:../architecture.adoc#_authentication_layer[Architecture]).

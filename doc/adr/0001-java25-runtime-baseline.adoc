@@ -1,0 +1,70 @@
+= ADR-0001 -- Java 25 Runtime Baseline for Virtual Threads
+:toc:
+:toclevels: 2
+
+== Status
+
+Proposed.
+
+== Context
+
+API Sheriff scales with a *virtual-thread-per-request* model (see
+link:../architecture.adoc#_threading_model[Architecture -- Threading Model]). The value of
+virtual threads for a gateway is highest when blocking work -- downstream HTTP calls, TLS,
+filtering -- does not pin the carrier platform thread.
+
+Two JDK facts drive this decision:
+
+* *JEP 491 (JDK 24+)* removes carrier-thread pinning on `synchronized` blocks and methods.
+  Before JDK 24, a virtual thread that blocked inside `synchronized` pinned its carrier,
+  throttling throughput under load. This is exactly the kind of hidden pin a gateway hits in
+  third-party and JDK library code.
+* *Java 25 is the current LTS* (released September 2025) and includes the JEP 491 behaviour.
+
+Separately, the build currently targets `maven.compiler.release=21` under
+`de.cuioss:cui-java-parent:1.4.5` and Quarkus 3.37.x. Bumping the *source/bytecode* release to
+25 would couple the project to toolchain, CI-image, and parent-POM expectations that are not
+yet established, for language-feature gains the gateway does not currently need.
+
+The decision therefore separates two concerns that are often conflated:
+
+* the *compile target* (source language level and bytecode version), and
+* the *runtime* the container/native image actually executes on.
+
+== Decision
+
+*Run the container and native image on the Java 25 runtime; keep the compile target at Java 21.*
+
+* `maven.compiler.release` stays at `21` -- source compatibility with the CUI parent and
+  Quarkus 3.37.x is preserved; no Java 22-25 language features are used yet.
+* The container base image (`Dockerfile.native` / JVM image) and the Mandrel/GraalVM native
+  builder are pinned to *JDK 25*, so the running process benefits from JEP 491 (no
+  `synchronized` pinning) and the rest of the JDK 24/25 virtual-thread and GC improvements.
+* This is the same "compile low, run high" split the JVM guarantees via bytecode
+  forward-compatibility.
+
+== Consequences
+
+Positive:
+
+* Full virtual-thread throughput under load without auditing every dependency for
+  `synchronized`-based pinning.
+* No source-level risk: the code still compiles and runs on JDK 21+, so local development and
+  CI on JDK 21 remain valid; only the *shipped runtime* is 25.
+* Reversible and low-blast-radius: the change is confined to the build's base-image / builder
+  version, not the source tree.
+
+Negative / to watch:
+
+* CI must make a JDK 25 runtime available for the container/native build stage (the compile
+  stage may remain on 21).
+* Native-image builds depend on a Mandrel/GraalVM distribution for JDK 25 being available for
+  the target platform; verify before pinning.
+* When the project later adopts Java 22-25 *language* features, revisit and raise
+  `maven.compiler.release` -- a separate decision from this one.
+
+== Revisit When
+
+* `cui-java-parent` and Quarkus establish a supported Java 25 *compile* baseline, at which
+  point raising `maven.compiler.release` becomes low-risk.
+* A concrete need for a Java 22-25 language feature arises.

@@ -1,0 +1,144 @@
+= Variant 3 -- BFF, Cookie-based (non-session)
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Summary
+
+The cookie-based Backend-For-Frontend variant is the *stateless* evolution of the
+link:02-bff-session.adoc[session-based variant]. API Sheriff is still a full OIDC confidential
+client running the authorization-code + PKCE login flow, but instead of holding tokens in a
+server-side store it *encrypts the access token (AES-256-GCM) into an `HttpOnly` cookie* and
+decrypts it per request. There is *no server-side store* -- the encrypted cookie carries the
+session state, so all gateway instances need only share the encryption key.
+
+This is manifest *Variant A* (the "token-mediating backend"), and it is the *preferred* target
+because it preserves the gateway's stateless, self-contained posture. It is planned to follow
+the session-based variant.
+
+[IMPORTANT]
+====
+*The authoritative specification for this variant is `TokenSheriff/doc/client` (the
+`CLIENT-1..22` contract). Where it and `doc/manifest.adoc` differ, `doc/client` governs.*
+
+This variant is the *stateless BFF* shape of `CLIENT-19` (access token returned to the browser
+only inside an `HttpOnly` cookie encrypted with a server-side symmetric key). As with the
+session-based variant, the confidential-client engine (`token-sheriff-client`) is still a
+skeleton, so API Sheriff implements the flow itself against `CLIENT-1..22`, reusing
+`token-sheriff-validation` to validate every retrieved token (`CLIENT-15` / `CLIENT-16`) before
+it is sealed into the cookie.
+====
+
+== Login Flow
+
+The login handshake is identical to the link:02-bff-session.adoc[session-based variant] up to
+the final binding step. The gateway redirects the browser to the IdP with PKCE / `state` /
+`nonce`, exchanges the code server-to-server, and validates the tokens offline -- then, in this
+variant, *encrypts them into an `HttpOnly` cookie* rather than storing them server-side.
+
+image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, cookie binding, align=center]
+
+== Steady-State API Call
+
+An API call carries the encrypted token cookie. The gateway:
+
+. Reads and *decrypts* the cookie (AES-256-GCM) to recover the access token -- no store lookup.
+. If the token is near expiry, transparently refreshes it and re-seals the cookie.
+. Injects `Authorization: Bearer <token>` and forwards, applying the same
+  link:01-base-gateway.adoc[base-gateway] filtering and zero-trust forward policy.
+
+image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
+
+The right-hand column above is this variant; the token lives only inside the encrypted cookie,
+and the gateway holds no per-user state.
+
+== Cookie Design
+
+[cols="1,3"]
+|===
+| Aspect | Design
+
+| Encryption
+| AES-256-GCM (authenticated encryption). The plaintext is the access token (+ refresh token
+  and minimal metadata); the ciphertext plus nonce and auth tag form the cookie value. A
+  tampered cookie fails authentication and is rejected.
+
+| Cookie attributes
+| `HttpOnly` (JavaScript cannot read it -- XSS-safe), `Secure`, `SameSite`, `__Host-` prefix.
+
+| Key management
+| A single server-side symmetric key, provided by environment indirection
+  (`${SHERIFF_SESSION_KEY}`), shared across all gateway instances. Key rotation is supported by
+  accepting the previous key for decryption during a grace window while encrypting with the new
+  key.
+
+| Size
+| The cookie must stay within browser limits (~4 KB). If access + refresh tokens exceed the
+  budget, the refresh token may be split into its own cookie; oversized IdPs are a deployment
+  consideration.
+|===
+
+== Statelessness
+
+Because the encrypted cookie carries all session state:
+
+* No session store, no Redis, no database -- the manifest's self-contained requirement holds
+  fully.
+* Any gateway instance can serve any request as long as it has the encryption key -- no sticky
+  sessions, no coordination.
+* Horizontal scaling is linear; a node can be added or removed with no session migration.
+
+This is the property that distinguishes Variant A from Variant B and the reason it is the
+preferred target.
+
+== Transparent Refresh and Step-Up
+
+Both work exactly as in the link:02-bff-session.adoc#_transparent_token_refresh[session-based
+variant] -- refresh with rotation on near-expiry, family revocation on reuse detection, and
+RFC 9470 step-up on upstream challenge -- with one difference: the refreshed token is re-sealed
+into a *new cookie* (`Set-Cookie` on the response) rather than written to a store.
+
+== Configuration
+
+[source,yaml]
+----
+# gateway.yaml
+oidc:
+  issuer: https://idp.example.com/realms/main
+  client_id: api-sheriff
+  client_secret: ${SHERIFF_CLIENT_SECRET}
+  redirect_uri: https://gw.example.com/auth/callback
+  scopes: [openid, profile]
+  session:
+    mode: cookie                 # encrypted cookie, no store (this variant)
+    cookie_name: __Host-sheriff
+    encryption_key: ${SHERIFF_SESSION_KEY}   # AES-256-GCM key
+    ttl_seconds: 3600
+    refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
+----
+
+[source,yaml]
+----
+# endpoints/app1.yaml           (base_url APP1 lives in topology.properties)
+endpoint:
+  id: app1
+  base_url: APP1
+  routes:
+    - id: orders-api
+      match: { path_prefix: /api/orders }
+      auth: { require: session, required_scopes: [orders.read] }
+      forward:
+        headers_allow: [accept, content-type]
+        set_headers: { authorization: "Bearer ${auth.access_token}" }
+      upstream: { path: /orders }
+----
+
+The only material difference from the link:02-bff-session.adoc[session-based] configuration is
+`session.mode: cookie` and the required `session.encryption_key`.
+
+== Properties
+
+* *Stateless* -- no server-side store; encrypted cookie carries the state.
+* *XSS-safe* -- `HttpOnly` cookie; the token is never accessible to JavaScript.
+* *Self-contained* -- instances share only the encryption key.
+* *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.

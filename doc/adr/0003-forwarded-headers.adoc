@@ -1,0 +1,78 @@
+= ADR-0003 -- Forwarding Headers: Accept Both, Emit X-Forwarded-* by Default
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+A reverse proxy must convey the original client's IP, protocol, and host to the upstream. Two
+header families exist:
+
+* the legacy de-facto trio `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`, and
+* the standardized `Forwarded` header (https://www.rfc-editor.org/rfc/rfc7239.html[RFC 7239],
+  2014), which folds all fields into one structured, list-valued header.
+
+The manifest lists RFC 7239 support as a requirement and the competitive analysis framed it as a
+differentiator (no evaluated gateway emits it). We researched why RFC 7239 adoption is poor before
+committing to a default.
+
+=== Why RFC 7239 adoption is poor (research findings)
+
+* *Chicken-and-egg inertia (dominant).* The value of a forwarding header is realized only when the
+  *downstream* reads it. Rails, ASP.NET, CloudFront, AWS ELB/ALB, and Cloudflare all read only
+  `X-Forwarded-*`. A proxy emitting `Forwarded` must *also* emit `X-Forwarded-*` for anything to
+  work -- so `Forwarded` is added cost with no functional gain.
+* *No security payoff.* The hard problem is *which hop to trust*, and that is identical for both
+  header families (RFC 7239 §8: the header "cannot be relied upon" and requires a trusted-proxy
+  allowlist -- the same model as XFF). The new syntax solves a *syntax* problem, not the *trust*
+  problem.
+* *Real complexity and hazards.* RFC 7239 is a two-level, delimiter-rich grammar (`,` between
+  hops, `;` between pairs) with conditional quoting, IPv6 bracket+port quoting, obfuscated
+  `_`-prefixed nodes, and arbitrary extensions. This yields concrete bugs -- naive comma-splitting,
+  IPv6 mishandling, header-injection via unquoted values -- and the "Forwarded header sabotage"
+  class, where an attacker injects malformed syntax so a strict parser discards the *trustworthy*
+  proxy-appended entry.
+* *Adoption state.* nginx: no native support (emit or parse). Apache `mod_remoteip`: XFF only.
+  HAProxy: `option forwarded` only since 2.8 (2023). Envoy / Traefik / Kong: XFF, with RFC 7239 via
+  plugins or long-open issues. CDNs/LBs: XFF only.
+
+The evidence: RFC 7239 is not a bad spec, but emitting it *by default* buys nothing for real
+downstreams while adding parsing/encoding risk.
+
+== Decision
+
+* *Accept both families on input.* Parse `Forwarded` (spec-correctly -- quoted-strings, `;` vs `,`,
+  IPv6 brackets, ports, obfuscated nodes; never naive comma-split) and `X-Forwarded-*`, normalizing
+  both into one internal per-hop model `{for, by, host, proto, port}`.
+* *Emit a configurable canonical output, defaulting to `X-Forwarded-*`.* `forwarded.emit` may be
+  `x-forwarded` (default), `rfc7239`, or `both`. When RFC 7239 is emitted it is *additive* (never
+  instead of XFF) and strictly encoded.
+* *Trust model is mandatory and comes first.* A `trusted_proxies` CIDR allowlist is required.
+  Trust is established from the unspoofable TCP peer, walking the appended chain right-to-left and
+  accepting entries only from allow-listed hops; the first entry from a non-trusted hop is the real
+  client. If the immediate peer is not trusted, forwarding headers are ignored and `remote_addr` is
+  used. Never trust-all (`0.0.0.0/0`).
+* *Sanitize at the boundary.* From untrusted clients, strip inbound forwarding headers and
+  regenerate from observation; from trusted proxies, append this hop. This defuses header sabotage.
+* *Obfuscate `by=` when emitting `Forwarded`* to avoid leaking internal topology (RFC 7239 §7.4).
+
+== Consequences
+
+* Works with every real downstream out of the box (XFF default), while still able to emit RFC 7239
+  for standards-conformant consumers when asked.
+* The differentiator is reframed honestly: not "we emit RFC 7239 by default", but "we *correctly
+  normalize both* behind a strict trusted-proxy allowlist and emit a configurable, sabotage-resistant
+  canonical output". This is the part competitors get wrong (the nginx `realip` / Kong too-broad-trust
+  bug that breaks IP rate-limiting is the canonical example).
+* Requires a spec-correct `Forwarded` parser and encoder (more code than XFF-only), justified by the
+  security posture.
+
+== References
+
+* https://www.rfc-editor.org/rfc/rfc7239.html[RFC 7239 -- Forwarded HTTP Extension] (§5 syntax, §8 security)
+* https://adam-p.ca/blog/2022/03/forwarded-header-sabotage/[Forwarded Header Sabotage]
+* nginx-devel rationale (parsing cost / "no practical implementations"), HAProxy #575, Kong #2202/#13599,
+  Envoy #5889, Traefik #4099, Apache Bugzilla #62377.

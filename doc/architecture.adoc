@@ -1,0 +1,290 @@
+= API Sheriff -- Architecture
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Overview
+
+API Sheriff is a single Quarkus process that terminates (or passes through) inbound
+connections, applies security filtering, optionally establishes and mediates an OIDC
+session, and forwards permitted requests to a statically configured upstream. It holds no
+mandatory external dependency: configuration is a set of immutable files read at startup,
+and the only optional state (a server-side session store) exists solely in the
+link:variants/02-bff-session.adoc[session-based BFF variant].
+
+The runtime is the same binary for all three link:README.adoc#_deployment_variants[variants];
+the active mode is a function of configuration.
+
+== Component Model
+
+An inbound request flows left to right through a fixed pipeline. The TLS edge terminates
+(or passes through) the connection; the security filter, route matcher, authentication layer,
+and zero-trust forward policy each act in turn; a request that fails any stage is rejected
+before it reaches the upstream. The event system and metrics observe every stage.
+
+image::resources/diagrams/request-pipeline.svg[Inbound request pipeline: TLS edge, security filter, route match, authenticate, forward policy, then upstream, align=center]
+
+The authentication stage is where the three variants differ: offline bearer validation
+(link:variants/01-base-gateway.adoc[Variant 1]), OIDC session mediation
+(link:variants/02-bff-session.adoc[Variant 2]), or OIDC encrypted-cookie mediation
+(link:variants/03-bff-cookie.adoc[Variant 3]). Everything else in the pipeline is shared.
+
+=== Configuration Subsystem
+
+Configuration is loaded once at startup from static files (see link:configuration.adoc[Configuration Model]),
+validated in full, and then frozen into immutable value objects. The gateway *refuses to
+start* on invalid configuration -- it never serves traffic against a partially valid route
+table. Only *Static mode* is supported initially (link:adr/0002-initial-scope.adoc[ADR-0002]);
+the manifest's dynamic `/api/gateway-config.json` discovery pattern is deferred.
+
+Configuration is layered: a global `gateway.yaml`, one *portable* `endpoints/*.yaml` file per
+service that references an abstract `base_url` alias, and a `topology.properties` that binds each
+alias to a concrete location (overridable by `TOPOLOGY_<ALIAS>` env vars). Endpoint files carry no
+real host, so a deployment is relocated by changing only the topology
+(link:adr/0004-topology-indirection.adoc[ADR-0004]).
+
+Immutability is a security property: a running node's behaviour is fully determined by an
+auditable, reproducible artifact. Changes are rolled out by restarting nodes (rolling
+update), not by mutating a live process.
+
+=== Inbound Security Filter
+
+The inbound filter is the "basic HTTP security filtering -- not a WAF" layer, delivered by
+`cui-http`'s security module. It runs as cheap, in-CPU, synchronous work (< 1 ms target, no
+I/O) and is therefore safe to run inline on the request's virtual thread.
+
+Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
+
+* `PipelineFactory.createCommonPipelines(config, counter)` yields the path, parameter,
+  header-name and header-value pipelines.
+* `RequestCollectionValidator` enforces collection-count limits (parameter/header/cookie
+  counts) -- the DoS guard a per-value pipeline cannot express.
+* A shared, immutable `SecurityConfiguration` (`defaults()` / `strict()` / `lenient()`, or a
+  builder) supplies the tunable limits.
+* A single `de.cuioss.http.security.monitoring.SecurityEventCounter` is passed into every
+  pipeline; it auto-increments on each violation, and its counts feed the gateway metrics.
+
+Path/parameter *whitelisting* that `cui-http` does not express natively (it has no path
+allow-list knob) is enforced at the gateway layer from the route's `allowed_paths` and the
+forward-policy allowlists. See link:configuration.adoc#_security_filtering[Security Filtering].
+
+=== Routing / Matching
+
+A static, immutable route table maps inbound requests to exactly one upstream. Matchers are
+bounded and composable with AND semantics (path prefix, HTTP method, host, header
+presence/value). The first matching route wins; a request that matches no route is rejected
+(deny-by-default). Routing carries no dynamic rule language.
+
+=== Authentication Layer
+
+The active authentication strategy depends on the variant:
+
+[cols="1,2"]
+|===
+| Variant | Strategy
+
+| link:variants/01-base-gateway.adoc[Base gateway]
+| Offline bearer-token validation via `token-sheriff-validation` `TokenValidator`. The
+  client presents its own `Authorization: Bearer`; the gateway validates it offline and
+  enforces required scopes.
+
+| link:variants/02-bff-session.adoc[BFF session]
+| The gateway is the OIDC confidential client. Tokens live server-side; the browser holds an
+  opaque session-id cookie. The gateway injects the stored access token upstream.
+
+| link:variants/03-bff-cookie.adoc[BFF cookie]
+| The gateway is the OIDC confidential client. The access token travels only inside an
+  AES-256-GCM-encrypted `HttpOnly` cookie and is decrypted per request before upstream injection.
+|===
+
+[IMPORTANT]
+====
+For everything BFF-related, the authoritative specification is `TokenSheriff/doc/client` (the
+`CLIENT-1..22` contract). *Where it and `doc/manifest.adoc` differ, `doc/client` governs.*
+
+That specification defines a strict seam. The confidential-client *engine* owns retrieval and
+flow (auth-code + PKCE, `state` / `nonce` / exact `redirect_uri`, mix-up `iss` defence, PAR,
+sender-constraint requests, step-up, RP-initiated logout) and the server-side token lifecycle
+(validate -> hold -> refresh with rotation -> revoke), and it must keep *both* token-binding
+shapes viable without forcing either (`CLIENT-19`). The *BFF* -- API Sheriff's job -- owns the
+browser-facing part: the session cookie, symmetric-key management (stateless variant),
+backend-API CSRF, request proxying, logout receivers, and RFC 9457 rendering at the edge.
+
+The engine module (`token-sheriff-client`) is currently an unbuilt skeleton, so API Sheriff
+implements the flow itself against `CLIENT-1..22`, reusing `token-sheriff-validation` unchanged
+to validate every retrieved token (`CLIENT-15` / `CLIENT-16`) before it is trusted or stored.
+====
+
+=== Forward Policy (Zero-Trust)
+
+Nothing crosses to the upstream unless it is explicitly allowed. The forward policy defines
+an allowlist of request headers and query parameters, and the set of headers the gateway
+*injects* (notably `Authorization: Bearer` from the mediated token, and the
+link:configuration.adoc#_forwarded_headers[forwarding header]). The gateway accepts both
+`Forwarded` (RFC 7239) and `X-Forwarded-*` on input, normalizes them behind a trusted-proxy
+allowlist, and emits a configurable canonical output -- *`X-Forwarded-*` by default*, RFC 7239
+opt-in and additive (link:adr/0003-forwarded-headers.adoc[ADR-0003]). Everything else is
+stripped. This deny-by-default posture is the KrakenD-inspired security default.
+
+=== Downstream Client
+
+Upstream calls use `cui-http`:
+
+* `HttpHandler` -- immutable, thread-safe client wrapper; HTTPS-by-default with a TLS 1.2+
+  floor; per-route connect/read timeouts.
+* `ETagAwareHttpAdapter` -- optional ETag/304 caching.
+* `ResilientHttpAdapter` -- non-blocking retry with exponential backoff (parks no thread);
+  idempotency-aware.
+* `HttpResult<T>` -- sealed `Success`/`Failure`; failures carry an `HttpErrorCategory`
+  (`NETWORK_ERROR`, `SERVER_ERROR`, `CLIENT_ERROR`, `INVALID_CONTENT`, `CONFIGURATION_ERROR`)
+  and may carry fallback content for graceful degradation.
+
+The adapters are `CompletableFuture`-based; under the virtual-thread model the gateway may
+also call the blocking JDK `send()` from a virtual-thread-per-request worker.
+
+[[_event_system]]
+== Event System
+
+API Sheriff tracks general and security-relevant events with an in-process counter modelled
+on `token-sheriff`'s `de.cuioss.sheriff.token.commons.events.SecurityEventCounter`. It is a
+thread-safe, lock-free counter -- *not* a CDI observer bus -- designed to feed metrics and
+error-mapping without pulling in a broker or an Elasticsearch dependency.
+
+Design (to be built as a low, framework-agnostic base package):
+
+* An `EventCategory` enum groups *failure* events by impact and maps to an HTTP status --
+  e.g. `INPUT_VALIDATION`, `AUTHENTICATION`, `AUTHORIZATION`, `UPSTREAM`, `CONFIGURATION`.
+* A `GatewayEventCounter` holds a `ConcurrentHashMap<EventType, AtomicLong>` and exposes
+  `increment(EventType)`, `getCount(EventType)`, an unmodifiable `getCounters()` snapshot,
+  and `reset()`, using `computeIfAbsent` + `incrementAndGet` (lock-free).
+* Each `EventType` carries its `EventCategory`. *Success/informational events carry a `null`
+  category* (per CUI logging convention) and are metric counters only -- e.g.
+  `REQUEST_FORWARDED`, `TOKEN_REFRESHED`, `CONFIG_LOADED`.
+* Failure event types carry a category -- e.g. `PATH_NOT_ALLOWED` / `SECURITY_FILTER_VIOLATION`
+  / `PARAMETER_LIMIT_EXCEEDED` (`INPUT_VALIDATION`), `TOKEN_MISSING` / `TOKEN_INVALID`
+  (`AUTHENTICATION`), `SCOPE_MISSING` (`AUTHORIZATION`), `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT`
+  (`UPSTREAM`).
+* Typed gateway exceptions carry their `EventType`, so the HTTP edge maps
+  event -> category -> status, and renders `application/problem+json` (RFC 9457) without
+  leaking internal detail.
+
+The counter is intentionally micrometer-ready without depending on micrometer; the metrics
+edge (below) reads its snapshots. The `cui-http` filter contributes its own
+`SecurityEventCounter`; both are surfaced together.
+
+[[_metrics]]
+== Metrics
+
+Metrics are exposed as Prometheus data via Quarkus Micrometer on the *management port*
+(`quarkus.management.enabled=true`, port `9000`), keeping the operational surface off the
+public data-plane port (the Keycloak pattern already used in `application.properties`).
+
+The manifest requires *paths, errors, and average timing*. These map to:
+
+[cols="1,2"]
+|===
+| Metric | Meaning
+
+| `sheriff_requests_total{route,method,status_family}`
+| Counter of requests per route, method, and status family -- the "paths" view.
+
+| `sheriff_request_duration_seconds{route}` (timer)
+| Latency distribution per route; the timer's mean gives "average timing", and quantiles/
+  histogram buckets give tail latency.
+
+| `sheriff_errors_total{route,category}`
+| Counter of rejected/failed requests keyed by `EventCategory` (input-validation, auth,
+  authorization, upstream) -- the "errors" view, sourced from the event system.
+
+| `sheriff_security_events_total{failure_type}`
+| The `cui-http` `SecurityEventCounter` counts, exposed per `UrlSecurityFailureType`.
+
+| `sheriff_upstream_duration_seconds{route}`
+| Time spent in the downstream call specifically, to separate gateway overhead from upstream cost.
+|===
+
+OpenTelemetry tracing is a planned (post-MVP) hook per the manifest and is not part of the
+initial metrics surface.
+
+[[_protocol_support]]
+== Protocol Support
+
+The following are supported *from the start* (link:adr/0002-initial-scope.adoc[ADR-0002]);
+HTTP/3 / QUIC is deferred.
+
+[cols="1,3"]
+|===
+| Protocol | Handling
+
+| HTTP/1.1, HTTP/2
+| Core request/response. HTTP/2 is negotiated via ALPN (`h2`) on terminated TLS.
+
+| WebSocket
+| Proxied bidirectionally (Quarkus/Vert.x). Authentication is enforced on the handshake; the
+  established stream is relayed. A differentiator -- WebSocket is enterprise-only in KrakenD.
+
+| gRPC (incl. gRPCS)
+| gRPC rides on HTTP/2, so it is largely covered by the standard HTTP/2 path: the gateway
+  proxies the `h2`/`h2c` stream and applies auth + header injection to the request. "gRPCS" is
+  gRPC over terminated TLS. Body-level (protobuf frame) inspection is out of scope -- the
+  security filter operates on HTTP metadata only.
+
+| GraphQL
+| A single POST endpoint over standard HTTP; routed and forwarded like any HTTP route. The
+  basic filter does not parse GraphQL query ASTs (it is not a WAF) and therefore does not
+  enforce query depth/cost -- it caps body size and applies path/header checks. Query-cost
+  limiting is a possible future addition.
+|===
+
+Because gRPC and GraphQL both ride on the standard HTTP/2 (or HTTP/1.1) transport, they need
+no separate proxy engine; the per-route `protocol` field (see
+link:configuration.adoc#_protocols[Configuration -- Protocols]) selects handshake/streaming
+behaviour where it differs (WebSocket upgrade, gRPC streaming). TLS *passthrough* routes are
+L4-only and cannot offer these L7 behaviours.
+
+== Threading Model
+
+The gateway targets a virtual-thread-per-request model:
+
+* Inbound security validation is synchronous CPU work and runs inline on the request thread.
+* Downstream I/O uses either the `cui-http` async `CompletableFuture` adapters or blocking
+  JDK `HttpClient.send()` from a virtual-thread worker -- both are virtual-thread-friendly.
+* Offline token validation (`TokenValidator`) is thread-safe and cache-backed; a single
+  instance is created at startup and shared.
+
+To get the full benefit -- specifically JEP 491 (JDK 24+), which removes carrier-thread
+pinning on `synchronized` blocks -- the container/native image runs on the Java 25 runtime.
+See link:adr/0001-java25-runtime-baseline.adoc[ADR-0001]. Source compatibility remains at
+Java 21 (`maven.compiler.release=21`).
+
+== Library Dependencies (Design Intent)
+
+These are the libraries the design assumes; adding them to the build is a separate, approved step.
+
+[cols="2,2,2"]
+|===
+| Concern | Library | Coordinates
+
+| Inbound security filtering + downstream calls
+| cui-http (client + security, one jar)
+| `de.cuioss:cui-http` (2.x)
+
+| Offline JWT validation
+| token-sheriff-validation
+| `de.cuioss.sheriff.token:token-sheriff-validation`
+
+| Offline validation -- Quarkus integration
+| token-sheriff-validation-quarkus
+| `de.cuioss.sheriff.token:token-sheriff-validation-quarkus`
+
+| Logging
+| cui-java-tools (`CuiLogger` / `LogRecord`)
+| `de.cuioss:cui-java-tools`
+
+| Runtime / DI / HTTP / metrics
+| Quarkus
+| `io.quarkus:*` (resteasy, arc, micrometer, smallrye-health)
+|===
+
+NOTE: The confidential-client engine `token-sheriff-client` exists only as a skeleton;
+API Sheriff does not depend on it yet (see the Authentication Layer note above).

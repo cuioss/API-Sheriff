@@ -1,0 +1,236 @@
+= API Sheriff -- Competitive Feature Analysis
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Purpose
+
+This document distils the link:archive/others/README.adoc[competitive analysis] of the major
+open-source API gateways (Apache APISIX, Traefik, KrakenD, Kong, Tyk, Gravitee) into a
+concrete feature agenda for API Sheriff: what to *adopt*, what to deliberately *avoid*,
+and the *differentiators* that no competitor covers.
+
+The guiding principle is that *staying lightweight and security-focused is the competitive
+edge*. Every evaluated gateway that added breadth (aggregation, plugin marketplaces,
+dynamic-config machinery, event brokers) paid for it in operational weight or moved the
+feature behind an enterprise licence. API Sheriff wins by doing a small, security-relevant
+set of things well, with zero mandatory external dependencies.
+
+== Reference Points
+
+[cols="1,3"]
+|===
+| Gateway | What API Sheriff learns from it
+
+| *Apache APISIX*
+| The only OSS gateway with a full confidential-client OIDC Relying Party -- encrypted
+  cookie token mediation and automatic refresh. This is the *feature reference* for the
+  BFF variants. (Its etcd/Lua operational weight is what we avoid.)
+
+| *KrakenD*
+| The *posture reference*: truly stateless, declarative, immutable configuration, no
+  database, zero-trust (deny-by-default) header/parameter forwarding.
+
+| *Traefik*
+| The *UX reference*: simplest deployment (single binary, no external deps), expressive
+  composable routing matchers, security-response-header middleware, production HTTP/3.
+
+| *Gravitee* / *Tyk*
+| *Anti-references*: Gravitee mandates MongoDB + Elasticsearch; Tyk mandates Redis. Both
+  demonstrate exactly the infrastructure weight API Sheriff is defined against.
+|===
+
+== Features to Adopt
+
+=== Tier 1 -- Core Identity
+
+[cols="1,3"]
+|===
+| Feature | Rationale and inspiration
+
+| *OIDC Relying Party with encrypted-cookie token mediation*
+| Inspired by APISIX `openid-connect`. The headline BFF capability, and the one feature
+  only APISIX offers in OSS. Mechanism: 302 to the IdP authorization endpoint, server-to-server
+  code exchange with `client_id`/`client_secret`, tokens kept off the browser, upstream
+  requests carry an injected `Authorization: Bearer`. See
+  link:variants/03-bff-cookie.adoc[Variant 3] and link:variants/02-bff-session.adoc[Variant 2].
+
+| *Transparent automatic token refresh*
+| Inspired by APISIX `renew_access_token_on_expiry` + `access_token_expires_leeway`.
+  Refresh silently before expiry using the refresh token; on refresh failure fall back to a
+  full authorization-code flow. Adopt a pre-expiry *leeway* to avoid edge-of-expiry races,
+  and destroy the session on failed refresh (Kong `unauthorized_destroy_session` behaviour).
+
+| *Offline JWT validation with cached JWKS*
+| Table stakes across KrakenD/Tyk/Gravitee/APISIX. API Sheriff uses
+  `token-sheriff-validation` (`TokenValidator`) -- cryptographic signature + `iss`/`aud`/`exp`
+  checks with no synchronous introspection call to the IdP. See
+  link:variants/01-base-gateway.adoc[Variant 1].
+
+| *Zero-trust header / parameter forwarding (deny-by-default allowlist)*
+| Inspired directly by KrakenD's zero-trust parameter forwarding. Nothing is forwarded
+  upstream unless it appears in the route's allowlist. This is a security posture, not scope
+  creep, and it aligns with "secure defaults".
+
+| *Path whitelisting + parameter limits (basic HTTP security filtering, NOT a WAF)*
+| Inspired by APISIX `uri-blocker` + KrakenD JSON-Schema/CEL validation, but scoped
+  deliberately to allowlists and limits. Delivered by `cui-http` inbound pipelines
+  (`URLPathValidationPipeline`, `URLParameterValidationPipeline`, `HTTPHeaderValidationPipeline`,
+  `RequestCollectionValidator`). See link:configuration.adoc#_security_filtering[Configuration].
+|===
+
+=== Tier 2 -- Strong Operational Fit
+
+[cols="1,3"]
+|===
+| Feature | Rationale and inspiration
+
+| *Static, immutable, file-based config validated at startup*
+| KrakenD's immutable/GitOps model + APISIX Standalone-API's `/validate` discipline: fail
+  fast on invalid config, never boot a half-valid gateway. Rolling restart is the production
+  update path, not live mutation.
+
+| *Expressive, bounded routing matchers*
+| Traefik's `PathPrefix` / `Host` / `Headers` / `Method` matchers, composable with AND
+  semantics -- but no Turing-complete rule language.
+
+| *Prometheus metrics + OpenTelemetry hooks*
+| Universal across all six competitors. Exposed on a separate management port (Keycloak
+  pattern), fed by the in-process event counter. See link:architecture.adoc#_metrics[Metrics].
+
+| *Security-response-header middleware*
+| Traefik/KrakenD headers middleware: HSTS, `X-Content-Type-Options: nosniff`, frame-deny,
+  CORS. Cheap, high value, on-brand.
+
+| *Per-route timeouts, retry, circuit breaker*
+| Traefik/KrakenD built-ins. Delivered in-process and stateless by `cui-http`
+  `ResilientHttpAdapter` (non-blocking exponential backoff) + per-route timeout on `HttpHandler`.
+
+| *mTLS + TLS 1.3 by default*
+| KrakenD (TLS 1.3 default) + Traefik (mTLS, custom certs). Expected of a security gateway.
+|===
+
+=== Tier 3 -- Later
+
+[cols="1,3"]
+|===
+| Feature | Rationale
+
+| *Per-node in-memory rate limiting*
+| KrakenD CE / Traefik token-bucket -- explicitly per-node and stateless. Avoid the
+  Redis-backed distributed variant (that is what makes Tyk stateful).
+
+| *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*
+| Required from day one (link:adr/0002-initial-scope.adoc[ADR-0002]). gRPC rides on HTTP/2 and
+  GraphQL on standard HTTP, so both are largely covered by the core HTTP path; WebSocket is a
+  differentiator because it is enterprise-only in KrakenD, and full gRPC + WebSocket in OSS is
+  a differentiator against KrakenD CE. HTTP/3 remains deferred (see below).
+|===
+
+== Features to Avoid
+
+[cols="1,3"]
+|===
+| Anti-feature | Why
+
+| *Mandatory external datastores (etcd / Redis / MongoDB / Elasticsearch)*
+| Violates the self-contained-deployment requirement. Tyk (Redis) and Gravitee (Mongo+ES)
+  are the cautionary tales. The stateless BFF cookie variant needs no store at all.
+
+| *Full dynamic runtime config via Admin API + config store*
+| Contradicts "immutable at startup". Dynamic mutation is the primary source of APISIX/Kong
+  operational complexity. Immutability is a security property (auditable, reproducible).
+
+| *Full signature-based WAF / OWASP CRS engine*
+| APISIX punts this to Coraza/SafeLine; Kong gates it behind EE. A real WAF is a product in
+  itself. API Sheriff offers allowlisting + limits, not attack-signature matching.
+
+| *API aggregation / response merging (KrakenD's "BFF")*
+| Response-composition middleware, not security; couples the gateway to upstream schemas.
+  For API Sheriff, "BFF" means OIDC token mediation, not fan-out aggregation.
+
+| *Load balancing / service discovery*
+| Explicitly out of scope per the manifest (handled by Kubernetes). Drags in health-checking
+  and discovery-provider integrations.
+
+| *Multi-language plugin runtimes (Go/Python/JS/Lua/WASM)*
+| Every plugin is an untrusted-code trust boundary. A security gateway minimises its
+  extension attack surface. Prefer a small, curated, in-process Java extension model -- or none.
+
+| *Event-native broker mediation (Kafka/MQTT/AMQP/Solace)*
+| Massive scope, EE-gated even in the incumbents. Far outside a stateless HTTP security gateway.
+
+| *Developer portal / monetization / management UI*
+| Classic open-core upsell surface (Kong, Gravitee, Tyk, KrakenD EE). Management-plane
+  product, not data-plane security.
+
+| *HTTP/3 / QUIC (initially)*
+| Only Traefik ships it production-ready; APISIX's is experimental with known CVEs. JVM
+  HTTP/3 support is still thin. Revisit once Quarkus/JDK HTTP/3 matures. HTTP/1.1, HTTP/2,
+  WebSocket, gRPC, and GraphQL all ship now (link:adr/0002-initial-scope.adoc[ADR-0002]).
+|===
+
+== Differentiators (No Competitor Covers)
+
+Per the link:archive/others/README.adoc[analysis], *none* of the six evaluated gateways support the
+following. Each is a defensible differentiator, and API Sheriff's JVM + confidential-client
+architecture makes it uniquely able to close all three.
+
+[cols="1,3"]
+|===
+| Gap | API Sheriff approach
+
+| *Correct forwarding-header normalization (both families)*
+| The differentiator is *not* "emit RFC 7239 by default" -- research shows that buys nothing,
+  since every real downstream (Rails, ASP.NET, CloudFront, ELB, Cloudflare) reads only
+  `X-Forwarded-*`. Instead, API Sheriff *accepts both* `Forwarded` (RFC 7239) and `X-Forwarded-*`
+  on input, normalizes them into one model behind a *mandatory trusted-proxy allowlist* (trust from
+  the unspoofable TCP peer, first untrusted hop = client), and emits a *configurable canonical
+  output* -- `X-Forwarded-*` by default, RFC 7239 opt-in and additive. This gets right exactly what
+  competitors get wrong: the too-broad-trust bug that breaks IP rate-limiting (nginx `realip` / Kong
+  #270, #13599) and "Forwarded header sabotage". See link:adr/0003-forwarded-headers.adoc[ADR-0003].
+
+| *RFC 9470 step-up authentication*
+| No gateway parses an upstream `WWW-Authenticate` challenge to trigger re-authorization.
+  Because API Sheriff is the OIDC relying party holding the session, it can intercept a
+  `401` carrying `insufficient_user_authentication` (with `acr_values` / `max_age` / `scope`),
+  attempt a silent refresh, then fall back to a browser redirect with the elevated parameters,
+  and replay the request. Structurally impossible for validation-only gateways.
+
+| *Datastore-free distributed configuration* (deferred)
+| No competitor does discovery without a shared store (etcd watch / DB sync / provider poll).
+  The intended approach keeps it stateless and pull-based: each node fetches a versioned,
+  immutable config document from a well-known endpoint (`/api/gateway-config.json`) at startup,
+  validates it, and boots against that snapshot -- multi-node coherence *without* Redis or Mongo.
+  *Out of initial scope*: API Sheriff ships with *Static mode only*
+  (link:adr/0002-initial-scope.adoc[ADR-0002]); this remains the differentiating direction to
+  revisit later.
+|===
+
+Secondary differentiators worth claiming:
+
+* *OSS token mediation on the JVM* -- APISIX has it only in Lua; Traefik/Kong only in EE.
+* *WebSocket in OSS* -- enterprise-only in KrakenD.
+* *First-class in-process security event system* feeding metrics/audit with no Elasticsearch
+  dependency (see link:architecture.adoc#_event_system[Event System]).
+
+== Summary Matrix
+
+[cols="2,1,1,1,1"]
+|===
+| Capability | API Sheriff | APISIX (OSS) | Traefik (OSS) | KrakenD (CE)
+
+| Zero mandatory external deps | Yes | Partial (etcd) | Yes | Yes
+| Immutable static config | Yes | Standalone mode | file provider | Yes (native)
+| OIDC RP + cookie mediation | Yes | Yes | EE only | No
+| Transparent token refresh | Yes | Yes | EE only | M2M only
+| Offline JWT validation | Yes | Yes | Partial | Yes
+| Zero-trust forwarding | Yes | No | No | Yes
+| Path allowlist + param limits | Yes | Partial | No | Partial
+| WebSocket | Yes | Yes | Yes | EE only
+| gRPC | Yes | Yes | Yes | EE only
+| GraphQL | Yes | No | No | Yes
+| Forwarding-header normalize (both, trusted) | *Yes* | Partial | Partial | Partial
+| RFC 9470 step-up | *Yes* | No | No | No
+| Datastore-free config discovery | Deferred | No | No | No
+|===

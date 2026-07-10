@@ -1,0 +1,72 @@
+= ADR-0004 -- Topology Indirection: Single-URL Alias with Env Override
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+Endpoint (route) configuration should be *portable* -- movable between dev, staging, and production
+without edits -- while the concrete backend locations differ per environment. The chosen structure
+(see link:../configuration.adoc[Configuration Model]) abstracts every backend host behind an alias
+(`APP1`, `KEYCLOAK`, ...) referenced by the endpoint files, and binds each alias to a real location
+in a separate `topology.properties`, overridable by an environment variable
+(`TOPOLOGY_<ALIAS>=https://...`).
+
+One design question remained: should a topology entry be a *single URL*
+(`https://app1.example.com:8443/ctx`) or *split components* (scheme / host / port / path)? We
+researched what the majority of widely-used systems do for human-authored, env-overridden config.
+
+=== Research findings
+
+* *No landslide, but a clean axis.* Machine-generated / service-discovery data planes (Envoy xDS,
+  Kubernetes, APISIX admin API, HAProxy runtime) favour *split components* -- easy to populate and
+  diff programmatically. Human-authored declarative surfaces (Traefik `url`, Spring Cloud Gateway
+  `uri`, Nginx `proxy_pass`, Kong's `url` shorthand) favour a *single URL* -- the compact,
+  copy-pasteable form. API Sheriff's topology is the *human-authored, env-overridden* surface, so
+  the single-URL camp applies.
+* *12-factor precedent.* Config treats a backing service's location as *one atomic resource handle*
+  (`DATABASE_URL`, `REDIS_URL`, ...), not a family of `_HOST`/`_PORT`/`_SCHEME` vars. This is the
+  strongest precedent and points at one URL per alias.
+* *Kong's hybrid.* Kong stores `protocol`/`host`/`port`/`path` as separate fields but accepts a
+  write-only `url` that is *decomposed on write*. URLs win for input ergonomics; components win for
+  validation/partial-update -- so accept the URL at the boundary and decompose once.
+* *Trade-offs.* One env var beats four coordinated ones (atomic change, no half-applied override).
+  A single URL validates in one shot (`java.net.URI`) and then yields the components anyway;
+  assembling a URL from parts is strictly more error-prone (default ports, IPv6 brackets, trailing
+  slashes). The only real argument for splitting is partial override (change only the port), which
+  is rare and cheap to work around.
+
+== Decision
+
+* *A topology entry is a single URL per alias.* `topology.properties`:
+  `APP1=https://app1.internal:8443/app1`.
+* *Environment variable `TOPOLOGY_<ALIAS>` overrides the file and takes precedence.*
+  Precedence, highest first: `TOPOLOGY_<ALIAS>` env var -> `topology.properties`.
+* *Decompose-on-read (Kong model).* On load, each resolved URL is validated and decomposed once into
+  `{scheme, host, port, base-path}`; the rest of the gateway works with the structured components. A
+  route's upstream is `resolved(base_url) + route.upstream.path`.
+* *No component split initially.* Per-component overrides (e.g. `TOPOLOGY_APP1_PORT`) are *not*
+  implemented now. They may be added later as a narrow escape hatch (mirroring Kong: full URL as the
+  ergonomic default, components as fine-grained override) only if a real partial-override need appears.
+* *Endpoint files never contain a concrete host* -- only the alias and an alias-relative path. Moving
+  a deployment changes only the topology (file or env), never the endpoint files.
+
+== Consequences
+
+* Relocating a backend is a one-line change (`TOPOLOGY_APP1=...`), with no edit to portable endpoint
+  files -- the intended "move a deployment by editing topology only" property.
+* Matches the dominant human-authored idiom (12-factor, Traefik, Spring, Nginx, Kong shorthand),
+  minimizing surprise and parsing risk.
+* Validation is single-shot and fail-fast at startup (an unresolved alias or malformed URL fails the
+  boot).
+* Partial override (port only) requires restating the whole URL until/unless the component escape
+  hatch is added -- an accepted, low-cost trade.
+
+== References
+
+* https://12factor.net/config[The Twelve-Factor App -- Config]
+* https://developer.konghq.com/gateway/entities/service/[Kong Service entity -- `url` shorthand decomposed into protocol/host/port/path]
+* https://doc.traefik.io/traefik/routing/services/[Traefik services `url`], https://docs.spring.io/spring-cloud-gateway/docs/current/reference/html/[Spring Cloud Gateway `uri`]
