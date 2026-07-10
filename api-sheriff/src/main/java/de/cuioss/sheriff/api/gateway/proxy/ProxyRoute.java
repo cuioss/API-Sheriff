@@ -124,20 +124,28 @@ public class ProxyRoute {
      * @param ctx the routing context of the matched request
      */
     private void forward(RoutingContext ctx) {
-        HttpServerRequest request = ctx.request();
         String prefix = stripTrailingSlash(config.pathPrefix());
-        String remainder = request.path().substring(prefix.length());
-        String query = request.query();
-        String target = upstreamBaseUrl + remainder + (query == null || query.isEmpty() ? "" : "?" + query);
-
+        // Everything that can throw (substring, URI parsing, send) stays inside the
+        // try so any failure yields a 502 rather than an uncaught error that would
+        // leave the client hanging on the virtual thread.
+        String target = upstreamBaseUrl;
         try {
+            // Derive the remainder from the raw (still percent-encoded) request URI so
+            // the original path/query encoding is preserved without double-encoding.
+            String rawUri = ctx.request().uri();
+            int queryStart = rawUri.indexOf('?');
+            String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
+            String rawQuery = queryStart < 0 ? "" : rawUri.substring(queryStart);
+            String remainder = rawPath.substring(prefix.length());
+            target = upstreamBaseUrl + remainder + rawQuery;
+
             HttpRequest upstreamRequest = buildUpstreamRequest(ctx, target);
             HttpResponse<byte[]> upstreamResponse = httpClient.send(upstreamRequest, HttpResponse.BodyHandlers.ofByteArray());
             ctx.vertx().runOnContext(v -> writeUpstreamResponse(ctx, upstreamResponse));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             failBadGateway(ctx, target, e);
-        } catch (IOException | IllegalArgumentException e) {
+        } catch (IOException | IllegalArgumentException | IndexOutOfBoundsException e) {
             failBadGateway(ctx, target, e);
         }
     }
@@ -163,7 +171,9 @@ public class ProxyRoute {
         response.setStatusCode(upstreamResponse.statusCode());
         upstreamResponse.headers().map().forEach((name, values) -> {
             if (!RESPONSE_SKIP_HEADERS.contains(name.toLowerCase())) {
-                values.forEach(value -> response.putHeader(name, value));
+                // headers().add (not putHeader) so multi-valued headers such as
+                // Set-Cookie are all preserved rather than collapsed to the last.
+                values.forEach(value -> response.headers().add(name, value));
             }
         });
         response.end(Buffer.buffer(upstreamResponse.body()));
