@@ -1,0 +1,60 @@
+= API Sheriff -- Deployment Variants
+:toc:
+:toclevels: 2
+:sectnums:
+
+API Sheriff ships as *one binary*; each route runs in one of three authentication postures,
+selected by configuration (see "Variants Are Route Postures" below). The inbound pipeline -- TLS edge, `cui-http` security filter, static routing,
+zero-trust forward policy, metrics, and event system -- is *shared* across all three (see
+link:../architecture.adoc[Architecture]). The variants differ only in the *authentication
+stage*.
+
+NOTE: For the two BFF variants, the authoritative specification is `TokenSheriff/doc/client`
+(`CLIENT-1..22`); the canonical statement of that seam -- including precedence over the archived
+manifest -- is in link:../architecture.adoc#_authentication_layer[Architecture -- Authentication
+Layer]. The manifest's Variant A / Variant B labels map onto `CLIENT-19`'s stateless / stateful
+BFF shapes.
+
+[cols="1,2,1,1"]
+|===
+| Variant | Authentication | State | Manifest
+
+| link:01-base-gateway.adoc[1. Base Security Gateway]
+| Offline bearer validation on `auth.require: bearer` routes (client holds its own token)
+| Stateless
+| --
+
+| link:02-bff-session.adoc[2. BFF -- Session-based]
+| OIDC confidential client; tokens held server-side; opaque session-id cookie
+| Stateful (needs a store)
+| Variant B
+
+| link:03-bff-cookie.adoc[3. BFF -- Cookie-based]
+| OIDC confidential client; tokens in an AES-256-GCM `HttpOnly` cookie, decrypted per request
+| Stateless (key only)
+| Variant A
+|===
+
+== Variants Are Route Postures, Not a Global Switch
+
+"Variant" names the authentication posture of a *route*, selected by its effective
+`auth.require` (`none` | `bearer` | `session`) -- declared once per endpoint file and
+overridable per route (see link:../configuration.adoc#_auth[Configuration -- `auth`]); one
+deployment may serve bearer routes and session routes side by side. What *is* global is `oidc.session.mode` (`server` | `cookie`) -- it decides which BFF
+shape handles all `session` routes, so a single deployment runs at most one of Variant 2 and
+Variant 3 at a time. A deployment with no `session` routes is a pure Variant 1 gateway and
+needs no `oidc` block.
+
+== Progression
+
+. *Base gateway* is the foundation -- the filter/route/forward/observe pipeline every mode reuses.
+. *Session-based BFF* adds the OIDC confidential-client login and server-side token custody.
+  This is where BFF work starts.
+. *Cookie-based BFF* is the stateless evolution: the same login flow, but the token is sealed
+  into an encrypted cookie instead of a store. This is the preferred long-term target because
+  it keeps the gateway self-contained.
+
+The two BFF variants share the same login handshake (see the sequence diagram in either
+section) and the same upstream `Authorization: Bearer` injection; they differ only in *where
+the token lives*, as compared side by side in
+link:02-bff-session.adoc#_steady_state_api_call[the mediation diagram].

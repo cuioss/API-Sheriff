@@ -1,0 +1,121 @@
+= API Sheriff -- Documentation Index
+:toc:
+:toclevels: 2
+:sectnums:
+
+API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and
+Java virtual threads. It is a purpose-built gateway rather than a configuration
+layer on top of an existing one -- the link:archive/others/README.adoc[competitive analysis]
+shows that no existing OSS gateway covers the required combination of confidential-client
+token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
+`X-Forwarded-*` behind a trusted-proxy allowlist), RFC 9470 step-up, and datastore-free
+distributed configuration (the last deferred past the initial release --
+link:adr/0002-initial-scope.adoc[ADR-0002]).
+
+This directory holds the design documentation. No production code is described as
+existing here; these documents define *what will be built* and *how the parts fit
+together*.
+
+== Source Requirements
+
+[cols="1,3"]
+|===
+| Document | Purpose
+
+| `TokenSheriff/doc/client` (`CLIENT-1..22`)
+| *Authoritative for all BFF concerns* -- the confidential-client flow, grants, `state`/`nonce`,
+  mix-up defence, PAR, step-up, logout, token lifecycle, and the two token-binding shapes.
+  *Where it and the archived manifest differ, `doc/client` governs.*
+
+| link:technical_aspects.adoc[Technical Aspects]
+| The CUI libraries API Sheriff builds on -- `cui-http` (downstream calls + inbound
+  security filtering), `token-sheriff-validation` (offline JWT validation),
+  `token-sheriff-client` (the OIDC confidential-client engine used by the BFF variants),
+  logging and testing.
+
+| link:archive/[Archived Sources]
+| The original link:archive/manifest.adoc[Project Manifest] and the
+  link:archive/others/README.adoc[competitor fact sheets] -- kept for history. Their content has
+  been fully adapted into the design documents below (requirements into
+  link:configuration.adoc[Configuration] and the link:variants/README.adoc[variants]; the
+  competitor analysis into link:features-analysis.adoc[Feature Analysis]) and the initial-scope
+  narrowing recorded in link:adr/0002-initial-scope.adoc[ADR-0002]. They are no longer edited.
+|===
+
+== Design Documents
+
+[cols="1,3"]
+|===
+| Document | Purpose
+
+| link:features-analysis.adoc[Competitive Feature Analysis]
+| What API Sheriff should adopt from APISIX / Traefik / KrakenD and friends, what to
+  deliberately avoid, and the differentiators no competitor covers.
+
+| link:architecture.adoc[Architecture]
+| The runtime components, request lifecycle, event system, metrics surface, and how
+  `cui-http` and `token-sheriff-validation` are wired in. Threading model (virtual threads).
+
+| link:configuration.adoc[Configuration Model]
+| The static, immutable YAML mapping schema: routing, URL/parameter whitelisting,
+  security filtering, TLS (termination and passthrough), and per-route limits.
+|===
+
+== Deployment Variants
+
+The gateway ships as one binary that operates in one of three modes, selected by
+configuration. Each has its own design section:
+
+[cols="1,3"]
+|===
+| Variant | Description
+
+| link:variants/01-base-gateway.adoc[1. Base Security Gateway]
+| Stateless reverse proxy. Inbound `cui-http` security filtering + offline bearer-token
+  validation on routes with `auth.require: bearer`. No browser session, no OIDC login flow.
+  The shared foundation for the other two.
+
+| link:variants/02-bff-session.adoc[2. BFF -- Session-based]
+| Backend-For-Frontend acting as an OIDC confidential client. Tokens held *server-side*;
+  the browser carries only an opaque session-id cookie. Stateful (manifest Variant B).
+
+| link:variants/03-bff-cookie.adoc[3. BFF -- Cookie-based (non-session)]
+| Backend-For-Frontend where the tokens travel only inside an AES-256-GCM encrypted
+  `HttpOnly` cookie, decrypted per request. Stateless (manifest Variant A).
+|===
+
+== Architecture Decisions
+
+[cols="1,3"]
+|===
+| ADR | Decision
+
+| link:adr/0001-java25-runtime-baseline.adoc[ADR-0001]
+| Run the container/native image on the Java 25 runtime for full virtual-thread benefit
+  while keeping source compatibility at Java 21. *(Status: proposed.)*
+
+| link:adr/0002-initial-scope.adoc[ADR-0002]
+| Initial scope: gRPC + GraphQL (with HTTP/2 + WebSocket) ship from the start, HTTP/3 deferred;
+  configuration is Static mode only, dynamic discovery deferred.
+
+| link:adr/0003-forwarded-headers.adoc[ADR-0003]
+| Forwarding headers: accept both `Forwarded` and `X-Forwarded-*`, normalize behind a
+  trusted-proxy allowlist, emit a configurable output with `X-Forwarded-*` as the default.
+
+| link:adr/0004-topology-indirection.adoc[ADR-0004]
+| Configuration layout: portable endpoint files reference `base_url` aliases resolved by
+  `topology.properties`; a single URL per alias, overridable by `TOPOLOGY_<ALIAS>` env vars.
+|===
+
+== Reading Order
+
+. link:features-analysis.adoc[Feature Analysis] -- what to build and what not to.
+. link:architecture.adoc[Architecture] -- how the runtime fits together.
+. link:configuration.adoc[Configuration] -- the YAML contract.
+. The link:variants/01-base-gateway.adoc[three variant sections] -- deployment modes.
+. link:technical_aspects.adoc[Technical Aspects] -- the CUI library APIs behind the design.
+. The link:adr/0001-java25-runtime-baseline.adoc[ADRs] -- the recorded decisions and their
+  rationale, referenced throughout the documents above.
+
+For historical context, the original requirements and competitor fact sheets are preserved
+under link:archive/[`archive/`].

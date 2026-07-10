@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BFF token mediation — session-based vs cookie-based, side by side.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-block.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 520"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">BFF token mediation variants, session-based versus cookie-based</title>
+  <desc id="desc">A side-by-side comparison of the two Backend-For-Frontend token-binding variants. In the session-based variant the browser holds an opaque session-id cookie and the gateway keeps tokens in a server-side store, making it stateful. In the cookie-based variant the tokens (access, refresh, ID token, minimal metadata) travel inside an AES-256-GCM encrypted HttpOnly cookie that the gateway decrypts per request, keeping it stateless. Both act as an OIDC confidential client, keep tokens out of JavaScript's reach, and inject an Authorization Bearer header upstream.</desc>
+
+  <defs>
+    <style>
+      .col-header { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .cat        { font-size: 13px; font-weight: 600; fill: #6e7681; }
+      .desc       { font-size: 12px; fill: #6e7681; }
+      .mono       { font-size: 12px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .col-sub    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .banner     { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .caption    { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .stroke     { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .sep        { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; }
+    </style>
+  </defs>
+
+  <!-- shared banner -->
+  <text x="460" y="34" class="banner">Both: OIDC confidential client &#183; token never readable by JavaScript (HttpOnly, Secure) &#183; Bearer injected upstream</text>
+
+  <!-- column headers -->
+  <text x="235" y="82" class="col-header">Session-based (Variant 2)</text>
+  <text x="685" y="82" class="col-header">Cookie-based (Variant 3)</text>
+
+  <!-- column boxes -->
+  <rect class="stroke" x="40"  y="96" width="390" height="374" rx="6"/>
+  <rect class="stroke" x="490" y="96" width="390" height="374" rx="6"/>
+
+  <!-- LEFT: session-based -->
+  <text x="64" y="140" class="cat">Browser</text>
+  <text x="64" y="160" class="desc">opaque session-id cookie</text>
+
+  <text x="64" y="198" class="cat">Gateway</text>
+  <text x="64" y="218" class="desc">server-side token store</text>
+
+  <text x="64" y="256" class="cat">Per request</text>
+  <text x="64" y="276" class="desc">look up token by session id</text>
+  <text x="64" y="296" class="mono">inject Authorization: Bearer</text>
+
+  <text x="64" y="334" class="cat">Property</text>
+  <text x="64" y="354" class="desc">stateful &#8212; needs a store</text>
+
+  <line class="sep" x1="64" y1="420" x2="406" y2="420"/>
+  <text x="235" y="446" class="col-sub">manifest Variant B</text>
+
+  <!-- RIGHT: cookie-based -->
+  <text x="514" y="140" class="cat">Browser</text>
+  <text x="514" y="160" class="desc">encrypted token cookie (AES-256-GCM)</text>
+
+  <text x="514" y="198" class="cat">Gateway</text>
+  <text x="514" y="218" class="desc">no server-side store</text>
+
+  <text x="514" y="256" class="cat">Per request</text>
+  <text x="514" y="276" class="desc">decrypt cookie to tokens</text>
+  <text x="514" y="296" class="mono">inject Authorization: Bearer</text>
+
+  <text x="514" y="334" class="cat">Property</text>
+  <text x="514" y="354" class="desc">stateless &#8212; encryption key only</text>
+
+  <line class="sep" x1="514" y1="420" x2="856" y2="420"/>
+  <text x="685" y="446" class="col-sub">manifest Variant A</text>
+
+  <!-- footer -->
+  <text x="460" y="502" class="caption">Same engine seam and the same upstream injection; the variants differ only in where the token lives.</text>
+</svg>

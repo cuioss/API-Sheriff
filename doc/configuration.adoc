@@ -1,0 +1,858 @@
+= API Sheriff -- Configuration Model
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Principles
+
+Configuration is *static, file-based, and immutable*. It is read once at startup, validated
+in full, frozen into immutable value objects, and never mutated at runtime. The gateway
+refuses to boot on invalid configuration.
+
+Two structural principles shape the layout:
+
+* *Endpoint config is portable; topology is environment-specific.* Route definitions never name
+  a concrete host. They reference an abstract alias (`APP1`, `KEYCLOAK`, ...); a separate
+  topology file binds each alias to a real location. Moving a deployment changes only the
+  topology, never the endpoint files.
+* *Zero-trust and deny-by-default* throughout: nothing is forwarded, routed, or trusted unless
+  it is explicitly configured.
+
+The model draws the best of the evaluated competitors (see link:features-analysis.adoc[Feature Analysis]):
+
+* *Endpoint-centric routes* with per-route timeout and circuit breaker -- from KrakenD.
+* *Composable, bounded matchers* (path, method, host, header) -- from Traefik.
+* *Validated-then-immutable, atomic config* -- from APISIX standalone mode + KrakenD GitOps.
+* *Zero-trust forwarding* (deny-by-default allowlists) -- from KrakenD.
+* *Alias -> URL indirection with env override* -- 12-factor "config in the environment"; the
+  single-URL alias and decompose-on-read model follow Kong / Spring / Traefik (see
+  link:adr/0004-topology-indirection.adoc[ADR-0004]).
+
+The schema is intentionally declarative; there is no rule language and no runtime mutation API.
+
+== Configuration Layout
+
+Configuration is three kinds of artifact:
+
+[cols="1,3"]
+|===
+| Artifact | Purpose
+
+| `gateway.yaml`
+| *Global* settings: schema version, TLS, security-response headers, filter defaults, the
+  `forwarded`-header policy, and the `oidc` block (BFF variants). No routes.
+
+| `endpoints/*.yaml`
+| *One file per endpoint* -- a service / host / app, or a logical group. Each file binds to one
+  `base_url` *alias* and declares the routes for that endpoint. These files are
+  *environment-independent* -- they never contain a real host.
+
+| `topology.properties`
+| Maps each `base_url` alias to a concrete location (one URL per alias). Overridable per alias by
+  an environment variable. This is the *only* file that changes between environments.
+|===
+
+[source,text]
+----
+conf/
+  gateway.yaml              # global settings
+  endpoints/
+    app1.yaml               # base_url: APP1     -> routes for /api/orders ...
+    keycloak.yaml           # base_url: KEYCLOAK -> routes for /auth, /token
+  topology.properties       # APP1=..., KEYCLOAK=...   (env vars override)
+----
+
+== Loading, Resolution and Validation
+
+* `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
+  startup.
+* Each endpoint's `base_url` alias is *resolved* against the topology (env var wins over the file,
+  see link:#_topology[Topology]); the resolved URL is *decomposed once* into
+  `{scheme, host, port, base-path}` (the Kong "accept URL, store components" model).
+* The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias,
+  a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
+* Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
+  commit. Topology values may be literal (they are locations, not secrets) but are still
+  overridable by env.
+* On any validation error the process exits non-zero and logs the offending file/alias -- it does
+  not start a degraded gateway.
+
+[[_distributed_configuration]]
+=== Configuration Mode -- Static Only (initial scope)
+
+*API Sheriff supports only Static mode initially* -- see link:adr/0002-initial-scope.adoc[ADR-0002].
+The manifest's dynamic `/api/gateway-config.json` discovery is deferred; `metadata.config_version`
+is retained now only as an audit stamp.
+
+== Gateway Configuration (`gateway.yaml`)
+
+[source,yaml]
+----
+version: 1                         # config schema version; unknown values are refused
+
+metadata:
+  config_version: "2026-07-10.1"   # audit stamp only (see "Configuration Mode")
+
+tls:                               # connections are TLS-terminated except listed SNIs
+  min_version: "1.3"
+  alpn: [h2, http/1.1]             # HTTP/2 (also carries gRPC) + HTTP/1.1
+  passthrough_sni: {}              # SNI hostname -> topology alias, relayed at L4 without
+                                   #   decryption, e.g. { legacy.example.com: LEGACY }
+  mtls:
+    enabled: false
+    client_ca: /etc/sheriff/ca.pem
+
+security_headers:                  # response-header middleware (global default)
+  hsts: { max_age: 31536000, include_subdomains: true }
+  content_type_nosniff: true
+  frame_deny: true
+  cors:                            # disabled unless configured; a cross-origin SPA (see
+    enabled: true                  #   oidc.session.csrf below) needs this enabled WITH
+    allowed_origins: [https://app.example.com]   # credentials, or the browser blocks the calls
+    allowed_methods: [GET, POST]
+    allowed_headers: [content-type]
+    allow_credentials: true
+
+security_defaults:                 # default inbound filter profile; overridable per route
+  profile: strict                  # default | strict | lenient  (maps to cui-http presets)
+
+forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
+  trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
+                                   #   keep as narrow as possible; empty => forwarding
+                                   #   headers are never trusted; TCP peer is the client
+  trust_scheme_host: false         # honor sanitized scheme/host/port/prefix from proxies
+                                   #   (ForwardedResolverConfig.trustAll)
+  emit: x-forwarded                # x-forwarded (default) | both (adds RFC 7239 Forwarded)
+
+token_validation:                  # offline bearer validation (routes with auth.require: bearer)
+  issuers:                         # one entry per accepted identity provider
+    - name: main
+      issuer: https://idp.example.com/realms/main   # expected iss claim
+      audience: api-sheriff                          # expected aud claim
+      jwks:
+        source: http               # http | file | inline
+        url: https://idp.example.com/realms/main/protocol/openid-connect/certs
+        # file: /etc/sheriff/jwks.json   (air-gapped deployments)
+
+oidc:                              # only used by the BFF variants (2 and 3)
+  issuer: https://idp.example.com/realms/main
+  client_id: api-sheriff
+  client_secret: ${SHERIFF_CLIENT_SECRET}
+  scopes: [openid, profile]
+  redirect_uri: https://gw.example.com/auth/callback
+  logout:
+    path: /logout                  # gateway-served; triggers RP-initiated logout at the IdP
+    post_logout_redirect_uri: https://gw.example.com/logout/done   # gateway-owned return leg,
+                                   #   pre-registered, exact match; verifies the logout state
+    final_redirect: https://app.example.com/   # where the browser lands after verification
+    backchannel_path: /logout/backchannel   # back-channel receiver (mode: server only)
+  session:                         # NOTE: exhibit shows the fields of BOTH modes; store is
+                                   #   server-mode-only, the encryption keys cookie-mode-only
+    mode: cookie                   # cookie (Variant 3) | server (Variant 2)
+    store: memory                  # server mode only; memory is the only initial option
+    cookie_name: __Host-sheriff
+    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM)
+    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation
+    ttl_seconds: 3600              # absolute session lifetime from login
+    csrf:
+      trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
+                                   #   defaults to the origin of redirect_uri
+    refresh:
+      enabled: true
+      leeway_seconds: 30           # refresh this long before expiry
+      on_failure: reauthenticate   # reauthenticate | reject
+  step_up:                         # RFC 9470
+    enabled: true
+    honor_upstream_challenge: true
+----
+
+== Endpoint Configuration Files (`endpoints/*.yaml`)
+
+One file per endpoint (service / host / app) or logical group. The file binds to a single
+`base_url` alias and lists its routes. *No concrete host appears here* -- the alias is resolved
+from the topology at startup.
+
+[source,yaml]
+----
+# endpoints/app1.yaml
+endpoint:
+  id: app1
+  base_url: APP1                   # alias; resolved from topology.properties / env
+  auth:                            # MANDATORY: default auth posture for every route in
+    require: bearer                #   this file; a route may override it (below)
+  routes:                          # merged into one table across all endpoint files
+                                   #   (see "Route ordering"); no match => 404
+    - id: orders-api
+      protocol: http               # http | grpc | graphql | websocket (see "Protocols")
+      match:
+        path_prefix: /api/orders
+        methods: [GET, POST]
+        host: api.example.com
+        headers:                   # optional header matchers (presence or exact value)
+          - { name: X-Tenant, present: true }
+      auth:                        # route-level override of endpoint.auth (whole block
+        require: bearer            #   replaces, no merge)
+        required_scopes: [orders.read]
+      security_filter:             # "basic filtering -- NOT a WAF"; see below
+        profile: strict
+        allowed_paths: ["/api/orders", "/api/orders/{id}"]   # quoted: {} is YAML syntax
+        max_header_count: 50
+        max_header_value_length: 8192   # characters (cui-http unit)
+        max_query_params: 20
+        max_param_value_length: 2048    # characters
+        max_body_bytes: 1048576
+      forward:                     # zero-trust: only what is listed crosses upstream
+        headers_allow: [accept, content-type]
+        query_allow: [page, size]
+        set_headers:               # additional STATIC gateway-set headers only; the mediated
+          x-gateway: api-sheriff   #   Authorization (session routes) and the forwarding-
+                                   #   header set are injected automatically, never configured
+      upstream:
+        path: /orders              # replaces the matched path_prefix; the request-path
+                                   #   remainder is appended (see "upstream")
+        connect_timeout_ms: 2000
+        read_timeout_ms: 5000
+        retry: { max_attempts: 3, idempotent_only: true }
+        circuit_breaker: { failures: 5, reset_ms: 30000 }
+      rate_limit: { requests_per_second: 100, burst: 20 }   # reserved; feature deferred
+----
+
+The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
+the `KEYCLOAK` alias:
+
+[source,yaml]
+----
+# endpoints/keycloak.yaml
+endpoint:
+  id: keycloak
+  base_url: KEYCLOAK
+  auth: { require: none }          # endpoint default: the login flow is necessarily
+                                   #   unauthenticated; inherited by both routes
+  routes:
+    - id: auth
+      match: { path_prefix: /auth }
+      forward:                     # deny-by-default: the OIDC request params must be listed
+        query_allow: [client_id, redirect_uri, response_type, scope, state, nonce,
+                      code_challenge, code_challenge_method]
+      upstream: { path: /realms/main/protocol/openid-connect/auth }
+    - id: token
+      match: { path_prefix: /token, methods: [POST] }
+      forward:
+        headers_allow: [content-type]
+      upstream: { path: /realms/main/protocol/openid-connect/token }
+----
+
+=== Route ordering
+
+The routes of *all* endpoint files are merged into a single immutable route table at startup.
+Matching is a two-step rule:
+
+. *Candidates* are the routes whose *entire* matcher set holds for the request (path prefix
+  AND methods AND host AND headers). A route whose `path_prefix` matches but whose `host` or
+  `methods` do not is simply not a candidate -- shorter-prefix routes are still considered.
+. Among the candidates, the one with the *longest* `path_prefix` wins.
+
+So that the winner is never ambiguous, any two routes with an *identical* `path_prefix` --
+in the same file or across files -- must be *statically disjoint*, meaning one of:
+
+* *both* declare `host`, with different values (a route that omits `host` matches every host,
+  so a declared-host route paired with a host-less route at the same prefix is *not* disjoint
+  and is rejected -- there is deliberately no "specific host + any-host fallback at the same
+  prefix" pattern; give the fallback a different prefix or declare hosts on both);
+* their `methods` sets do not overlap (an omitted `methods` means all methods and overlaps
+  everything); or
+* both declare a matcher on the *same header name* with different exact values
+  (e.g. `X-Tenant: a` vs `X-Tenant: b`; `present: true` establishes nothing).
+
+Any same-prefix pair that fails all three tests is rejected at boot; precedence never depends
+on file-system or declaration order. This keeps the canonical virtual-hosting case
+expressible: `/api` on `a.example.com` -> `APP_A` and `/api` on `b.example.com` -> `APP_B`
+live in two endpoint files and are disjoint by host.
+
+A request that matches no route is rejected with `404`.
+
+*Reserved gateway paths.* The gateway's own OIDC endpoints -- the `oidc.redirect_uri` path,
+`oidc.logout.path`, its return path, and `oidc.logout.backchannel_path` -- are matched
+*exactly, before the route table*, but only on the *OIDC host* (the host of
+`oidc.redirect_uri`). A proxy route such as `path_prefix: /auth` therefore never swallows the
+`/auth/callback` callback, while other virtual hosts (e.g. machine-to-machine API hosts with
+`bearer` routes) keep their full path namespace. Routes remain free to use neighbouring
+prefixes; only the exact reserved paths on that one host are carved out.
+
+=== Defaults for omitted blocks
+
+Deny-by-default extends to omitted configuration:
+
+[cols="1,3"]
+|===
+| Omitted block | Effect
+
+| `auth` (route level)
+| The route inherits the *endpoint's* `auth` block. The authentication posture is defined per
+  endpoint file -- `endpoint.auth` is *mandatory*, and anonymous access is
+  `auth: { require: none }`, written out; there is no implicit default. A route-level `auth`
+  block *replaces* the endpoint default wholesale (no field merging). An endpoint file without
+  an `auth` block fails the boot.
+
+| `security_filter`
+| The global `security_defaults.profile` applies with the preset's limits.
+
+| `forward`
+| Nothing is forwarded: no request headers and no query parameters cross to the upstream
+  beyond the *automatic* injections (the mediated `Authorization: Bearer` on session routes
+  and the regenerated forwarding-header set -- see `forward` below). A route that needs
+  client input must list it.
+
+| `rate_limit`
+| No rate limiting (the feature is deferred regardless; the field is reserved).
+|===
+
+[[_topology]]
+== Topology (`topology.properties`)
+
+Each `base_url` alias maps to *one URL* -- the concrete location of the current installation. A URL
+is the majority idiom for a human-authored, env-overridden target (12-factor resource handle;
+Traefik `url`, Spring `uri`, Nginx `proxy_pass`); the gateway decomposes it once on load into its
+components. See link:adr/0004-topology-indirection.adoc[ADR-0004].
+
+[source,properties]
+----
+# topology.properties  (the ONLY file that changes between environments)
+APP1=https://app1.internal:8443/app1
+KEYCLOAK=https://kc.internal:8443
+----
+
+=== Environment-variable override (takes precedence)
+
+Any alias may be overridden by an environment variable `TOPOLOGY_<ALIAS>`, which *wins over* the
+file. This lets an operator relocate a backend without touching any file:
+
+[source,bash]
+----
+TOPOLOGY_APP1=https://app1.mycompany.com
+----
+
+Precedence, highest first: `TOPOLOGY_<ALIAS>` env var -> `topology.properties` entry. An alias
+referenced by an endpoint file that resolves to neither is a *boot failure*.
+
+=== Resolution semantics
+
+* The resolved value is a full URL (`scheme://host[:port][/base-path]`), validated and decomposed
+  once into `{scheme, host, port, base-path}`.
+* A route's upstream target is `resolved(base_url) + route.upstream.path + remainder`, where
+  *remainder* is the request path with the matched `match.path_prefix` stripped (segments are
+  joined with exactly one `/`). `/api/orders/42` on `path_prefix: /api/orders` with
+  `upstream.path: /orders` therefore reaches `<resolved APP1>/orders/42`.
+* Component overrides (e.g. changing only the port) are intentionally *not* supported initially; the
+  whole URL is the unit of override. A `TOPOLOGY_<ALIAS>_PORT`-style escape hatch may be added later
+  if a real partial-override need appears (Kong's component model) -- see
+  link:adr/0004-topology-indirection.adoc[ADR-0004].
+
+== Field Reference
+
+=== `tls`
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| (termination)
+| The gateway terminates TLS (new certificate) for every connection whose SNI is *not* listed
+  in `passthrough_sni`, decrypts, and applies all L7 features (filtering, routing, auth,
+  mediation). Termination is not configurable per se -- it is the behaviour of everything that
+  is not passthrough. Required for the BFF variants and for L7 gRPC/WebSocket.
+
+| `passthrough_sni`
+| A map of *SNI hostname -> topology alias*: connections whose SNI matches a key are relayed
+  as opaque TCP (L4), without decryption, to the `host:port` the alias resolves to via
+  link:#_topology[`topology.properties`] / `TOPOLOGY_<ALIAS>` -- the same indirection routes
+  use, so passthrough targets are relocatable per environment too. The alias must resolve at
+  boot, and its URL must carry *no base-path* (an L4 relay has no concept of one); either
+  violation fails the boot. Passthrough is declared *here, per SNI* -- never on a route. No L7
+  feature (filtering, auth, header injection, gRPC/WebSocket/GraphQL handling) applies to a
+  passthrough connection. Hostname comparison is *case-insensitive* (RFC 6066). Two guards
+  keep the L4/L7 split unambiguous: a route whose `match.host` equals a passthrough SNI
+  *fails the boot* (the two declarations contradict each other), and a *terminated* request
+  whose `Host` header names a passthrough SNI is rejected with `404` before routing --
+  otherwise a client could reach a "passthrough-only" backend at L7 by completing a terminated
+  handshake and smuggling the hostname in the `Host` header. Termination (everything else) and
+  passthrough (mapped SNIs) coexist on the same listener.
+
+| `min_version`
+| Minimum negotiated TLS version for terminated connections; `1.3` recommended, `1.2` floor.
+
+| `alpn`
+| Advertised ALPN protocols. `h2` also carries gRPC ("gRPCS" when TLS-terminated).
+
+| `mtls.*`
+| Require and verify client certificates against the given CA (terminated connections only --
+  on passthrough the gateway never participates in the handshake).
+|===
+
+*How SNI selection works.* Server Name Indication (RFC 6066) is the hostname the client sends
+in the *TLS ClientHello* -- in cleartext, before any encryption is established -- precisely so that a server
+fronting multiple hosts can decide how to handle the connection without decrypting anything.
+API Sheriff reads it at accept time and splits there:
+
+* *SNI mapped in `passthrough_sni`* -> the gateway stops participating: the entire encrypted
+  byte stream, ClientHello included, is relayed to the `host:port` resolved from the SNI's
+  topology alias. The
+  *backend* completes the handshake and presents its own certificate; the client gets true
+  end-to-end TLS. The price is total L7 blindness: the gateway cannot terminate mTLS, choose
+  ALPN, inspect paths, inject forwarding headers, or authenticate anything on that connection.
+* *Any other SNI, or no SNI at all* -> the gateway terminates: it completes the handshake with
+  its own certificate (enforcing `min_version`, `alpn`, `mtls`) and the full L7 pipeline
+  applies. A ClientHello *without* SNI (rare; old clients or IP-address dialing) can never
+  match a passthrough entry and is therefore always terminated.
+
+Matching is *exact and case-insensitive* (hostnames are case-insensitive per RFC 6066/RFC 952);
+wildcard entries (`*.internal.example.com`) are *not* supported initially -- list each host.
+Note the two guards described under `passthrough_sni` above: the boot-time route/`match.host`
+collision check and the runtime rejection of terminated requests whose `Host` header names a
+passthrough SNI.
+
+*Encrypted ClientHello (ECH).* ECH hides the true (inner) hostname; the outer ClientHello
+carries the ECHConfig's `public_name` as its cleartext SNI, and that outer name is the *only*
+thing SNI-based selection can ever act on. Two consequences: passthrough keyed on the
+`public_name` is ECH-*compatible* -- the intact ClientHello is relayed and the backend holding
+the ECH key completes the handshake (that is the fronting model). Conversely, hosts the
+gateway *terminates* must not publish ECHConfigs pointing at it: the gateway holds no ECH key,
+so an ECH client would treat the handshake as ECH rejection (it authenticates the
+`public_name`, refuses to send the real request, and retries or aborts). Listing an *inner*
+hostname in `passthrough_sni` does nothing -- it never appears in the outer SNI.
+
+[[_protocols]]
+=== `protocol`
+
+Each route declares the protocol it serves: `http` (the default), `graphql`, `grpc`, or
+`websocket`. All four are supported *from the start* (link:adr/0002-initial-scope.adoc[ADR-0002]);
+HTTP/3 is deferred. The value selects handshake/streaming behaviour only (WebSocket upgrade,
+gRPC streaming); the semantics of each protocol -- and what the security filter does and does
+not inspect -- are defined once in
+link:architecture.adoc#_protocol_support[Architecture -- Protocol Support].
+
+[[_security_filtering]]
+=== `security_filter`
+
+The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature matching. Maps onto
+`cui-http`'s `SecurityConfiguration` and pipelines:
+
+[cols="2,2,2"]
+|===
+| Config field | cui-http mapping | Notes
+
+| `profile`
+| `SecurityConfiguration.strict()` / `defaults()` / `lenient()`
+| Baseline preset; the limits below override it.
+
+| `max_body_bytes`
+| *(gateway-enforced)*
+| DoS guard. `cui-http` removed its BODY validation pipeline ("body content validation should
+  be handled at application layer"), so the gateway enforces this cap itself while reading the
+  request body; `SecurityConfiguration.maxBodySize` is not wired.
+
+| `max_header_count` / `max_query_params`
+| `maxHeaderCount` / `maxParameterCount` (`RequestCollectionValidator`)
+| Hash-collision / resource-exhaustion guards.
+
+| `max_header_value_length` / `max_param_value_length`
+| `maxHeaderValueLength` / `maxParameterValueLength`
+| Per-item length caps (a single header value / parameter value, not the whole header block),
+  measured in *characters* -- the `cui-http` unit -- not bytes.
+
+| (path safety)
+| `URLPathValidationPipeline`
+| Traversal / encoding / character / pattern checks; tuned by the profile.
+
+| `allowed_header_names` / `blocked_header_names`
+| `allowedHeaderNames` / `blockedHeaderNames`
+| Optional header-name allow/block lists.
+
+| `allowed_content_types`
+| `allowedContentTypes`
+| Optional `Content-Type` allowlist for request bodies.
+|===
+
+*Whitelisting.* `cui-http` has no path allow-list knob, so URL/parameter whitelisting is enforced at
+the gateway layer: `allowed_paths` (a request whose validated, normalized path matches no entry is
+rejected -- the manifest's "WAF via path white-listing"), plus `forward.query_allow` /
+`forward.headers_allow` (only listed items reach upstream). Header-name and content-type allow/block
+are configured via `allowed_header_names` / `blocked_header_names` / `allowed_content_types`
+above, wired to the corresponding `cui-http` knobs.
+
+*`allowed_paths` matching semantics.* An entry is a literal path in which `{name}` placeholders
+each match *exactly one* path segment (any characters except `/`). There are no wildcards, no
+regular expressions, and no multi-segment placeholders. Matching runs *after* the `cui-http`
+validation pipeline has decoded and normalized the path, so encoding tricks (`%2e%2e`, overlong
+UTF-8, doubled slashes) cannot bypass the allowlist. `/api/orders/{id}` matches
+`/api/orders/42` but neither `/api/orders` nor `/api/orders/42/items`.
+
+=== `auth`
+
+Whether authentication is required is defined *per endpoint file*: `endpoint.auth` is
+mandatory and is the default posture for every route in the file. A route-level `auth` block
+replaces the endpoint default wholesale for that route (no field merging). "Effective auth"
+below means the route's own block if present, else the endpoint's. `required_scopes` is valid
+at either level; because override is wholesale, a route-level block that omits it *drops*
+endpoint-level scope enforcement for that route. Weakening overrides (lower `require`, dropped
+scopes) are legal -- a health route under a bearer endpoint is the normal case -- but every one
+is called out in the boot log, so weakening is always an explicit, audited choice.
+
+[cols="1,3"]
+|===
+| Value | Behaviour
+
+| `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block fails the boot (see "Defaults for omitted blocks").
+| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; enforce `required_scopes`. link:variants/01-base-gateway.adoc[Variant 1].
+| `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. `required_scopes` on a session route are enforced against the *mediated* access token's granted scopes -- so they must be requested in `oidc.scopes` at login, or every request on the route fails with `403`.
+|===
+
+Routes with different `require` values may coexist in one deployment; the canonical statement
+of the variants-are-route-postures rule is in link:variants/README.adoc[Variants].
+
+[[_token_validation]]
+=== `token_validation`
+
+Configures offline bearer validation for `require: bearer` routes; it materializes the
+`token-sheriff-validation` `IssuerConfig`/`TokenValidator` wiring described in
+link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effective* auth is
+`require: bearer`.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `issuers[].name`
+| Unique label, used in logs and metrics.
+
+| `issuers[].issuer`
+| The expected `iss` claim (maps to `IssuerConfig.issuerIdentifier`). Multiple issuers are
+  supported; the validator selects by the token's `iss`.
+
+| `issuers[].audience`
+| The expected `aud` claim (maps to `IssuerConfig.expectedAudience`).
+
+| `issuers[].jwks`
+| Key material for signature verification: `source: http` with a `url` (cached, periodically
+  refreshed), `source: file`, or `source: inline` -- the latter two for air-gapped deployments.
+|===
+
+The BFF variants do *not* read this block: they validate the tokens they retrieve against the
+issuer configured in link:#_oidc[`oidc`].
+
+[[_oidc]]
+=== `oidc`
+
+The confidential-client block used by the BFF variants
+(link:variants/02-bff-session.adoc[Variant 2] and link:variants/03-bff-cookie.adoc[Variant 3]);
+ignored when no route's effective auth is `require: session`.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `issuer`, `client_id`, `client_secret`, `scopes`, `redirect_uri`
+| The OIDC confidential-client identity. `client_secret` must be an `${ENV_VAR}` reference.
+  `redirect_uri` is the gateway's own callback route, registered exactly at the IdP.
+
+| `logout.path`
+| Gateway-served logout endpoint (default `/logout`): revokes the held tokens (RFC 7009),
+  destroys the local session/cookie, and redirects to the IdP `end_session_endpoint` with
+  `id_token_hint`, `post_logout_redirect_uri`, and a *session-bound `state`* (per `CLIENT-13`).
+  Because the session is already destroyed at that point, the `state` is sealed into a
+  short-lived (60 s), single-use `+__Host-sheriff-logout+` cookie set alongside the redirect;
+  the return leg verifies against that cookie and clears it -- stateless, so it works
+  identically in both session modes.
+
+| `logout.post_logout_redirect_uri`
+| The return leg from the IdP. It must be a *gateway-owned* path -- the gateway has to see the
+  return to verify the session-bound `state` -- pre-registered at the IdP and compared by
+  *exact string match*, never pattern or prefix (open-redirect defence). After verification the
+  browser is redirected to `logout.final_redirect`.
+
+| `logout.final_redirect`
+| The application URL the browser lands on after the verified logout round-trip. Optional;
+  defaults to `/`.
+
+| `logout.backchannel_path`
+| Receiver for OIDC back-channel logout tokens from the IdP. Meaningful in `mode: server`
+  only, where a validated logout token destroys the matching session; in `mode: cookie` the
+  endpoint is *disabled* (`404`) -- there is no server-side state a logout token could
+  destroy. See the statelessness limitation in link:variants/03-bff-cookie.adoc[Variant 3].
+
+| `session.csrf.trusted_origins`
+| The browser origins allowed to make *unsafe-method* (non-GET/HEAD/OPTIONS) calls to
+  `require: session` routes -- i.e. the origins the SPA is served from. Defaults to the origin
+  of `redirect_uri`. The `Origin` header carries the *calling page's* origin, so an
+  application served from a different host than the gateway must be listed here.
+  Compared as full origins (scheme + host + port), exact match. A *cross-origin* SPA needs
+  *both* halves configured: this list (what the gateway *accepts* -- CSRF) and
+  `security_headers.cors` enabled with `allow_credentials: true` (what the browser *permits*).
+  This works only for *same-site* origins -- a different origin under the same registrable
+  domain, e.g. `app.example.com` calling `gw.example.com` -- because the session cookie is
+  fixed at `SameSite=Lax`: a truly *cross-site* SPA (different registrable domain) never gets
+  the cookie attached to its calls, by design. Host the application under the same site as the
+  gateway. See link:variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
+
+| `session.mode`
+| `cookie` (Variant 3, encrypted-cookie state) or `server` (Variant 2, server-side store).
+  Global -- one deployment runs one BFF shape.
+
+| `session.store`
+| `server` mode only. `memory` (single-node or sticky-session deployments) is the only initial
+  option; a shared external store is deliberately unsupported for now (see the trade-off in
+  link:variants/02-bff-session.adoc[Variant 2]).
+
+| `session.cookie_name`
+| Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default
+  and recommended.
+
+| `session.encryption_key` / `session.previous_key`
+| `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. `previous_key` is optional
+  and *decrypt-only*: during key rotation, cookies sealed with the old key are still accepted
+  (and re-sealed with the new key on next write) for a grace window.
+
+| `session.ttl_seconds`
+| *Absolute* session lifetime, counted from a login timestamp stored inside the session record
+  (server mode) or the encrypted cookie payload (cookie mode) -- enforcement is server-side,
+  since cookie attributes are client-advisory. It is not an idle timeout, and token refresh
+  does not extend it. On each `Set-Cookie` (including re-seals after refresh) the cookie
+  `Max-Age` is set to the *remaining* lifetime, so re-sealing never extends the session. On
+  expiry the user re-authenticates via the login flow.
+
+| `session.refresh.enabled` / `leeway_seconds`
+| Transparent refresh: when the access token is within `leeway_seconds` of expiry, refresh it
+  (with rotation) during the request.
+
+| `session.refresh.on_failure`
+| What happens to the *request during which* refresh fails; the session is destroyed either
+  way. `reauthenticate` (default): treat the request as unauthenticated -- navigation requests
+  are redirected into a fresh authorization-code flow, others get `401` (the same content
+  negotiation as `require: session`). `reject`: always answer `401` `application/problem+json`,
+  even for navigations -- for deployments whose SPA handles re-login entirely itself.
+
+| `step_up.*`
+| RFC 9470: honour an upstream `401` + `insufficient_user_authentication` challenge by silent
+  refresh, then re-authorization with elevated `acr_values`/`max_age`. See
+  link:variants/02-bff-session.adoc[Variant 2].
+|===
+
+=== `match`
+
+Matchers compose with AND semantics; a route matches only if every declared matcher holds.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `path_prefix`
+| Literal path prefix, compared segment-wise against the validated, normalized path
+  (`/api` matches `/api/orders` but not `/apifoo`). Also the precedence key (see "Route ordering").
+
+| `methods`
+| HTTP method list; omitted means all methods.
+
+| `host`
+| Exact match against the request `Host` header / SNI.
+
+| `headers`
+| Header matchers: `present: true` or an exact `value`. All listed must hold.
+|===
+
+=== `forward`
+
+Deny-by-default. `headers_allow` / `query_allow` are allowlists; anything not listed is not
+forwarded. `set_headers` adds *static*, gateway-controlled headers. Two injections happen
+*automatically* and are never written in `set_headers`: the mediated `Authorization: Bearer`
+on `require: session` routes (Variants 2/3 -- the gateway sets it from the session's access
+token, and an inbound `Authorization` header from the client is always stripped on those
+routes), and the regenerated forwarding-header set per the `forwarded` policy.
+
+=== `upstream`
+
+The target is `resolved(endpoint.base_url) + upstream.path + remainder`, where *remainder* is
+the request path after stripping the matched `match.path_prefix` -- so path parameters survive
+the mapping (`/api/orders/42` -> `.../orders/42`), and `upstream.path` *replaces* the matched
+prefix rather than prepending to the full request path. Allowed query parameters
+(`forward.query_allow`) are appended unchanged. `connect_timeout_ms` / `read_timeout_ms`
+map to `cui-http` `HttpHandler` (whose builder takes *whole seconds* -- millisecond values are
+rounded *up* to the next second when wired through it); `retry` maps to `ResilientHttpAdapter` + `RetryConfig`
+(`idempotent_only` retries idempotent methods only -- GET, HEAD, OPTIONS, PUT, DELETE; never
+POST or PATCH). `circuit_breaker` is a small *gateway-side* component wrapped around the
+downstream call -- stateless, per node; `cui-http` supplies retry and timeouts but no breaker
+(see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
+written literally here -- only the alias-relative `path`.
+
+=== `rate_limit`
+
+Reserved schema for per-node, in-memory token-bucket rate limiting
+(`requests_per_second`, `burst`). The feature is *deferred* and not part of the initial
+release (link:features-analysis.adoc[Feature Analysis, Tier 3]); the field is documented so
+the schema need not change when it ships. Until then it is accepted and ignored, and no
+`429` is ever produced.
+
+=== `metadata`
+
+`config_version` is an audit stamp only -- logged at boot, exposed for operational
+traceability, no runtime behaviour. Retained so the model need not change if dynamic
+discovery is added later (link:adr/0002-initial-scope.adoc[ADR-0002]).
+
+=== `security_headers`
+
+Response-header middleware applied to every response the gateway returns (global; a route
+cannot disable it).
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `hsts`
+| `Strict-Transport-Security` with `max_age` and `include_subdomains`.
+
+| `content_type_nosniff`
+| `X-Content-Type-Options: nosniff`.
+
+| `frame_deny`
+| `X-Frame-Options: DENY`.
+
+| `cors`
+| CORS preflight/response handling. Disabled by default. `allowed_origins` are exact origins;
+  a wildcard origin combined with `allow_credentials: true` is rejected at boot (credential
+  leak). Preflight `OPTIONS` requests are answered by the CORS layer *before* authentication --
+  preflights carry no cookies by spec, so routing them into the auth stage would break every
+  credentialed cross-origin call. Responses to CORS requests carry `Vary: Origin` (shared-cache
+  poisoning guard). When disabled, no CORS headers are emitted and cross-origin browser calls
+  fail -- the secure default.
+|===
+
+=== `security_defaults`
+
+The global inbound-filter baseline: `profile` selects the `cui-http` preset
+(`default` -> `SecurityConfiguration.defaults()`, `strict` -> `strict()`,
+`lenient` -> `lenient()`) applied to every route that does not declare its own
+`security_filter` block. Per-route `security_filter` settings override this baseline.
+
+[[_forwarded_headers]]
+=== `forwarded`
+
+Forwarded-header handling is *delivered by `cui-http`'s `de.cuioss.http.forwarded` package*
+(`ForwardedHeaderResolver` -> immutable `ResolvedForwarding`, configured by a
+`ForwardedResolverConfig`); the gateway wires configuration in and consumes the resolved
+result -- it implements no parsing of its own. The authoritative behaviour specification is
+`cui-http/doc/forwarded-header-resolution.adoc`; the design rationale (why `X-Forwarded-*` is
+the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `trusted_proxies`
+| *Mandatory* CIDR allowlist (IPv4 + IPv6), mapped to `ForwardedResolverConfig.trustedProxies`.
+  It drives the *client-IP trust walk*: the `X-Forwarded-For` (or RFC 7239 `for`) chain is
+  walked right-to-left, skipping trusted hops; the first non-trusted, well-formed address is
+  the client. An *empty* list means no client IP is ever resolved from headers -- the TCP peer
+  is the client (fail-safe). The gateway additionally consults forwarding headers only when
+  the *immediate TCP peer* is in this list -- a *gateway-side* gate: the transport-agnostic
+  resolver consumes only a header accessor and never sees the peer, so this check is API
+  Sheriff code, and without it a direct client's spoofed `X-Forwarded-For` would be honored.
+  Never trust-all (`0.0.0.0/0`) -- the canonical footgun -- and keep the list as *narrow* as
+  possible (the exact proxy addresses, not a whole `/8`): every host inside a listed range
+  that can reach the gateway directly can spoof forwarding headers. Each listed proxy must
+  also *manage* the `X-Forwarded-*` family (append or strip) -- see the mixed-family
+  requirement in link:adr/0003-forwarded-headers.adoc[ADR-0003].
+
+| `trust_scheme_host`
+| Maps to `ForwardedResolverConfig.trustAll`: honor the *sanitized* forwarded scheme / host /
+  port / context-path prefix. Off by default (secure default: nothing is honored); enable only
+  when the gateway sits fully behind trusted proxies. cui-http's finer-grained
+  `allowedContextPaths` (honor specific prefixes without `trustAll`) is deliberately not
+  exposed initially.
+
+| `emit`
+| Canonical output: `x-forwarded` (default) or `both`. `x-forwarded` emits the
+  `ResolvedForwarding` serialization `toXForwardedHeaders()`
+  (`X-Forwarded-Proto/-Host/-Port/-Prefix/-For`, present fields only); `both` additionally
+  emits `toForwardedHeader()` -- a single strictly encoded RFC 7239 `Forwarded` value. There is
+  deliberately no `Forwarded`-only mode: XFF-only downstreams would silently lose client
+  information (link:adr/0003-forwarded-headers.adoc[ADR-0003]).
+|===
+
+*Inbound header family and precedence.* The resolver understands `X-Forwarded-Proto/-Host/
+-Port/-Prefix/-For`, RFC 7239 `Forwarded` (`proto`, `host`, `for` -- the RFC defines no prefix
+directive), and the NiFi-proprietary `X-ProxyScheme/-Host/-Port/-ContextPath`. Precedence is
+*per field*, first present non-blank value wins:
+
+[cols="1,4"]
+|===
+| Field | Precedence
+
+| scheme      | `X-Forwarded-Proto` -> `X-ProxyScheme` -> RFC 7239 `proto`
+| host        | `X-Forwarded-Host` -> `X-ProxyHost` -> RFC 7239 `host`
+| port        | `X-Forwarded-Port` -> `X-ProxyPort` -> port carried by the resolved host
+| prefix      | `X-ProxyContextPath` -> `X-Forwarded-Prefix` (RFC 7239: none)
+| client IP   | `X-Forwarded-For` chain -> RFC 7239 `for` chain
+|===
+
+*Sanitization (fail-safe, never throws).* Every honored value passes the `cui-http`
+header-value pipeline (CR/LF, NUL, control characters, over-length, suspicious patterns; the
+pipeline is configured from the global `security_defaults` profile), plus fixed fail-secure
+field guards that no profile can relax: scheme must be `http`/`https`, port `1..65535`, host
+must carry no path separators or whitespace, and the context-path rejects protocol-relative
+(`//host`) and backslash values on the *raw* value, before the sanitization pipeline -- whose
+normalization would otherwise collapse `//host` to `/host` and mask the attack (honoring
+`//attacker.com` would compose into a protocol-relative URL and exfiltrate the request).
+Rejected values are *dropped, never honored*: pipeline sanitization failures increment the
+shared `SecurityEventCounter` feeding the gateway metrics, the raw-value guards log
+`HTTP-120`..`HTTP-123` WARNs, and plain trust misses (e.g. a forwarded host with
+`trust_scheme_host: false`) are simply not honored, without noise.
+
+*Emission is regeneration, never propagation.* The gateway does not append to or forward
+inbound chains: it emits freshly generated headers from the *resolved, sanitized* facts --
+`X-Forwarded-For` carries exactly the one resolved client IP. Any sabotage payload smuggled
+into inbound headers therefore dies at the gateway instead of reaching the upstream. Because
+emission carries *present fields only*, what appears depends on the trust config: under the
+secure default (`trust_scheme_host: false`) only the client IP resolves, so only
+`X-Forwarded-For` / `Forwarded: for=...` are emitted. The example below assumes
+`trust_scheme_host: true` and a trusted proxy that sent `X-Forwarded-Host: gw.example.com` /
+`X-Forwarded-Proto: https` for client `192.0.2.60`, with `emit: both`:
+
+[source,text]
+----
+X-Forwarded-For: 192.0.2.60
+X-Forwarded-Host: gw.example.com
+X-Forwarded-Proto: https
+Forwarded: for=192.0.2.60;host=gw.example.com;proto=https
+----
+
+RFC 7239 encoding is strict (IPv6 client addresses bracketed *and* quoted; other values quoted
+only when not a valid token). Two asymmetries are inherent: `Forwarded` cannot carry the
+context-path prefix (the RFC defines no directive -- the prefix travels only as
+`X-Forwarded-Prefix`), and no `by=` parameter is emitted at all, which avoids the internal
+topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation the RFC suggests.
+
+== Configuration Validation Rules (summary)
+
+* `version` must be a known value.
+* Every route has a unique `id` (across all endpoint files) and a resolvable `endpoint.base_url`.
+* Every `base_url` alias resolves via `TOPOLOGY_<ALIAS>` or `topology.properties` to a well-formed
+  URL; otherwise boot fails.
+* Every endpoint file declares an `auth` block (the default posture for its routes); omitting
+  it fails the boot. Routes may override it per route (see "Defaults for omitted blocks").
+* A route whose *effective* auth is `require: bearer` requires a `token_validation` block with
+  at least one issuer.
+* A route whose *effective* auth is `require: session` requires an `oidc` block.
+* Any two routes with an identical `match.path_prefix` -- same file or not -- must be statically
+  disjoint (both declare different `host` values, or non-overlapping `methods`, or same-name
+  header matchers with different exact values); otherwise the boot fails (see "Route ordering").
+* A route whose `match.host` equals (case-insensitively) a key in `tls.passthrough_sni`
+  fails the boot -- the route and the passthrough declaration contradict each other
+  (see the `tls` field reference).
+* Every `tls.passthrough_sni` alias resolves via the topology, and the resolved URL carries no
+  base-path; otherwise the boot fails.
+* `forwarded.trusted_proxies` must be present (may be empty = forwarding headers are never
+  trusted); a non-empty `0.0.0.0/0` is rejected as unsafe.
+* Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
+  literals.
+* `session.mode: cookie` requires `session.encryption_key`; `previous_key` is optional and
+  decrypt-only. `session.mode: server` requires neither and accepts only `store: memory`.
+* `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
