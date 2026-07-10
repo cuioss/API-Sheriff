@@ -8,7 +8,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">BFF token mediation variants, session-based versus cookie-based</title>
-  <desc id="desc">A side-by-side comparison of the two Backend-For-Frontend token-binding variants. In the session-based variant the browser holds an opaque session-id cookie and the gateway keeps tokens in a server-side store, making it stateful. In the cookie-based variant the tokens (access, refresh, minimal metadata) travel inside an AES-256-GCM encrypted HttpOnly cookie that the gateway decrypts per request, keeping it stateless. Both act as an OIDC confidential client, keep tokens out of JavaScript's reach, and inject an Authorization Bearer header upstream.</desc>
+  <desc id="desc">A side-by-side comparison of the two Backend-For-Frontend token-binding variants. In the session-based variant the browser holds an opaque session-id cookie and the gateway keeps tokens in a server-side store, making it stateful. In the cookie-based variant the tokens (access, refresh, ID token, minimal metadata) travel inside an AES-256-GCM encrypted HttpOnly cookie that the gateway decrypts per request, keeping it stateless. Both act as an OIDC confidential client, keep tokens out of JavaScript's reach, and inject an Authorization Bearer header upstream.</desc>
 
   <defs>
     <style>

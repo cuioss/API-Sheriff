@@ -95,9 +95,9 @@ The active authentication strategy depends on the variant:
   opaque session-id cookie. The gateway injects the stored access token upstream.
 
 | link:variants/03-bff-cookie.adoc[BFF cookie]
-| The gateway is the OIDC confidential client. The tokens (access token, refresh token, minimal
-  metadata) travel only inside an AES-256-GCM-encrypted `HttpOnly` cookie, decrypted per request
-  before upstream injection.
+| The gateway is the OIDC confidential client. The tokens (access, refresh, and ID token plus
+  minimal metadata) travel only inside an AES-256-GCM-encrypted `HttpOnly` cookie, decrypted
+  per request before upstream injection.
 |===
 
 [IMPORTANT]

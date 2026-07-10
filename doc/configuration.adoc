@@ -117,8 +117,9 @@ security_defaults:                 # default inbound filter profile; overridable
   profile: strict                  # default | strict | lenient  (maps to cui-http presets)
 
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
-  trusted_proxies: [10.0.0.0/8]    # MANDATORY CIDR allowlist; empty => forwarding headers
-                                   #   are never trusted; the TCP peer is the client
+  trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
+                                   #   keep as narrow as possible; empty => forwarding
+                                   #   headers are never trusted; TCP peer is the client
   trust_scheme_host: false         # honor sanitized scheme/host/port/prefix from proxies
                                    #   (ForwardedResolverConfig.trustAll)
   emit: x-forwarded                # x-forwarded (default) | both (adds RFC 7239 Forwarded)
@@ -272,11 +273,11 @@ A request that matches no route is rejected with `404`.
 
 *Reserved gateway paths.* The gateway's own OIDC endpoints -- the `oidc.redirect_uri` path,
 `oidc.logout.path`, its return path, and `oidc.logout.backchannel_path` -- are matched
-*exactly, before the route table*. A proxy route such as `path_prefix: /auth` therefore never
-swallows the `/auth/callback` callback. The carve-out applies on *every* host -- a backend
-path equal to a reserved path is unreachable through the gateway on any virtual host, so
-choose reserved paths that no backend serves. Routes remain free to use neighbouring
-prefixes; only the exact reserved paths are carved out.
+*exactly, before the route table*, but only on the *OIDC host* (the host of
+`oidc.redirect_uri`). A proxy route such as `path_prefix: /auth` therefore never swallows the
+`/auth/callback` callback, while other virtual hosts (e.g. machine-to-machine API hosts with
+`bearer` routes) keep their full path namespace. Routes remain free to use neighbouring
+prefixes; only the exact reserved paths on that one host are carved out.
 
 === Defaults for omitted blocks
 
@@ -754,7 +755,11 @@ the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
   the *immediate TCP peer* is in this list -- a *gateway-side* gate: the transport-agnostic
   resolver consumes only a header accessor and never sees the peer, so this check is API
   Sheriff code, and without it a direct client's spoofed `X-Forwarded-For` would be honored.
-  Never trust-all (`0.0.0.0/0`) -- the canonical footgun.
+  Never trust-all (`0.0.0.0/0`) -- the canonical footgun -- and keep the list as *narrow* as
+  possible (the exact proxy addresses, not a whole `/8`): every host inside a listed range
+  that can reach the gateway directly can spoof forwarding headers. Each listed proxy must
+  also *manage* the `X-Forwarded-*` family (append or strip) -- see the mixed-family
+  requirement in link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
 | `trust_scheme_host`
 | Maps to `ForwardedResolverConfig.trustAll`: honor the *sanitized* forwarded scheme / host /

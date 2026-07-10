@@ -55,6 +55,13 @@ downstreams while adding parsing/encoding risk.
   port, and client IP, `X-Forwarded-*` is consulted first and RFC 7239 last -- consistent with
   the adoption reality above; the context-path prefix comes from `X-ProxyContextPath` /
   `X-Forwarded-Prefix` only, since RFC 7239 defines no prefix directive.
+  *Mixed-family deployment requirement:* fixed precedence makes the highest-precedence family
+  the authoritative one, so each trusted proxy MUST *manage* `X-Forwarded-*` -- either append
+  to it or strip it. A proxy that appends only RFC 7239 `Forwarded` while passing a client's
+  spoofed `X-Forwarded-For` through untouched would hand the spoofed chain the win. Where such
+  a proxy cannot be fixed, the gateway must strip the unmanaged family before resolution; an
+  `accept`-family knob for this is a known, deliberate omission until a real deployment needs
+  it.
 * *Emit a configurable canonical output, defaulting to `X-Forwarded-*`.* `forwarded.emit` may be
   `x-forwarded` (default) or `both`. `both` adds a strictly encoded RFC 7239 `Forwarded` header
   *in addition to* `X-Forwarded-*`. There is deliberately *no* `Forwarded`-only mode: XFF-only

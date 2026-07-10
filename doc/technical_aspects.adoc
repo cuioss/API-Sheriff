@@ -209,7 +209,8 @@ Conventions:
 
 * Always `%s` for substitution
 * Exception parameter always first: `LOGGER.error(exception, "Failed for %s", id)`
-* Identifier ranges: INFO 001-099, WARN 100-199, ERROR 200-299
+* Identifier ranges: INFO 1-99, WARN 100-199, ERROR 200-299 -- an *allocation* convention;
+  the rendered output is not zero-padded (`AUTH-1`, not `AUTH-001`)
 * Lazy evaluation via `Supplier<String>` for expensive debug messages
 
 === Log Testing

@@ -57,11 +57,13 @@ the session id.
 | Aspect | Design
 
 | Store
-| A server-side store keyed by session id, holding the access token, refresh token, and token
-  metadata (expiry, `acr`, `auth_time`). Configured as `oidc.session.store`; *`memory` is the
-  only initial option*, sufficient for single-node or sticky-session deployments. A multi-node
-  non-sticky deployment would need a shared store, which is deliberately unsupported for now
-  (below).
+| A server-side store keyed by session id, holding the access token, refresh token, the raw
+  ID token (needed as `id_token_hint` at logout), and token metadata (expiry, `acr`,
+  `auth_time`, `sid`). The store maintains a secondary index by `sid`/`sub` so a back-channel
+  logout token destroys the matching session in O(1) -- never a full scan. Configured as
+  `oidc.session.store`; *`memory` is the only initial option*, sufficient for single-node or
+  sticky-session deployments. A multi-node non-sticky deployment would need a shared store,
+  which is deliberately unsupported for now (below).
 
 | Trade-off
 | A shared store (e.g. Redis) reintroduces an external dependency -- exactly what the

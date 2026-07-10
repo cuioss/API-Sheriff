@@ -54,9 +54,11 @@ and the gateway holds no per-user state.
 | Aspect | Design
 
 | Encryption
-| AES-256-GCM (authenticated encryption). The plaintext is the access token (+ refresh token
-  and minimal metadata); the ciphertext plus nonce and auth tag form the cookie value. A
-  tampered cookie fails authentication and is rejected.
+| AES-256-GCM (authenticated encryption). The plaintext is the token set: access token,
+  refresh token, the raw ID token (needed as `id_token_hint` at logout -- without it in the
+  cookie, the stateless gateway could not drive RP-initiated logout), and minimal metadata;
+  the ciphertext plus nonce and auth tag form the cookie value. A tampered cookie fails
+  authentication and is rejected.
 
 | Cookie attributes
 | `HttpOnly` (JavaScript cannot read it -- XSS-safe), `Secure`, `SameSite=Lax`, `__Host-` prefix.
@@ -68,9 +70,9 @@ and the gateway holds no per-user state.
   the old key are still accepted and re-sealed with the new key on the next write.
 
 | Size
-| The cookie must stay within browser limits (~4 KB). If access + refresh tokens exceed the
-  budget, the refresh token may be split into its own cookie; oversized IdPs are a deployment
-  consideration.
+| The cookie must stay within browser limits (~4 KB). If the token set exceeds the budget,
+  the refresh and/or ID token may be split into their own cookies; oversized IdPs are a
+  deployment consideration.
 |===
 
 == Statelessness
