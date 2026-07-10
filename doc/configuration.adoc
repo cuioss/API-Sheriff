@@ -675,8 +675,9 @@ the request path after stripping the matched `match.path_prefix` -- so path para
 the mapping (`/api/orders/42` -> `.../orders/42`), and `upstream.path` *replaces* the matched
 prefix rather than prepending to the full request path. Allowed query parameters
 (`forward.query_allow`) are appended unchanged. `connect_timeout_ms` / `read_timeout_ms`
-map to `cui-http` `HttpHandler` (whose builder takes *whole seconds* -- millisecond values are
-rounded *up* to the next second when wired through it); `retry` maps to `ResilientHttpAdapter` + `RetryConfig`
+map to `cui-http` `HttpHandler` (whose builder takes *whole seconds*; a value that is not a
+multiple of 1000 ms -- i.e. does not represent a whole number of seconds -- is rejected at
+boot, fail-fast rather than silently rounded); `retry` maps to `ResilientHttpAdapter` + `RetryConfig`
 (`idempotent_only` retries idempotent methods only -- GET, HEAD, OPTIONS, PUT, DELETE; never
 POST or PATCH). `circuit_breaker` is a small *gateway-side* component wrapped around the
 downstream call -- stateless, per node; `cui-http` supplies retry and timeouts but no breaker
@@ -755,7 +756,7 @@ the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
   the *immediate TCP peer* is in this list -- a *gateway-side* gate: the transport-agnostic
   resolver consumes only a header accessor and never sees the peer, so this check is API
   Sheriff code, and without it a direct client's spoofed `X-Forwarded-For` would be honored.
-  Never trust-all (`0.0.0.0/0`) -- the canonical footgun -- and keep the list as *narrow* as
+  Never trust-all (`0.0.0.0/0` or its IPv6 twin `::/0`) -- the canonical footgun -- and keep the list as *narrow* as
   possible (the exact proxy addresses, not a whole `/8`): every host inside a listed range
   that can reach the gateway directly can spoof forwarding headers. Each listed proxy must
   also *manage* the `X-Forwarded-*` family (append or strip) -- see the mixed-family
@@ -850,7 +851,10 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * Every `tls.passthrough_sni` alias resolves via the topology, and the resolved URL carries no
   base-path; otherwise the boot fails.
 * `forwarded.trusted_proxies` must be present (may be empty = forwarding headers are never
-  trusted); a non-empty `0.0.0.0/0` is rejected as unsafe.
+  trusted); the trust-all CIDRs `0.0.0.0/0` *and* `::/0` are rejected as unsafe.
+* `upstream.connect_timeout_ms` / `read_timeout_ms` values wired through the `cui-http`
+  `HttpHandler` must represent a whole number of seconds (multiples of 1000 ms); anything
+  else fails the boot (no silent rounding).
 * Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
   literals.
 * `session.mode: cookie` requires `session.encryption_key`; `previous_key` is optional and
