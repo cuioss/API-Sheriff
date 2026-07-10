@@ -1,0 +1,203 @@
+= Plan 01 -- Base Implementation
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Turn the existing scaffolding into a verified, clean foundation: a Quarkus module that does
+one real gateway thing end-to-end (a minimal pass-through proxy to a routable upstream), an
+integration-test setup that exercises it against a real upstream target container, a
+benchmark that measures proxy overhead, and *all builds green -- locally and on CI*. The
+structure follows the sibling project `/Users/oliver/git/TokenSheriff`; stale scaffolding
+copied from it is removed.
+
+== Required Reading (before implementation)
+
+. link:../README.adoc[Documentation Index] and link:../architecture.adoc[Architecture] --
+  what is being built overall; this plan implements only the outermost shell.
+. link:../variants/01-base-gateway.adoc[Variant 1] -- the target the minimal proxy grows into.
+. link:../adr/0001-java25-runtime-baseline.adoc[ADR-0001] -- compile at 21, *run* the
+  container/native image on a JDK 25 line (Mandrel builder pin).
+. In `/Users/oliver/git/TokenSheriff`: `agents.md` (dev guidelines), the root and
+  `token-sheriff-quarkus-parent` poms (profile/plugin conventions),
+  `token-sheriff-quarkus-integration-tests/` (compose + scripts + IT layout),
+  `benchmarking/` (WRK suite, `benchmarking-common` report engine,
+  `scripts/benchmark-pages.py`), `.github/workflows/` (reusable org workflows).
+
+== Current State (verified inventory)
+
+The three modules (`api-sheriff`, `integration-tests`, `benchmarks`) already exist, cloned
+from TokenSheriff, and the *harness* is functional: root pom (parent
+`cui-java-parent:1.4.5`, Quarkus 3.37.2, Java release 21, `coverage` profile), native
+Dockerfiles (distroless + JFR), docker-compose (Keycloak 26.5.4, Prometheus, wrk),
+start/stop/health scripts, failsafe-wired `integration-tests`/`jfr`/`benchmark`/`quick`
+profiles, a real WRK post-processor (`benchmarking-common:0.8.0`), and CI workflows
+(`maven.yml`, `integration-tests.yml`, `benchmark.yml` publishing to
+`cuioss.github.io/api-sheriff/benchmarks`). The `pre-commit` and coverage machinery come
+from `cui-java-parent`.
+
+The *product* is placeholder: `GatewayResource` serves only hardcoded `/api/health` +
+`/api/info`; there is no proxying, no upstream, and Keycloak is started but unused. Known
+stale leftovers from TokenSheriff: the `jwt-validation` virtual-thread name prefix,
+`benchmark-with-monitoring.sh` (greps for `jwt` containers, references JMH),
+`TestDataGenerator`/`generators` test-jar (unconsumed), `test-jwks.json` + PEM key files
+(unread), and an empty `integration-tests/src/main/resources/application.properties`.
+
+== Design Decisions
+
+=== D1 -- Keep the TokenSheriff-derived structure; align the parent
+
+The module layout, profile shapes, scripts, and CI wiring already mirror TokenSheriff and
+stay. One deliberate delta to close: TokenSheriff builds on `cui-java-parent:1.5.0`,
+API Sheriff on `1.4.5` -- bump to 1.5.0 so both projects share the same `pre-commit` /
+OpenRewrite / coverage behaviour. (Version bump of an existing parent -- call it out in the
+PR; no new dependency.)
+
+Native builds: pin the Mandrel builder to the JDK 25 line
+(`quarkus.native.builder-image=...ubi9-quarkus-mandrel-builder-image:jdk-25`, the pin
+TokenSheriff already uses) per ADR-0001 -- compile target stays 21.
+
+=== D2 -- Upstream target: `go-httpbin` as the routable backend
+
+The gateway needs something to route *to*, in a way tests can assert on. Researched options
+(echo servers, httpbin forks, whoami, grpcbin, GraphQL fakes; maintenance and multi-arch
+status verified as of 2026) condense to:
+
+[cols="1,2,3"]
+|===
+| Role | Container | Why
+
+| *Primary functional upstream*
+| `ghcr.io/mccutchen/go-httpbin` (pin `v2.23.1`, amd64+arm64, ~15 MB, actively maintained)
+| `/anything/*` echoes the *complete received request* (method, path, headers, query, body)
+  as JSON -- ITs assert exactly what the gateway forwarded or stripped. Also provides
+  `/status/{code}`, `/delay/{s}`, `/drip`, SSE, and *WebSocket echo* (`/websocket/echo`) --
+  one container covers HTTP now and WS + cheap fault simulation in later plans.
+
+| *Benchmark upstream*
+| `nginx:alpine` serving a static payload, `access_log off`
+| The de-facto gateway-benchmark idiom (Traefik/KrakenD/APISIX all benchmark against
+  static/minimal backends); saturates far above the gateway so the backend never pollutes
+  the measurement. JSON-serializing echo servers are wrong for benchmarks.
+
+| *Fault injection (Plan 03)*
+| `ghcr.io/shopify/toxiproxy` (pin `2.12.0`) between gateway and upstream
+| L4 toxics (timeout, latency, reset, disable) -- the only option that also faults
+  gRPC/WS/TLS streams; needed for circuit-breaker half-open tests. *Wired in Plan 03*, when
+  the breaker exists; documented here so the compose topology anticipates it.
+
+| *gRPC / GraphQL upstreams (later protocol plans)*
+| tiny in-repo Quarkus echo services under `integration-tests/`
+| `moul/grpcbin` is dead (2021, amd64-only) and GraphQL fakes are stale or heavy
+  (Hasura); GraphQL routing tests need only `POST /anything/graphql` on go-httpbin anyway.
+  A ~50-line reactor-built echo service beats a dead third-party image. *Not in this plan.*
+|===
+
+Keycloak (already present, realm files committed) stays: it becomes the token issuer in
+Plan 03. Testcontainers-based alternatives (dasniko `testcontainers-keycloak`, WireMock
+module, Quarkus `@QuarkusIntegrationTest` resource managers) were evaluated: the existing
+docker-compose approach is kept -- it matches TokenSheriff, gives stable hostnames/certs
+(needed later for SNI passthrough tests), and already has CI wiring. WireMock (JVM-mode unit
+level) may be introduced later where per-stub HTTP pathology is needed; not part of this plan.
+
+All compose images stay digest/tag-pinned (existing convention).
+
+=== D3 -- Minimal proxy: a Vert.x catch-all route, property-configured
+
+One real end-to-end path, deliberately interim but on the final architecture line
+(link:03-request-pipeline.adoc[Plan 03] keeps the edge, replaces the internals):
+
+* A Vert.x route handler (`quarkus-vertx-http`, already present transitively) registered as
+  catch-all on the data plane, executing per-request on a *virtual thread*.
+* One route configured via MicroProfile config properties (interim; replaced by the real
+  config subsystem in link:02-configuration-management.adoc[Plan 02]):
+  `sheriff.proxy.path-prefix` and `sheriff.proxy.upstream-url`.
+* Forwarding: method + path remainder + query + body pass through; hop-by-hop headers
+  stripped; JDK `HttpClient` blocking `send()` on the virtual thread (the `cui-http`
+  handler stack arrives with Plan 03's dependency approval). No security stages yet.
+* Unmatched path -> `404` (deny-by-default from day one).
+* The placeholder `/api/health` + `/api/info` endpoints and their tests remain for now
+  (health is used by scripts/benchmarks); `ApiSheriff`/`GatewayResource` are deleted in
+  Plan 03.
+* Rename the virtual-thread prefix from `jwt-validation` to `api-sheriff`.
+
+No new Maven dependencies are needed for this plan (Vert.x HTTP and JDK HttpClient are
+already available).
+
+== Work Breakdown
+
+. *Baseline verification* -- run and record: `./mvnw -Ppre-commit clean verify -DskipTests`,
+  `./mvnw clean install`, `./mvnw clean verify -Pintegration-tests -pl integration-tests -am`
+  (Docker required), `./mvnw clean verify -pl benchmarks -Pbenchmark`. Fix anything red
+  *before* changing behaviour, so regressions are attributable.
+. *Housekeeping* -- delete `TestDataGenerator` + the `generators` test-jar wiring (or keep
+  the wiring only if Plan 03 will publish real generators -- decide then; delete now),
+  `test-jwks.json`, unused PEM files, the empty stub `application.properties`; fix or delete
+  `benchmark-with-monitoring.sh` (it greps `jwt`/JMH -- delete, it returns with Plan 03's
+  benchmarks if needed); prune unused test dependencies flagged by the build. Pre-1.0 rule:
+  remove, never deprecate.
+. *Parent + native alignment (D1)* -- `cui-java-parent` 1.4.5 -> 1.5.0; Mandrel builder
+  jdk-25 pin; verify native build (`./mvnw clean install -Pnative -pl api-sheriff -am
+  -DskipTests`) and the distroless image still work.
+. *Upstream target (D2)* -- add `go-httpbin` service to
+  `integration-tests/docker-compose.yml` (pinned, healthcheck via `/status/200`, on the
+  `api-sheriff` network, no published host port needed -- the gateway reaches it by service
+  name; publish one for local debugging only if the scripts need it). Extend
+  `start-integration-container.sh` health-wait accordingly.
+. *Minimal proxy (D3)* -- implement the catch-all Vert.x handler + property-based route;
+  unit tests (`@QuarkusTest` + `cui-test-mockwebserver-junit5` as the mock upstream):
+  forwarding of method/path-remainder/query/body, hop-by-hop stripping, 404 on unmatched.
+  CuiLogger + LogRecord for the new INFO/WARN messages; start `doc/LogMessages.adoc`.
+. *Integration tests* -- new IT: request via the gateway's public HTTPS port with the proxy
+  route pointed at `http://go-httpbin:8080/anything`; assert the echoed JSON shows the
+  expected method, remainder path, query, and body, and that an unmatched path yields 404.
+  Keep the existing health/metrics ITs.
+. *Benchmark* -- add `nginx-static` service (compose `benchmark` profile, next to `wrk`);
+  add a `proxied_static_benchmark` WRK script (wrk -> gateway -> nginx) following the
+  existing lua/sh + `=== BENCHMARK METADATA ===` conventions, so the post-processor and
+  pages pipeline pick it up unchanged; keep the two health benchmarks (they now measure
+  baseline overhead vs. proxy overhead).
+. *CI verification* -- push the branch, confirm all three workflows green
+  (`maven.yml`, `integration-tests.yml`, `benchmark.yml` on merge); confirm the benchmark
+  pages deploy includes the new benchmark. No workflow changes expected -- the profiles and
+  module names are unchanged.
+. *Docs* -- short update to the module READMEs where behaviour changed (benchmarks README is
+  currently a stub pointing at OAuthSheriff -- replace with a real one).
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-01-base-implementation`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+If the plan has to be split into multiple PRs, this workflow applies to each PR; the build
+must be green after every one.
+
+== Acceptance Criteria
+
+* All four build commands from step 1 pass locally; `maven.yml` and `integration-tests.yml`
+  pass on the PR; `benchmark.yml` passes after merge and publishes three benchmarks
+  (2x health + proxied-static).
+* The proxy IT proves end-to-end forwarding through the native container against
+  go-httpbin, including 404 deny-by-default.
+* Native image builds with the jdk-25 Mandrel pin; parent is 1.5.0.
+* No stale TokenSheriff leftovers remain (grep for `jwt` in module sources/scripts is clean
+  apart from design docs).
+* No OpenRewrite markers; coverage >= 80% on new code.
+
+== Out of Scope
+
+* Real configuration files/schemas (link:02-configuration-management.adoc[Plan 02]).
+* Security filtering, token validation, forward policy, events/metrics/error contract
+  (link:03-request-pipeline.adoc[Plan 03]).
+* gRPC/WebSocket/GraphQL processors, TLS passthrough, mTLS, BFF variants (later plans).
+* Toxiproxy wiring (arrives with the circuit breaker in Plan 03).

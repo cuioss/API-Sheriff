@@ -1,0 +1,53 @@
+= API Sheriff -- Implementation Plans
+:toc:
+:toclevels: 2
+
+Sequenced implementation plans deriving from the link:../README.adoc[design documentation].
+Each plan lists its *required reading* -- read those design documents in full before
+implementing; the design docs govern, the plans only sequence the work. Deviations discovered
+during implementation are fixed in the design docs (same PR), never silently in code.
+
+== Plan Sequence
+
+The plans build strictly on one another:
+
+[cols="1,3,3"]
+|===
+| Plan | Delivers | Depends on
+
+| link:01-base-implementation.adoc[01 -- Base Implementation]
+| Verified green builds (local + CI), TokenSheriff-aligned structure, a minimal
+  property-configured pass-through proxy, the `go-httpbin` upstream target in the
+  integration setup, a proxied-route WRK benchmark, stale scaffolding removed.
+| --
+
+| link:02-configuration-management.adoc[02 -- Configuration Management]
+| JSON Schemas for `gateway.yaml` / `endpoints/*.yaml`, the loading/resolution/validation
+  pipeline (topology indirection, fail-fast boot), immutable `GatewayConfig` + `RouteTable`,
+  config mounted into the integration containers.
+| Plan 01
+
+| link:03-request-pipeline.adoc[03 -- Request Pipeline]
+| The data plane for standard HTTP verbs: cui-http inbound filtering (basic + per-route),
+  route selection, protocol-processor loading, offline bearer validation, zero-trust forward
+  policy with regenerated forwarding headers (cui-http 2.1-SNAPSHOT), dispatch with
+  retry/circuit breaker, plus the event system, metrics, logging, and RFC 9457 error edge.
+| Plans 01 + 02
+|===
+
+Later plans (not yet written): WebSocket + gRPC processors, TLS passthrough/mTLS, the two
+BFF variants (`token-sheriff-client`), rate limiting.
+
+== Conventions
+
+* Every plan carries an *Execution Workflow* section -- the same fixed sequence each time:
+  feature branch off `main` -> implement -> `./mvnw -Ppre-commit clean verify -DskipTests` +
+  `./mvnw clean install` (both green) -> commit -> push -> PR -> wait ~5 minutes for the AI
+  reviewers and watch checks -> handle *every* review comment (fix or justified reply, then
+  resolve) -> merge -> `git checkout main && git pull`. Builds must be green after every PR,
+  not only at plan completion.
+* *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
+  with an IMPORTANT block and requires explicit user approval before it is added
+  (CLAUDE.md rule). Snapshot dependencies (`cui-http:2.1-SNAPSHOT`,
+  `token-sheriff-*:1.0.0-SNAPSHOT`) additionally need a CI-resolvability check before merge.
+* Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.

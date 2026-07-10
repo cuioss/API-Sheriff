@@ -84,6 +84,13 @@ configuration. Each has its own design section:
   `HttpOnly` cookie, decrypted per request. Stateless (manifest Variant A).
 |===
 
+== Implementation Plans
+
+Sequenced plans for building what these documents describe live under
+link:plan/README.adoc[`plan/`]: base implementation, configuration management, and the
+request pipeline. Each plan names the design documents that must be read before
+implementing it.
+
 == Architecture Decisions
 
 [cols="1,3"]

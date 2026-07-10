@@ -1,0 +1,253 @@
+= Plan 03 -- Request Pipeline
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Implement the gateway's data plane for the standard HTTP verbs: the fixed request pipeline
+from link:../architecture.adoc[Architecture] -- inbound `cui-http` security filtering
+(configured by `gateway.yaml`), route selection from the frozen `RouteTable`, per-route
+protocol-processor loading, per-route thorough checks (derived from the optional per-route
+`security_filter` block), offline bearer-token validation via `token-sheriff-validation`,
+zero-trust forward policy with regenerated forwarding headers, upstream dispatch, and
+response return -- together with the cross-cutting spine built as part of the same plan:
+the event system, metrics, structured logging, and the RFC 9457 error contract.
+
+== Required Reading (before implementation)
+
+. link:../architecture.adoc[Architecture] -- *entire document*: component model, inbound
+  security filter wiring, routing, authentication layer, forward policy, downstream client,
+  event system, error contract, metrics, threading model.
+. link:../variants/01-base-gateway.adoc[Variant 1 -- Base Security Gateway] -- request flow,
+  responsibilities, offline validation wiring (incl. the 4-arg `AccessTokenRequest.of(...)`
+  DPoP requirement).
+. link:../configuration.adoc[Configuration Model] -- sections `security_filter`, `auth`,
+  `token_validation`, `match`, `forward`, `upstream`, `forwarded`, `security_headers`.
+. link:../adr/0003-forwarded-headers.adoc[ADR-0003] -- forwarding-header posture; note the
+  *gateway-side immediate-TCP-peer gate* is API Sheriff code, not the resolver's.
+. link:../technical_aspects.adoc[Technical Aspects] -- the concrete `cui-http` and
+  `token-sheriff-validation` APIs (pipelines, `SecurityConfiguration`,
+  `ForwardedHeaderResolver`/`ResolvedForwarding`, `HttpHandler`/`HttpResult`,
+  `TokenValidator`).
+. `cui-http/doc/forwarded-header-resolution.adoc` (in the cui-http repository) -- the
+  authoritative resolver behaviour contract.
+. link:02-configuration-management.adoc[Plan 02] -- the `GatewayConfig`/`RouteTable` model
+  this plan consumes.
+
+== Prerequisites
+
+* Plans 01 and 02 delivered: green builds, config subsystem produces `GatewayConfig` +
+  `RouteTable`.
+
+== Design Decisions
+
+=== D1 -- cui-http 2.1-SNAPSHOT (mandatory)
+
+The `de.cuioss.http.forwarded` package (`ForwardedHeaderResolver`, `ResolvedForwarding`,
+`ForwardedResolverConfig`) exists only in `de.cuioss:cui-http:2.1-SNAPSHOT` -- *verified: it
+is absent from the released 2.0.0 jar*. This plan therefore pins the latest cui-http
+snapshot.
+
+[IMPORTANT]
+====
+Dependency changes -- *require explicit user approval before adding*:
+
+* `de.cuioss:cui-http:2.1-SNAPSHOT` (security pipelines, forwarded resolver, HttpHandler
+  stack). Snapshot risk: CI must resolve it (Sonatype snapshots repository or a version bump
+  to a 2.1 release when available); pin and re-verify before merge.
+* `de.cuioss.sheriff.token:token-sheriff-validation-quarkus:1.0.0-SNAPSHOT` (direct; core
+  `token-sheriff-validation` arrives transitively). Same snapshot caveat -- TokenSheriff is
+  unreleased.
+
+The BFF engine modules (`token-sheriff-client*`) are *not* added here -- they belong to the
+later variant plans.
+====
+
+=== D2 -- Edge implementation: Vert.x route handler, not a JAX-RS resource
+
+The data plane is implemented as a Vert.x HTTP route (`quarkus-vertx-http`, already present
+transitively) -- a catch-all handler registered at low priority so the management endpoints
+(`/q/*` on the management port) and, later, the reserved OIDC paths keep working. Rationale
+over a `@Path("{p:.*}")` RESTEasy resource:
+
+* full control over verbs (all standard verbs incl. `PATCH`/`OPTIONS`/`HEAD` in one handler),
+  raw header multimaps, and streaming request/response bodies without JAX-RS buffering;
+* the natural upgrade path for WebSocket (Vert.x handles the upgrade) and h2 streaming in the
+  later protocol plans;
+* `@RunOnVirtualThread`-equivalent execution: the handler dispatches request processing onto a
+  virtual thread per request (architecture threading model); inbound filtering is synchronous
+  CPU work on that thread.
+
+Plan 01's placeholder `GatewayResource`/`ApiSheriff` and their tests are *removed* in this
+plan (pre-1.0 rule: delete, don't deprecate) once the pipeline serves real routes.
+
+*Protocol processors.* The per-route `protocol` field selects a `ProtocolProcessor`
+(loaded per route at boot, from a small registry keyed by the config enum):
+`HttpProtocolProcessor` is implemented in this plan and carries the standard-verb
+request/response semantics; `graphql` routes explicitly reuse it (POST-over-HTTP per
+architecture doc). `grpc` and `websocket` processors are registered as *boot-time rejections*
+in this plan (config accepted by Plan 02's schema, route load fails with a clear
+"not yet implemented" error) so a later plan can slot them in without pipeline changes.
+
+=== D3 -- Pipeline stages and their fixed order
+
+Assembled once at boot per route into an immutable `RouteRuntime` (compiled matchers, filter
+pipelines, forward policy sets, upstream client chain, scope list, protocol processor);
+request-time work touches no mutable shared state.
+
+----
+inbound request (virtual thread)
+  0. security response headers prepared (security_headers; applied to EVERY response,
+     including rejections); CORS preflight answered here, BEFORE auth
+  1. BASIC CHECKS (gateway.yaml `security_defaults` profile, cui-http):
+     PipelineFactory.createCommonPipelines(config, securityEventCounter)
+       - URLPathValidationPipeline on the raw path
+       - URLParameterValidationPipeline / header pipelines on names+values
+       - RequestCollectionValidator: header/parameter/cookie counts
+     violation -> 400 problem+json, INPUT_VALIDATION event                   [stage 1]
+  2. ROUTE SELECTION: RouteTable candidate match (path prefix AND methods AND
+     host AND headers), longest prefix wins; no candidate -> 404             [stage 2]
+  3. THOROUGH CHECKS (route's optional `security_filter`, cui-http):
+     - per-route SecurityConfiguration (profile + explicit overrides) pipelines,
+       re-run only when they differ from the stage-1 defaults
+     - allowed_paths whitelist on the VALIDATED, NORMALIZED path (gateway code,
+       {name} = exactly one segment)
+     - max_body_bytes cap enforced while reading the body (gateway code;
+       cui-http has no body pipeline)                                        [stage 3]
+  4. AUTHENTICATION (effective auth):
+     - require: none    -> pass
+     - require: bearer  -> TokenValidator.createAccessToken(
+                             AccessTokenRequest.of(token, headers, uri, method))
+                           401 on missing/invalid (+ WWW-Authenticate: Bearer);
+                           providesScopes(required) -> 403 SCOPE_MISSING
+     - require: session -> boot-time rejection in this plan (variant plans)  [stage 4]
+  5. FORWARD POLICY (zero-trust):
+     - headers_allow / query_allow filtering; set_headers appended
+     - forwarded handling: gateway-side TCP-peer gate against
+       forwarded.trusted_proxies FIRST, then ForwardedHeaderResolver.resolve(...),
+       emit regenerated toXForwardedHeaders() (+ toForwardedHeader() when
+       emit: both); inbound forwarding headers never propagated
+     - inbound Authorization stripped unless explicitly allow-listed         [stage 5]
+  6. DISPATCH: upstream URL = resolved(base_url) + upstream.path + remainder
+     + allowed query; per-route HttpHandler (timeouts) wrapped in
+     ResilientHttpAdapter (retry, idempotent-only) wrapped in the gateway
+     circuit breaker; failure mapping per the error contract
+     (502 / 503 breaker-open + Retry-After / 504 timeout)                    [stage 6]
+  7. RESPONSE: status + upstream headers (hop-by-hop headers stripped) + body
+     streamed back; security response headers from stage 0 applied
+----
+
+Every rejection path returns `application/problem+json` per the
+link:../architecture.adoc#_error_contract[error contract] table and never calls the upstream.
+
+=== D4 -- Event system, metrics, logging (built here, low base package)
+
+* `de.cuioss.sheriff.api.events`: `EventCategory` (failure categories per architecture doc),
+  `EventType` (each failure type carries its category and HTTP status; success events carry
+  `null` category), `GatewayEventCounter` (`ConcurrentHashMap<EventType, AtomicLong>`,
+  lock-free, micrometer-free), typed `GatewayException` carrying its `EventType`.
+* Error edge: one exception handler maps `GatewayException` -> status + RFC 9457 body (type
+  named by the category, no internal detail); `TokenValidationException` from the validator is
+  mapped to `TOKEN_INVALID`/`TOKEN_MISSING` equivalents.
+* Metrics (micrometer, management port): the five `sheriff_*` meters from
+  link:../architecture.adoc#_metrics[Architecture -- Metrics]
+  (`requests_total`, `request_duration_seconds`, `errors_total`,
+  `security_events_total` sourced from the shared cui-http `SecurityEventCounter`,
+  `upstream_duration_seconds`). Route label = route id (bounded cardinality; unmatched
+  requests use a fixed `"<no-route>"` label value).
+* Logging: `ApiSheriffLogMessages` DSL-style class (CuiLogger/LogRecord, `%s` only, exception
+  first, INFO 1-99 / WARN 100-199 / ERROR 200-299), documented in `doc/LogMessages.adoc`.
+  Security-relevant WARNs for: filter violations (with failure type, never the raw payload),
+  auth weakening at boot, breaker open/close transitions.
+
+=== D5 -- Readiness
+
+Extend readiness (SmallRye Health, management port) to reflect: config loaded (Plan 02) and,
+when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
+(`token-sheriff-validation-quarkus` ships health checks -- reuse, don't rebuild).
+
+== Work Breakdown
+
+. *Dependencies* (after approval): cui-http 2.1-SNAPSHOT,
+  token-sheriff-validation-quarkus 1.0.0-SNAPSHOT; verify CI snapshot resolution first.
+. *Event system + error edge* (D4) -- pure unit-tested base package first; problem+json
+  rendering tests for every row of the error-contract table.
+. *RouteRuntime assembly* -- boot-time compilation of `RouteTable` into runtime objects:
+  matchers, per-route `SecurityConfiguration`/pipelines, forward sets, `HttpHandler` +
+  `ResilientHttpAdapter` chain, circuit breaker, protocol processor lookup, weakening-override
+  boot WARNs. Boot-time rejection of `grpc`/`websocket`/`session` (this plan's scope guard).
+. *Stages 0-3* -- security headers + CORS preflight, basic pipelines, route selection,
+  thorough checks, allowed_paths matcher, body cap. Unit tests use the cui-http *attack
+  databases* (`OWASPTop10AttackDatabase`, CVE databases, plus the legitimate-pattern
+  databases for false-positive guarding) via `@GeneratorsSource`-style parameterized tests.
+. *Stage 4* -- TokenValidator producer wiring from `token_validation` config (single shared
+  validator at startup), bearer extraction, scope enforcement; tests with
+  `token-sheriff-validation`'s `generators` test-jar key material; JWKS over
+  `cui-test-mockwebserver-junit5`.
+. *Stage 5* -- forward-policy filtering; TCP-peer gate + resolver wiring + regeneration
+  (assert: spoofed inbound `X-Forwarded-For` from a non-trusted peer is ignored; chains are
+  regenerated, never appended).
+. *Stage 6 + 7* -- dispatch, hop-by-hop header stripping, streaming, circuit breaker
+  (unit-test state machine: closed -> open after N failures -> half-open after reset_ms),
+  timeout/retry mapping to 504/502/503.
+. *Vert.x edge* -- catch-all route, virtual-thread dispatch, wire stages; delete the Plan 01
+  placeholder resource/tests.
+. *Metrics + readiness* (D4/D5) -- meter binding, health checks; assert metric presence in
+  unit tests and via the management port in ITs.
+. *Integration tests* -- against the compose stack (upstream echo target + Keycloak from
+  Plan 01, config mount from Plan 02):
+  * happy path per verb (GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS) asserting the echo shows
+    exactly the allow-listed headers/params + regenerated `X-Forwarded-*` and nothing else;
+  * bearer route: real Keycloak token accepted (the `integration` realm finally earns its
+    keep), tampered/expired token -> 401 problem+json, missing scope -> 403;
+  * filter rejection -> 400; unmatched route -> 404; upstream down -> 502; timeout -> 504;
+    breaker -> 503 with Retry-After (fault injection per the infrastructure chosen in
+    Plan 01);
+  * `/q/metrics` shows the `sheriff_*` meters moving.
+. *Benchmarks* -- extend the WRK suite with a bearer-validated proxied route (wrk ->
+  gateway -> echo upstream) alongside Plan 01's plain-proxy benchmark, so validation overhead
+  is measured separately from proxy overhead.
+. *Docs* -- update `doc/LogMessages.adoc`; note any deliberate deviations discovered during
+  implementation back into `architecture.adoc` (the doc governs; deviations need a doc PR,
+  not silent drift).
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-03-request-pipeline`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+If the plan has to be split into multiple PRs, this workflow applies to each PR; the build
+must be green after every one.
+
+== Acceptance Criteria
+
+* All pipeline stages implemented and unit-tested; every row of the error-contract table has
+  a test producing exactly that status + problem+json shape.
+* Attack-database parameterized tests pass (no bypass, no false positive from the
+  legitimate-pattern databases).
+* Forwarding: spoof/sabotage tests prove drop-and-regenerate semantics; emitted headers match
+  ADR-0003 for both `emit` modes.
+* Bearer validation works offline against Keycloak-issued tokens in ITs; upstream is never
+  called on any rejection (assert via echo-side request counting).
+* Metrics/eventing surface matches the names in `architecture.adoc`.
+* `./mvnw -Ppre-commit clean verify -DskipTests`, `./mvnw clean install`, integration-tests
+  profile, and the benchmark profile all pass locally and on CI; coverage >= 80% on new
+  packages.
+
+== Out of Scope (explicit)
+
+* `require: session` / OIDC / BFF behaviour (variant plans; engine modules not yet added).
+* WebSocket upgrade and gRPC streaming processors (config-visible, boot-rejected here).
+* TLS `passthrough_sni` L4 relay and `mtls` (separate plan; needs listener-level work).
+* Rate limiting (deferred feature, reserved config).
+* HTTP/3 (ADR-0002).
