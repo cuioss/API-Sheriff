@@ -1,0 +1,220 @@
+= Plan 02 -- Configuration Management
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Implement the complete configuration subsystem described in
+link:../configuration.adoc[Configuration Model]: a JSON Schema per config artifact,
+loading and resolution logic (`gateway.yaml`, `endpoints/*.yaml`, `topology.properties`),
+full boot-time validation with fail-fast semantics, and immutable value objects the rest of
+the gateway consumes. At the end of this plan, configuration management is *feature-complete*
+for the initial (Static-mode) scope -- even where the features consuming a given block
+(e.g. `oidc`) are not built yet, the block parses, validates, and freezes.
+
+== Required Reading (before implementation)
+
+Read these documents *in full* before touching code; the validation rules and semantics are
+specified there, not here:
+
+. link:../configuration.adoc[Configuration Model] -- the authoritative schema, field
+  reference, defaults-for-omitted-blocks, route-ordering/disjointness rules, and the
+  link:../configuration.adoc#_configuration_validation_rules_summary[validation-rules summary].
+. link:../adr/0004-topology-indirection.adoc[ADR-0004] -- alias -> URL indirection,
+  `TOPOLOGY_<ALIAS>` env override, decompose-on-read.
+. link:../adr/0002-initial-scope.adoc[ADR-0002] -- Static mode only; `metadata.config_version`
+  is an audit stamp.
+. link:../architecture.adoc[Architecture], section "Configuration Subsystem" -- immutability
+  as a security property, refuse-to-start semantics.
+. link:01-base-implementation.adoc[Plan 01] -- the minimal proxy this plan replaces the
+  hardcoded configuration of.
+
+== Prerequisites
+
+* Plan 01 delivered: modules build locally and on CI; a minimal proxy exists with a
+  *hardcoded/property-based* single route that this plan replaces with real config files.
+
+== Design Decisions
+
+=== D1 -- Schema technology: JSON Schema (draft 2020-12), validated at boot
+
+One schema file per YAML artifact:
+
+[cols="1,2,2"]
+|===
+| Artifact | Schema file | Referenced from
+
+| `gateway.yaml`
+| `api-sheriff/src/main/resources/schema/gateway.schema.json`
+| `# yaml-language-server: $schema=...` header comment in every sample/test config; linked
+  from `configuration.adoc`
+
+| `endpoints/*.yaml`
+| `api-sheriff/src/main/resources/schema/endpoint.schema.json`
+| same mechanism
+
+| `topology.properties`
+| *no schema* -- `.properties` has no schema ecosystem; validated programmatically
+  (alias pattern `[A-Z][A-Z0-9_]*`, value must parse as URL)
+| validation rules documented in `configuration.adoc`
+|===
+
+Schema posture:
+
+* `"additionalProperties": false` everywhere -- unknown keys fail the boot, per
+  link:../configuration.adoc[Configuration Model] ("unknown keys ... fail the boot").
+* The schema encodes *structure and per-field constraints* (types, enums such as
+  `require: none|bearer|session`, `emit: x-forwarded|both`, ranges, required blocks such as
+  `endpoint.auth`). *Cross-cutting rules* (route disjointness, alias resolution,
+  effective-auth -> required blocks, passthrough/host collisions, timeout whole-second rule,
+  trust-all CIDR rejection, `${ENV_VAR}`-only secrets) are code -- a `ConfigValidator` layer
+  that runs after schema validation and reports *all* violations, not just the first.
+* The schema files are also the editor/IDE contract (yaml-language-server) and are linked
+  from the documentation -- one source of truth for structure.
+
+=== D2 -- Parsing/binding stack (requires dependency approval)
+
+Parse YAML with *Jackson* (`jackson-dataformat-yaml`, via the Quarkus-managed Jackson) into a
+tree, validate the tree against the schema with *`com.networknt:json-schema-validator`*, then
+bind to immutable Java records. Rationale: schema violations report JSON-Pointer paths (good
+boot errors), Jackson is already on the classpath (`quarkus-resteasy-jackson`), and the
+networknt validator is a plain library that works in native image.
+
+[IMPORTANT]
+====
+New dependencies -- *require explicit user approval before adding* (CLAUDE.md rule):
+
+* `com.fasterxml.jackson.dataformat:jackson-dataformat-yaml` (version from the Quarkus BOM)
+* `com.networknt:json-schema-validator` (schema validation at boot)
+
+Fallback if the networknt dependency is rejected: keep the schema files as documentation/IDE
+artifacts only and express *all* structural rules in the programmatic validator. The plan's
+deliverables do not change, only the implementation of the structural half.
+====
+
+=== D3 -- Configuration object model
+
+Immutable records (Java 21) under `de.cuioss.sheriff.api.config.model`:
+
+* `GatewayConfig` (root aggregate) -- `TlsConfig`, `SecurityHeadersConfig`,
+  `SecurityDefaultsConfig`, `ForwardedConfig`, `TokenValidationConfig` (+`IssuerConfig`
+  mirror), `OidcConfig` (parsed and validated now; consumed by later BFF plans), `Metadata`.
+* `EndpointConfig` -- `id`, `baseUrlAlias`, mandatory `AuthConfig`, `List<RouteConfig>`.
+* `RouteConfig` -- `MatchConfig`, `AuthConfig` (nullable = inherit endpoint),
+  `SecurityFilterConfig`, `ForwardConfig`, `UpstreamConfig`, reserved `RateLimitConfig`,
+  `protocol` enum.
+* `ResolvedTopology` -- alias -> `ResolvedUpstream{scheme, host, port, basePath}`
+  (decompose-once, ADR-0004).
+* `RouteTable` -- the merged, disjointness-checked, longest-prefix-ordered immutable table
+  with the *effective auth* (endpoint default or wholesale route override) materialized per
+  route, so downstream pipeline code never re-implements inheritance.
+
+Empty collections over null; `Optional` for optional scalar returns; Lombok only where records
+don't fit. Every package gets `package-info.java`.
+
+=== D4 -- Loading pipeline and CDI wiring
+
+----
+config dir (property `sheriff.config.dir`, default `conf/`; overridable via
+SHERIFF_CONFIG_DIR for the container)
+  |
+  v
+1. read gateway.yaml, endpoints/*.yaml (sorted, for deterministic error output),
+   topology.properties
+2. schema-validate each YAML document (D1/D2)          -> collect ALL errors
+3. bind to records (D3)
+4. resolve ${ENV_VAR} secret references                -> missing env var = boot error
+5. resolve topology aliases (env TOPOLOGY_<ALIAS> wins over file), decompose URLs
+6. cross-validation (ConfigValidator: the full rule list from configuration.adoc
+   "Configuration Validation Rules (summary)")         -> collect ALL errors
+7. build RouteTable (merge, disjointness check, longest-prefix ordering,
+   effective-auth materialization; weakening overrides logged as boot-log WARNs)
+8. freeze -> GatewayConfig + RouteTable exposed as @ApplicationScoped CDI beans
+----
+
+* Failure semantics: any error in steps 1-7 -> log every collected violation with
+  file/pointer context, then *fail startup* (throw from the CDI producer / startup observer;
+  Quarkus exits non-zero). Never serve traffic on partial config.
+* `CONFIG_LOADED` INFO LogRecord (with `metadata.config_version` audit stamp) on success;
+  validation failures use structured ERROR LogRecords. Document all new records in
+  `doc/LogMessages.adoc` (create it -- CLAUDE.md requires it, it does not exist yet).
+* The producer replaces Plan 01's hardcoded route: the minimal proxy now reads `RouteTable`.
+
+=== D5 -- What "reference the schema" means concretely
+
+* Sample config set under `api-sheriff/src/test/resources/config/valid/` (used by tests) and
+  a runnable example under `integration-tests/src/main/docker/sheriff-config/` (mounted into
+  the container) -- every YAML file carries the `$schema` header comment.
+* `configuration.adoc` gains a short "Schemas" section linking the two schema files as the
+  machine-readable contract (doc change, same PR).
+
+== Work Breakdown
+
+. *Schemas* -- author `gateway.schema.json` + `endpoint.schema.json` mirroring
+  `configuration.adoc` exactly (every field of the two exhibits, enums, required lists,
+  `additionalProperties: false`). Review against the doc field-by-field; the doc governs.
+. *Model records* (D3) + builders where needed; unit tests via `cui-test-value-objects` /
+  `cui-test-generator` contracts.
+. *Loader* -- YAML read + schema validation + binding; error aggregation with
+  file/JSON-Pointer context.
+. *Topology resolution* -- properties parsing, env override precedence, URL decomposition;
+  unit tests incl. malformed URL, missing alias, env-wins-over-file.
+. *ConfigValidator* -- one small rule class per bullet of the validation-rules summary in
+  `configuration.adoc`, each with parameterized tests (valid + violating fixtures):
+  route-id uniqueness, alias resolution, endpoint-auth mandatory, effective-auth ->
+  `token_validation`/`oidc` presence, same-prefix disjointness (host/methods/header value),
+  passthrough-SNI vs `match.host` collision, passthrough alias base-path rule, trusted-proxies
+  presence + trust-all rejection, whole-second timeouts, `${ENV_VAR}`-only secrets,
+  cookie/server session-mode conditionals, CORS wildcard+credentials rejection.
+. *RouteTable* -- merge/ordering/disjointness + effective-auth materialization; property-based
+  tests with `@GeneratorsSource` for prefix/host/method permutations.
+. *CDI wiring* -- producer, startup observer, fail-fast test (`QuarkusUnitTest` with broken
+  config asserting startup failure), `CONFIG_LOADED` log assertion via
+  `cui-test-juli-logger`.
+. *Integration tests* -- mount the example `sheriff-config/` into the container
+  (docker-compose volume), point the minimal proxy route at the Plan 01 upstream target via
+  `topology.properties`; IT asserts (a) gateway boots with the mounted config, (b) the routed
+  request reaches the upstream, (c) readiness (`/q/health/ready`) reflects loaded config. Add
+  one negative script-level check: container with an invalid config exits non-zero.
+. *Docs & cleanup* -- `doc/LogMessages.adoc`, schema references in `configuration.adoc`,
+  remove any remaining Plan 01 hardcoded-route configuration.
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-02-configuration-management`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+If the plan has to be split into multiple PRs, this workflow applies to each PR; the build
+must be green after every one.
+
+== Acceptance Criteria
+
+* Both schema files exist, match `configuration.adoc` field-for-field, and every sample/test
+  YAML references them.
+* All validation rules from the summary section are enforced with at least one negative test
+  each; error output names file + path for every violation in one pass.
+* `GatewayConfig`/`RouteTable` are immutable, CDI-injectable, and consumed by the proxy.
+* Invalid config => non-zero exit, no traffic served (verified by unit-level Quarkus test and
+  container-level negative IT).
+* `./mvnw -Ppre-commit clean verify -DskipTests` and `./mvnw clean install` pass; coverage of
+  the new `config` packages >= 80%.
+* `./mvnw clean verify -Pintegration-tests -pl integration-tests -am` passes locally and via
+  `.github/workflows/integration-tests.yml`.
+
+== Out of Scope
+
+* Consuming `oidc`, `tls.passthrough_sni`, `mtls`, `security_filter`, `forwarded`, or
+  `token_validation` at runtime -- the blocks are *parsed and validated* here; their runtime
+  behaviour is link:03-request-pipeline.adoc[Plan 03] (+ later variant plans).
+* Dynamic configuration / discovery (deferred, ADR-0002).
+* `rate_limit` behaviour (reserved field; accepted and ignored).
