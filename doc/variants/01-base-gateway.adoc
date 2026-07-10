@@ -6,7 +6,8 @@
 == Summary
 
 The base gateway is a *stateless reverse proxy* with two security responsibilities:
-inbound HTTP security filtering and *offline bearer-token validation* on `/api`. It has no
+inbound HTTP security filtering and *offline bearer-token validation* on every route whose
+effective auth is `require: bearer`. It has no
 browser session, runs no OIDC login flow, and keeps no server-side state. It is the shared
 foundation on which the two link:../README.adoc#_deployment_variants[BFF variants] add
 session mediation.
@@ -53,8 +54,9 @@ upstream is never called.
   `SCOPE_MISSING` event.
 
 | Forwarding
-| Zero-trust: only allow-listed headers/params reach the upstream. The gateway normalizes inbound
-  `Forwarded` / `X-Forwarded-*` behind a trusted-proxy allowlist and injects the configured output
+| Zero-trust: only allow-listed headers/params reach the upstream. Inbound
+  `Forwarded` / `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s
+  forwarded resolver, and the gateway emits regenerated canonical output
   (`X-Forwarded-*` by default). See link:../adr/0003-forwarded-headers.adoc[ADR-0003].
 
 | Observability
@@ -70,20 +72,20 @@ upstream is never called.
 endpoint:
   id: app1
   base_url: APP1
+  auth: { require: bearer, required_scopes: [orders.read] }   # default for all routes here
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders, methods: [GET, POST] }
-      auth: { require: bearer, required_scopes: [orders.read] }
       security_filter:
         profile: strict
-        allowed_paths: [/api/orders, /api/orders/{id}]
+        allowed_paths: ["/api/orders", "/api/orders/{id}"]
         max_query_params: 20
         max_body_bytes: 1048576
       forward:
         headers_allow: [accept, content-type]
         query_allow: [page, size]
       upstream:
-        path: /orders          # appended to resolved APP1 base_url
+        path: /orders          # replaces the matched prefix; request-path remainder appended
         read_timeout_ms: 5000
 ----
 
@@ -93,8 +95,22 @@ endpoint:
 APP1=https://orders-svc.internal:8443
 ----
 
-No `oidc` block is required for this variant. See the full schema (gateway / endpoint / topology
-layout) in link:../configuration.adoc[Configuration Model].
+Bearer routes require the issuers to validate against, configured in `gateway.yaml`:
+
+[source,yaml]
+----
+# gateway.yaml (excerpt)
+token_validation:
+  issuers:
+    - name: main
+      issuer: https://idp.example.com/realms/main
+      audience: api-sheriff
+      jwks: { source: http, url: https://idp.example.com/realms/main/protocol/openid-connect/certs }
+----
+
+No `oidc` block is required for this variant -- that block belongs to the BFF variants. See the
+full schema (gateway / endpoint / topology layout) in
+link:../configuration.adoc[Configuration Model].
 
 == Offline Validation Wiring
 
@@ -105,17 +121,21 @@ claim checks:
 ----
 Startup (once, shared):
   IssuerConfig  -> issuerIdentifier, expectedAudience, JWKS source (file / in-memory / HTTP-cached)
+                   (materialized from the token_validation.issuers configuration)
   TokenValidator.builder().issuerConfig(...).build()
 
-Per request on /api:
-  AccessTokenRequest.of(bearerToken, requestHeaders)   // headers enable DPoP checks
+Per request on a bearer route:
+  AccessTokenRequest.of(bearerToken, requestHeaders, requestUri, requestMethod)
+      // URI + method are REQUIRED when a DPoP proof is present: DpopProofValidator
+      // hard-fails htu/htm validation without them -- never use the 2-arg form here
   AccessTokenContent token = validator.createAccessToken(request)   // offline, cached JWKS
   token.providesScopes(route.requiredScopes)           // 403 if missing
   -> forward upstream
 
 On failure:
   TokenValidationException carries EventType + EventCategory
-  edge maps category -> HTTP status (401), renders application/problem+json (RFC 9457)
+  edge maps event -> HTTP status (401; the category names the RFC 9457 problem type)
+  and renders application/problem+json
 ----
 
 For a fully air-gapped deployment, the issuer's JWKS is supplied in-memory or from a file

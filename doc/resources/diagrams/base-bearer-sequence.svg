@@ -68,5 +68,5 @@
   <text x="300" y="352" class="arrow-lbl">200 OK</text>
 
   <!-- footer -->
-  <text x="450" y="472" class="caption">Stateless. A failed filter or invalid token is rejected at the gateway (401 / 403) &#8212; the upstream is never called.</text>
+  <text x="450" y="472" class="caption">Stateless. Rejected at the gateway: filter violation 400, missing/invalid token 401, missing scope 403 &#8212; the upstream is never called.</text>
 </svg>

@@ -9,7 +9,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">BFF OIDC confidential-client login handshake</title>
-  <desc id="desc">A time-ordered exchange: an unauthenticated browser request is redirected by API Sheriff to the identity provider's authorization endpoint with PKCE, state and nonce; after the user authenticates, the provider posts an authorization code back to the gateway callback; the gateway verifies state and issuer, exchanges the code server-to-server for tokens, validates every token offline, and binds them to the browser as either a server-side session or an encrypted cookie.</desc>
+  <desc id="desc">A time-ordered exchange: an unauthenticated browser request is redirected by API Sheriff to the identity provider's authorization endpoint with PKCE, state and nonce; after the user authenticates, the provider redirects the browser back to the gateway callback with the authorization code as a query parameter; the gateway verifies state and issuer, exchanges the code server-to-server for tokens, validates every token offline, and binds them to the browser as either a server-side session or an encrypted cookie.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -60,13 +60,13 @@
   <line class="arrow" x1="150" y1="220" x2="745" y2="220" marker-end="url(#arrow)"/>
   <text x="600" y="212" class="arrow-lbl">authenticate + consent</text>
 
-  <!-- 4. IdP -> browser (302 form_post) -->
+  <!-- 4. IdP -> browser (302 redirect, code as query parameter) -->
   <line class="arrow-return" x1="745" y1="270" x2="150" y2="270" marker-end="url(#arrow)"/>
   <text x="600" y="262" class="arrow-lbl">302 &#8594; /auth/callback?code</text>
 
   <!-- 5. browser -> gateway callback -->
   <line class="arrow" x1="150" y1="320" x2="445" y2="320" marker-end="url(#arrow)"/>
-  <text x="300" y="312" class="arrow-lbl">POST /auth/callback (code, state)</text>
+  <text x="300" y="312" class="arrow-lbl">GET /auth/callback?code&amp;state</text>
 
   <!-- gateway note: verify -->
   <text x="466" y="348" class="note">verify state + iss (RFC 9207)</text>

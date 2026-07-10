@@ -7,8 +7,10 @@ API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and
 Java virtual threads. It is a purpose-built gateway rather than a configuration
 layer on top of an existing one -- the link:archive/others/README.adoc[competitive analysis]
 shows that no existing OSS gateway covers the required combination of confidential-client
-token mediation, RFC 7239 `Forwarded`, RFC 9470 step-up, and datastore-free distributed
-configuration.
+token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
+`X-Forwarded-*` behind a trusted-proxy allowlist), RFC 9470 step-up, and datastore-free
+distributed configuration (the last deferred past the initial release --
+link:adr/0002-initial-scope.adoc[ADR-0002]).
 
 This directory holds the design documentation. No production code is described as
 existing here; these documents define *what will be built* and *how the parts fit
@@ -27,7 +29,9 @@ together*.
 
 | link:technical_aspects.adoc[Technical Aspects]
 | The CUI libraries API Sheriff builds on -- `cui-http` (downstream calls + inbound
-  security filtering), `token-sheriff-validation` (offline JWT validation), logging and testing.
+  security filtering), `token-sheriff-validation` (offline JWT validation),
+  `token-sheriff-client` (the OIDC confidential-client engine used by the BFF variants),
+  logging and testing.
 
 | link:archive/[Archived Sources]
 | The original link:archive/manifest.adoc[Project Manifest] and the
@@ -68,16 +72,16 @@ configuration. Each has its own design section:
 
 | link:variants/01-base-gateway.adoc[1. Base Security Gateway]
 | Stateless reverse proxy. Inbound `cui-http` security filtering + offline bearer-token
-  validation on `/api`. No browser session, no OIDC login flow. The shared foundation for
-  the other two.
+  validation on routes with `auth.require: bearer`. No browser session, no OIDC login flow.
+  The shared foundation for the other two.
 
 | link:variants/02-bff-session.adoc[2. BFF -- Session-based]
 | Backend-For-Frontend acting as an OIDC confidential client. Tokens held *server-side*;
   the browser carries only an opaque session-id cookie. Stateful (manifest Variant B).
 
 | link:variants/03-bff-cookie.adoc[3. BFF -- Cookie-based (non-session)]
-| Backend-For-Frontend where the access token travels only inside an AES-256-GCM encrypted
-  `HttpOnly` cookie and is decrypted per request. Stateless (manifest Variant A).
+| Backend-For-Frontend where the tokens travel only inside an AES-256-GCM encrypted
+  `HttpOnly` cookie, decrypted per request. Stateless (manifest Variant A).
 |===
 
 == Architecture Decisions
@@ -88,7 +92,7 @@ configuration. Each has its own design section:
 
 | link:adr/0001-java25-runtime-baseline.adoc[ADR-0001]
 | Run the container/native image on the Java 25 runtime for full virtual-thread benefit
-  while keeping source compatibility at Java 21.
+  while keeping source compatibility at Java 21. *(Status: proposed.)*
 
 | link:adr/0002-initial-scope.adoc[ADR-0002]
 | Initial scope: gRPC + GraphQL (with HTTP/2 + WebSocket) ship from the start, HTTP/3 deferred;
@@ -109,6 +113,9 @@ configuration. Each has its own design section:
 . link:architecture.adoc[Architecture] -- how the runtime fits together.
 . link:configuration.adoc[Configuration] -- the YAML contract.
 . The link:variants/01-base-gateway.adoc[three variant sections] -- deployment modes.
+. link:technical_aspects.adoc[Technical Aspects] -- the CUI library APIs behind the design.
+. The link:adr/0001-java25-runtime-baseline.adoc[ADRs] -- the recorded decisions and their
+  rationale, referenced throughout the documents above.
 
 For historical context, the original requirements and competitor fact sheets are preserved
 under link:archive/[`archive/`].

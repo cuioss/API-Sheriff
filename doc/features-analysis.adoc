@@ -51,8 +51,8 @@ set of things well, with zero mandatory external dependencies.
 | *OIDC Relying Party with encrypted-cookie token mediation*
 | Inspired by APISIX `openid-connect`. The headline BFF capability, and the one feature
   only APISIX offers in OSS. Mechanism: 302 to the IdP authorization endpoint, server-to-server
-  code exchange with `client_id`/`client_secret`, tokens kept off the browser, upstream
-  requests carry an injected `Authorization: Bearer`. See
+  code exchange with `client_id`/`client_secret`, tokens kept out of browser-readable storage,
+  upstream requests carry an injected `Authorization: Bearer`. See
   link:variants/03-bff-cookie.adoc[Variant 3] and link:variants/02-bff-session.adoc[Variant 2].
 
 | *Transparent automatic token refresh*
@@ -95,16 +95,24 @@ set of things well, with zero mandatory external dependencies.
   semantics -- but no Turing-complete rule language.
 
 | *Prometheus metrics + OpenTelemetry hooks*
-| Universal across all six competitors. Exposed on a separate management port (Keycloak
-  pattern), fed by the in-process event counter. See link:architecture.adoc#_metrics[Metrics].
+| Universal across all six competitors. Prometheus ships from the start, exposed on a separate
+  management port (Keycloak pattern) and fed by the in-process event counter; the OpenTelemetry
+  tracing hook is *post-MVP* (see link:architecture.adoc#_metrics[Metrics]).
 
 | *Security-response-header middleware*
 | Traefik/KrakenD headers middleware: HSTS, `X-Content-Type-Options: nosniff`, frame-deny,
   CORS. Cheap, high value, on-brand.
 
 | *Per-route timeouts, retry, circuit breaker*
-| Traefik/KrakenD built-ins. Delivered in-process and stateless by `cui-http`
-  `ResilientHttpAdapter` (non-blocking exponential backoff) + per-route timeout on `HttpHandler`.
+| Traefik/KrakenD built-ins. Retry and timeouts are delivered by `cui-http`; the breaker is
+  gateway code -- component ownership is stated in
+  link:architecture.adoc#_downstream_client[Architecture -- Downstream Client].
+
+| *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*
+| Required from day one (link:adr/0002-initial-scope.adoc[ADR-0002]). gRPC rides on HTTP/2 and
+  GraphQL on standard HTTP, so both are largely covered by the core HTTP path; WebSocket is a
+  differentiator because it is enterprise-only in KrakenD, and full gRPC + WebSocket in OSS is
+  a differentiator against KrakenD CE. HTTP/3 remains deferred (see below).
 
 | *mTLS + TLS 1.3 by default*
 | KrakenD (TLS 1.3 default) + Traefik (mTLS, custom certs). Expected of a security gateway.
@@ -118,13 +126,9 @@ set of things well, with zero mandatory external dependencies.
 
 | *Per-node in-memory rate limiting*
 | KrakenD CE / Traefik token-bucket -- explicitly per-node and stateless. Avoid the
-  Redis-backed distributed variant (that is what makes Tyk stateful).
-
-| *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*
-| Required from day one (link:adr/0002-initial-scope.adoc[ADR-0002]). gRPC rides on HTTP/2 and
-  GraphQL on standard HTTP, so both are largely covered by the core HTTP path; WebSocket is a
-  differentiator because it is enterprise-only in KrakenD, and full gRPC + WebSocket in OSS is
-  a differentiator against KrakenD CE. HTTP/3 remains deferred (see below).
+  Redis-backed distributed variant (that is what makes Tyk stateful). The `rate_limit` field
+  is reserved in the link:configuration.adoc[configuration schema] but the feature is
+  *deferred* -- it is not part of the initial release.
 |===
 
 == Features to Avoid
@@ -170,6 +174,7 @@ set of things well, with zero mandatory external dependencies.
   WebSocket, gRPC, and GraphQL all ship now (link:adr/0002-initial-scope.adoc[ADR-0002]).
 |===
 
+[[_differentiators]]
 == Differentiators (No Competitor Covers)
 
 Per the link:archive/others/README.adoc[analysis], *none* of the six evaluated gateways support the
@@ -186,9 +191,11 @@ architecture makes it uniquely able to close all three.
   `X-Forwarded-*`. Instead, API Sheriff *accepts both* `Forwarded` (RFC 7239) and `X-Forwarded-*`
   on input, normalizes them into one model behind a *mandatory trusted-proxy allowlist* (trust from
   the unspoofable TCP peer, first untrusted hop = client), and emits a *configurable canonical
-  output* -- `X-Forwarded-*` by default, RFC 7239 opt-in and additive. This gets right exactly what
-  competitors get wrong: the too-broad-trust bug that breaks IP rate-limiting (nginx `realip` / Kong
-  #270, #13599) and "Forwarded header sabotage". See link:adr/0003-forwarded-headers.adoc[ADR-0003].
+  output* -- `X-Forwarded-*` by default, RFC 7239 opt-in and additive -- delivered by `cui-http`'s
+  `de.cuioss.http.forwarded` resolver. This gets right exactly what
+  competitors get wrong: the too-broad-trust bug that breaks IP rate-limiting (the nginx
+  `realip` / Kong issues cited in ADR-0003's references) and "Forwarded header sabotage".
+  See link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
 | *RFC 9470 step-up authentication*
 | No gateway parses an upstream `WWW-Authenticate` challenge to trigger re-authorization.

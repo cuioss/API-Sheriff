@@ -3,25 +3,24 @@
 :toclevels: 2
 :sectnums:
 
-API Sheriff ships as *one binary* that operates in one of three modes, selected by
-configuration. The inbound pipeline -- TLS edge, `cui-http` security filter, static routing,
+API Sheriff ships as *one binary*; each route runs in one of three authentication postures,
+selected by configuration (see "Variants Are Route Postures" below). The inbound pipeline -- TLS edge, `cui-http` security filter, static routing,
 zero-trust forward policy, metrics, and event system -- is *shared* across all three (see
 link:../architecture.adoc[Architecture]). The variants differ only in the *authentication
 stage*.
 
-[IMPORTANT]
-====
-For the two BFF variants, the authoritative specification is `TokenSheriff/doc/client` (the
-`CLIENT-1..22` contract). *Where it and `doc/manifest.adoc` differ, `doc/client` governs.* The
-manifest's Variant A / Variant B labels map onto `CLIENT-19`'s stateless / stateful BFF shapes.
-====
+NOTE: For the two BFF variants, the authoritative specification is `TokenSheriff/doc/client`
+(`CLIENT-1..22`); the canonical statement of that seam -- including precedence over the archived
+manifest -- is in link:../architecture.adoc#_authentication_layer[Architecture -- Authentication
+Layer]. The manifest's Variant A / Variant B labels map onto `CLIENT-19`'s stateless / stateful
+BFF shapes.
 
 [cols="1,2,1,1"]
 |===
 | Variant | Authentication | State | Manifest
 
 | link:01-base-gateway.adoc[1. Base Security Gateway]
-| Offline bearer validation on `/api` (client holds its own token)
+| Offline bearer validation on `auth.require: bearer` routes (client holds its own token)
 | Stateless
 | --
 
@@ -31,10 +30,20 @@ manifest's Variant A / Variant B labels map onto `CLIENT-19`'s stateless / state
 | Variant B
 
 | link:03-bff-cookie.adoc[3. BFF -- Cookie-based]
-| OIDC confidential client; access token in an AES-256-GCM `HttpOnly` cookie, decrypted per request
+| OIDC confidential client; tokens in an AES-256-GCM `HttpOnly` cookie, decrypted per request
 | Stateless (key only)
 | Variant A
 |===
+
+== Variants Are Route Postures, Not a Global Switch
+
+"Variant" names the authentication posture of a *route*, selected by its effective
+`auth.require` (`none` | `bearer` | `session`) -- declared once per endpoint file and
+overridable per route (see link:../configuration.adoc#_auth[Configuration -- `auth`]); one
+deployment may serve bearer routes and session routes side by side. What *is* global is `oidc.session.mode` (`server` | `cookie`) -- it decides which BFF
+shape handles all `session` routes, so a single deployment runs at most one of Variant 2 and
+Variant 3 at a time. A deployment with no `session` routes is a pure Variant 1 gateway and
+needs no `oidc` block.
 
 == Progression
 

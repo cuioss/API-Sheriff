@@ -44,20 +44,40 @@ downstreams while adding parsing/encoding risk.
 
 == Decision
 
-* *Accept both families on input.* Parse `Forwarded` (spec-correctly -- quoted-strings, `;` vs `,`,
-  IPv6 brackets, ports, obfuscated nodes; never naive comma-split) and `X-Forwarded-*`, normalizing
-  both into one internal per-hop model `{for, by, host, proto, port}`.
+* *Implement via `cui-http`'s `de.cuioss.http.forwarded` resolver* -- API Sheriff writes no
+  forwarded-header parsing of its own. The behaviour contract (precedence, sanitization,
+  serialization) is `cui-http/doc/forwarded-header-resolution.adoc`; this ADR records the
+  posture decisions.
+* *Accept both families on input (plus the NiFi `X-Proxy*` set).* `Forwarded` is parsed
+  spec-correctly (quoted-strings, `;` vs `,`, IPv6 brackets, obfuscated nodes; never naive
+  comma-split); everything is normalized into one immutable resolved model
+  `{scheme, host, port, contextPath, clientIp}`. Precedence is *per field*: for scheme, host,
+  port, and client IP, `X-Forwarded-*` is consulted first and RFC 7239 last -- consistent with
+  the adoption reality above; the context-path prefix comes from `X-ProxyContextPath` /
+  `X-Forwarded-Prefix` only, since RFC 7239 defines no prefix directive.
 * *Emit a configurable canonical output, defaulting to `X-Forwarded-*`.* `forwarded.emit` may be
-  `x-forwarded` (default), `rfc7239`, or `both`. When RFC 7239 is emitted it is *additive* (never
-  instead of XFF) and strictly encoded.
+  `x-forwarded` (default) or `both`. `both` adds a strictly encoded RFC 7239 `Forwarded` header
+  *in addition to* `X-Forwarded-*`. There is deliberately *no* `Forwarded`-only mode: XFF-only
+  downstreams (the overwhelming majority, per the research above) would silently lose client
+  information.
 * *Trust model is mandatory and comes first.* A `trusted_proxies` CIDR allowlist is required.
   Trust is established from the unspoofable TCP peer, walking the appended chain right-to-left and
   accepting entries only from allow-listed hops; the first entry from a non-trusted hop is the real
   client. If the immediate peer is not trusted, forwarding headers are ignored and `remote_addr` is
-  used. Never trust-all (`0.0.0.0/0`).
-* *Sanitize at the boundary.* From untrusted clients, strip inbound forwarding headers and
-  regenerate from observation; from trusted proxies, append this hop. This defuses header sabotage.
-* *Obfuscate `by=` when emitting `Forwarded`* to avoid leaking internal topology (RFC 7239 §7.4).
+  used. Never trust-all (`0.0.0.0/0`). *Division of labour:* the right-to-left chain walk is the
+  resolver's; the *immediate-TCP-peer gate is gateway code* -- the transport-agnostic resolver
+  consumes only a header accessor and never sees the peer, so API Sheriff must check the peer
+  against `trusted_proxies` *before* consulting the resolver at all. Without that gate, a direct
+  client sending `X-Forwarded-For: 1.2.3.4` would have its spoofed entry honored.
+* *Emission is regeneration, never propagation.* Inbound chains are never appended to or
+  forwarded: the gateway emits freshly generated headers from the resolved, sanitized facts
+  (the emitted `X-Forwarded-For` carries exactly the one resolved client). Malformed or
+  sabotaged inbound values are dropped-and-logged at the gateway and can never reach the
+  upstream -- a stronger defence than per-hop appending.
+* *Emit no `by=` parameter at all* -- omitting it avoids the internal-topology leak
+  (RFC 7239 §8.2/§8.3) more simply than the obfuscated identifiers (§6.3) the RFC suggests.
+  Note also that RFC 7239 cannot carry a context-path prefix; the prefix travels only as
+  `X-Forwarded-Prefix`.
 
 == Consequences
 
@@ -67,8 +87,9 @@ downstreams while adding parsing/encoding risk.
   normalize both* behind a strict trusted-proxy allowlist and emit a configurable, sabotage-resistant
   canonical output". This is the part competitors get wrong (the nginx `realip` / Kong too-broad-trust
   bug that breaks IP rate-limiting is the canonical example).
-* Requires a spec-correct `Forwarded` parser and encoder (more code than XFF-only), justified by the
-  security posture.
+* The spec-correct `Forwarded` parser and encoder is not gateway code: it ships in `cui-http`
+  (`de.cuioss.http.forwarded`), already hardened by the same header-value sanitization
+  pipelines the inbound filter uses.
 
 == References
 

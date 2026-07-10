@@ -72,8 +72,10 @@ forward-policy allowlists. See link:configuration.adoc#_security_filtering[Secur
 
 A static, immutable route table maps inbound requests to exactly one upstream. Matchers are
 bounded and composable with AND semantics (path prefix, HTTP method, host, header
-presence/value). The first matching route wins; a request that matches no route is rejected
-(deny-by-default). Routing carries no dynamic rule language.
+presence/value). The most specific matching route wins; a request that matches no route is rejected
+with `404` (deny-by-default). Routes from all endpoint files form one table ordered
+most-specific-first; see link:configuration.adoc#_route_ordering[Configuration -- Route ordering]. Routing
+carries no dynamic rule language.
 
 === Authentication Layer
 
@@ -93,14 +95,17 @@ The active authentication strategy depends on the variant:
   opaque session-id cookie. The gateway injects the stored access token upstream.
 
 | link:variants/03-bff-cookie.adoc[BFF cookie]
-| The gateway is the OIDC confidential client. The access token travels only inside an
-  AES-256-GCM-encrypted `HttpOnly` cookie and is decrypted per request before upstream injection.
+| The gateway is the OIDC confidential client. The tokens (access token, refresh token, minimal
+  metadata) travel only inside an AES-256-GCM-encrypted `HttpOnly` cookie, decrypted per request
+  before upstream injection.
 |===
 
 [IMPORTANT]
 ====
 For everything BFF-related, the authoritative specification is `TokenSheriff/doc/client` (the
-`CLIENT-1..22` contract). *Where it and `doc/manifest.adoc` differ, `doc/client` governs.*
+`CLIENT-1..22` contract). *Where it and the archived manifest (`doc/archive/manifest.adoc`)
+differ, `doc/client` governs.* This block is the canonical statement of that seam; the variant
+documents reference it rather than restating it.
 
 That specification defines a strict seam. The confidential-client *engine* owns retrieval and
 flow (auth-code + PKCE, `state` / `nonce` / exact `redirect_uri`, mix-up `iss` defence, PAR,
@@ -110,21 +115,36 @@ shapes viable without forcing either (`CLIENT-19`). The *BFF* -- API Sheriff's j
 browser-facing part: the session cookie, symmetric-key management (stateless variant),
 backend-API CSRF, request proxying, logout receivers, and RFC 9457 rendering at the edge.
 
-The engine module (`token-sheriff-client`) is currently an unbuilt skeleton, so API Sheriff
-implements the flow itself against `CLIENT-1..22`, reusing `token-sheriff-validation` unchanged
-to validate every retrieved token (`CLIENT-15` / `CLIENT-16`) before it is trusted or stored.
+That seam is realized directly: *API Sheriff depends on the engine module
+`token-sheriff-client`* -- purpose-built for this gateway and implemented upstream -- for the
+entire confidential-client flow and server-side token lifecycle, and implements *only the BFF
+side* itself (session/cookie handling, CSRF, proxying, logout receivers, and RFC 9457
+rendering for *gateway-raised* errors -- *engine-raised* failures are mapped to
+`application/problem+json` by `token-sheriff-client-quarkus`'s exception mapper; both conform
+to the same RFC 9457 contract).
+Where the variant sections say the gateway "exchanges the code", "refreshes", or "revokes",
+the engine performs the OAuth legs and the gateway drives it. `token-sheriff-validation`
+validates every retrieved token (`CLIENT-15` / `CLIENT-16`) before it is trusted or stored;
+the engine wires it internally. The engine's API surface is specified in
+`TokenSheriff/doc/client`.
 ====
 
 === Forward Policy (Zero-Trust)
 
 Nothing crosses to the upstream unless it is explicitly allowed. The forward policy defines
-an allowlist of request headers and query parameters, and the set of headers the gateway
-*injects* (notably `Authorization: Bearer` from the mediated token, and the
-link:configuration.adoc#_forwarded_headers[forwarding header]). The gateway accepts both
-`Forwarded` (RFC 7239) and `X-Forwarded-*` on input, normalizes them behind a trusted-proxy
-allowlist, and emits a configurable canonical output -- *`X-Forwarded-*` by default*, RFC 7239
-opt-in and additive (link:adr/0003-forwarded-headers.adoc[ADR-0003]). Everything else is
-stripped. This deny-by-default posture is the KrakenD-inspired security default.
+an allowlist of request headers and query parameters plus optional static `set_headers`; two
+injections happen *automatically*, outside the policy -- the mediated `Authorization:
+Bearer` on session routes and the regenerated
+link:configuration.adoc#_forwarded_headers[forwarding-header set]. Forwarded-header handling
+is delivered by `cui-http`'s `de.cuioss.http.forwarded` resolver: both `Forwarded` (RFC 7239)
+and `X-Forwarded-*` (plus NiFi `X-Proxy*`) are resolved per field into one sanitized,
+immutable result -- the client IP behind the trusted-proxy allowlist plus a gateway-side
+TCP-peer gate, scheme/host/port/prefix only when `trust_scheme_host` opts in -- and the
+gateway emits *freshly regenerated* canonical output from it: `X-Forwarded-*` by default,
+RFC 7239 opt-in and additive
+(link:adr/0003-forwarded-headers.adoc[ADR-0003]); inbound chains are never propagated.
+Everything else is stripped. This deny-by-default posture is the KrakenD-inspired security
+default.
 
 === Downstream Client
 
@@ -138,6 +158,10 @@ Upstream calls use `cui-http`:
 * `HttpResult<T>` -- sealed `Success`/`Failure`; failures carry an `HttpErrorCategory`
   (`NETWORK_ERROR`, `SERVER_ERROR`, `CLIENT_ERROR`, `INVALID_CONTENT`, `CONFIGURATION_ERROR`)
   and may carry fallback content for graceful degradation.
+* Per-route *circuit breaker* -- a small gateway-side component wrapped around the adapter
+  chain (stateless, per node): opens after the configured consecutive failures, half-opens
+  after `reset_ms`. `cui-http` supplies retry and timeouts but no breaker, so this is gateway
+  code by design.
 
 The adapters are `CompletableFuture`-based; under the virtual-thread model the gateway may
 also call the blocking JDK `send()` from a virtual-thread-per-request worker.
@@ -152,8 +176,11 @@ error-mapping without pulling in a broker or an Elasticsearch dependency.
 
 Design (to be built as a low, framework-agnostic base package):
 
-* An `EventCategory` enum groups *failure* events by impact and maps to an HTTP status --
-  e.g. `INPUT_VALIDATION`, `AUTHENTICATION`, `AUTHORIZATION`, `UPSTREAM`, `CONFIGURATION`.
+* An `EventCategory` enum groups *failure* events by impact -- e.g. `INPUT_VALIDATION`,
+  `AUTHENTICATION`, `AUTHORIZATION`, `UPSTREAM`, `CONFIGURATION`. The HTTP status is mapped
+  per *event type* (two events in one category may map to different statuses); the category
+  names the RFC 9457 problem type and keys the error metrics. `CONFIGURATION` events occur at
+  boot only -- the gateway refuses to start -- and never surface as an HTTP response.
 * A `GatewayEventCounter` holds a `ConcurrentHashMap<EventType, AtomicLong>` and exposes
   `increment(EventType)`, `getCount(EventType)`, an unmodifiable `getCounters()` snapshot,
   and `reset()`, using `computeIfAbsent` + `incrementAndGet` (lock-free).
@@ -162,15 +189,35 @@ Design (to be built as a low, framework-agnostic base package):
   `REQUEST_FORWARDED`, `TOKEN_REFRESHED`, `CONFIG_LOADED`.
 * Failure event types carry a category -- e.g. `PATH_NOT_ALLOWED` / `SECURITY_FILTER_VIOLATION`
   / `PARAMETER_LIMIT_EXCEEDED` (`INPUT_VALIDATION`), `TOKEN_MISSING` / `TOKEN_INVALID`
-  (`AUTHENTICATION`), `SCOPE_MISSING` (`AUTHORIZATION`), `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT`
-  (`UPSTREAM`).
+  (`AUTHENTICATION`), `SCOPE_MISSING` / `CSRF_REJECTED` (`AUTHORIZATION`),
+  `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT` (`UPSTREAM`).
 * Typed gateway exceptions carry their `EventType`, so the HTTP edge maps
-  event -> category -> status, and renders `application/problem+json` (RFC 9457) without
-  leaking internal detail.
+  event -> status (with the category naming the problem type), and renders
+  `application/problem+json` (RFC 9457) without leaking internal detail.
 
 The counter is intentionally micrometer-ready without depending on micrometer; the metrics
 edge (below) reads its snapshots. The `cui-http` filter contributes its own
 `SecurityEventCounter`; both are surfaced together.
+
+[[_error_contract]]
+=== Error Contract
+
+Every gateway-generated rejection is an `application/problem+json` (RFC 9457) response that
+names the category but leaks no internal detail. The consolidated status mapping:
+
+[cols="1,2,2"]
+|===
+| Status | Cause | EventCategory
+
+| `400` | Security-filter violation (path/parameter/header pipeline, collection limits, body size) | `INPUT_VALIDATION`
+| `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
+| `403` | Valid credentials lacking a required scope; failed CSRF origin check | `AUTHORIZATION`
+| `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `INPUT_VALIDATION`
+| `429` | Rate limit exceeded -- *reserved*; the feature is deferred | --
+| `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
+| `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
+| `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
+|===
 
 [[_metrics]]
 == Metrics
@@ -206,6 +253,13 @@ The manifest requires *paths, errors, and average timing*. These map to:
 OpenTelemetry tracing is a planned (post-MVP) hook per the manifest and is not part of the
 initial metrics surface.
 
+*Health.* SmallRye Health serves liveness/readiness (`/q/health/live`, `/q/health/ready`) on
+the same management port. Readiness reflects the loaded-and-validated configuration and, for
+the BFF variants, the ability to reach the configured issuer at startup. The management port
+is not exposed publicly, so health and metrics endpoints carry no authentication of their own;
+data-plane routes such as a public `/health` proxy are ordinary routes and need an explicit
+`auth: { require: none }`.
+
 [[_protocol_support]]
 == Protocol Support
 
@@ -239,8 +293,9 @@ HTTP/3 / QUIC is deferred.
 Because gRPC and GraphQL both ride on the standard HTTP/2 (or HTTP/1.1) transport, they need
 no separate proxy engine; the per-route `protocol` field (see
 link:configuration.adoc#_protocols[Configuration -- Protocols]) selects handshake/streaming
-behaviour where it differs (WebSocket upgrade, gRPC streaming). TLS *passthrough* routes are
-L4-only and cannot offer these L7 behaviours.
+behaviour where it differs (WebSocket upgrade, gRPC streaming). Connections whose SNI is
+listed in `tls.passthrough_sni` are relayed at L4 and never reach the route table, so no L7
+behaviour applies to them.
 
 == Threading Model
 
@@ -253,13 +308,16 @@ The gateway targets a virtual-thread-per-request model:
   instance is created at startup and shared.
 
 To get the full benefit -- specifically JEP 491 (JDK 24+), which removes carrier-thread
-pinning on `synchronized` blocks -- the container/native image runs on the Java 25 runtime.
-See link:adr/0001-java25-runtime-baseline.adoc[ADR-0001]. Source compatibility remains at
+pinning on `synchronized` blocks -- the container/native image is to run on the Java 25
+runtime, per link:adr/0001-java25-runtime-baseline.adoc[ADR-0001] (status: proposed). Source compatibility remains at
 Java 21 (`maven.compiler.release=21`).
 
 == Library Dependencies (Design Intent)
 
-These are the libraries the design assumes; adding them to the build is a separate, approved step.
+These are the libraries the design assumes; adding them to the build is a separate, approved
+step. As a Quarkus application, API Sheriff's *direct* dependencies for the token-sheriff stack
+are the Quarkus extension modules (`token-sheriff-validation-quarkus`,
+`token-sheriff-client-quarkus`); the core jars listed alongside them arrive transitively.
 
 [cols="2,2,2"]
 |===
@@ -277,6 +335,14 @@ These are the libraries the design assumes; adding them to the build is a separa
 | token-sheriff-validation-quarkus
 | `de.cuioss.sheriff.token:token-sheriff-validation-quarkus`
 
+| OIDC confidential-client engine (BFF variants only)
+| token-sheriff-client
+| `de.cuioss.sheriff.token:token-sheriff-client`
+
+| Engine -- Quarkus integration (RFC 9457 exception mapping)
+| token-sheriff-client-quarkus
+| `de.cuioss.sheriff.token:token-sheriff-client-quarkus`
+
 | Logging
 | cui-java-tools (`CuiLogger` / `LogRecord`)
 | `de.cuioss:cui-java-tools`
@@ -286,5 +352,7 @@ These are the libraries the design assumes; adding them to the build is a separa
 | `io.quarkus:*` (resteasy, arc, micrometer, smallrye-health)
 |===
 
-NOTE: The confidential-client engine `token-sheriff-client` exists only as a skeleton;
-API Sheriff does not depend on it yet (see the Authentication Layer note above).
+NOTE: The engine dependencies (`token-sheriff-client`, `-quarkus`) are needed by the BFF
+variants only; a pure base-gateway deployment needs just the validation stack (direct
+dependency `token-sheriff-validation-quarkus`, core transitive). See the Authentication Layer
+note above for the engine/BFF responsibility split.

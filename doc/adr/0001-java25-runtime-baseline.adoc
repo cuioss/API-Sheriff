@@ -37,9 +37,13 @@ The decision therefore separates two concerns that are often conflated:
 
 * `maven.compiler.release` stays at `21` -- source compatibility with the CUI parent and
   Quarkus 3.37.x is preserved; no Java 22-25 language features are used yet.
-* The container base image (`Dockerfile.native` / JVM image) and the Mandrel/GraalVM native
-  builder are pinned to *JDK 25*, so the running process benefits from JEP 491 (no
-  `synchronized` pinning) and the rest of the JDK 24/25 virtual-thread and GC improvements.
+* The two shipping paths get JDK 25 by different mechanisms. *JVM mode*: the container base
+  image is pinned to a JDK 25 runtime (no JVM Dockerfile exists yet; it is created with this
+  pin). *Native mode*: the runtime image (`Dockerfile.native`, distroless) contains no JVM at
+  all -- there the JEP 491 behaviour comes entirely from the *Mandrel/GraalVM builder*, which
+  must be pinned to a JDK 25 line (it is currently unpinned in the build). Either way the
+  running process gets JEP 491 (no `synchronized` pinning) and the rest of the JDK 24/25
+  virtual-thread and GC improvements.
 * This is the same "compile low, run high" split the JVM guarantees via bytecode
   forward-compatibility.
 
