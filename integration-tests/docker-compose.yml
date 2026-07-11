@@ -33,6 +33,19 @@ services:
     networks:
       - api-sheriff
 
+  # Routable upstream backend for the proxy: /anything/* echoes the complete
+  # received request as JSON, so integration tests can assert exactly what the
+  # gateway forwarded. Reached by the gateway on the internal network as
+  # http://go-httpbin:8080; port 18080 is published only for the host-side
+  # readiness probe and local debugging.
+  go-httpbin:
+    image: ghcr.io/mccutchen/go-httpbin:2.23.1
+    ports:
+      - "18080:8080"
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
   api-sheriff:
     image: "api-sheriff:distroless"
     build:
@@ -54,9 +67,13 @@ services:
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      # Interim proxy route -> go-httpbin echo backend (reached by service name)
+      - SHERIFF_PROXY_PATH_PREFIX=/proxy
+      - SHERIFF_PROXY_UPSTREAM_URL=http://go-httpbin:8080/anything
 
     depends_on:
       - keycloak
+      - go-httpbin
 
     volumes:
       # Read-only certificate mount (production pattern)
