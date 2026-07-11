@@ -1,0 +1,44 @@
+{
+  "best_practices": [],
+  "insights": [],
+  "internal_dependencies": [],
+  "key_dependencies": [],
+  "key_dependencies_reasoning": "",
+  "key_packages": {},
+  "purpose": "library",
+  "purpose_reasoning": "documentation-only virtual module (build_system=documentation); no code \u2014 closest available classification",
+  "responsibility": "Design documentation: architecture, configuration model, deployment variants, ADRs 0001-0004, competitive feature analysis, and the sequenced implementation plans under doc/plan/ that drive development.",
+  "responsibility_reasoning": "doc/README.adoc index read in full",
+  "skills_by_profile": {
+    "documentation": {
+      "defaults": [
+        {
+          "description": "AsciiDoc formatting, validation, link verification, and template creation",
+          "skill": "pm-documents:ref-asciidoc"
+        },
+        {
+          "description": "Content quality, tone analysis, organization standards, and review orchestration",
+          "skill": "pm-documents:ref-documentation"
+        },
+        {
+          "description": "Narrative styles for technical documentation \u2014 tone, voice, and arc for the engineering-narrative style",
+          "skill": "pm-documents:ref-narrative-styles"
+        },
+        {
+          "description": "SVG diagram authoring standards \u2014 visual language, theme handling, AsciiDoc embedding, per-diagram-type patterns",
+          "skill": "pm-documents:ref-svg-diagrams"
+        },
+        {
+          "description": "Manage Architectural Decision Records with CRUD operations and AsciiDoc formatting",
+          "skill": "plan-marshall:manage-adr"
+        },
+        {
+          "description": "Manage Interface specifications with CRUD operations and AsciiDoc formatting",
+          "skill": "pm-documents:manage-interface"
+        }
+      ]
+    }
+  },
+  "skills_by_profile_reasoning": "documentation: AsciiDoc design docs under doc/ incl. 4 ADRs (manage-adr optional applies)",
+  "tips": []
+}
