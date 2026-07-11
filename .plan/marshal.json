@@ -96,7 +96,7 @@
           "merge_queue_wait_budget_seconds": 1800,
           "merge_hold_window": "full_window_release_at_waits",
           "merge_hold_budget_seconds": 3600,
-          "use_merge_queue": true,
+          "use_merge_queue": false,
           "admin_merge_on_stuck_state": false
         },
         "default:record-metrics": {},
