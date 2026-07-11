@@ -13,27 +13,27 @@ Multi-module Maven project:
 - `integration-tests/` — Integration test coordinator (Docker infrastructure, IT suites, scripts)
 - `benchmarks/` — WRK HTTP load testing benchmarks
 
-## Build Commands
+## Development Notes
+
+### Build Commands
+
+Never hard-code build tool commands (`mvn`, `./mvnw`) — invoke builds via the canonical executor commands below:
+
+- Compile: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "compile"`
+- Quality gate: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Ppre-commit"`
+- Full verify: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify"`
+- Coverage: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pcoverage"`
+- Module tests (api-sheriff): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -am"` — only on api-sheriff
+- Module tests (benchmarks): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl benchmarks -am"` — only on benchmarks
+- Module tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl integration-tests -am"` — only on integration-tests
+- Integration tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pintegration-tests -pl integration-tests -am"` — only on integration-tests
+- Benchmark (benchmarks): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pbenchmark -pl benchmarks -am"` — only on benchmarks
+- Use a 10-minute Bash timeout (600000ms) for build invocations
+- Analyze each build's TOON result: `status`, `errors[N]{file,line,message,category}`, `log_file`
+
+Special builds without a canonical command:
 
 ```bash
-# Full build with tests
-./mvnw clean install
-
-# Build without tests
-./mvnw clean install -DskipTests
-
-# Single module
-./mvnw clean install -pl <module-name>
-
-# Single test
-./mvnw test -Dtest=ClassName#methodName
-
-# Integration tests
-./mvnw clean verify -Pintegration-tests -pl integration-tests -am
-
-# Integration benchmarks (WRK)
-./mvnw clean verify -pl benchmarks -Pbenchmark
-
 # Build native executable
 ./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
 
@@ -43,16 +43,10 @@ docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:lat
 
 ### Pre-Commit Process
 
-**CRITICAL** — run before every commit:
+**CRITICAL** — run before every commit; both must pass with zero errors/warnings:
 
-1. Quality verification (fix ALL errors/warnings):
-   ```bash
-   ./mvnw -Ppre-commit clean verify -DskipTests
-   ```
-2. Full verification (must pass completely):
-   ```bash
-   ./mvnw clean install
-   ```
+1. Quality gate (canonical `quality-gate` command above)
+2. Full verify (canonical `verify` command above)
 
 ## Pre-1.0 Rules (HIGHEST PRIORITY)
 
@@ -128,3 +122,12 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
    - Every comment MUST get a reply (reason for fix or reason for not fixing) and MUST be resolved
 7. Do **NOT** enable auto-merge unless explicitly instructed. Wait for user approval.
 8. Return to main: `git checkout main && git pull`
+
+## Temporary Files
+
+Use `.plan/temp/` for ALL temporary and generated files (covered by `Write(.plan/**)` permission — avoids permission prompts).
+
+## Tool Usage
+
+- Use proper tools (Edit, Read, Write) instead of shell commands (echo, cat)
+- Never use Bash for file operations (find, grep, cat, ls) — use Glob, Read, Grep tools instead

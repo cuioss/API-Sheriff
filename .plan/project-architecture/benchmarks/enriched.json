@@ -1,0 +1,95 @@
+{
+  "best_practices": [],
+  "insights": [],
+  "internal_dependencies": [],
+  "key_dependencies": [
+    "de.cuioss:benchmarking-common",
+    "de.cuioss:cui-java-tools"
+  ],
+  "key_dependencies_reasoning": "benchmarking-common provides the WRK result publication pipeline",
+  "key_packages": {
+    "de.cuioss.sheriff.api.wrk.benchmark": {
+      "description": "WrkResultPostProcessor converts raw wrk output into the benchmarking-common publication format; GatewayEndpointBenchmarkTest drives the wrk scripts."
+    }
+  },
+  "purpose": "benchmark",
+  "purpose_reasoning": "WRK benchmark harness, benchmark Maven profile, no production code",
+  "responsibility": "WRK-based HTTP load benchmarks for the gateway. Wraps wrk scripts (health, proxied-static route) run against the docker-compose stack via the benchmark profile, and post-processes results with WrkResultPostProcessor (benchmarking-common) for publication to GitHub Pages.",
+  "responsibility_reasoning": "benchmarks/README.adoc + wrk-scripts inventory + benchmark profile",
+  "skills_by_profile": {
+    "implementation": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Core Java patterns including modern features and performance optimization",
+          "skill": "pm-dev-java:java-core"
+        },
+        "pm-dev-java-cui:cui-logging"
+      ]
+    },
+    "module_testing": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Language-agnostic testing methodology (AAA, coverage, reliability, determinism)",
+          "skill": "plan-marshall:persona-module-tester"
+        },
+        {
+          "description": "Core Java patterns including modern features and performance optimization",
+          "skill": "pm-dev-java:java-core"
+        },
+        {
+          "description": "JUnit 5 testing patterns with AAA structure, coverage analysis, and assertion standards",
+          "skill": "pm-dev-java:junit-core"
+        },
+        "pm-dev-java-cui:cui-logging"
+      ]
+    },
+    "quality": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Core Java patterns including modern features and performance optimization",
+          "skill": "pm-dev-java:java-core"
+        },
+        {
+          "description": "JavaDoc documentation standards including class, method, and code example patterns",
+          "skill": "pm-dev-java:javadoc"
+        },
+        "pm-dev-java-cui:cui-logging"
+      ]
+    },
+    "security": {
+      "defaults": [
+        "pm-dev-java-cui:cui-logging",
+        {
+          "description": "CUI HTTP request-sanitization security surface",
+          "skill": "pm-dev-java-cui:cui-http"
+        }
+      ]
+    }
+  },
+  "skills_by_profile_reasoning": "general-dev: cross-cutting; java: Maven module with Java post-processor and JUnit tests; java-cui: cui-java-tools/CuiLogger used in WrkResultPostProcessor",
+  "tips": []
+}

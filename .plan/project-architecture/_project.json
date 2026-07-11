@@ -1,0 +1,16 @@
+{
+  "description": "API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and Java virtual threads \u2014 a purpose-built reverse proxy providing cui-http inbound security filtering, offline bearer-token validation, and (in later variants) OIDC confidential-client BFF token mediation. Pre-1.0: the current code delivers a minimal pass-through proxy plus the build/IT/benchmark harness; configuration management and the full request pipeline follow the plans under doc/plan/.",
+  "description_reasoning": "source: doc/README.adoc introduction + root pom description + doc/plan/README.adoc plan sequence",
+  "extensions_used": [
+    "plan-marshall",
+    "pm-documents"
+  ],
+  "modules": {
+    "api-sheriff": {},
+    "api-sheriff-parent": {},
+    "benchmarks": {},
+    "documentation": {},
+    "integration-tests": {}
+  },
+  "name": "API-Sheriff"
+}

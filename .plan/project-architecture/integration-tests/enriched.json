@@ -1,0 +1,152 @@
+{
+  "best_practices": [],
+  "insights": [],
+  "internal_dependencies": [
+    "api-sheriff"
+  ],
+  "key_dependencies": [
+    "io.rest-assured:rest-assured",
+    "org.awaitility:awaitility"
+  ],
+  "key_dependencies_reasoning": "ITs run against the api-sheriff native container; REST Assured + Awaitility drive/await the dockerized stack",
+  "key_packages": {
+    "de.cuioss.sheriff.api.integration": {
+      "description": "IT suite: BaseIntegrationTest (stack lifecycle/awaiting), ApiSheriffIntegrationIT (health), ProxyIntegrationIT (pass-through proxy against go-httpbin)."
+    }
+  },
+  "purpose": "integration-tests",
+  "purpose_reasoning": "only failsafe IT sources, integration-tests profile, docker infrastructure",
+  "responsibility": "Integration test coordinator: builds the native gateway container and orchestrates the docker-compose stack (gateway, Keycloak, go-httpbin, nginx-static, Prometheus) via the integration-tests profile, running IT suites (proxy pass-through, health) with REST Assured and Awaitility.",
+  "responsibility_reasoning": "module pom description, docker-compose.yml services, ProxyIntegrationIT/BaseIntegrationTest sources",
+  "skills_by_profile": {
+    "implementation": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Core Java patterns including modern features and performance optimization",
+          "skill": "pm-dev-java:java-core"
+        },
+        {
+          "description": "JSpecify null safety annotations with @NullMarked, @Nullable, and package-level configuration",
+          "skill": "pm-dev-java:java-null-safety"
+        },
+        {
+          "description": "Lombok patterns including @Delegate, @Builder, @Value, @Data, @UtilityClass for reducing boilerplate",
+          "skill": "pm-dev-java:java-lombok"
+        },
+        {
+          "description": "Quarkus-specific CDI standards with testing, native image support, and GraalVM reflection configuration",
+          "skill": "pm-dev-java:java-quarkus"
+        },
+        {
+          "description": "CDI patterns including constructor injection, scopes, producers, and Quarkus configuration",
+          "skill": "pm-dev-java:java-cdi"
+        },
+        {
+          "description": "Java code maintenance standards including prioritization, refactoring triggers, and compliance",
+          "skill": "pm-dev-java:java-maintenance"
+        },
+        "pm-dev-java-cui:cui-logging",
+        "pm-dev-java-cui:cui-http"
+      ]
+    },
+    "module_testing": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Language-agnostic testing methodology (AAA, coverage, reliability, determinism)",
+          "skill": "plan-marshall:persona-module-tester"
+        },
+        {
+          "description": "Core Java patterns including modern features and performance optimization",
+          "skill": "pm-dev-java:java-core"
+        },
+        {
+          "description": "JUnit 5 testing patterns with AAA structure, coverage analysis, and assertion standards",
+          "skill": "pm-dev-java:junit-core"
+        },
+        {
+          "description": "JSpecify null safety annotations with @NullMarked, @Nullable, and package-level configuration",
+          "skill": "pm-dev-java:java-null-safety"
+        },
+        {
+          "description": "Lombok patterns including @Delegate, @Builder, @Value, @Data, @UtilityClass for reducing boilerplate",
+          "skill": "pm-dev-java:java-lombok"
+        },
+        {
+          "description": "Quarkus-specific CDI standards with testing, native image support, and GraalVM reflection configuration",
+          "skill": "pm-dev-java:java-quarkus"
+        },
+        {
+          "description": "Maven integration testing with Failsafe plugin, IT naming conventions, and profiles",
+          "skill": "pm-dev-java:junit-integration"
+        },
+        {
+          "description": "Weld Testing standards for CDI unit testing with @EnableAutoWeld and auto-discovery patterns",
+          "skill": "pm-dev-java:junit-weld-testing"
+        },
+        "pm-dev-java-cui:cui-logging",
+        "pm-dev-java-cui:cui-testing",
+        "pm-dev-java-cui:cui-http-testing"
+      ]
+    },
+    "quality": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Core Java patterns including modern features and performance optimization",
+          "skill": "pm-dev-java:java-core"
+        },
+        {
+          "description": "JavaDoc documentation standards including class, method, and code example patterns",
+          "skill": "pm-dev-java:javadoc"
+        },
+        {
+          "description": "JSpecify null safety annotations with @NullMarked, @Nullable, and package-level configuration",
+          "skill": "pm-dev-java:java-null-safety"
+        },
+        {
+          "description": "Lombok patterns including @Delegate, @Builder, @Value, @Data, @UtilityClass for reducing boilerplate",
+          "skill": "pm-dev-java:java-lombok"
+        },
+        {
+          "description": "Quarkus-specific CDI standards with testing, native image support, and GraalVM reflection configuration",
+          "skill": "pm-dev-java:java-quarkus"
+        },
+        "pm-dev-java-cui:cui-logging"
+      ]
+    },
+    "security": {
+      "defaults": [
+        "pm-dev-java-cui:cui-logging",
+        {
+          "description": "CUI HTTP request-sanitization security surface",
+          "skill": "pm-dev-java-cui:cui-http"
+        }
+      ]
+    }
+  },
+  "skills_by_profile_reasoning": "general-dev: cross-cutting; java: Failsafe IT module \u2014 junit-integration optional applies; java-cui: cui-test-juli-logger used; cui-http-testing applies for attack-database ITs (Plan 03)",
+  "tips": []
+}
