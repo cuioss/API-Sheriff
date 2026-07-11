@@ -59,7 +59,8 @@
       "per_envelope_budget_tokens": "400K",
       "verification_steps": {
         "default:verify:quality-gate": {},
-        "default:verify:module-tests": {}
+        "default:verify:module-tests": {},
+        "default:verify:coverage": {}
       },
       "effort": {
         "default": "level-4",
@@ -96,11 +97,23 @@
           "merge_queue_wait_budget_seconds": 1800,
           "merge_hold_window": "full_window_release_at_waits",
           "merge_hold_budget_seconds": 3600,
-          "use_merge_queue": false,
+          "use_merge_queue": true,
           "admin_merge_on_stuck_state": false
         },
         "default:record-metrics": {},
-        "default:archive-plan": {}
+        "default:archive-plan": {},
+        "default:finalize-step-security-audit": {
+          "security_audit": "auto"
+        },
+        "default:architecture-refresh": {},
+        "default:finalize-step-preference-emitter": {
+          "preference_min_recurrence": 2
+        },
+        "default:finalize-step-print-phase-breakdown": {},
+        "default:pre-submission-self-review": {
+          "self_review": "auto",
+          "drop_review_on_scope_gate": false
+        }
       },
       "effort": {
         "default": "level-3",
@@ -202,7 +215,7 @@
       "lessons_superseded_days": 0,
       "temp_on_maintenance": true
     },
-    "provisioned_version": "0.1.1088",
-    "config_seed_fingerprint": "afa68648"
+    "provisioned_version": "0.1.1090",
+    "config_seed_fingerprint": "dde4bc0c"
   }
 }
