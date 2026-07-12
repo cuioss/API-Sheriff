@@ -34,6 +34,14 @@ Usage follows exhaustive pattern matching (switch expressions) or simple `isSucc
 The `map()` method transforms content while preserving metadata.
 Failures may carry fallback content for graceful degradation with cached data.
 
+NOTE: `HttpResult<T>` *materializes the whole body* into the in-memory `T`. That is exactly
+right for the *control plane* -- the small, bounded JSON calls the gateway makes itself (OIDC
+discovery, JWKS, token exchange, revocation) -- but it is *not* used for the *data plane*:
+proxied client bodies (large responses, downloads, SSE, chunked/long-lived streams) are
+*streamed* with backpressure and never buffered into an `HttpResult<byte[]>`/`HttpResult<String>`.
+The boundary, and the competitor evidence behind it, is
+link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006].
+
 == HTTP Security Validation
 
 Library: **cui-http** (security module)

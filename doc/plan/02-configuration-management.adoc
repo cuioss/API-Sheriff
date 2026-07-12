@@ -95,20 +95,26 @@ deliverables do not change, only the implementation of the structural half.
 
 === D3 -- Configuration object model
 
-Immutable records (Java 21) under `de.cuioss.sheriff.api.config.model`:
+Immutable Java records under `de.cuioss.sheriff.api.config.model`:
 
 * `GatewayConfig` (root aggregate) -- `TlsConfig`, `SecurityHeadersConfig`,
   `SecurityDefaultsConfig`, `ForwardedConfig`, `TokenValidationConfig` (+`IssuerConfig`
   mirror), `OidcConfig` (parsed and validated now; consumed by later BFF plans), `Metadata`.
-* `EndpointConfig` -- `id`, `baseUrlAlias`, mandatory `AuthConfig`, `List<RouteConfig>`.
+* `EndpointConfig` -- `id` (the unique endpoint name), `enabled` (default `true`),
+  `baseUrlAlias`, mandatory `AuthConfig`, optional `allowedMethods` (verb allowlist), and
+  `List<RouteConfig>`.
 * `RouteConfig` -- `MatchConfig`, `AuthConfig` (nullable = inherit endpoint),
   `SecurityFilterConfig`, `ForwardConfig`, `UpstreamConfig`, reserved `RateLimitConfig`,
   `protocol` enum.
 * `ResolvedTopology` -- alias -> `ResolvedUpstream{scheme, host, port, basePath}`
   (decompose-once, ADR-0004).
 * `RouteTable` -- the merged, disjointness-checked, longest-prefix-ordered immutable table
-  with the *effective auth* (endpoint default or wholesale route override) materialized per
-  route, so downstream pipeline code never re-implements inheritance.
+  with the *effective auth* (endpoint default or wholesale route override) *and effective
+  `allowedMethods`* (endpoint list, else global, else the standard set -- no inheritance)
+  materialized per route, so downstream pipeline code never re-implements inheritance. Only
+  routes of *enabled* endpoints are included; a disabled endpoint (`enabled: false` or
+  `ENDPOINT_<ID>_ENABLED=false`) contributes no rows and is exempt from alias resolution and
+  disjointness checks.
 
 Empty collections over null; `Optional` for optional scalar returns; Lombok only where records
 don't fit. Every package gets `package-info.java`.
@@ -125,15 +131,19 @@ SHERIFF_CONFIG_DIR for the container)
 2. schema-validate each YAML document (D1/D2)          -> collect ALL errors
 3. bind to records (D3)
 4. resolve ${ENV_VAR} secret references                -> missing env var = boot error
-5. resolve topology aliases (env TOPOLOGY_<ALIAS> wins over file), decompose URLs
-6. cross-validation (ConfigValidator: the full rule list from configuration.adoc
+5. resolve endpoint enablement (env ENDPOINT_<ID>_ENABLED wins over file `enabled`);
+   drop disabled endpoints before the checks that only concern live routes
+6. resolve topology aliases (env TOPOLOGY_<ALIAS> wins over file), decompose URLs
+   -- only for ENABLED endpoints' aliases
+7. cross-validation (ConfigValidator: the full rule list from configuration.adoc
    "Configuration Validation Rules (summary)")         -> collect ALL errors
-7. build RouteTable (merge, disjointness check, longest-prefix ordering,
-   effective-auth materialization; weakening overrides logged as boot-log WARNs)
-8. freeze -> GatewayConfig + RouteTable exposed as @ApplicationScoped CDI beans
+8. build RouteTable (enabled endpoints only; merge, disjointness check, longest-prefix
+   ordering, effective-auth + effective-allowed_methods materialization; weakening
+   overrides logged as boot-log WARNs)
+9. freeze -> GatewayConfig + RouteTable exposed as @ApplicationScoped CDI beans
 ----
 
-* Failure semantics: any error in steps 1-7 -> log every collected violation with
+* Failure semantics: any error in steps 1-8 -> log every collected violation with
   file/pointer context, then *fail startup* (throw from the CDI producer / startup observer;
   Quarkus exits non-zero). Never serve traffic on partial config.
 * `CONFIG_LOADED` INFO LogRecord (with `metadata.config_version` audit stamp) on success;
@@ -160,15 +170,23 @@ SHERIFF_CONFIG_DIR for the container)
   file/JSON-Pointer context.
 . *Topology resolution* -- properties parsing, env override precedence, URL decomposition;
   unit tests incl. malformed URL, missing alias, env-wins-over-file.
+. *Endpoint enablement* -- resolve the `enabled` flag with `ENDPOINT_<ID>_ENABLED` env
+  precedence (mirrors topology resolution: env wins over file, default `true`); disabled
+  endpoints are dropped before route-table assembly and exempt from alias resolution; unit
+  tests incl. env-disables-file-enabled, env-enables-file-disabled, disabled-endpoint-alias-
+  need-not-resolve.
 . *ConfigValidator* -- one small rule class per bullet of the validation-rules summary in
   `configuration.adoc`, each with parameterized tests (valid + violating fixtures):
-  route-id uniqueness, alias resolution, endpoint-auth mandatory, effective-auth ->
-  `token_validation`/`oidc` presence, same-prefix disjointness (host/methods/header value),
-  passthrough-SNI vs `match.host` collision, passthrough alias base-path rule, trusted-proxies
-  presence + trust-all rejection, whole-second timeouts, `${ENV_VAR}`-only secrets,
-  cookie/server session-mode conditionals, CORS wildcard+credentials rejection.
-. *RouteTable* -- merge/ordering/disjointness + effective-auth materialization; property-based
-  tests with `@GeneratorsSource` for prefix/host/method permutations.
+  endpoint-id uniqueness, route-id uniqueness, alias resolution (enabled endpoints only),
+  endpoint-auth mandatory, effective-auth -> `token_validation`/`oidc` presence, same-prefix
+  disjointness (host/methods/header value), `allowed_methods` TRACE/CONNECT rejection +
+  `match.methods` within the effective `allowed_methods`, passthrough-SNI vs `match.host` collision,
+  passthrough alias base-path rule, trusted-proxies presence + trust-all rejection,
+  whole-second timeouts, `${ENV_VAR}`-only secrets, cookie/server session-mode conditionals,
+  CORS wildcard+credentials rejection.
+. *RouteTable* -- merge/ordering/disjointness + effective-auth + effective-`allowed_methods`
+  materialization (enabled endpoints only); property-based tests with `@GeneratorsSource` for
+  prefix/host/method permutations.
 . *CDI wiring* -- producer, startup observer, fail-fast test (`QuarkusUnitTest` with broken
   config asserting startup failure), `CONFIG_LOADED` log assertion via
   `cui-test-juli-logger`.

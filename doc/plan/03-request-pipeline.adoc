@@ -26,6 +26,13 @@ the event system, metrics, structured logging, and the RFC 9457 error contract.
   `token_validation`, `match`, `forward`, `upstream`, `forwarded`, `security_headers`.
 . link:../adr/0003-forwarded-headers.adoc[ADR-0003] -- forwarding-header posture; note the
   *gateway-side immediate-TCP-peer gate* is API Sheriff code, not the resolver's.
+. link:../adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006] -- stream data-plane bodies
+  (never materialize the proxied body into `HttpResult<byte[]>`); `max_body_bytes` as a
+  streaming counter. Governs the dispatch/response stages.
+. link:../architecture.adoc#_performance_object_reuse[Architecture -- Object Reuse] +
+  link:../adr/0005-module-structure.adoc[ADR-0005] -- assemble heavy objects once at boot and
+  share the immutable instances (dedup `SecurityConfiguration`/`HttpHandler`); keep the
+  framework-agnostic pipeline packages free of CDI/Vert.x imports (arch-gate).
 . link:../technical_aspects.adoc[Technical Aspects] -- the concrete `cui-http` and
   `token-sheriff-validation` APIs (pipelines, `SecurityConfiguration`,
   `ForwardedHeaderResolver`/`ResolvedForwarding`, `HttpHandler`/`HttpResult`,
@@ -92,9 +99,9 @@ in this plan (config accepted by Plan 02's schema, route load fails with a clear
 
 === D3 -- Pipeline stages and their fixed order
 
-Assembled once at boot per route into an immutable `RouteRuntime` (compiled matchers, filter
-pipelines, forward policy sets, upstream client chain, scope list, protocol processor);
-request-time work touches no mutable shared state.
+Assembled once at boot per route into an immutable `RouteRuntime` (compiled matchers, the
+effective `allowed_methods` verb set, filter pipelines, forward policy sets, upstream client
+chain, scope list, protocol processor); request-time work touches no mutable shared state.
 
 ----
 inbound request (virtual thread)
@@ -108,13 +115,17 @@ inbound request (virtual thread)
      violation -> 400 problem+json, INPUT_VALIDATION event                   [stage 1]
   2. ROUTE SELECTION: RouteTable candidate match (path prefix AND methods AND
      host AND headers), longest prefix wins; no candidate -> 404             [stage 2]
+  2b. VERB GATE: matched route's effective allowed_methods (endpoint list, else
+      global, else standard set -- materialized at boot); method outside it ->
+      405 + Allow header, INPUT_VALIDATION event                             [stage 2b]
   3. THOROUGH CHECKS (route's optional `security_filter`, cui-http):
      - per-route SecurityConfiguration (profile + explicit overrides) pipelines,
        re-run only when they differ from the stage-1 defaults
      - allowed_paths whitelist on the VALIDATED, NORMALIZED path (gateway code,
        {name} = exactly one segment)
-     - max_body_bytes cap enforced while reading the body (gateway code;
-       cui-http has no body pipeline)                                        [stage 3]
+     - max_body_bytes cap enforced as a STREAMING byte counter while piping the
+       body (gateway code; cui-http has no body pipeline) -- the body is never
+       buffered to measure it (ADR-0006)                                     [stage 3]
   4. AUTHENTICATION (effective auth):
      - require: none    -> pass
      - require: bearer  -> TokenValidator.createAccessToken(
@@ -130,12 +141,14 @@ inbound request (virtual thread)
        emit: both); inbound forwarding headers never propagated
      - inbound Authorization stripped unless explicitly allow-listed         [stage 5]
   6. DISPATCH: upstream URL = resolved(base_url) + upstream.path + remainder
-     + allowed query; per-route HttpHandler (timeouts) wrapped in
-     ResilientHttpAdapter (retry, idempotent-only) wrapped in the gateway
-     circuit breaker; failure mapping per the error contract
+     + allowed query; shared per-upstream-tuple HttpHandler (timeouts) wrapped
+     in ResilientHttpAdapter (retry, idempotent-only) wrapped in the gateway
+     circuit breaker; request body STREAMED to the upstream (never buffered);
+     failure mapping per the error contract
      (502 / 503 breaker-open + Retry-After / 504 timeout)                    [stage 6]
   7. RESPONSE: status + upstream headers (hop-by-hop headers stripped) + body
-     streamed back; security response headers from stage 0 applied
+     STREAMED back with backpressure (Vert.x pipeTo; never materialized into an
+     HttpResult<byte[]>, ADR-0006); security response headers from stage 0 applied
 ----
 
 Every rejection path returns `application/problem+json` per the
@@ -174,13 +187,19 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
 . *Event system + error edge* (D4) -- pure unit-tested base package first; problem+json
   rendering tests for every row of the error-contract table.
 . *RouteRuntime assembly* -- boot-time compilation of `RouteTable` into runtime objects:
-  matchers, per-route `SecurityConfiguration`/pipelines, forward sets, `HttpHandler` +
-  `ResilientHttpAdapter` chain, circuit breaker, protocol processor lookup, weakening-override
-  boot WARNs. Boot-time rejection of `grpc`/`websocket`/`session` (this plan's scope guard).
-. *Stages 0-3* -- security headers + CORS preflight, basic pipelines, route selection,
-  thorough checks, allowed_paths matcher, body cap. Unit tests use the cui-http *attack
-  databases* (`OWASPTop10AttackDatabase`, CVE databases, plus the legitimate-pattern
-  databases for false-positive guarding) via `@GeneratorsSource`-style parameterized tests.
+  matchers, the effective `allowed_methods` verb set, per-route `SecurityConfiguration`/pipelines,
+  forward sets, `HttpHandler` + `ResilientHttpAdapter` chain, circuit breaker, protocol processor
+  lookup, weakening-override boot WARNs. *Deduplicate shared heavy objects* per
+  link:../architecture.adoc#_performance_object_reuse[Architecture -- Object Reuse]: one
+  `SecurityConfiguration`/pipeline set per distinct profile shape, one `HttpHandler` (+ pooled
+  client) per distinct upstream-target tuple -- routes sharing a shape/target share the instance,
+  not a copy. Boot-time rejection of `grpc`/`websocket`/`session` (this plan's scope guard).
+. *Stages 0-3* -- security headers + CORS preflight, basic pipelines, route selection, the
+  `allowed_methods` verb gate (stage 2b -> 405 + `Allow`), thorough checks, allowed_paths
+  matcher, body cap. Unit tests use the cui-http *attack databases* (`OWASPTop10AttackDatabase`,
+  CVE databases, plus the legitimate-pattern databases for false-positive guarding) via
+  `@GeneratorsSource`-style parameterized tests; add a verb-gate test (method outside the
+  effective set -> 405 with the correct `Allow` set, upstream never called).
 . *Stage 4* -- TokenValidator producer wiring from `token_validation` config (single shared
   validator at startup), bearer extraction, scope enforcement; tests with
   `token-sheriff-validation`'s `generators` test-jar key material; JWKS over
@@ -188,9 +207,12 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
 . *Stage 5* -- forward-policy filtering; TCP-peer gate + resolver wiring + regeneration
   (assert: spoofed inbound `X-Forwarded-For` from a non-trusted peer is ignored; chains are
   regenerated, never appended).
-. *Stage 6 + 7* -- dispatch, hop-by-hop header stripping, streaming, circuit breaker
-  (unit-test state machine: closed -> open after N failures -> half-open after reset_ms),
-  timeout/retry mapping to 504/502/503.
+. *Stage 6 + 7* -- dispatch, hop-by-hop header stripping, *body streaming with backpressure*
+  (Vert.x `ReadStream.pipeTo`/`Pipe` in both directions -- no `HttpResult<byte[]>`
+  materialization of the proxied body, per ADR-0006), circuit breaker (unit-test state machine:
+  closed -> open after N failures -> half-open after reset_ms), timeout/retry mapping to
+  504/502/503. Tests: assert a large response streams (first byte before last, bounded memory)
+  and that `max_body_bytes` aborts mid-stream without buffering the whole body.
 . *Vert.x edge* -- catch-all route, virtual-thread dispatch, wire stages; delete the Plan 01
   placeholder resource/tests.
 . *Metrics + readiness* (D4/D5) -- meter binding, health checks; assert metric presence in

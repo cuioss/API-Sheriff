@@ -1,0 +1,126 @@
+= ADR-0006 -- Stream Data-Plane Bodies; Use `HttpResult<T>` Only on the Control Plane
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+`cui-http` offers two shapes for a downstream call:
+
+* the *async/streaming* client surface (`HttpHandler`, `ResilientHttpAdapter`,
+  `ETagAwareHttpAdapter`, JDK `HttpClient`), and
+* the `HttpResult<T>` *result object* -- a sealed `Success`/`Failure` that carries the
+  *fully-materialized, deserialized* response body as an in-memory `T`, plus status, ETag, an
+  `HttpErrorCategory`, and optional fallback content
+  (link:../technical_aspects.adoc#_httpresult_pattern[Technical Aspects -- HttpResult]).
+
+`HttpResult<T>` is excellent where the response is *small, bounded, and wanted as an object*.
+It is the wrong shape for the *proxy data plane*, where the gateway forwards arbitrary client
+traffic: large responses, file downloads, Server-Sent Events, chunked/long-lived streams, and
+(later) WebSocket upgrades. Materializing such a body into `HttpResult<byte[]>` /
+`HttpResult<String>` means holding the *whole* body in heap/direct memory before a single byte
+reaches the client.
+
+Plan 01's interim proxy already exhibits the hazard: it reads the upstream response with
+`HttpResponse.BodyHandlers.ofByteArray()` (whole body buffered) -- acceptable for a throwaway
+scaffold, unacceptable for the real pipeline.
+
+=== What the competitors do (research)
+
+Every mainstream high-performance proxy *streams* the proxied body by default, with bounded
+buffers and backpressure; full in-memory materialization is off-by-default, opt-in, or the
+documented cause of OOM / latency / broken streaming.
+
+[cols="1,3"]
+|===
+| Proxy | Body handling on the proxy path
+
+| *nginx*
+| `proxy_buffering on` by default but *bounded* -- buffers spill to a temp file
+  (`proxy_max_temp_file_size`), never unbounded RAM; `proxy_buffering off` streams
+  synchronously and is the documented fix for SSE.
+
+| *Envoy*
+| Streams by default ("proxy arbitrarily large bodies" when filters are streaming); full-body
+  buffering is an opt-in filter that returns `500` past its limit. Backpressure via *watermark
+  buffers* + `readDisable`/HTTP-2 flow-control windows; "all buffer limits are soft limits".
+
+| *Traefik / Go `httputil.ReverseProxy`*
+| Streams through `io.CopyBuffer` (32 KB window); `FlushInterval` auto-overridden to
+  immediate flush for streaming responses (`text/event-stream` / `Content-Length: -1`). Full
+  buffering is a separate opt-in middleware.
+
+| *HAProxy*
+| Streams through a bounded per-connection buffer (`tune.bufsize`); whole-body buffering is
+  opt-in (`option http-buffer-request`); switches to a byte tunnel on `101`/`CONNECT`.
+
+| *Spring Cloud Gateway* (JVM, reactive Netty)
+| Streams a `Flux<DataBuffer>` end-to-end by default. The moment a filter materializes the body
+  (`ModifyResponseBodyGatewayFilterFactory`) it is the documented source of
+  `OutOfDirectMemoryError`, broken SSE, direct-memory leaks, and cgroup OOM-kills on large
+  bodies.
+
+| *Vert.x* (our runtime)
+| The recommended primitive is `ReadStream.pipeTo(WriteStream)` / `Pipe`, which does automatic
+  flow control. Vert.x docs warn explicitly that reading faster than writing "could result in
+  the write queue ... growing without bound, eventually causing it to exhaust all available
+  RAM" -- exactly what buffering a proxied body into a `Buffer`/`byte[]`/`String` reintroduces.
+|===
+
+The evidence is unanimous: materializing a *proxied* body is an anti-pattern -- it OOMs under
+concurrency (N concurrent large bodies × whole body in memory), breaks SSE/chunked/infinite
+streams (an object carrying a completed `T` cannot exist until the stream ends), destroys
+backpressure, and forces time-to-first-byte up to time-to-last-byte.
+
+== Decision
+
+*Split the two planes explicitly.*
+
+* *Control plane -- use `HttpResult<T>`.* Small, bounded, single-shot JSON the gateway itself
+  consumes: OIDC discovery, JWKS fetch, the token-endpoint exchange, revocation, userinfo.
+  Here materialization is a *feature* -- a fully-deserialized object, ETag/304 caching
+  (`ETagAwareHttpAdapter`), a typed `HttpErrorCategory`, and fallback content for graceful
+  degradation. These calls live inside `token-sheriff-validation` / `token-sheriff-client`,
+  which already use this shape.
+* *Data plane -- stream, never materialize.* The proxy path forwards request and response
+  bodies as *streams with backpressure*: in Quarkus/Vert.x, pipe the upstream
+  `ReadStream` to the client `WriteStream` (`pipeTo` / `Pipe`), pausing the source when the
+  sink's write queue is full and resuming on drain. The gateway does *not* wrap the proxied
+  body in `HttpResult<byte[]>` / `HttpResult<String>`. `HttpResult` may still be used on the
+  data plane for its *control metadata* (status, error category for the `502`/`503`/`504`
+  mapping) as long as the *body* is a stream, not a materialized `T` -- i.e. never
+  `HttpResult<byte[]>` for the proxied payload.
+* *`max_body_bytes` is a streaming counter, not a buffer.* The per-route body cap
+  (link:../configuration.adoc#_security_filtering[`security_filter.max_body_bytes`]) is enforced
+  by counting bytes as they flow through the pipe and aborting once the cap is exceeded (reject
+  with the input-validation edge; never call the upstream on a request-body breach). The whole
+  body is never held to measure it -- this matches Envoy's soft-limit model and HAProxy's
+  bounded window.
+* *Streaming-specific responses pass through untouched.* SSE (`text/event-stream`), chunked
+  transfer, and long-lived responses are relayed with immediate flush and no buffering;
+  WebSocket upgrades (later plan) become a byte relay after the authenticated handshake. None of
+  these are ever materialized.
+
+== Consequences
+
+* Bounded, predictable memory under concurrency: per-request memory is the pipe window, not the
+  body size, so a thousand concurrent large downloads do not multiply into the heap.
+* SSE / streaming / large downloads work correctly (first byte out immediately; no
+  hold-until-complete), matching every surveyed proxy's default.
+* The `HttpResult<T>` ergonomics are retained exactly where they help -- the small control-plane
+  JSON calls -- without leaking their materialize-the-body cost onto the data plane.
+* Plan 03 replaces the interim `ofByteArray()` buffering proxy with the streaming pipe; the body
+  cap is re-expressed as a streaming counter (see
+  link:../plan/03-request-pipeline.adoc[Plan 03], dispatch/response stages).
+
+== References
+
+* link:../architecture.adoc#_downstream_client[Architecture -- Downstream Client].
+* nginx `proxy_buffering` -- https://nginx.org/en/docs/http/ngx_http_proxy_module.html
+* Envoy flow control -- https://github.com/envoyproxy/envoy/blob/main/source/docs/flow_control.md
+* Go `httputil.ReverseProxy` (streaming, `FlushInterval`) -- https://pkg.go.dev/net/http/httputil#ReverseProxy
+* Spring Cloud Gateway body-materialization OOM -- https://github.com/spring-cloud/spring-cloud-gateway/issues/1404
+* Vert.x `Pipe` (backpressure, unbounded-growth warning) -- https://vertx.io/docs/apidocs/io/vertx/core/streams/Pipe.html

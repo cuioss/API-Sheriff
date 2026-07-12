@@ -116,6 +116,13 @@ security_headers:                  # response-header middleware (global default)
 security_defaults:                 # default inbound filter profile; overridable per route
   profile: strict                  # default | strict | lenient  (maps to cui-http presets)
 
+allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
+                                   #   (global default). An endpoint may REPLACE this wholesale
+                                   #   (no inheritance -- see endpoint.allowed_methods). A routed
+                                   #   request whose method is not in the EFFECTIVE list is
+                                   #   rejected 405. TRACE and CONNECT are never permitted and
+                                   #   cannot be listed. Omit => the standard set shown here.
+
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
                                    #   keep as narrow as possible; empty => forwarding
@@ -176,10 +183,19 @@ from the topology at startup.
 ----
 # endpoints/app1.yaml
 endpoint:
-  id: app1
+  id: app1                         # unique endpoint name (mandatory); a duplicate id across
+                                   #   endpoint files fails the boot
+  enabled: true                    # default true. false => this endpoint is inert: its routes
+                                   #   are not added to the table and its base_url alias need
+                                   #   not resolve. Overridable per environment by the env var
+                                   #   ENDPOINT_APP1_ENABLED (wins over the file), the same
+                                   #   indirection topology uses
   base_url: APP1                   # alias; resolved from topology.properties / env
   auth:                            # MANDATORY: default auth posture for every route in
     require: bearer                #   this file; a route may override it (below)
+  allowed_methods: [GET, POST]     # optional per-endpoint verb allowlist; REPLACES the global
+                                   #   gateway.allowed_methods wholesale for this endpoint (no
+                                   #   inheritance, no merge). Omit => the global list applies
   routes:                          # merged into one table across all endpoint files
                                    #   (see "Route ordering"); no match => 404
     - id: orders-api
@@ -294,6 +310,15 @@ Deny-by-default extends to omitted configuration:
   block *replaces* the endpoint default wholesale (no field merging). An endpoint file without
   an `auth` block fails the boot.
 
+| `enabled` (endpoint level)
+| The endpoint is *active* (`enabled: true`). Set `false` -- or the env override
+  `ENDPOINT_<ID>_ENABLED=false` -- to make the endpoint inert (see
+  link:#_endpoint_identity[`endpoint`]).
+
+| `allowed_methods` (endpoint level)
+| The *global* `gateway.allowed_methods` applies (which itself defaults to the standard verb
+  set when omitted). No inheritance/merge -- see link:#_allowed_methods[`allowed_methods`].
+
 | `security_filter`
 | The global `security_defaults.profile` applies with the preset's limits.
 
@@ -349,6 +374,40 @@ referenced by an endpoint file that resolves to neither is a *boot failure*.
   link:adr/0004-topology-indirection.adoc[ADR-0004].
 
 == Field Reference
+
+[[_endpoint_identity]]
+=== `endpoint` (identity and enablement)
+
+Every `endpoints/*.yaml` file declares exactly one `endpoint` block. Its identity and
+enablement fields:
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `id`
+| The endpoint's *unique name* (mandatory). It labels the endpoint in logs and metrics and is
+  the key for the `enabled` env override (below). *`id` must be unique across all endpoint
+  files* -- two endpoints sharing an `id` (in one file or across files) *fail the boot*. This
+  is distinct from, and additional to, route-`id` uniqueness. Pattern: `[a-z][a-z0-9-]*`.
+
+| `enabled`
+| Whether this endpoint is active. *Defaults to `true`*. When `false`, the endpoint is *inert*:
+  its routes are *not* merged into the route table (requests to those paths get the ordinary
+  `404`), it does not participate in route disjointness / passthrough-collision checks, and its
+  `base_url` alias *need not resolve* -- so an endpoint whose backend is absent in a given
+  environment can be shipped in the config set and simply switched off there. A disabled
+  endpoint is still *schema-validated* (typos are caught), it is just not activated. Overridable
+  per environment by the environment variable *`ENDPOINT_<ID>_ENABLED`* (`true`/`false`), which
+  *wins over the file value* -- the same file-plus-env-override indirection
+  link:#_topology[topology] uses. `<ID>` is the upper-cased `id` with hyphens mapped to
+  underscores (endpoint `order-api` -> `ENDPOINT_ORDER_API_ENABLED`).
+|===
+
+The endpoint's other fields are documented under their own headings: `base_url`
+(link:#_topology[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004]), `auth`
+(link:#_auth[`auth`]), `allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
+`routes` (link:#_route_ordering[Route ordering] + the per-route field headings).
 
 === `tls`
 
@@ -733,6 +792,38 @@ The global inbound-filter baseline: `profile` selects the `cui-http` preset
 `lenient` -> `lenient()`) applied to every route that does not declare its own
 `security_filter` block. Per-route `security_filter` settings override this baseline.
 
+[[_allowed_methods]]
+=== `allowed_methods`
+
+A *positive allowlist of HTTP verbs*, declarable at two scopes -- `gateway.yaml` (global) and
+per `endpoint` -- with *explicit no-inheritance semantics*. It is a coarse, defence-in-depth
+verb gate that sits *above* the per-route `match.methods` matcher: `match.methods` selects which
+route serves a verb; `allowed_methods` decides whether the gateway will serve the verb *at all*
+for that endpoint.
+
+*Resolution (no inheritance).* Each route's *effective* `allowed_methods` is materialized once
+at boot:
+
+* the *endpoint's* `allowed_methods` if the endpoint declares one -- it *replaces* the global
+  list wholesale for that endpoint (no merge, no union, no intersection -- exactly the
+  wholesale-replace rule the `auth` block uses); else
+* the *global* `gateway.allowed_methods` if declared; else
+* the standard set `{GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS}`.
+
+Because the endpoint list *replaces* rather than narrows, an endpoint may permit a verb the
+global default omits (global `[GET, POST, PUT]`, endpoint `[PUT, DELETE, HEAD]` -> that
+endpoint serves `DELETE`/`HEAD` and *not* `GET`/`POST`; other endpoints keep the global list).
+
+*Runtime.* After route selection, a request whose method is not in the matched route's
+effective `allowed_methods` is rejected with `405 Method Not Allowed` and an `Allow` header
+listing the effective set (`INPUT_VALIDATION` event); the upstream is never called. `TRACE` and
+`CONNECT` are *never* permitted -- they are not proxyable through the data plane and cannot
+appear in any `allowed_methods` list (listing either fails the boot).
+
+*Boot validation.* Every method named in a route's `match.methods` must be a member of that
+route's effective `allowed_methods`; a route that matches a verb its endpoint forbids is a
+contradiction and *fails the boot* (fail-fast, rather than a route that can never fire).
+
 [[_forwarded_headers]]
 === `forwarded`
 
@@ -834,9 +925,15 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 == Configuration Validation Rules (summary)
 
 * `version` must be a known value.
+* Every `endpoint.id` is unique across all endpoint files (in one file or across files); a
+  duplicate endpoint `id` fails the boot.
 * Every route has a unique `id` (across all endpoint files) and a resolvable `endpoint.base_url`.
-* Every `base_url` alias resolves via `TOPOLOGY_<ALIAS>` or `topology.properties` to a well-formed
-  URL; otherwise boot fails.
+* An endpoint is *enabled* unless `enabled: false` (file) or `ENDPOINT_<ID>_ENABLED=false` (env,
+  which wins). A *disabled* endpoint is schema-validated but otherwise inert: its routes are not
+  merged into the table, its `base_url` alias is *exempt* from the resolution requirement below,
+  and it takes no part in the disjointness / passthrough-collision checks.
+* Every `base_url` alias *of an enabled endpoint* resolves via `TOPOLOGY_<ALIAS>` or
+  `topology.properties` to a well-formed URL; otherwise boot fails.
 * Every endpoint file declares an `auth` block (the default posture for its routes); omitting
   it fails the boot. Routes may override it per route (see "Defaults for omitted blocks").
 * A route whose *effective* auth is `require: bearer` requires a `token_validation` block with
@@ -845,6 +942,13 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * Any two routes with an identical `match.path_prefix` -- same file or not -- must be statically
   disjoint (both declare different `host` values, or non-overlapping `methods`, or same-name
   header matchers with different exact values); otherwise the boot fails (see "Route ordering").
+* `allowed_methods` (global or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`, `PATCH`,
+  `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint `allowed_methods`
+  *replaces* the global list wholesale (no inheritance).
+* Every method in a route's `match.methods` must be a member of that route's *effective*
+  `allowed_methods` (the endpoint's list if declared, else the global list, else the standard
+  set); a route matching a verb its endpoint forbids fails the boot (see
+  link:#_allowed_methods[`allowed_methods`]).
 * A route whose `match.host` equals (case-insensitively) a key in `tls.passthrough_sni`
   fails the boot -- the route and the passthrough declaration contradict each other
   (see the `tls` field reference).

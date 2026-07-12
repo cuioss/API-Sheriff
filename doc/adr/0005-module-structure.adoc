@@ -1,0 +1,100 @@
+= ADR-0005 -- Module Structure: One Quarkus Module Now, Framework-Agnostic Core Seam Kept Clean
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+API Sheriff's production code currently lives in a single deployable Quarkus module
+(`api-sheriff`), alongside the `integration-tests` and `benchmarks` coordinator modules. As the
+request pipeline (link:../plan/03-request-pipeline.adoc[Plan 03]) lands, that module gains a
+substantial body of logic that is *not* inherently Quarkus-specific: the immutable
+configuration model and validators (link:../plan/02-configuration-management.adoc[Plan 02]),
+the event/counter system, the route table and matchers, the forward policy, and the boot-time
+assembly of per-route runtime objects. Only a thin outer layer is genuinely framework-bound:
+the CDI producers/observers, the Vert.x HTTP edge, the MicroProfile-config plumbing, and the
+Micrometer/SmallRye-Health wiring.
+
+This raises the question the CUI ecosystem has already answered once: should the
+framework-agnostic logic be extracted into a separate *plain-Java core module*, with a thin
+`-quarkus` binding module on top -- the exact split `token-sheriff-validation` /
+`token-sheriff-validation-quarkus` and `token-sheriff-client` / `token-sheriff-client-quarkus`
+use (`CLIENT-21`: the engine is pure Java, framework bindings sit outside it)?
+
+The heaviest framework-agnostic logic API Sheriff relies on -- offline JWT validation and the
+entire OIDC confidential-client flow -- *already* lives in those upstream pure-Java modules.
+API Sheriff *consumes* them; it does not re-implement them. So the pure-core principle is
+already honoured for the hard parts. What remains in the `api-sheriff` module is mostly config
+modelling plus framework glue.
+
+== Decision
+
+*Keep a single `api-sheriff` Quarkus module for the initial releases. Do not extract a
+separate core module yet. Instead, enforce a clean framework-agnostic seam by package
+discipline inside the one module, so extraction is cheap if and when a real second consumer
+appears.*
+
+Concretely:
+
+* *No core module now.* There is exactly one deployable (the gateway) and exactly one consumer
+  of the framework-agnostic logic (that same deployable). A second Maven module would add a
+  reactor node, a published artifact, and a dependency edge for *zero* current reuse -- cost
+  without payoff. The Static-mode gateway is one process; the pure-Java engines it needs are
+  already separate upstream modules.
+* *Keep the seam clean by package layout.* Framework-agnostic code lives in packages that
+  *must not* import Quarkus, CDI (`jakarta.enterprise.*`, `jakarta.inject.*`),
+  MicroProfile Config, Vert.x, or Micrometer -- e.g. `de.cuioss.sheriff.api.config.model`,
+  `...config.validation`, `...events`, `...routing`, `...forward`, `...pipeline`. These types
+  take their collaborators through *constructor parameters*, never field/CDI injection, and are
+  assembled once at boot (see link:../plan/03-request-pipeline.adoc[Plan 03]'s `RouteRuntime`).
+* *Confine framework wiring to an edge layer.* CDI producers/observers, the Vert.x route
+  handler, config-source plumbing, health/metrics binding, and the RFC 9457 exception edge live
+  in dedicated packages (e.g. `...quarkus`, `...edge`) that *may* depend on the framework and
+  that construct the framework-agnostic objects and hand them their dependencies.
+* *Enforce the boundary mechanically.* An ArchUnit rule (the Java arch-gate) asserts that the
+  framework-agnostic packages carry no import of `io.quarkus..`, `io.vertx..`,
+  `jakarta.enterprise..`, `jakarta.inject..`, `org.eclipse.microprofile..`, or
+  `io.micrometer..`. This is the single-module substitute for the compile-time guarantee a
+  separate module would give, and it is what makes a later extraction mechanical rather than
+  archaeological.
+
+== Consequences
+
+Positive:
+
+* No premature module proliferation: one reactor node, one artifact, one place to build and
+  reason about, matching the actual number of consumers (one).
+* The framework-agnostic core stays genuinely framework-agnostic -- enforced by the arch-gate,
+  not by hope -- so the day a second consumer appears (a non-Quarkus embedding, a shared
+  offline config-lint/validate CLI, a native-image constraint that forces separation, or a
+  reusable test harness) the extraction is a package-to-module move, not a detangling project.
+* Consistent with the CUI precedent already in play: the *pure-Java engines* are separate
+  modules upstream; API Sheriff's own code is predominantly config + framework glue, which is
+  the part that least benefits from its own module.
+
+Negative / to watch:
+
+* The boundary is enforced by an arch-gate rule rather than by module compilation, so it is
+  only as strong as that rule -- the rule must be present and part of the quality gate from the
+  first pipeline PR (Plan 03), or the seam silently erodes.
+* If the framework-agnostic surface grows large and stable, the argument for a real module
+  strengthens; this ADR is explicitly a *"not yet"*, not a *"never"*.
+
+== Revisit When
+
+* A *second consumer* of the framework-agnostic logic materialises (a non-Quarkus host, a
+  standalone `validate`/`lint` CLI for offline config checking, a portal/embedding adapter, or
+  a shared cross-project test harness).
+* Native-image or dependency constraints make the single-module layout costly.
+* The arch-gate boundary proves insufficient in practice (repeated violations, or a need for
+  the compile-time guarantee only a module split provides).
+
+== References
+
+* link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer] -- the
+  engine/BFF seam and the pure-Java engine modules API Sheriff consumes.
+* `TokenSheriff/doc/client` `CLIENT-21` -- framework-agnostic engine, framework bindings outside
+  it (the precedent this ADR mirrors at package granularity).
