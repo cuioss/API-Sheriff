@@ -98,8 +98,8 @@ implementing it.
 | ADR | Decision
 
 | link:adr/0001-java25-runtime-baseline.adoc[ADR-0001]
-| Run the container/native image on the Java 25 runtime for full virtual-thread benefit
-  while keeping source compatibility at Java 21. *(Status: proposed.)*
+| Compile *and* run on Java 25 (the LTS) for full virtual-thread benefit; CI build/test matrix
+  covers Java 25 + 26 (add 27 at GA). Java 21 is not a target. *(Status: accepted.)*
 
 | link:adr/0002-initial-scope.adoc[ADR-0002]
 | Initial scope: gRPC + GraphQL (with HTTP/2 + WebSocket) ship from the start, HTTP/3 deferred;
@@ -112,6 +112,14 @@ implementing it.
 | link:adr/0004-topology-indirection.adoc[ADR-0004]
 | Configuration layout: portable endpoint files reference `base_url` aliases resolved by
   `topology.properties`; a single URL per alias, overridable by `TOPOLOGY_<ALIAS>` env vars.
+
+| link:adr/0005-module-structure.adoc[ADR-0005]
+| One Quarkus module for now (no separate core module yet); keep the framework-agnostic seam
+  clean by package layout + an arch-gate, so a core module is cheap to extract later.
+
+| link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]
+| Stream data-plane bodies with backpressure; use the `HttpResult<T>` materialize-the-body
+  pattern on the control plane only. `max_body_bytes` is a streaming counter, not a buffer.
 |===
 
 == Reading Order

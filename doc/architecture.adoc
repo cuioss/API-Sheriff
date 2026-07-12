@@ -77,6 +77,16 @@ with `404` (deny-by-default). Routes from all endpoint files form one table orde
 most-specific-first; see link:configuration.adoc#_route_ordering[Configuration -- Route ordering]. Routing
 carries no dynamic rule language.
 
+Only routes of *enabled* endpoints enter the table: an endpoint switched off by `enabled: false`
+or `ENDPOINT_<ID>_ENABLED=false` contributes nothing (its paths fall through to `404`), which
+lets one config set be shipped across environments and toggled per environment (see
+link:configuration.adoc#_endpoint_identity[Configuration -- `endpoint`]). Orthogonally, a coarse
+*positive verb allowlist* -- `allowed_methods`, global with wholesale per-endpoint override and
+no inheritance -- gates which HTTP methods an endpoint serves at all: a routed request whose
+method is outside the matched route's effective set is rejected `405` with an `Allow` header,
+above and beyond the per-route `match.methods` matcher (see
+link:configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`]).
+
 === Authentication Layer
 
 The active authentication strategy depends on the variant:
@@ -166,6 +176,20 @@ Upstream calls use `cui-http`:
 The adapters are `CompletableFuture`-based; under the virtual-thread model the gateway may
 also call the blocking JDK `send()` from a virtual-thread-per-request worker.
 
+*Two planes, two body shapes* (link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]). The
+`HttpResult<T>` *materialize-the-body* pattern is used on the *control plane* only -- the small,
+bounded JSON calls the gateway itself makes (OIDC discovery, JWKS, token exchange, revocation),
+where a deserialized object, ETag/304 caching, a typed error category, and fallback content are
+exactly what is wanted. On the *data plane* -- proxying arbitrary client traffic, including large
+responses, downloads, SSE, chunked and long-lived streams -- the gateway *streams* request and
+response bodies with backpressure (Vert.x `ReadStream.pipeTo`/`Pipe`, pausing the source when
+the sink's write queue is full) and *never* materializes the proxied body into
+`HttpResult<byte[]>`/`HttpResult<String>`. Buffering a proxied body is the documented OOM /
+broken-SSE / lost-backpressure anti-pattern every mainstream proxy avoids by default; the
+`security_filter.max_body_bytes` cap is enforced as a *streaming byte counter*, not by holding
+the body. `HttpResult`'s control metadata (status, `HttpErrorCategory`) may still drive the
+`502`/`503`/`504` mapping as long as the body itself stays a stream.
+
 [[_event_system]]
 == Event System
 
@@ -213,6 +237,7 @@ names the category but leaks no internal detail. The consolidated status mapping
 | `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
 | `403` | Valid credentials lacking a required scope; failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `INPUT_VALIDATION`
+| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default or endpoint override); the response carries an `Allow` header listing the permitted set | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is deferred | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
@@ -233,7 +258,13 @@ The manifest requires *paths, errors, and average timing*. These map to:
 | Metric | Meaning
 
 | `sheriff_requests_total{route,method,status_family}`
-| Counter of requests per route, method, and status family -- the "paths" view.
+| Counter of requests per route, method, and status family -- the "paths" view. Because
+  `status_family` labels each count (`2xx`/`3xx`/`4xx`/`5xx`), *how often each resource was
+  called successfully* is a direct query: `sheriff_requests_total{status_family="2xx"}` per
+  `route` (and, if wanted, a `sum by (route)` for a total-calls-per-resource view). The
+  `REQUEST_FORWARDED` success event in the link:#_event_system[event system] is the same signal
+  at the counter layer. Route cardinality is bounded (route id is a config-fixed label;
+  unmatched requests share the fixed `"<no-route>"` value), so this is safe to keep always on.
 
 | `sheriff_request_duration_seconds{route}` (timer)
 | Latency distribution per route; the timer's mean gives "average timing", and quantiles/
@@ -308,9 +339,70 @@ The gateway targets a virtual-thread-per-request model:
   instance is created at startup and shared.
 
 To get the full benefit -- specifically JEP 491 (JDK 24+), which removes carrier-thread
-pinning on `synchronized` blocks -- the container/native image is to run on the Java 25
-runtime, per link:adr/0001-java25-runtime-baseline.adoc[ADR-0001] (status: proposed). Source compatibility remains at
-Java 21 (`maven.compiler.release=21`).
+pinning on `synchronized` blocks -- API Sheriff *compiles and runs on Java 25* (the LTS),
+per link:adr/0001-java25-runtime-baseline.adoc[ADR-0001] (`maven.compiler.release=25`; the
+container/native runtime is the JDK 25 line). The CI build/test matrix additionally exercises
+the next GA release (Java 26, then 27 at GA) as a forward-compatibility guard. Java 21 is not a
+target for this project.
+
+[[_performance_object_reuse]]
+== Performance: Boot-Time Assembly and Object Reuse
+
+The gateway is on a hot path -- every request pays for whatever it constructs. The design rule
+is therefore *assemble the expensive objects once at boot and share the immutable instances
+across all requests*; request-time work allocates as little as possible and touches no shared
+mutable state. This is where the throughput comes from, and it is safe precisely *because* the
+shared objects are immutable.
+
+*Reused, shared, immutable (constructed once at startup):*
+
+[cols="1,3"]
+|===
+| Object | Reuse rule
+
+| Inbound security pipelines + `SecurityConfiguration`
+| Immutable and thread-safe once built. One `SecurityConfiguration` and its pipeline set per
+  *distinct profile / `security_filter` shape* -- *deduplicated*, so the many routes that share
+  a profile share one pipeline instance rather than each compiling its own. Built at boot,
+  referenced by every matching route's `RouteRuntime`.
+
+| `HttpHandler` (downstream client) + its connection pool
+| Immutable and thread-safe after construction. One `HttpHandler` per *distinct upstream target
+  tuple* (resolved host + connect/read timeouts + TLS context) -- *deduplicated across routes*,
+  so N routes to the same backend with the same timeouts share one handler and one pooled JDK
+  `HttpClient`/connection pool, rather than opening N pools. This is the single biggest "reuse a
+  large object" lever.
+
+| `TokenValidator`
+| A single shared, cache-backed, thread-safe instance created at startup (already the rule --
+  see Threading Model); never per-request.
+
+| `ForwardedHeaderResolver`
+| Immutable, thread-safe, transport-agnostic; one instance wired from the `forwarded` config,
+  reused for every request.
+
+| `RouteTable` / per-route `RouteRuntime`
+| Assembled once at boot (matchers, effective auth, effective `allowed_methods`, filter
+  pipelines, forward sets, upstream client chain, circuit breaker, protocol processor). The
+  request path *looks up* an immutable `RouteRuntime`; it compiles nothing.
+
+| Event counters (`GatewayEventCounter`, cui-http `SecurityEventCounter`)
+| Shared, lock-free (`ConcurrentHashMap` + `AtomicLong`); safe to increment concurrently.
+|===
+
+*Per-request, never shared (lives on the request's virtual-thread stack):* the resolved
+forwarding result (`ResolvedForwarding`), the validated token (`AccessTokenContent`), the
+matched route reference, and the streamed request/response bodies. None of this is stored back
+into a shared object.
+
+*Why reuse does not compromise security.* The shared objects carry *configuration*, not
+*request state*: they are immutable and hold nothing derived from a specific client, token, or
+body. Because there is no shared mutable per-request state, there is no cross-request bleed --
+one request can never observe or inherit another's identity, headers, or body through a reused
+pipeline, handler, or resolver. The circuit breaker is the one shared object with mutable state,
+and it is deliberately *per-node, per-route* aggregate health only (failure counts/timers), never
+per-client data. Reuse is thus a throughput win with no confidentiality or integrity cost -- the
+immutability that makes the objects shareable is the same property that makes them safe to share.
 
 == Library Dependencies (Design Intent)
 
