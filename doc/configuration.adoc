@@ -820,9 +820,14 @@ listing the effective set (`INPUT_VALIDATION` event); the upstream is never call
 `CONNECT` are *never* permitted -- they are not proxyable through the data plane and cannot
 appear in any `allowed_methods` list (listing either fails the boot).
 
-*Boot validation.* Every method named in a route's `match.methods` must be a member of that
-route's effective `allowed_methods`; a route that matches a verb its endpoint forbids is a
-contradiction and *fails the boot* (fail-fast, rather than a route that can never fire).
+*Boot validation.* The check applies only to *explicitly declared* `match.methods`: every method
+*listed* in a route's `match.methods` must be a member of that route's effective
+`allowed_methods` -- a route that matches a verb its endpoint forbids is a contradiction and
+*fails the boot* (fail-fast, rather than a route that can never fire). A route that *omits*
+`match.methods` (so it would match all methods) does *not* fail the boot against a narrower
+`allowed_methods`; it simply serves the effective set and the verb gate returns `405` at runtime
+for the rest. So `allowed_methods` is the way to blanket-restrict verbs across an endpoint's
+routes without restating `match.methods` on each.
 
 [[_forwarded_headers]]
 === `forwarded`

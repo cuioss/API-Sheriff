@@ -86,19 +86,24 @@ backpressure, and forces time-to-first-byte up to time-to-last-byte.
   degradation. These calls live inside `token-sheriff-validation` / `token-sheriff-client`,
   which already use this shape.
 * *Data plane -- stream, never materialize.* The proxy path forwards request and response
-  bodies as *streams with backpressure*: in Quarkus/Vert.x, pipe the upstream
-  `ReadStream` to the client `WriteStream` (`pipeTo` / `Pipe`), pausing the source when the
-  sink's write queue is full and resuming on drain. The gateway does *not* wrap the proxied
-  body in `HttpResult<byte[]>` / `HttpResult<String>`. `HttpResult` may still be used on the
-  data plane for its *control metadata* (status, error category for the `502`/`503`/`504`
-  mapping) as long as the *body* is a stream, not a materialized `T` -- i.e. never
-  `HttpResult<byte[]>` for the proxied payload.
+  bodies as *streams with backpressure*, in *both directions*: in Quarkus/Vert.x, pipe the
+  client `ReadStream` to the upstream `WriteStream` (the *request* body) and the upstream
+  `ReadStream` to the client `WriteStream` (the *response* body) via `pipeTo`/`Pipe`, pausing
+  the source when the sink's write queue is full and resuming on drain. The gateway does *not*
+  wrap the proxied body in `HttpResult<byte[]>` / `HttpResult<String>`. `HttpResult` may still be
+  used on the data plane for its *control metadata* (status, error category for the
+  `502`/`503`/`504` mapping) as long as the *body* is a stream, not a materialized `T` -- i.e.
+  never `HttpResult<byte[]>` for the proxied payload.
 * *`max_body_bytes` is a streaming counter, not a buffer.* The per-route body cap
   (link:../configuration.adoc#_security_filtering[`security_filter.max_body_bytes`]) is enforced
-  by counting bytes as they flow through the pipe and aborting once the cap is exceeded (reject
-  with the input-validation edge; never call the upstream on a request-body breach). The whole
-  body is never held to measure it -- this matches Envoy's soft-limit model and HAProxy's
-  bounded window.
+  by counting bytes as they flow through the pipe and aborting once the cap is exceeded; the
+  whole body is never held to measure it (matching Envoy's soft-limit model and HAProxy's
+  bounded window). Two cases: when a request carries a `Content-Length` that already exceeds the
+  cap, it is rejected *before* the upstream connection is opened; for a *chunked / streaming
+  request body with no usable `Content-Length`*, the cap can only be discovered mid-stream -- by
+  then the upstream connection may already be open and some bytes forwarded, so the breach
+  *aborts the in-flight upstream call* (tears down the connection) rather than avoiding it. Both
+  paths reject via the input-validation edge and never complete the forward.
 * *Streaming-specific responses pass through untouched.* SSE (`text/event-stream`), chunked
   transfer, and long-lived responses are relayed with immediate flush and no buffering;
   WebSocket upgrades (later plan) become a byte relay after the authenticated handshake. None of

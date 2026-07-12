@@ -123,9 +123,11 @@ inbound request (virtual thread)
        re-run only when they differ from the stage-1 defaults
      - allowed_paths whitelist on the VALIDATED, NORMALIZED path (gateway code,
        {name} = exactly one segment)
-     - max_body_bytes cap enforced as a STREAMING byte counter while piping the
-       body (gateway code; cui-http has no body pipeline) -- the body is never
-       buffered to measure it (ADR-0006)                                     [stage 3]
+     - max_body_bytes: FAST-REJECT here when a Content-Length already exceeds the
+       cap (no body read yet); the actual STREAMING byte counter runs at dispatch
+       (stage 6) for chunked / no-Content-Length bodies. Gateway code; the counter
+       lives in the framework EDGE layer (it needs the Vert.x stream), the core
+       pipeline only carries the limit -- ADR-0005 boundary, ADR-0006      [stage 3]
   4. AUTHENTICATION (effective auth):
      - require: none    -> pass
      - require: bearer  -> TokenValidator.createAccessToken(
@@ -143,7 +145,9 @@ inbound request (virtual thread)
   6. DISPATCH: upstream URL = resolved(base_url) + upstream.path + remainder
      + allowed query; shared per-upstream-tuple HttpHandler (timeouts) wrapped
      in ResilientHttpAdapter (retry, idempotent-only) wrapped in the gateway
-     circuit breaker; request body STREAMED to the upstream (never buffered);
+     circuit breaker; request body STREAMED to the upstream (never buffered),
+     the max_body_bytes streaming counter enforcing here -- a breach mid-stream
+     ABORTS the in-flight upstream call (400, INPUT_VALIDATION);
      failure mapping per the error contract
      (502 / 503 breaker-open + Retry-After / 504 timeout)                    [stage 6]
   7. RESPONSE: status + upstream headers (hop-by-hop headers stripped) + body
