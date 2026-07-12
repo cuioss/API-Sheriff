@@ -108,6 +108,8 @@ As a security-focused API Gateway:
 
 ## Git Workflow
 
+**Minimize the number of PRs.** Batch related changes into a single PR rather than splitting them; only open a second PR when a single one would exceed 150 changed files.
+
 All cuioss repositories have branch protection on `main`. Direct pushes to `main` are never allowed. Always use this workflow:
 
 1. Create a feature branch: `git checkout -b <branch-name>`
