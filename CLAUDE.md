@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development. Built with Maven, Java 21+, and Quarkus 3.32.1. Follows CUI (CUIoss) standards.
+API Sheriff is a security-focused API Gateway with a lightweight approach, currently in pre-1.0 development. Built with Maven, Java 25 (compile + runtime; CI matrix 25 + 26), and Quarkus 3.37.2. Follows CUI (CUIoss) standards.
 
 ## Project Structure
 
@@ -57,7 +57,7 @@ docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:lat
 
 ## Code Standards
 
-- Java 21+ features encouraged (records, sealed classes, pattern matching, text blocks)
+- Java 25 features encouraged (records, sealed classes, pattern matching, text blocks, virtual threads)
 - Lombok: `@Builder`, `@Value`, `@NonNull`, `@ToString`, `@EqualsAndHashCode`
 - Prefer immutable objects, final fields, empty collections over null, Optional for nullable returns
 - Indentation: 4 spaces, LF line endings, UTF-8

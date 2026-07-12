@@ -3,6 +3,14 @@
 :toclevels: 3
 :sectnums:
 
+[IMPORTANT]
+====
+*Plan 01 has been merged.* Design decisions taken *after* the merge that touch plan-01
+deliverables are recorded in the link:#_post_merge_amendments[Post-Merge Amendments] section
+at the end of this document, not by rewriting the body above them. The body reflects the state
+at merge time; the amendments govern where they differ.
+====
+
 == Goal
 
 Turn the existing scaffolding into a verified, clean foundation: a Quarkus module that does
@@ -57,7 +65,9 @@ PR; no new dependency.)
 
 Native builds: pin the Mandrel builder to the JDK 25 line
 (`quarkus.native.builder-image=...ubi9-quarkus-mandrel-builder-image:jdk-25`, the pin
-TokenSheriff already uses) per ADR-0001 -- compile target stays 21.
+TokenSheriff already uses) per ADR-0001. (At merge time the *compile* target stayed 21; this
+was reversed after merge -- the project now compiles *and* runs on Java 25. See
+link:#_post_merge_amendments[Post-Merge Amendments -- A1].)
 
 === D2 -- Upstream target: `go-httpbin` as the routable backend
 
@@ -202,3 +212,32 @@ must be green after every one.
   (link:03-request-pipeline.adoc[Plan 03]).
 * gRPC/WebSocket/GraphQL processors, TLS passthrough, mTLS, BFF variants (later plans).
 * Toxiproxy wiring (arrives with the circuit breaker in Plan 03).
+
+[[_post_merge_amendments]]
+== Post-Merge Amendments
+
+Changes decided after Plan 01 merged. Each is a small, self-contained follow-up landed on its
+own branch/PR (the standard link:#_execution_workflow[Execution Workflow] applies), not a
+reopening of the plan. They supersede the body above where they conflict.
+
+=== A1 -- Java 25 compile *and* runtime; CI matrix 25 + 26
+
+*Supersedes* the merge-time "compile at 21, run at 25" split (D1 and the Current-State
+inventory line "Java release 21"). Per the rewritten
+link:../adr/0001-java25-runtime-baseline.adoc[ADR-0001], API Sheriff compiles and runs on
+Java 25 -- there is no Java 21 target.
+
+Concrete changes (all landed as a follow-up PR):
+
+* `pom.xml`: `maven.compiler.release` `21 -> 25`, and the `maven-compiler-plugin`
+  `<release>` `21 -> 25`.
+* `.github/project.yml`: `maven-build.java-versions` `["21","25"] -> ["25","26"]`,
+  `maven-build.java-version` `21 -> 25` (the primary/deploy JDK). Add `"27"` to the matrix at
+  its GA (expected September 2026).
+* The Mandrel native builder pin stays on the `jdk-25` line (unchanged -- it was already 25).
+* Verify before merge: full `verify` and `native` builds green on JDK 25; the JDK 26 matrix leg
+  green (or, if a JDK-26-only regression appears, pinned/skipped with a tracked issue -- it is a
+  forward-compat guard, not a release blocker).
+
+Acceptance delta: the merge-time criterion "compile target stays 21" no longer applies; the
+build compiles at release 25 and the CI matrix runs 25 + 26.
