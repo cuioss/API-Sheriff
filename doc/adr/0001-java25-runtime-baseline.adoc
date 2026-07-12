@@ -1,10 +1,14 @@
-= ADR-0001 -- Java 25 Runtime Baseline for Virtual Threads
+= ADR-0001 -- Java 25 Compile and Runtime Baseline
 :toc:
 :toclevels: 2
 
 == Status
 
-Proposed.
+Accepted.
+
+Supersedes the earlier *proposed* form of this ADR, which kept the compile target at Java 21
+and raised only the *runtime* to Java 25 ("compile low, run high"). That split is dropped: the
+project compiles *and* runs on Java 25.
 
 == Context
 
@@ -21,54 +25,62 @@ Two JDK facts drive this decision:
   third-party and JDK library code.
 * *Java 25 is the current LTS* (released September 2025) and includes the JEP 491 behaviour.
 
-Separately, the build currently targets `maven.compiler.release=21` under
-`de.cuioss:cui-java-parent:1.4.5` and Quarkus 3.37.x. Bumping the *source/bytecode* release to
-25 would couple the project to toolchain, CI-image, and parent-POM expectations that are not
-yet established, for language-feature gains the gateway does not currently need.
+The earlier form of this ADR separated the *compile target* (source language level and
+bytecode version) from the *runtime* the container/native image executes on, and raised only
+the runtime, out of caution about toolchain / CI-image / parent-POM readiness at release 25.
 
-The decision therefore separates two concerns that are often conflated:
-
-* the *compile target* (source language level and bytecode version), and
-* the *runtime* the container/native image actually executes on.
+That caution no longer applies. API Sheriff *ships and runs a Java 25 image only* -- there is
+no Java 21 (or any pre-25) deployment target for this product, and none is planned. Compiling
+at 21 for a 25-only runtime is indirection that buys nothing: it forbids Java 22-25 language
+features, splits the local/CI toolchain story ("develop on 21, ship on 25"), and keeps a
+version around that plays no role in the delivered artifact. The parent POM
+(`de.cuioss:cui-java-parent:1.5.0`) and Quarkus 3.37.2 support a Java 25 *compile* baseline, so
+the readiness gap the original ADR waited for is closed.
 
 == Decision
 
-*Run the container and native image on the Java 25 runtime; keep the compile target at Java 21.*
+*Compile and run API Sheriff on Java 25. Java 21 is not a target for this project.*
 
-* `maven.compiler.release` stays at `21` -- source compatibility with the CUI parent and
-  Quarkus 3.37.x is preserved; no Java 22-25 language features are used yet.
-* The two shipping paths get JDK 25 by different mechanisms. *JVM mode*: the container base
-  image is pinned to a JDK 25 runtime (no JVM Dockerfile exists yet; it is created with this
-  pin). *Native mode*: the runtime image (`Dockerfile.native`, distroless) contains no JVM at
-  all -- there the JEP 491 behaviour comes entirely from the *Mandrel/GraalVM builder*, which
-  must be pinned to a JDK 25 line (it is currently unpinned in the build). Either way the
-  running process gets JEP 491 (no `synchronized` pinning) and the rest of the JDK 24/25
-  virtual-thread and GC improvements.
-* This is the same "compile low, run high" split the JVM guarantees via bytecode
-  forward-compatibility.
+* `maven.compiler.release` is set to `25`. Java 22-25 language features are permitted from now
+  on (records, sealed types, pattern matching are already in use; virtual threads,
+  structured concurrency where it helps).
+* Both shipping paths run on Java 25. *JVM mode*: the container base image is pinned to a JDK 25
+  runtime line. *Native mode*: the `Dockerfile.native` (distroless) image contains no JVM;
+  the JEP 491 behaviour comes from the *Mandrel/GraalVM builder*, pinned to the JDK 25 line.
+* *CI build/test matrix* compiles and runs the test suites on *Java 25 and Java 26*, and adds
+  each newer GA release as it appears (Java 27 GA is expected September 2026; add it then).
+  The 25 leg is the *primary* leg -- it produces the released/deployed artifacts and the
+  Sonar/coverage analysis; the 26 (and later) leg is a *forward-compatibility* guard that must
+  stay green but does not ship. Configured in `.github/project.yml`
+  (`maven-build.java-versions` = the matrix, `maven-build.java-version` = the primary/deploy
+  JDK).
+* Local development requires a JDK 25 or newer (a JDK 26 toolchain compiles `--release 25`
+  correctly).
 
 == Consequences
 
 Positive:
 
 * Full virtual-thread throughput under load without auditing every dependency for
-  `synchronized`-based pinning.
-* No source-level risk: the code still compiles and runs on JDK 21+, so local development and
-  CI on JDK 21 remain valid; only the *shipped runtime* is 25.
-* Reversible and low-blast-radius: the change is confined to the build's base-image / builder
-  version, not the source tree.
+  `synchronized`-based pinning, and without a compile/runtime version split to reason about.
+* One toolchain story end to end: the version you build with is the version you ship on.
+* Java 22-25 language features become available for the pipeline and config code.
+* The forward-compatibility matrix leg surfaces JDK-26+ regressions (deprecations, behavioural
+  changes, native-image breakage) before the next LTS forces the issue.
 
 Negative / to watch:
 
-* CI must make a JDK 25 runtime available for the container/native build stage (the compile
-  stage may remain on 21).
-* Native-image builds depend on a Mandrel/GraalVM distribution for JDK 25 being available for
-  the target platform; verify before pinning.
-* When the project later adopts Java 22-25 *language* features, revisit and raise
-  `maven.compiler.release` -- a separate decision from this one.
+* Every build/CI/native stage needs a JDK 25 (or newer) available -- there is no longer a
+  Java 21 fallback leg. Contributors on an older JDK must upgrade.
+* Native-image builds depend on a Mandrel/GraalVM distribution for the JDK 25 line for the
+  target platform; verify it is published before pinning, and re-verify when the Mandrel pin
+  advances.
+* The 26+ matrix leg can go red on a JDK the project does not yet ship on; treat such failures
+  as forward-compat signal (pin/skip with a tracked issue) rather than release blockers, but
+  keep the leg present.
 
 == Revisit When
 
-* `cui-java-parent` and Quarkus establish a supported Java 25 *compile* baseline, at which
-  point raising `maven.compiler.release` becomes low-risk.
-* A concrete need for a Java 22-25 language feature arises.
+* A new LTS (Java 29, expected 2027) becomes the deploy baseline -- raise the primary
+  `java-version` and the Mandrel pin, and re-anchor the matrix.
+* A dropped dependency or native-image constraint forces a specific JDK ceiling.
