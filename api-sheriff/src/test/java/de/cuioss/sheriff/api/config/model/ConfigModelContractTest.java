@@ -29,10 +29,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 
+
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Named;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -302,8 +303,8 @@ class ConfigModelContractTest {
             assertEquals(subject, equalCopy, "instances built from equal components must be equal");
             assertEquals(subject.hashCode(), equalCopy.hashCode(), "equal instances must share a hashCode");
             assertNotEquals(subject, different, "instances with differing components must not be equal");
-            assertNotEquals(subject, null, "a value object is never equal to null");
-            assertNotEquals(subject, "not-a-config", "a value object is never equal to a foreign type");
+            assertNotEquals(null, subject, "a value object is never equal to null");
+            assertNotEquals("not-a-config", subject, "a value object is never equal to a foreign type");
             assertNotNull(subject.toString(), "toString must be present");
         }
     }

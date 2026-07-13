@@ -39,7 +39,7 @@ import lombok.Builder;
  */
 @Builder
 public record UpstreamConfig(Optional<String> path, Optional<Integer> connectTimeoutMs, Optional<Integer> readTimeoutMs,
-        Optional<Retry> retry, Optional<NotModified> notModified, Optional<CircuitBreaker> circuitBreaker) {
+                             Optional<Retry> retry, Optional<NotModified> notModified, Optional<CircuitBreaker> circuitBreaker) {
 
     /**
      * Canonical constructor normalizing absent components to {@link Optional#empty()}.

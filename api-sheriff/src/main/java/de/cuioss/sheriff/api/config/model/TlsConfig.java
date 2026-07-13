@@ -34,7 +34,7 @@ import lombok.Builder;
  */
 @Builder
 public record TlsConfig(Optional<String> minVersion, List<String> alpn, Map<String, String> passthroughSni,
-        Optional<Mtls> mtls) {
+                        Optional<Mtls> mtls) {
 
     /**
      * Canonical constructor defensively copying collections and normalizing absent

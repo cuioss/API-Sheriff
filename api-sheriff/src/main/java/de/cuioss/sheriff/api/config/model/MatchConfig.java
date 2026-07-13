@@ -34,7 +34,7 @@ import lombok.Builder;
  */
 @Builder
 public record MatchConfig(String pathPrefix, List<HttpMethod> methods, Optional<String> host,
-        List<HeaderMatcher> headers) {
+                          List<HeaderMatcher> headers) {
 
     /**
      * Canonical constructor requiring {@code pathPrefix}, defensively copying the

@@ -35,7 +35,7 @@ import lombok.Builder;
  */
 @Builder
 public record SecurityHeadersConfig(Optional<Hsts> hsts, Optional<Boolean> contentTypeNosniff,
-        Optional<Boolean> frameDeny, Optional<Cors> cors) {
+                                    Optional<Boolean> frameDeny, Optional<Cors> cors) {
 
     /**
      * Canonical constructor normalizing absent components to {@link Optional#empty()}.
@@ -81,7 +81,7 @@ public record SecurityHeadersConfig(Optional<Hsts> hsts, Optional<Boolean> conte
      */
     @Builder
     public record Cors(Optional<Boolean> enabled, List<String> allowedOrigins, List<String> allowedMethods,
-            List<String> allowedHeaders, Optional<Boolean> allowCredentials) {
+                       List<String> allowedHeaders, Optional<Boolean> allowCredentials) {
 
         /**
          * Canonical constructor defensively copying collections and normalizing
