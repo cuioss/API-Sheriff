@@ -52,11 +52,11 @@ public record RouteConfig(String id, Optional<Protocol> protocol, MatchConfig ma
     public RouteConfig {
         id = Objects.requireNonNull(id, "id");
         match = Objects.requireNonNull(match, "match");
-        protocol = protocol == null ? Optional.empty() : protocol;
-        auth = auth == null ? Optional.empty() : auth;
-        securityFilter = securityFilter == null ? Optional.empty() : securityFilter;
-        forward = forward == null ? Optional.empty() : forward;
-        upstream = upstream == null ? Optional.empty() : upstream;
-        rateLimit = rateLimit == null ? Optional.empty() : rateLimit;
+        protocol = Objects.requireNonNullElse(protocol, Optional.empty());
+        auth = Objects.requireNonNullElse(auth, Optional.empty());
+        securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());
+        forward = Objects.requireNonNullElse(forward, Optional.empty());
+        upstream = Objects.requireNonNullElse(upstream, Optional.empty());
+        rateLimit = Objects.requireNonNullElse(rateLimit, Optional.empty());
     }
 }

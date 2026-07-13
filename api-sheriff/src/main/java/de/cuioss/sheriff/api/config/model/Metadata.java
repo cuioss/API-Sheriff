@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.config.model;
 
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -34,6 +35,6 @@ public record Metadata(Optional<String> configVersion) {
      * {@link Optional#empty()}.
      */
     public Metadata {
-        configVersion = configVersion == null ? Optional.empty() : configVersion;
+        configVersion = Objects.requireNonNullElse(configVersion, Optional.empty());
     }
 }

@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -46,7 +47,7 @@ public record ForwardedConfig(List<String> trustedProxies, Optional<Boolean> tru
      */
     public ForwardedConfig {
         trustedProxies = trustedProxies == null ? List.of() : List.copyOf(trustedProxies);
-        trustSchemeHost = trustSchemeHost == null ? Optional.empty() : trustSchemeHost;
-        emit = emit == null ? Optional.empty() : emit;
+        trustSchemeHost = Objects.requireNonNullElse(trustSchemeHost, Optional.empty());
+        emit = Objects.requireNonNullElse(emit, Optional.empty());
     }
 }

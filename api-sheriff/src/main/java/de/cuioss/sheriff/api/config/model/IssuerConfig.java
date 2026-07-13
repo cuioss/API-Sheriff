@@ -40,8 +40,8 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
     public IssuerConfig {
         name = Objects.requireNonNull(name, "name");
         issuer = Objects.requireNonNull(issuer, "issuer");
-        audience = audience == null ? Optional.empty() : audience;
-        jwks = jwks == null ? Optional.empty() : jwks;
+        audience = Objects.requireNonNullElse(audience, Optional.empty());
+        jwks = Objects.requireNonNullElse(jwks, Optional.empty());
     }
 
     /**
@@ -63,8 +63,8 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
          */
         public Jwks {
             source = Objects.requireNonNull(source, "source");
-            url = url == null ? Optional.empty() : url;
-            file = file == null ? Optional.empty() : file;
+            url = Objects.requireNonNullElse(url, Optional.empty());
+            file = Objects.requireNonNullElse(file, Optional.empty());
         }
     }
 }

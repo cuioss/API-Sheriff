@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -41,10 +42,10 @@ public record SecurityHeadersConfig(Optional<Hsts> hsts, Optional<Boolean> conte
      * Canonical constructor normalizing absent components to {@link Optional#empty()}.
      */
     public SecurityHeadersConfig {
-        hsts = hsts == null ? Optional.empty() : hsts;
-        contentTypeNosniff = contentTypeNosniff == null ? Optional.empty() : contentTypeNosniff;
-        frameDeny = frameDeny == null ? Optional.empty() : frameDeny;
-        cors = cors == null ? Optional.empty() : cors;
+        hsts = Objects.requireNonNullElse(hsts, Optional.empty());
+        contentTypeNosniff = Objects.requireNonNullElse(contentTypeNosniff, Optional.empty());
+        frameDeny = Objects.requireNonNullElse(frameDeny, Optional.empty());
+        cors = Objects.requireNonNullElse(cors, Optional.empty());
     }
 
     /**
@@ -63,8 +64,8 @@ public record SecurityHeadersConfig(Optional<Hsts> hsts, Optional<Boolean> conte
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public Hsts {
-            maxAge = maxAge == null ? Optional.empty() : maxAge;
-            includeSubdomains = includeSubdomains == null ? Optional.empty() : includeSubdomains;
+            maxAge = Objects.requireNonNullElse(maxAge, Optional.empty());
+            includeSubdomains = Objects.requireNonNullElse(includeSubdomains, Optional.empty());
         }
     }
 
@@ -88,11 +89,11 @@ public record SecurityHeadersConfig(Optional<Hsts> hsts, Optional<Boolean> conte
          * absent components.
          */
         public Cors {
-            enabled = enabled == null ? Optional.empty() : enabled;
+            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
             allowedOrigins = allowedOrigins == null ? List.of() : List.copyOf(allowedOrigins);
             allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
             allowedHeaders = allowedHeaders == null ? List.of() : List.copyOf(allowedHeaders);
-            allowCredentials = allowCredentials == null ? Optional.empty() : allowCredentials;
+            allowCredentials = Objects.requireNonNullElse(allowCredentials, Optional.empty());
         }
     }
 }

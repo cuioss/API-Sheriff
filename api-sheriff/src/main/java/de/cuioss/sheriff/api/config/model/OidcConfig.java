@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -47,14 +48,14 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
      * absent components.
      */
     public OidcConfig {
-        issuer = issuer == null ? Optional.empty() : issuer;
-        clientId = clientId == null ? Optional.empty() : clientId;
-        clientSecret = clientSecret == null ? Optional.empty() : clientSecret;
+        issuer = Objects.requireNonNullElse(issuer, Optional.empty());
+        clientId = Objects.requireNonNullElse(clientId, Optional.empty());
+        clientSecret = Objects.requireNonNullElse(clientSecret, Optional.empty());
         scopes = scopes == null ? List.of() : List.copyOf(scopes);
-        redirectUri = redirectUri == null ? Optional.empty() : redirectUri;
-        logout = logout == null ? Optional.empty() : logout;
-        session = session == null ? Optional.empty() : session;
-        stepUp = stepUp == null ? Optional.empty() : stepUp;
+        redirectUri = Objects.requireNonNullElse(redirectUri, Optional.empty());
+        logout = Objects.requireNonNullElse(logout, Optional.empty());
+        session = Objects.requireNonNullElse(session, Optional.empty());
+        stepUp = Objects.requireNonNullElse(stepUp, Optional.empty());
     }
 
     /**
@@ -104,10 +105,10 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public Logout {
-            path = path == null ? Optional.empty() : path;
-            postLogoutRedirectUri = postLogoutRedirectUri == null ? Optional.empty() : postLogoutRedirectUri;
-            finalRedirect = finalRedirect == null ? Optional.empty() : finalRedirect;
-            backchannelPath = backchannelPath == null ? Optional.empty() : backchannelPath;
+            path = Objects.requireNonNullElse(path, Optional.empty());
+            postLogoutRedirectUri = Objects.requireNonNullElse(postLogoutRedirectUri, Optional.empty());
+            finalRedirect = Objects.requireNonNullElse(finalRedirect, Optional.empty());
+            backchannelPath = Objects.requireNonNullElse(backchannelPath, Optional.empty());
         }
     }
 
@@ -138,14 +139,14 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public Session {
-            mode = mode == null ? Optional.empty() : mode;
-            store = store == null ? Optional.empty() : store;
-            cookieName = cookieName == null ? Optional.empty() : cookieName;
-            encryptionKey = encryptionKey == null ? Optional.empty() : encryptionKey;
-            previousKey = previousKey == null ? Optional.empty() : previousKey;
-            ttlSeconds = ttlSeconds == null ? Optional.empty() : ttlSeconds;
-            csrf = csrf == null ? Optional.empty() : csrf;
-            refresh = refresh == null ? Optional.empty() : refresh;
+            mode = Objects.requireNonNullElse(mode, Optional.empty());
+            store = Objects.requireNonNullElse(store, Optional.empty());
+            cookieName = Objects.requireNonNullElse(cookieName, Optional.empty());
+            encryptionKey = Objects.requireNonNullElse(encryptionKey, Optional.empty());
+            previousKey = Objects.requireNonNullElse(previousKey, Optional.empty());
+            ttlSeconds = Objects.requireNonNullElse(ttlSeconds, Optional.empty());
+            csrf = Objects.requireNonNullElse(csrf, Optional.empty());
+            refresh = Objects.requireNonNullElse(refresh, Optional.empty());
         }
 
         /**
@@ -200,9 +201,9 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public Refresh {
-            enabled = enabled == null ? Optional.empty() : enabled;
-            leewaySeconds = leewaySeconds == null ? Optional.empty() : leewaySeconds;
-            onFailure = onFailure == null ? Optional.empty() : onFailure;
+            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
+            leewaySeconds = Objects.requireNonNullElse(leewaySeconds, Optional.empty());
+            onFailure = Objects.requireNonNullElse(onFailure, Optional.empty());
         }
     }
 
@@ -222,8 +223,8 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public StepUp {
-            enabled = enabled == null ? Optional.empty() : enabled;
-            honorUpstreamChallenge = honorUpstreamChallenge == null ? Optional.empty() : honorUpstreamChallenge;
+            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
+            honorUpstreamChallenge = Objects.requireNonNullElse(honorUpstreamChallenge, Optional.empty());
         }
     }
 }

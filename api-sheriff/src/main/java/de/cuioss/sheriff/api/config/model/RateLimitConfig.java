@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.config.model;
 
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -37,7 +38,7 @@ public record RateLimitConfig(Optional<Integer> requestsPerSecond, Optional<Inte
      * Canonical constructor normalizing absent components to {@link Optional#empty()}.
      */
     public RateLimitConfig {
-        requestsPerSecond = requestsPerSecond == null ? Optional.empty() : requestsPerSecond;
-        burst = burst == null ? Optional.empty() : burst;
+        requestsPerSecond = Objects.requireNonNullElse(requestsPerSecond, Optional.empty());
+        burst = Objects.requireNonNullElse(burst, Optional.empty());
     }
 }

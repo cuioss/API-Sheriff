@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -41,10 +42,10 @@ public record TlsConfig(Optional<String> minVersion, List<String> alpn, Map<Stri
      * components.
      */
     public TlsConfig {
-        minVersion = minVersion == null ? Optional.empty() : minVersion;
+        minVersion = Objects.requireNonNullElse(minVersion, Optional.empty());
         alpn = alpn == null ? List.of() : List.copyOf(alpn);
         passthroughSni = passthroughSni == null ? Map.of() : Map.copyOf(passthroughSni);
-        mtls = mtls == null ? Optional.empty() : mtls;
+        mtls = Objects.requireNonNullElse(mtls, Optional.empty());
     }
 
     /**
@@ -63,7 +64,7 @@ public record TlsConfig(Optional<String> minVersion, List<String> alpn, Map<Stri
          * {@link Optional#empty()}.
          */
         public Mtls {
-            clientCa = clientCa == null ? Optional.empty() : clientCa;
+            clientCa = Objects.requireNonNullElse(clientCa, Optional.empty());
         }
     }
 }

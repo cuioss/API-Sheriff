@@ -58,7 +58,7 @@ public record EndpointConfig(String id, boolean enabled, String baseUrl, AuthCon
         baseUrl = Objects.requireNonNull(baseUrl, "baseUrl");
         auth = Objects.requireNonNull(auth, "auth");
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
-        upstreamDefaults = upstreamDefaults == null ? Optional.empty() : upstreamDefaults;
+        upstreamDefaults = Objects.requireNonNullElse(upstreamDefaults, Optional.empty());
         routes = routes == null ? List.of() : List.copyOf(routes);
     }
 }

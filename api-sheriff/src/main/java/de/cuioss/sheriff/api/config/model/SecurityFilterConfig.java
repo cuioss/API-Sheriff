@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -54,13 +55,13 @@ public record SecurityFilterConfig(Optional<String> profile, List<String> allowe
      * components.
      */
     public SecurityFilterConfig {
-        profile = profile == null ? Optional.empty() : profile;
+        profile = Objects.requireNonNullElse(profile, Optional.empty());
         allowedPaths = allowedPaths == null ? List.of() : List.copyOf(allowedPaths);
-        maxHeaderCount = maxHeaderCount == null ? Optional.empty() : maxHeaderCount;
-        maxHeaderValueLength = maxHeaderValueLength == null ? Optional.empty() : maxHeaderValueLength;
-        maxQueryParams = maxQueryParams == null ? Optional.empty() : maxQueryParams;
-        maxParamValueLength = maxParamValueLength == null ? Optional.empty() : maxParamValueLength;
-        maxBodyBytes = maxBodyBytes == null ? Optional.empty() : maxBodyBytes;
+        maxHeaderCount = Objects.requireNonNullElse(maxHeaderCount, Optional.empty());
+        maxHeaderValueLength = Objects.requireNonNullElse(maxHeaderValueLength, Optional.empty());
+        maxQueryParams = Objects.requireNonNullElse(maxQueryParams, Optional.empty());
+        maxParamValueLength = Objects.requireNonNullElse(maxParamValueLength, Optional.empty());
+        maxBodyBytes = Objects.requireNonNullElse(maxBodyBytes, Optional.empty());
         allowedHeaderNames = allowedHeaderNames == null ? List.of() : List.copyOf(allowedHeaderNames);
         blockedHeaderNames = blockedHeaderNames == null ? List.of() : List.copyOf(blockedHeaderNames);
         allowedContentTypes = allowedContentTypes == null ? List.of() : List.copyOf(allowedContentTypes);

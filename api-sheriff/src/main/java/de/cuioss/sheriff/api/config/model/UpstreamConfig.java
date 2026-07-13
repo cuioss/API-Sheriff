@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.config.model;
 
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -45,12 +46,12 @@ public record UpstreamConfig(Optional<String> path, Optional<Integer> connectTim
      * Canonical constructor normalizing absent components to {@link Optional#empty()}.
      */
     public UpstreamConfig {
-        path = path == null ? Optional.empty() : path;
-        connectTimeoutMs = connectTimeoutMs == null ? Optional.empty() : connectTimeoutMs;
-        readTimeoutMs = readTimeoutMs == null ? Optional.empty() : readTimeoutMs;
-        retry = retry == null ? Optional.empty() : retry;
-        notModified = notModified == null ? Optional.empty() : notModified;
-        circuitBreaker = circuitBreaker == null ? Optional.empty() : circuitBreaker;
+        path = Objects.requireNonNullElse(path, Optional.empty());
+        connectTimeoutMs = Objects.requireNonNullElse(connectTimeoutMs, Optional.empty());
+        readTimeoutMs = Objects.requireNonNullElse(readTimeoutMs, Optional.empty());
+        retry = Objects.requireNonNullElse(retry, Optional.empty());
+        notModified = Objects.requireNonNullElse(notModified, Optional.empty());
+        circuitBreaker = Objects.requireNonNullElse(circuitBreaker, Optional.empty());
     }
 
     /**
@@ -71,9 +72,9 @@ public record UpstreamConfig(Optional<String> path, Optional<Integer> connectTim
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public Retry {
-            enabled = enabled == null ? Optional.empty() : enabled;
-            maxAttempts = maxAttempts == null ? Optional.empty() : maxAttempts;
-            idempotentOnly = idempotentOnly == null ? Optional.empty() : idempotentOnly;
+            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
+            maxAttempts = Objects.requireNonNullElse(maxAttempts, Optional.empty());
+            idempotentOnly = Objects.requireNonNullElse(idempotentOnly, Optional.empty());
         }
     }
 
@@ -92,7 +93,7 @@ public record UpstreamConfig(Optional<String> path, Optional<Integer> connectTim
          * {@link Optional#empty()}.
          */
         public NotModified {
-            enabled = enabled == null ? Optional.empty() : enabled;
+            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
         }
     }
 
@@ -111,8 +112,8 @@ public record UpstreamConfig(Optional<String> path, Optional<Integer> connectTim
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
          */
         public CircuitBreaker {
-            failures = failures == null ? Optional.empty() : failures;
-            resetMs = resetMs == null ? Optional.empty() : resetMs;
+            failures = Objects.requireNonNullElse(failures, Optional.empty());
+            resetMs = Objects.requireNonNullElse(resetMs, Optional.empty());
         }
     }
 }

@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import lombok.Builder;
@@ -55,14 +56,14 @@ public record GatewayConfig(int version, Optional<Metadata> metadata, Optional<T
      * normalizing absent optional blocks to {@link Optional#empty()}.
      */
     public GatewayConfig {
-        metadata = metadata == null ? Optional.empty() : metadata;
-        tls = tls == null ? Optional.empty() : tls;
-        securityHeaders = securityHeaders == null ? Optional.empty() : securityHeaders;
-        securityDefaults = securityDefaults == null ? Optional.empty() : securityDefaults;
+        metadata = Objects.requireNonNullElse(metadata, Optional.empty());
+        tls = Objects.requireNonNullElse(tls, Optional.empty());
+        securityHeaders = Objects.requireNonNullElse(securityHeaders, Optional.empty());
+        securityDefaults = Objects.requireNonNullElse(securityDefaults, Optional.empty());
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
-        upstreamDefaults = upstreamDefaults == null ? Optional.empty() : upstreamDefaults;
-        forwarded = forwarded == null ? Optional.empty() : forwarded;
-        tokenValidation = tokenValidation == null ? Optional.empty() : tokenValidation;
-        oidc = oidc == null ? Optional.empty() : oidc;
+        upstreamDefaults = Objects.requireNonNullElse(upstreamDefaults, Optional.empty());
+        forwarded = Objects.requireNonNullElse(forwarded, Optional.empty());
+        tokenValidation = Objects.requireNonNullElse(tokenValidation, Optional.empty());
+        oidc = Objects.requireNonNullElse(oidc, Optional.empty());
     }
 }

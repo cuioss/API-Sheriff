@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.config.model;
 
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -36,6 +37,6 @@ public record SecurityDefaultsConfig(Optional<String> profile) {
      * {@link Optional#empty()}.
      */
     public SecurityDefaultsConfig {
-        profile = profile == null ? Optional.empty() : profile;
+        profile = Objects.requireNonNullElse(profile, Optional.empty());
     }
 }

@@ -43,7 +43,7 @@ public record MatchConfig(String pathPrefix, List<HttpMethod> methods, Optional<
     public MatchConfig {
         pathPrefix = Objects.requireNonNull(pathPrefix, "pathPrefix");
         methods = methods == null ? List.of() : List.copyOf(methods);
-        host = host == null ? Optional.empty() : host;
+        host = Objects.requireNonNullElse(host, Optional.empty());
         headers = headers == null ? List.of() : List.copyOf(headers);
     }
 
@@ -65,8 +65,8 @@ public record MatchConfig(String pathPrefix, List<HttpMethod> methods, Optional<
          */
         public HeaderMatcher {
             name = Objects.requireNonNull(name, "name");
-            present = present == null ? Optional.empty() : present;
-            value = value == null ? Optional.empty() : value;
+            present = Objects.requireNonNullElse(present, Optional.empty());
+            value = Objects.requireNonNullElse(value, Optional.empty());
         }
     }
 }
