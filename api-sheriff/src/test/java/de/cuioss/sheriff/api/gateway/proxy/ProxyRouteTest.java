@@ -48,18 +48,23 @@ import okio.ByteString;
  * body to the upstream, hop-by-hop header stripping, and {@code 404}
  * deny-by-default for unmatched paths.
  * <p>
- * The upstream is a {@link MockWebServer} started on the fixed port that
- * {@code sheriff.proxy.upstream-url} points to in the test configuration —
- * {@code @QuarkusTest} freezes config at boot, so a dynamically-assigned port
- * cannot be injected. The mock echoes each received request back as JSON, so the
- * assertions verify exactly what the gateway forwarded.
+ * The proxy edge sources its upstream from the {@code RouteTable} the
+ * configuration subsystem assembles at boot: the test config
+ * ({@code src/test/resources/config/testboot}) declares a single {@code /proxy}
+ * route ({@code endpoints/proxy.yaml}) whose {@code UPSTREAM} topology alias
+ * ({@code topology.properties}) resolves to the {@link MockWebServer} started on
+ * the fixed port below. There is no static {@code ProxyConfiguration} bean any
+ * more. The fixed port is required because {@code @QuarkusTest} freezes config at
+ * boot, so a dynamically-assigned port cannot be injected. The mock echoes each
+ * received request back as JSON, so the assertions verify exactly what the gateway
+ * forwarded from the RouteTable-sourced upstream.
  */
 @QuarkusTest
 @EnableMockWebServer(manualStart = true)
 @ModuleDispatcher
 class ProxyRouteTest {
 
-    /** Must match {@code sheriff.proxy.upstream-url} in {@code src/test/resources/application.properties}. */
+    /** Must match the {@code UPSTREAM} alias port in {@code config/testboot/topology.properties}. */
     private static final int UPSTREAM_PORT = 19191;
 
     @BeforeAll

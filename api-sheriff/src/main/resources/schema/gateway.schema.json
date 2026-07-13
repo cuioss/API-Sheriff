@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-sheriff.cuioss.de/schema/gateway.schema.json",
+  "title": "API Sheriff gateway.yaml",
+  "description": "JSON Schema for the global gateway.yaml configuration document. Mirrors doc/configuration.adoc field-for-field. Unknown keys are rejected at every object level (additionalProperties: false).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "$defs": {
+    "httpVerb": {
+      "type": "string",
+      "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    },
+    "upstreamDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
+        },
+        "not_modified": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Config schema version; unknown values are refused in code."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config_version": { "type": "string" }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_version": { "type": "string", "enum": ["1.2", "1.3"] },
+        "alpn": { "type": "array", "items": { "type": "string" } },
+        "passthrough_sni": {
+          "type": "object",
+          "description": "Map of SNI hostname -> topology alias, relayed at L4 without decryption.",
+          "additionalProperties": { "type": "string" }
+        },
+        "mtls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "client_ca": { "type": "string" }
+          }
+        }
+      }
+    },
+    "security_headers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hsts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_age": { "type": "integer" },
+            "include_subdomains": { "type": "boolean" }
+          }
+        },
+        "content_type_nosniff": { "type": "boolean" },
+        "frame_deny": { "type": "boolean" },
+        "cors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "allowed_origins": { "type": "array", "items": { "type": "string" } },
+            "allowed_methods": { "type": "array", "items": { "type": "string" } },
+            "allowed_headers": { "type": "array", "items": { "type": "string" } },
+            "allow_credentials": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "security_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": "string", "enum": ["default", "strict", "lenient"] }
+      }
+    },
+    "allowed_methods": {
+      "type": "array",
+      "description": "Global positive HTTP-verb allowlist. TRACE and CONNECT are never permitted and are excluded from the enum.",
+      "items": { "$ref": "#/$defs/httpVerb" }
+    },
+    "upstream_defaults": {
+      "$ref": "#/$defs/upstreamDefaults",
+      "description": "Global retry / HTTP-304 not-modified defaults (both default true). An endpoint upstream_defaults block replaces this wholesale."
+    },
+    "forwarded": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trusted_proxies": { "type": "array", "items": { "type": "string" } },
+        "trust_scheme_host": { "type": "boolean" },
+        "emit": { "type": "string", "enum": ["x-forwarded", "both"] }
+      }
+    },
+    "token_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "issuer"],
+            "properties": {
+              "name": { "type": "string" },
+              "issuer": { "type": "string" },
+              "audience": { "type": "string" },
+              "jwks": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["source"],
+                "properties": {
+                  "source": { "type": "string", "enum": ["http", "file", "inline"] },
+                  "url": { "type": "string" },
+                  "file": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuer": { "type": "string" },
+        "client_id": { "type": "string" },
+        "client_secret": { "type": "string" },
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "redirect_uri": { "type": "string" },
+        "logout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "post_logout_redirect_uri": { "type": "string" },
+            "final_redirect": { "type": "string" },
+            "backchannel_path": { "type": "string" }
+          }
+        },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "type": "string", "enum": ["cookie", "server"] },
+            "store": { "type": "string", "enum": ["memory"] },
+            "cookie_name": { "type": "string" },
+            "encryption_key": { "type": "string" },
+            "previous_key": { "type": "string" },
+            "ttl_seconds": { "type": "integer" },
+            "csrf": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "trusted_origins": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            "refresh": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "leeway_seconds": { "type": "integer" },
+                "on_failure": { "type": "string", "enum": ["reauthenticate", "reject"] }
+              }
+            }
+          }
+        },
+        "step_up": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "honor_upstream_challenge": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}

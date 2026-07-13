@@ -1,0 +1,15 @@
+# Proxy endpoint for the @QuarkusTest boot configuration.
+#
+# Declares the single /proxy route ProxyRouteTest exercises. Its upstream is the
+# UPSTREAM topology alias (topology.properties -> http://localhost:19191), so the
+# assembled RouteTable carries one route whose ResolvedUpstream the proxy edge
+# forwards to. This replaces the removed static ProxyConfiguration bean.
+endpoint:
+  id: proxy
+  base_url: UPSTREAM
+  auth:
+    require: none
+  routes:
+    - id: proxy-all
+      match:
+        path_prefix: /proxy

@@ -1,7 +1,9 @@
 = API Sheriff -- Configuration Model
-:toc:
+:toc: left
 :toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 == Principles
 
@@ -83,6 +85,38 @@ conf/
 *API Sheriff supports only Static mode initially* -- see link:adr/0002-initial-scope.adoc[ADR-0002].
 The manifest's dynamic `/api/gateway-config.json` discovery is deferred; `metadata.config_version`
 is retained now only as an audit stamp.
+
+[[_schemas]]
+== Schemas
+
+Both configuration artifacts are validated against bundled *JSON Schema* documents (Draft
+2020-12) before binding, so a structurally malformed file is rejected with a precise
+file-and-JSON-pointer error before any immutable value object is built:
+
+[cols="1,3"]
+|===
+| Schema | Validates
+
+| `schema/gateway.schema.json`
+| The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
+  `security_headers`, `security_defaults`, `allowed_methods`, `upstream_defaults`, `forwarded`,
+  `token_validation` and `oidc`.
+
+| `schema/endpoint.schema.json`
+| A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`, `auth`,
+  `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's `match`, `auth`,
+  `security_filter`, `forward`, `upstream` and reserved `rate_limit`.
+|===
+
+Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
+typo or a stale field -- fails the boot rather than being silently ignored. The schemas mirror
+this document field-for-field and are the *structural* gate only. The *cross-cutting* rules a
+schema cannot express are enforced in code and listed under
+link:#_configuration_validation_rules_summary[Configuration Validation Rules]: endpoint- and
+route-`id` uniqueness across files, `upstream_defaults` and `allowed_methods` wholesale-replacement,
+`allowed_methods` verb membership, topology-alias resolvability, and same-prefix disjointness. Every
+violation -- from the schema gate and the code rules alike -- is collected in a single pass and
+reported together, never one at a time, and any violation refuses the boot.
 
 == Gateway Configuration (`gateway.yaml`)
 
@@ -742,6 +776,47 @@ POST or PATCH). `circuit_breaker` is a small *gateway-side* component wrapped ar
 downstream call -- stateless, per node; `cui-http` supplies retry and timeouts but no breaker
 (see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
 written literally here -- only the alias-relative `path`.
+
+[[_upstream_defaults]]
+=== `upstream_defaults`
+
+Two upstream behaviour toggles -- upstream *retry* and HTTP *304 Not Modified* handling --
+declarable at two scopes, `gateway.yaml` (global) and per `endpoint`, and overridable per route.
+Each route's effective value is materialized *once* at boot into the route table, so the request
+pipeline reads a single resolved `true`/`false` and never re-derives the inheritance.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `retry.enabled`
+| Whether idempotent upstream calls for the route are retried. This toggle only *gates* retry;
+  the retry *policy* (attempt count, idempotent-only) lives in the route's `upstream.retry` --
+  see link:#_upstream[`upstream`].
+
+| `not_modified.enabled`
+| Whether the route participates in conditional-request / HTTP `304 Not Modified` handling.
+|===
+
+*Resolution (wholesale, no merge).* Each route's effective `retry` / `not_modified` toggle is,
+in precedence order:
+
+* the route's own `upstream.retry.enabled` / `upstream.not_modified.enabled` if declared; else
+* the *endpoint-level* `upstream_defaults` block if the endpoint declares one -- it *replaces*
+  the global block wholesale for that endpoint's routes (the same no-merge rule `auth` and
+  link:#_allowed_methods[`allowed_methods`] use); else
+* the *global* `gateway.upstream_defaults` block if declared; else
+* the built-in default -- both toggles *enabled*.
+
+Both `upstream_defaults` blocks (global and per endpoint) share one shape; an omitted toggle
+defaults to `true`:
+
+[source,yaml]
+----
+upstream_defaults:
+  retry: { enabled: true }
+  not_modified: { enabled: false }
+----
 
 === `rate_limit`
 

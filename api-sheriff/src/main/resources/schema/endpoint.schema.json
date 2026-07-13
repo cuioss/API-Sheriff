@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api-sheriff.cuioss.de/schema/endpoint.schema.json",
+  "title": "API Sheriff endpoints/*.yaml",
+  "description": "JSON Schema for a single endpoint file under endpoints/*.yaml. Mirrors doc/configuration.adoc field-for-field. Endpoint-id uniqueness across files, upstream_defaults wholesale-replacement, and allowed_methods no-inheritance semantics are enforced in code, not schema. Unknown keys are rejected at every object level (additionalProperties: false).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["endpoint"],
+  "$defs": {
+    "httpVerb": {
+      "type": "string",
+      "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["require"],
+      "properties": {
+        "require": { "type": "string", "enum": ["none", "bearer", "session"] },
+        "required_scopes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "upstreamDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
+        },
+        "not_modified": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "base_url", "auth", "routes"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Unique endpoint name (mandatory). Uniqueness across all endpoint files is enforced in code."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this endpoint is active. Defaults to true. Overridable per environment by ENDPOINT_<ID>_ENABLED."
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Topology alias resolved from topology.properties / TOPOLOGY_<ALIAS>. Never a concrete host."
+        },
+        "auth": { "$ref": "#/$defs/auth" },
+        "allowed_methods": {
+          "type": "array",
+          "description": "Optional per-endpoint verb allowlist. REPLACES the global gateway.allowed_methods wholesale for this endpoint (no inheritance). TRACE and CONNECT are excluded from the enum.",
+          "items": { "$ref": "#/$defs/httpVerb" }
+        },
+        "upstream_defaults": {
+          "$ref": "#/$defs/upstreamDefaults",
+          "description": "Optional endpoint-level retry / not-modified defaults. When present, replaces the global upstream_defaults wholesale for this endpoint."
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "match"],
+            "properties": {
+              "id": { "type": "string" },
+              "protocol": { "type": "string", "enum": ["http", "grpc", "graphql", "websocket"] },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path_prefix"],
+                "properties": {
+                  "path_prefix": { "type": "string" },
+                  "methods": { "type": "array", "items": { "$ref": "#/$defs/httpVerb" } },
+                  "host": { "type": "string" },
+                  "headers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["name"],
+                      "properties": {
+                        "name": { "type": "string" },
+                        "present": { "type": "boolean" },
+                        "value": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              },
+              "auth": { "$ref": "#/$defs/auth" },
+              "security_filter": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "profile": { "type": "string", "enum": ["default", "strict", "lenient"] },
+                  "allowed_paths": { "type": "array", "items": { "type": "string" } },
+                  "max_header_count": { "type": "integer" },
+                  "max_header_value_length": { "type": "integer" },
+                  "max_query_params": { "type": "integer" },
+                  "max_param_value_length": { "type": "integer" },
+                  "max_body_bytes": { "type": "integer" },
+                  "allowed_header_names": { "type": "array", "items": { "type": "string" } },
+                  "blocked_header_names": { "type": "array", "items": { "type": "string" } },
+                  "allowed_content_types": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "forward": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "headers_allow": { "type": "array", "items": { "type": "string" } },
+                  "query_allow": { "type": "array", "items": { "type": "string" } },
+                  "set_headers": { "type": "object", "additionalProperties": { "type": "string" } }
+                }
+              },
+              "upstream": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": { "type": "string" },
+                  "connect_timeout_ms": { "type": "integer" },
+                  "read_timeout_ms": { "type": "integer" },
+                  "retry": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "enabled": { "type": "boolean" },
+                      "max_attempts": { "type": "integer" },
+                      "idempotent_only": { "type": "boolean" }
+                    }
+                  },
+                  "not_modified": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "enabled": { "type": "boolean" }
+                    }
+                  },
+                  "circuit_breaker": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "failures": { "type": "integer" },
+                      "reset_ms": { "type": "integer" }
+                    }
+                  }
+                }
+              },
+              "rate_limit": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Reserved; the rate-limit feature is deferred. Accepted and ignored.",
+                "properties": {
+                  "requests_per_second": { "type": "integer" },
+                  "burst": { "type": "integer" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

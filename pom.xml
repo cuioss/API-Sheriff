@@ -6,7 +6,7 @@
     <parent>
         <groupId>de.cuioss</groupId>
         <artifactId>cui-java-parent</artifactId>
-        <version>1.5.0</version>
+        <version>1.5.1</version>
         <relativePath />
     </parent>
     <groupId>de.cuioss.sheriff.api</groupId>
@@ -44,6 +44,7 @@
         <maven.compiler.release>25</maven.compiler.release>
         <version.quarkus>3.37.2</version.quarkus>
         <version.oauth-sheriff>0.8.0</version.oauth-sheriff>
+        <version.json-schema-validator>1.5.9</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
     </properties>
@@ -70,6 +71,13 @@
                 <version>${version.cui.parent}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <!-- Configuration management: boot-time JSON Schema validation
+                 (jackson-dataformat-yaml version is managed by the Quarkus BOM) -->
+            <dependency>
+                <groupId>com.networknt</groupId>
+                <artifactId>json-schema-validator</artifactId>
+                <version>${version.json-schema-validator}</version>
             </dependency>
             <!-- Internal modules -->
             <dependency>

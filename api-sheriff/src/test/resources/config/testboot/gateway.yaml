@@ -1,0 +1,8 @@
+# Minimal valid boot configuration for the @QuarkusTest container.
+# The sibling endpoints/proxy.yaml + topology.properties add the single /proxy
+# route that ProxyRouteTest exercises, so ConfigProducer assembles a RouteTable
+# with one route during full-container tests (GatewayResourceTest, ProxyRouteTest).
+# Referenced by sheriff.config.dir in the test application.properties.
+version: 1
+metadata:
+  config_version: "test-boot"

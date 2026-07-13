@@ -39,8 +39,7 @@ the event system, metrics, structured logging, and the RFC 9457 error contract.
   `TokenValidator`).
 . `cui-http/doc/forwarded-header-resolution.adoc` (in the cui-http repository) -- the
   authoritative resolver behaviour contract.
-. link:02-configuration-management.adoc[Plan 02] -- the `GatewayConfig`/`RouteTable` model
-  this plan consumes.
+. Plan 02 (delivered) -- the `GatewayConfig`/`RouteTable` model this plan consumes.
 
 == Prerequisites
 
@@ -49,20 +48,18 @@ the event system, metrics, structured logging, and the RFC 9457 error contract.
 
 == Design Decisions
 
-=== D1 -- cui-http 2.1-SNAPSHOT (mandatory)
+=== D1 -- cui-http 2.1 (mandatory)
 
 The `de.cuioss.http.forwarded` package (`ForwardedHeaderResolver`, `ResolvedForwarding`,
-`ForwardedResolverConfig`) exists only in `de.cuioss:cui-http:2.1-SNAPSHOT` -- *verified: it
-is absent from the released 2.0.0 jar*. This plan therefore pins the latest cui-http
-snapshot.
+`ForwardedResolverConfig`) exists only in `de.cuioss:cui-http:2.1` -- *it is absent from the
+released 2.0.0 jar*. This plan therefore pins `cui-http:2.1`.
 
 [IMPORTANT]
 ====
 Dependency changes -- *require explicit user approval before adding*:
 
-* `de.cuioss:cui-http:2.1-SNAPSHOT` (security pipelines, forwarded resolver, HttpHandler
-  stack). Snapshot risk: CI must resolve it (Sonatype snapshots repository or a version bump
-  to a 2.1 release when available); pin and re-verify before merge.
+* `de.cuioss:cui-http:2.1` (security pipelines, forwarded resolver, HttpHandler
+  stack).
 * `de.cuioss.sheriff.token:token-sheriff-validation-quarkus:1.0.0-SNAPSHOT` (direct; core
   `token-sheriff-validation` arrives transitively). Same snapshot caveat -- TokenSheriff is
   unreleased.
@@ -186,7 +183,7 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
 
 == Work Breakdown
 
-. *Dependencies* (after approval): cui-http 2.1-SNAPSHOT,
+. *Dependencies* (after approval): cui-http 2.1,
   token-sheriff-validation-quarkus 1.0.0-SNAPSHOT; verify CI snapshot resolution first.
 . *Event system + error edge* (D4) -- pure unit-tested base package first; problem+json
   rendering tests for every row of the error-contract table.

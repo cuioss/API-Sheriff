@@ -122,7 +122,7 @@ One real end-to-end path, deliberately interim but on the final architecture lin
 * A Vert.x route handler (`quarkus-vertx-http`, already present transitively) registered as
   catch-all on the data plane, executing per-request on a *virtual thread*.
 * One route configured via MicroProfile config properties (interim; replaced by the real
-  config subsystem in link:02-configuration-management.adoc[Plan 02]):
+  config subsystem in Plan 02, delivered):
   `sheriff.proxy.path-prefix` and `sheriff.proxy.upstream-url`.
 * Forwarding: method + path remainder + query + body pass through; hop-by-hop headers
   stripped; JDK `HttpClient` blocking `send()` on the virtual thread (the `cui-http`
@@ -207,7 +207,7 @@ must be green after every one.
 
 == Out of Scope
 
-* Real configuration files/schemas (link:02-configuration-management.adoc[Plan 02]).
+* Real configuration files/schemas (Plan 02, delivered).
 * Security filtering, token validation, forward policy, events/metrics/error contract
   (link:03-request-pipeline.adoc[Plan 03]).
 * gRPC/WebSocket/GraphQL processors, TLS passthrough, mTLS, BFF variants (later plans).

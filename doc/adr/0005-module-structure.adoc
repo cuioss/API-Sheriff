@@ -12,7 +12,7 @@ API Sheriff's production code currently lives in a single deployable Quarkus mod
 (`api-sheriff`), alongside the `integration-tests` and `benchmarks` coordinator modules. As the
 request pipeline (link:../plan/03-request-pipeline.adoc[Plan 03]) lands, that module gains a
 substantial body of logic that is *not* inherently Quarkus-specific: the immutable
-configuration model and validators (link:../plan/02-configuration-management.adoc[Plan 02]),
+configuration model and validators (Plan 02, delivered),
 the event/counter system, the route table and matchers, the forward policy, and the boot-time
 assembly of per-route runtime objects. Only a thin outer layer is genuinely framework-bound:
 the CDI producers/observers, the Vert.x HTTP edge, the MicroProfile-config plumbing, and the

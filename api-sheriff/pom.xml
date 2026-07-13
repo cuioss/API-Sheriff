@@ -30,6 +30,16 @@
             <artifactId>cui-java-tools</artifactId>
         </dependency>
 
+        <!-- Configuration management: YAML parsing + boot-time JSON Schema validation -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+        </dependency>
+
         <!-- Quarkus dependencies -->
         <dependency>
             <groupId>io.quarkus</groupId>

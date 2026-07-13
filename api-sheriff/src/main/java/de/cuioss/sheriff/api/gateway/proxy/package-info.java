@@ -16,12 +16,13 @@
 /**
  * Interim minimal reverse-proxy edge for the API Sheriff gateway.
  * <p>
- * A single catch-all Vert.x route ({@link de.cuioss.sheriff.api.gateway.proxy.ProxyRoute})
- * forwards requests matching a configured path prefix
- * ({@link de.cuioss.sheriff.api.gateway.proxy.ProxyConfiguration}) to an upstream
- * URL, executing the blocking forward on a virtual thread. This is the outermost
- * shell only: it is kept as the edge and has its internals replaced by the real
- * request pipeline in Plan 03.
+ * One Vert.x route per {@code path_prefix}
+ * ({@link de.cuioss.sheriff.api.gateway.proxy.ProxyRoute}) forwards matched
+ * requests to the upstream resolved for that route by the configuration
+ * subsystem's {@link de.cuioss.sheriff.api.config.model.RouteTable}, executing the
+ * blocking forward on a virtual thread. This is the outermost shell only: it is
+ * kept as the edge and has its internals replaced by the real request pipeline in
+ * Plan 03.
  *
  * @since 1.0
  */
