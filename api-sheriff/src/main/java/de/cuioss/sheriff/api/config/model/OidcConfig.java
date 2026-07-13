@@ -58,6 +58,33 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
     }
 
     /**
+     * Overridden to redact {@link #clientSecret()}. The default record
+     * {@code toString()} would otherwise print the resolved secret value verbatim
+     * — {@link de.cuioss.sheriff.api.config.load.ConfigLoader} substitutes the
+     * {@code ${ENV_VAR}} reference with the real secret before binding, so an
+     * unredacted {@code toString()} would leak it into any log line, exception
+     * message, or debugger view that captures this instance.
+     *
+     * @return a string representation with {@code clientSecret} redacted
+     */
+    @Override
+    public String toString() {
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s]"
+                .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp);
+    }
+
+    /**
+     * Redacts a secret-bearing {@link Optional} for display, preserving presence
+     * without exposing the value.
+     *
+     * @param secret the secret-bearing optional to redact
+     * @return {@code "Optional[***REDACTED***]"} when present, {@code "Optional.empty"} otherwise
+     */
+    private static String redact(Optional<String> secret) {
+        return secret.isPresent() ? "Optional[***REDACTED***]" : "Optional.empty";
+    }
+
+    /**
      * RP-initiated logout settings.
      *
      * @param path                  the gateway-served logout path, empty when omitted
@@ -119,6 +146,21 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
             ttlSeconds = ttlSeconds == null ? Optional.empty() : ttlSeconds;
             csrf = csrf == null ? Optional.empty() : csrf;
             refresh = refresh == null ? Optional.empty() : refresh;
+        }
+
+        /**
+         * Overridden to redact {@link #encryptionKey()} and {@link #previousKey()}.
+         * The default record {@code toString()} would otherwise print the resolved
+         * cookie-encryption key values verbatim into any log line, exception message,
+         * or debugger view that captures this instance.
+         *
+         * @return a string representation with both key fields redacted
+         */
+        @Override
+        public String toString() {
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s]"
+                    .formatted(mode, store, cookieName, redact(encryptionKey), redact(previousKey), ttlSeconds, csrf,
+                            refresh);
         }
     }
 
