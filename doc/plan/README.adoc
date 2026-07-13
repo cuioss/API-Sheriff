@@ -21,7 +21,7 @@ The plans build strictly on one another:
   integration setup, a proxied-route WRK benchmark, stale scaffolding removed.
 | --
 
-| link:02-configuration-management.adoc[02 -- Configuration Management]
+| 02 -- Configuration Management (delivered)
 | JSON Schemas for `gateway.yaml` / `endpoints/*.yaml`, the loading/resolution/validation
   pipeline (topology indirection, fail-fast boot), immutable `GatewayConfig` + `RouteTable`,
   config mounted into the integration containers.
@@ -30,7 +30,7 @@ The plans build strictly on one another:
 | link:03-request-pipeline.adoc[03 -- Request Pipeline]
 | The data plane for standard HTTP verbs: cui-http inbound filtering (basic + per-route),
   route selection, protocol-processor loading, offline bearer validation, zero-trust forward
-  policy with regenerated forwarding headers (cui-http 2.1-SNAPSHOT), dispatch with
+  policy with regenerated forwarding headers (cui-http:2.1), dispatch with
   retry/circuit breaker, plus the event system, metrics, logging, and RFC 9457 error edge.
 | Plans 01 + 02
 |===
@@ -48,6 +48,6 @@ BFF variants (`token-sheriff-client`), rate limiting.
   not only at plan completion.
 * *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
   with an IMPORTANT block and requires explicit user approval before it is added
-  (CLAUDE.md rule). Snapshot dependencies (`cui-http:2.1-SNAPSHOT`,
-  `token-sheriff-*:1.0.0-SNAPSHOT`) additionally need a CI-resolvability check before merge.
+  (CLAUDE.md rule). The remaining snapshot dependency (`token-sheriff-*:1.0.0-SNAPSHOT`)
+  additionally needs a CI-resolvability check before merge.
 * Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.
