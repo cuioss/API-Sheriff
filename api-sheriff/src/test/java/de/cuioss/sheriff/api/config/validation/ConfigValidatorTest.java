@@ -225,6 +225,64 @@ class ConfigValidatorTest {
         }
 
         @Test
+        @DisplayName("Should reject a non-positive upstream timeout")
+        void shouldRejectNonPositiveTimeout() {
+            RouteConfig route = RouteConfig.builder()
+                    .id("r").match(match("/r", HttpMethod.GET))
+                    .upstream(Optional.of(UpstreamConfig.builder().readTimeoutMs(Optional.of(0)).build()))
+                    .build();
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("orders").enabled(true).baseUrl("ORDERS")
+                    .auth(new AuthConfig("none", List.of()))
+                    .routes(List.of(route))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "read_timeout_ms", "must be a positive whole-second multiple");
+        }
+
+        @Test
+        @DisplayName("Should reject a negative upstream timeout")
+        void shouldRejectNegativeTimeout() {
+            RouteConfig route = RouteConfig.builder()
+                    .id("r").match(match("/r", HttpMethod.GET))
+                    .upstream(Optional.of(UpstreamConfig.builder().connectTimeoutMs(Optional.of(-1000)).build()))
+                    .build();
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("orders").enabled(true).baseUrl("ORDERS")
+                    .auth(new AuthConfig("none", List.of()))
+                    .routes(List.of(route))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "connect_timeout_ms", "must be a positive whole-second multiple");
+        }
+
+        @Test
+        @DisplayName("Should accept a positive whole-second upstream timeout")
+        void shouldAcceptPositiveWholeSecondTimeout() {
+            RouteConfig route = RouteConfig.builder()
+                    .id("r").match(match("/r", HttpMethod.GET))
+                    .upstream(Optional.of(UpstreamConfig.builder().readTimeoutMs(Optional.of(2000)).build()))
+                    .build();
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("orders").enabled(true).baseUrl("ORDERS")
+                    .auth(new AuthConfig("none", List.of()))
+                    .routes(List.of(route))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations for a positive whole-second timeout, got: "
+                    + errors);
+        }
+
+        @Test
         @DisplayName("Should reject a trust-all CIDR in forwarded.trusted_proxies")
         void shouldRejectTrustAllCidr() {
             GatewayConfig gateway = validGateway()

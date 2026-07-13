@@ -37,6 +37,7 @@ import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
+import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
@@ -79,6 +80,11 @@ class RouteTableBuilderTest {
 
     private static RouteConfig routeWithPrefix(String id, String pathPrefix, HttpMethod... methods) {
         return RouteConfig.builder().id(id).match(match(pathPrefix, methods)).build();
+    }
+
+    private static RouteConfig routeWithHeader(String id, String pathPrefix, HeaderMatcher header) {
+        MatchConfig match = MatchConfig.builder().pathPrefix(pathPrefix).headers(List.of(header)).build();
+        return RouteConfig.builder().id(id).match(match).build();
     }
 
     private static RouteConfig routeWithToggles(String id, Boolean retry, Boolean notModified) {
@@ -192,6 +198,65 @@ class RouteTableBuilderTest {
             assertEquals("narrow", table.lookup("/a/b/item").orElseThrow().id());
             assertEquals("broad", table.lookup("/a/other").orElseThrow().id());
             assertTrue(table.lookup("/unmatched").isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should not match a prefix that only shares a leading substring with the path")
+        void shouldMatchOnSegmentBoundaryOnly() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("proxy", "/proxy", HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(table.lookup("/proxy-helper").isEmpty(),
+                    "/proxy-helper must not match the prefix /proxy across a segment boundary");
+            assertEquals("proxy", table.lookup("/proxy").orElseThrow().id(),
+                    "an exact prefix match must resolve the route");
+            assertEquals("proxy", table.lookup("/proxy/items").orElseThrow().id(),
+                    "a child path must match the prefix on the segment boundary");
+        }
+
+        @Test
+        @DisplayName("Should treat a prefix already ending in a slash as a segment boundary")
+        void shouldMatchTrailingSlashPrefix() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("api", "/api/", HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals("api", table.lookup("/api/orders").orElseThrow().id());
+            assertTrue(table.lookup("/api-internal").isEmpty(),
+                    "/api-internal must not match the prefix /api/");
+        }
+
+        @Test
+        @DisplayName("Should accept same-prefix routes made disjoint by mutually exclusive header presence")
+        void shouldAcceptSamePrefixRoutesDisjointByHeaderPresence() {
+            RouteConfig present = routeWithHeader("present", "/x",
+                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(true)).build());
+            RouteConfig absent = routeWithHeader("absent", "/x",
+                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(false)).build());
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(present, absent)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(2, table.routes().size(),
+                    "presence-disjoint same-prefix routes should both survive");
+        }
+
+        @Test
+        @DisplayName("Should reject same-prefix routes whose header matchers only agree on presence")
+        void shouldRejectSamePrefixRoutesWithMatchingHeaderPresence() {
+            RouteConfig first = routeWithHeader("first", "/x",
+                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(true)).build());
+            RouteConfig second = routeWithHeader("second", "/x",
+                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(true)).build());
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(first, second)).build();
+
+            assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")));
         }
     }
 

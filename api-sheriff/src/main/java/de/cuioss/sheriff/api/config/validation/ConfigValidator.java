@@ -195,6 +195,13 @@ public final class ConfigValidator {
 
     private static void requireWholeSecond(EndpointConfig endpoint, RouteConfig route, String field, int value,
             List<ConfigError> errors) {
+        if (value <= 0) {
+            errors.add(new ConfigError(endpointFile(endpoint),
+                    "/endpoint/routes/%s/upstream/%s".formatted(route.id(), field),
+                    "%s must be a positive whole-second multiple of %d ms, was %d"
+                            .formatted(field, MILLIS_PER_SECOND, value)));
+            return;
+        }
         if (value % MILLIS_PER_SECOND != 0) {
             errors.add(new ConfigError(endpointFile(endpoint),
                     "/endpoint/routes/%s/upstream/%s".formatted(route.id(), field),

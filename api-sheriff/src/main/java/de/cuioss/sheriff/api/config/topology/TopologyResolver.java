@@ -103,7 +103,7 @@ public final class TopologyResolver {
                         "Unresolved topology alias '%s' referenced by enabled endpoint '%s'"
                                 .formatted(alias, endpoint.id()));
             }
-            resolved.put(alias, decompose(alias, value));
+            resolved.put(alias, decompose(alias, value.trim()));
         }
         return new ResolvedTopology(resolved);
     }

@@ -58,6 +58,25 @@ public record RouteTable(List<ResolvedRoute> routes) {
      */
     public Optional<ResolvedRoute> lookup(String path) {
         Objects.requireNonNull(path, "path");
-        return routes.stream().filter(route -> path.startsWith(route.pathPrefix())).findFirst();
+        return routes.stream().filter(route -> matchesPrefix(path, route.pathPrefix())).findFirst();
+    }
+
+    /**
+     * Tests whether {@code path} is covered by {@code prefix} on segment boundaries.
+     * <p>
+     * A path matches a prefix when it equals the prefix exactly or continues it at a
+     * segment boundary, so {@code /proxy} matches {@code /proxy} and {@code /proxy/x}
+     * but not {@code /proxy-helper}. A prefix that already ends in {@code /} is treated
+     * as a segment boundary directly.
+     *
+     * @param path   the request path to test
+     * @param prefix the route {@code path_prefix} to test against
+     * @return {@code true} when the path is at or below the prefix on a segment boundary
+     */
+    private static boolean matchesPrefix(String path, String prefix) {
+        if (path.equals(prefix)) {
+            return true;
+        }
+        return prefix.endsWith("/") ? path.startsWith(prefix) : path.startsWith(prefix + "/");
     }
 }

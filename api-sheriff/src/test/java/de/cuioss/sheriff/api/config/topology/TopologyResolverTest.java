@@ -103,6 +103,18 @@ class TopologyResolverTest {
     }
 
     @Test
+    void trimsSurroundingWhitespaceBeforeParsing() throws Exception {
+        Path file = topologyFile("ORDERS=  https://orders.internal:8443/api  \n");
+
+        ResolvedTopology topology = resolverWith(Map.of()).resolve(file, List.of(endpointFor("ORDERS")));
+
+        ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
+        assertEquals("orders.internal", upstream.host());
+        assertEquals(8443, upstream.port());
+        assertEquals("/api", upstream.basePath());
+    }
+
+    @Test
     void rejectsMalformedUrl() throws Exception {
         Path file = topologyFile("ORDERS=http://orders internal:8443\n");
 

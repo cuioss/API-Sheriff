@@ -165,16 +165,25 @@ public final class RouteTableBuilder {
     private static boolean headersDistinguish(MatchConfig first, MatchConfig second) {
         for (HeaderMatcher headerA : first.headers()) {
             for (HeaderMatcher headerB : second.headers()) {
-                Optional<String> valueA = headerA.value();
-                Optional<String> valueB = headerB.value();
                 if (headerA.name().equalsIgnoreCase(headerB.name())
-                        && valueA.isPresent() && valueB.isPresent()
-                        && !valueA.get().equals(valueB.get())) {
+                        && (valuesDistinguish(headerA, headerB) || presenceDistinguishes(headerA, headerB))) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
+        Optional<String> valueA = headerA.value();
+        Optional<String> valueB = headerB.value();
+        return valueA.isPresent() && valueB.isPresent() && !valueA.get().equals(valueB.get());
+    }
+
+    private static boolean presenceDistinguishes(HeaderMatcher headerA, HeaderMatcher headerB) {
+        Optional<Boolean> presentA = headerA.present();
+        Optional<Boolean> presentB = headerB.present();
+        return presentA.isPresent() && presentB.isPresent() && !presentA.get().equals(presentB.get());
     }
 
     /**
