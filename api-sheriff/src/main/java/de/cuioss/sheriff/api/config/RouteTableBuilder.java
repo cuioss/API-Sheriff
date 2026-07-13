@@ -22,6 +22,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
@@ -164,9 +165,11 @@ public final class RouteTableBuilder {
     private static boolean headersDistinguish(MatchConfig first, MatchConfig second) {
         for (HeaderMatcher headerA : first.headers()) {
             for (HeaderMatcher headerB : second.headers()) {
+                Optional<String> valueA = headerA.value();
+                Optional<String> valueB = headerB.value();
                 if (headerA.name().equalsIgnoreCase(headerB.name())
-                        && headerA.value().isPresent() && headerB.value().isPresent()
-                        && !headerA.value().get().equals(headerB.value().get())) {
+                        && valueA.isPresent() && valueB.isPresent()
+                        && !valueA.get().equals(valueB.get())) {
                     return true;
                 }
             }
