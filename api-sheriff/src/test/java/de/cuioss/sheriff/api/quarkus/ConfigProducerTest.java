@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -59,7 +60,7 @@ class ConfigProducerTest {
     }
 
     @Test
-    void shouldProduceBeansFromValidConfig() throws IOException {
+    void shouldProduceBeansFromValidConfig() throws Exception {
         ConfigProducer producer = producerForValidConfig();
 
         GatewayConfig gateway = producer.gatewayConfig();
@@ -71,7 +72,7 @@ class ConfigProducerTest {
     }
 
     @Test
-    void shouldLogConfigLoadedOnSuccess() throws IOException {
+    void shouldLogConfigLoadedOnSuccess() throws Exception {
         ConfigProducer producer = producerForValidConfig();
 
         producer.gatewayConfig();
@@ -80,7 +81,7 @@ class ConfigProducerTest {
     }
 
     @Test
-    void shouldBuildOnceAndCacheTheResult() throws IOException {
+    void shouldBuildOnceAndCacheTheResult() throws Exception {
         ConfigProducer producer = producerForValidConfig();
 
         GatewayConfig first = producer.gatewayConfig();
@@ -90,7 +91,7 @@ class ConfigProducerTest {
     }
 
     @Test
-    void shouldAssembleEagerlyOnStartupForValidConfig() throws IOException {
+    void shouldAssembleEagerlyOnStartupForValidConfig() throws Exception {
         ConfigProducer producer = producerForValidConfig();
 
         assertDoesNotThrow(() -> producer.onStartup(null),

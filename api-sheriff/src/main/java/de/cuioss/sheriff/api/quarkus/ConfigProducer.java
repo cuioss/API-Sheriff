@@ -18,8 +18,6 @@ package de.cuioss.sheriff.api.quarkus;
 import java.nio.file.Path;
 import java.util.List;
 
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-
 import de.cuioss.sheriff.api.config.ConfigLogMessages;
 import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
@@ -39,6 +37,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * The framework-bound edge (ADR-0005 seam) that assembles the file-based

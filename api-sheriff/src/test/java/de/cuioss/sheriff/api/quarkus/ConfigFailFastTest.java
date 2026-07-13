@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 
+
 import org.junit.jupiter.api.Test;
 
 import de.cuioss.test.juli.LogAsserts;
@@ -45,7 +46,7 @@ class ConfigFailFastTest {
     }
 
     @Test
-    void shouldThrowFromProducerOnBrokenConfig() throws URISyntaxException {
+    void shouldThrowFromProducerOnBrokenConfig() throws Exception {
         ConfigProducer producer = producerForBrokenConfig();
 
         assertThrows(IllegalStateException.class, producer::gatewayConfig,
@@ -53,7 +54,7 @@ class ConfigFailFastTest {
     }
 
     @Test
-    void shouldFailStartupOnBrokenConfig() throws URISyntaxException {
+    void shouldFailStartupOnBrokenConfig() throws Exception {
         ConfigProducer producer = producerForBrokenConfig();
 
         assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
@@ -61,7 +62,7 @@ class ConfigFailFastTest {
     }
 
     @Test
-    void shouldLogEveryViolationAndTheAbort() throws URISyntaxException {
+    void shouldLogEveryViolationAndTheAbort() throws Exception {
         ConfigProducer producer = producerForBrokenConfig();
 
         assertThrows(IllegalStateException.class, producer::gatewayConfig);
