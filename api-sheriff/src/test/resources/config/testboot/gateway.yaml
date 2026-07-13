@@ -1,0 +1,8 @@
+# Minimal valid boot configuration for the @QuarkusTest container.
+# It declares no endpoints, so the produced RouteTable is empty; its sole purpose
+# is to let ConfigProducer assemble successfully during full-container tests
+# (GatewayResourceTest, ProxyRouteTest). Referenced by sheriff.config.dir in the
+# test application.properties.
+version: 1
+metadata:
+  config_version: "test-boot"

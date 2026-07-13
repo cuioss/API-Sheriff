@@ -1,0 +1,6 @@
+# Intentionally broken gateway configuration used by ConfigFailFastTest.
+# It violates the D2 gateway schema in two ways: 'version' is a string rather than
+# an integer, and 'unknown_key' is not an allowed top-level property
+# (additionalProperties: false). Loading it must fail fast at boot.
+version: "not-an-integer"
+unknown_key: true
