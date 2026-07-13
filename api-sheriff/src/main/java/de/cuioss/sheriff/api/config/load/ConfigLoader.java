@@ -40,6 +40,7 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
 import com.networknt.schema.JsonSchema;
@@ -248,10 +249,13 @@ public final class ConfigLoader {
     private static ObjectMapper buildMapper() {
         SimpleModule module = new SimpleModule();
         module.addDeserializer(UpstreamDefaultsConfig.class, new UpstreamDefaultsDeserializer());
+        // Register the Jdk8 module explicitly (Optional support) rather than via
+        // findAndAddModules()'s ServiceLoader discovery, which does not resolve in a
+        // native image and leaves Optional-typed record components unbindable.
         return YAMLMapper.builder()
                 .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .findAndAddModules()
+                .addModule(new Jdk8Module())
                 .addModule(module)
                 .build();
     }
