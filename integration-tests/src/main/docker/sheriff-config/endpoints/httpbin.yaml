@@ -1,0 +1,16 @@
+# The single proxied endpoint the integration suite exercises. Its /proxy route
+# is the only route in the assembled RouteTable, so a request that echoes proves
+# the gateway sourced its upstream from this mounted configuration (not from a
+# removed static ProxyConfiguration). The UPSTREAM topology alias resolves to the
+# go-httpbin echo backend (topology.properties), overridable per environment by
+# TOPOLOGY_UPSTREAM (the benchmark overlay repoints it at nginx-static).
+endpoint:
+  id: httpbin
+  enabled: true
+  base_url: UPSTREAM
+  auth:
+    require: none
+  routes:
+    - id: httpbin-proxy
+      match:
+        path_prefix: /proxy

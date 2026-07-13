@@ -67,9 +67,10 @@ services:
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
-      # Interim proxy route -> go-httpbin echo backend (reached by service name)
-      - SHERIFF_PROXY_PATH_PREFIX=/proxy
-      - SHERIFF_PROXY_UPSTREAM_URL=http://go-httpbin:8080/anything
+      # File-based configuration mounted at /app/sheriff-config: the proxy edge
+      # sources its routes and upstreams from the assembled RouteTable, and the
+      # UPSTREAM topology alias resolves to the go-httpbin echo backend.
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
 
     depends_on:
       - keycloak
@@ -78,6 +79,8 @@ services:
     volumes:
       # Read-only certificate mount (production pattern)
       - ./src/main/docker/certificates:/app/certificates:ro
+      # Read-only file-based gateway configuration mount (production pattern)
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
       # Mount target directory for log files (defaults to ./target)
       - ${LOG_TARGET_DIR:-./target}:/logs:rw
 

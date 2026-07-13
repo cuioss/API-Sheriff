@@ -15,7 +15,9 @@ services:
 
   api-sheriff:
     environment:
-      # Override the IT upstream (go-httpbin) with the static backend for benchmarks
-      - SHERIFF_PROXY_UPSTREAM_URL=http://nginx-static:8080
+      # Override the UPSTREAM topology alias (go-httpbin) with the static backend
+      # for benchmarks. TOPOLOGY_<ALIAS> takes precedence over topology.properties,
+      # so the mounted config is reused unchanged and only the target is repointed.
+      - TOPOLOGY_UPSTREAM=http://nginx-static:8080
     depends_on:
       - nginx-static
