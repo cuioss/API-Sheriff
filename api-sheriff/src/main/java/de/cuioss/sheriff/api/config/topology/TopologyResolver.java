@@ -28,7 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
@@ -59,7 +59,7 @@ public final class TopologyResolver {
     private static final int HTTP_PORT = 80;
     private static final int HTTPS_PORT = 443;
 
-    private final Function<String, @Nullable String> environment;
+    private final UnaryOperator<@Nullable String> environment;
 
     /**
      * Creates a resolver backed by the process environment
@@ -75,7 +75,7 @@ public final class TopologyResolver {
      * @param environment maps an environment-variable name to its value, or
      *                    {@code null} when undefined
      */
-    public TopologyResolver(Function<String, @Nullable String> environment) {
+    public TopologyResolver(UnaryOperator<@Nullable String> environment) {
         this.environment = Objects.requireNonNull(environment, "environment");
     }
 

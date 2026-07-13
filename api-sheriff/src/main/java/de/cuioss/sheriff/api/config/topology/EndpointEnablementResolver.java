@@ -18,7 +18,7 @@ package de.cuioss.sheriff.api.config.topology;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import org.jspecify.annotations.Nullable;
@@ -42,7 +42,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class EndpointEnablementResolver {
 
-    private final Function<String, @Nullable String> environment;
+    private final UnaryOperator<@Nullable String> environment;
 
     /**
      * Creates a resolver backed by the process environment
@@ -58,7 +58,7 @@ public final class EndpointEnablementResolver {
      * @param environment maps an environment-variable name to its value, or
      *                    {@code null} when undefined
      */
-    public EndpointEnablementResolver(Function<String, @Nullable String> environment) {
+    public EndpointEnablementResolver(UnaryOperator<@Nullable String> environment) {
         this.environment = Objects.requireNonNull(environment, "environment");
     }
 

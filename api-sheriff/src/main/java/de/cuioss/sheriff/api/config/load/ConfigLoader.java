@@ -140,24 +140,28 @@ public final class ConfigLoader {
     private List<EndpointConfig> loadEndpoints(List<ConfigError> errors) {
         List<EndpointConfig> endpoints = new ArrayList<>();
         for (Path path : listEndpointFiles(errors)) {
-            String file = ENDPOINTS_DIR + "/" + path.getFileName();
-            JsonNode root = readYaml(path, file, errors);
-            if (root == null) {
-                continue;
-            }
-            validate(endpointSchema, root, file, errors);
-            resolveSecrets(root, file, "", errors);
-            if (hasErrorsFor(file, errors)) {
-                continue;
-            }
-            JsonNode block = root.get(ENDPOINT_ROOT);
-            applyEnabledDefault(block);
-            EndpointConfig endpoint = bind(block, EndpointConfig.class, file, errors);
+            EndpointConfig endpoint = loadEndpoint(path, errors);
             if (endpoint != null) {
                 endpoints.add(endpoint);
             }
         }
         return endpoints;
+    }
+
+    private @Nullable EndpointConfig loadEndpoint(Path path, List<ConfigError> errors) {
+        String file = ENDPOINTS_DIR + "/" + path.getFileName();
+        JsonNode root = readYaml(path, file, errors);
+        if (root == null) {
+            return null;
+        }
+        validate(endpointSchema, root, file, errors);
+        resolveSecrets(root, file, "", errors);
+        if (hasErrorsFor(file, errors)) {
+            return null;
+        }
+        JsonNode block = root.get(ENDPOINT_ROOT);
+        applyEnabledDefault(block);
+        return bind(block, EndpointConfig.class, file, errors);
     }
 
     private List<Path> listEndpointFiles(List<ConfigError> errors) {
@@ -315,7 +319,7 @@ public final class ConfigLoader {
             if (blockNode == null) {
                 return true;
             }
-            JsonNode enabled = blockNode.get("enabled");
+            JsonNode enabled = blockNode.get(ENABLED_FIELD);
             return enabled == null || enabled.asBoolean(true);
         }
     }

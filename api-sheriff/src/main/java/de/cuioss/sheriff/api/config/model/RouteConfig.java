@@ -50,8 +50,8 @@ public record RouteConfig(String id, Optional<Protocol> protocol, MatchConfig ma
      * absent optionals to {@link Optional#empty()}.
      */
     public RouteConfig {
-        id = Objects.requireNonNull(id, "id");
-        match = Objects.requireNonNull(match, "match");
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(match, "match");
         protocol = Objects.requireNonNullElse(protocol, Optional.empty());
         auth = Objects.requireNonNullElse(auth, Optional.empty());
         securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());

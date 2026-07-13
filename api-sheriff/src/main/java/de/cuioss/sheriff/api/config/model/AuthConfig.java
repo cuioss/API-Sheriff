@@ -42,7 +42,7 @@ public record AuthConfig(String require, List<String> requiredScopes) {
      * unmodifiable list and normalizing an absent list to empty.
      */
     public AuthConfig {
-        require = Objects.requireNonNull(require, "require");
+        Objects.requireNonNull(require, "require");
         requiredScopes = requiredScopes == null ? List.of() : List.copyOf(requiredScopes);
     }
 }

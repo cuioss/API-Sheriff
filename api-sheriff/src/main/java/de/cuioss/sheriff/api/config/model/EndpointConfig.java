@@ -54,9 +54,9 @@ public record EndpointConfig(String id, boolean enabled, String baseUrl, AuthCon
      * collections, and normalizing absent components.
      */
     public EndpointConfig {
-        id = Objects.requireNonNull(id, "id");
-        baseUrl = Objects.requireNonNull(baseUrl, "baseUrl");
-        auth = Objects.requireNonNull(auth, "auth");
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(baseUrl, "baseUrl");
+        Objects.requireNonNull(auth, "auth");
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
         upstreamDefaults = Objects.requireNonNullElse(upstreamDefaults, Optional.empty());
         routes = routes == null ? List.of() : List.copyOf(routes);

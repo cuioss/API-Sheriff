@@ -27,6 +27,7 @@ import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.OidcConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
@@ -230,7 +231,7 @@ public final class ConfigValidator {
     }
 
     private static void validateSessionMode(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.oidc().flatMap(oidc -> oidc.session()).ifPresent(session ->
+        gateway.oidc().flatMap(OidcConfig::session).ifPresent(session ->
                 session.mode().ifPresent(mode -> {
                     if ("cookie".equals(mode) && session.encryptionKey().isEmpty()) {
                         errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/encryption_key",

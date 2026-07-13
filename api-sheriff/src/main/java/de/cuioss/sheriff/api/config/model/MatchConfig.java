@@ -41,7 +41,7 @@ public record MatchConfig(String pathPrefix, List<HttpMethod> methods, Optional<
      * collections, and normalizing absent components.
      */
     public MatchConfig {
-        pathPrefix = Objects.requireNonNull(pathPrefix, "pathPrefix");
+        Objects.requireNonNull(pathPrefix, "pathPrefix");
         methods = methods == null ? List.of() : List.copyOf(methods);
         host = Objects.requireNonNullElse(host, Optional.empty());
         headers = headers == null ? List.of() : List.copyOf(headers);
@@ -64,7 +64,7 @@ public record MatchConfig(String pathPrefix, List<HttpMethod> methods, Optional<
          * optionals.
          */
         public HeaderMatcher {
-            name = Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(name, "name");
             present = Objects.requireNonNullElse(present, Optional.empty());
             value = Objects.requireNonNullElse(value, Optional.empty());
         }

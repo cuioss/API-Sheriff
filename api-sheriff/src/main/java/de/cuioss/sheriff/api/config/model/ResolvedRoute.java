@@ -57,12 +57,12 @@ public record ResolvedRoute(String id, Protocol protocol, MatchConfig match, Aut
      * {@link Protocol#HTTP}.
      */
     public ResolvedRoute {
-        id = Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(id, "id");
         protocol = protocol == null ? Protocol.HTTP : protocol;
-        match = Objects.requireNonNull(match, "match");
-        effectiveAuth = Objects.requireNonNull(effectiveAuth, "effectiveAuth");
+        Objects.requireNonNull(match, "match");
+        Objects.requireNonNull(effectiveAuth, "effectiveAuth");
         effectiveAllowedMethods = effectiveAllowedMethods == null ? List.of() : List.copyOf(effectiveAllowedMethods);
-        upstream = Objects.requireNonNull(upstream, "upstream");
+        Objects.requireNonNull(upstream, "upstream");
     }
 
     /**

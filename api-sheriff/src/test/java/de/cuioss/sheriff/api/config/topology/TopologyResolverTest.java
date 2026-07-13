@@ -117,25 +117,31 @@ class TopologyResolverTest {
     @Test
     void rejectsMalformedUrl() throws Exception {
         Path file = topologyFile("ORDERS=http://orders internal:8443\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
 
         assertThrows(TopologyResolutionException.class,
-                () -> resolverWith(Map.of()).resolve(file, List.of(endpointFor("ORDERS"))));
+                () -> resolver.resolve(file, endpoints));
     }
 
     @Test
     void rejectsUrlWithoutSchemeOrHost() throws Exception {
         Path file = topologyFile("ORDERS=orders.internal:8443\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
 
         assertThrows(TopologyResolutionException.class,
-                () -> resolverWith(Map.of()).resolve(file, List.of(endpointFor("ORDERS"))));
+                () -> resolver.resolve(file, endpoints));
     }
 
     @Test
     void rejectsMissingAliasReferencedByEnabledEndpoint() throws Exception {
         Path file = topologyFile("OTHER=https://other.internal\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));
 
         assertThrows(TopologyResolutionException.class,
-                () -> resolverWith(Map.of()).resolve(file, List.of(endpointFor("MISSING"))));
+                () -> resolver.resolve(file, endpoints));
     }
 
     @Test

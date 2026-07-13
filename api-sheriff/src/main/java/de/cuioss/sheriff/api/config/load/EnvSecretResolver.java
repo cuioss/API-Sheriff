@@ -16,7 +16,7 @@
 package de.cuioss.sheriff.api.config.load;
 
 import java.util.Objects;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -42,9 +42,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class EnvSecretResolver {
 
-    private static final Pattern REFERENCE = Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)}");
+    private static final Pattern REFERENCE = Pattern.compile("\\$\\{([A-Za-z_]\\w*)}");
 
-    private final Function<String, @Nullable String> lookup;
+    private final UnaryOperator<@Nullable String> lookup;
 
     /**
      * Creates a resolver backed by the process environment
@@ -60,7 +60,7 @@ public final class EnvSecretResolver {
      * @param lookup maps an environment-variable name to its value, or {@code null}
      *               when the variable is undefined
      */
-    public EnvSecretResolver(Function<String, @Nullable String> lookup) {
+    public EnvSecretResolver(UnaryOperator<@Nullable String> lookup) {
         this.lookup = Objects.requireNonNull(lookup, "lookup");
     }
 

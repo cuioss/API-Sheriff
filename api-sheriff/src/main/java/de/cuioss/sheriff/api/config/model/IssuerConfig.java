@@ -38,8 +38,8 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
      * optionals to {@link Optional#empty()}.
      */
     public IssuerConfig {
-        name = Objects.requireNonNull(name, "name");
-        issuer = Objects.requireNonNull(issuer, "issuer");
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(issuer, "issuer");
         audience = Objects.requireNonNullElse(audience, Optional.empty());
         jwks = Objects.requireNonNullElse(jwks, Optional.empty());
     }
@@ -62,7 +62,7 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
          * optionals to {@link Optional#empty()}.
          */
         public Jwks {
-            source = Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(source, "source");
             url = Objects.requireNonNullElse(url, Optional.empty());
             file = Objects.requireNonNullElse(file, Optional.empty());
         }

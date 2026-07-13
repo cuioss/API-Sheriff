@@ -39,8 +39,8 @@ public record ResolvedUpstream(String scheme, String host, int port, String base
      * an absent {@code basePath} to the empty string.
      */
     public ResolvedUpstream {
-        scheme = Objects.requireNonNull(scheme, "scheme");
-        host = Objects.requireNonNull(host, "host");
+        Objects.requireNonNull(scheme, "scheme");
+        Objects.requireNonNull(host, "host");
         basePath = basePath == null ? "" : basePath;
     }
 }
