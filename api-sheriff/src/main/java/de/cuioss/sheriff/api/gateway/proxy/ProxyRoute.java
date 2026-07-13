@@ -21,9 +21,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 
+import de.cuioss.sheriff.api.config.model.ResolvedRoute;
+import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.api.config.model.RouteTable;
 import de.cuioss.sheriff.api.gateway.proxy.ProxyLogMessages.INFO;
 import de.cuioss.sheriff.api.gateway.proxy.ProxyLogMessages.WARN;
 import de.cuioss.tools.logging.CuiLogger;
@@ -39,19 +43,24 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 
 /**
- * Interim minimal reverse proxy: a single catch-all Vert.x route on the data
- * plane that forwards matched requests to a configured upstream.
+ * Interim minimal reverse proxy: a Vert.x route per configured
+ * {@code path_prefix} that forwards matched requests to the upstream resolved for
+ * that route.
  * <p>
- * Behaviour (deliberately interim — Plan 03 keeps this edge and replaces the
+ * The routing table is the {@link RouteTable} assembled by the configuration
+ * subsystem (Deliverable 7); this edge sources each route's upstream from the
+ * table's {@link ResolvedUpstream} rather than from a single static configuration
+ * bean. Behaviour (deliberately interim — Plan 03 keeps this edge and replaces the
  * internals with the real request pipeline):
  * <ul>
- *   <li>The route matches {@code <path-prefix>/*}; the prefix is stripped and the
- *       remaining path plus the query string are appended to the upstream URL.</li>
+ *   <li>One route is registered per {@code path_prefix} in the table; the prefix
+ *       is stripped and the remaining path plus the query string are appended to
+ *       the route's upstream base URL.</li>
  *   <li>Method, path remainder, query and body pass through; hop-by-hop headers
  *       are stripped in both directions.</li>
  *   <li>Forwarding uses a blocking JDK {@link HttpClient} {@code send()} executed
  *       on a virtual thread, so the Vert.x event loop is never blocked.</li>
- *   <li>Any path outside the prefix falls through to the default {@code 404}
+ *   <li>Any path with no matching route falls through to {@code 404}
  *       (deny-by-default); upstream failures surface as {@code 502}.</li>
  * </ul>
  *
@@ -80,23 +89,22 @@ public class ProxyRoute {
             "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
             "te", "trailer", "transfer-encoding", "upgrade", "content-length");
 
-    private final ProxyConfiguration config;
+    private final RouteTable routeTable;
     private final ExecutorService virtualThreadExecutor;
     private final HttpClient httpClient;
-    private final String upstreamBaseUrl;
 
     /**
      * Creates the proxy route.
      *
-     * @param config                the interim proxy configuration
+     * @param routeTable            the assembled route table sourcing each route's
+     *                              upstream
      * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor
      *                              (thread names use {@code quarkus.virtual-threads.name-prefix})
      */
     @Inject
-    public ProxyRoute(ProxyConfiguration config, @VirtualThreads ExecutorService virtualThreadExecutor) {
-        this.config = config;
+    public ProxyRoute(RouteTable routeTable, @VirtualThreads ExecutorService virtualThreadExecutor) {
+        this.routeTable = routeTable;
         this.virtualThreadExecutor = virtualThreadExecutor;
-        this.upstreamBaseUrl = stripTrailingSlash(config.upstreamUrl());
         this.httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(10))
@@ -105,37 +113,50 @@ public class ProxyRoute {
     }
 
     /**
-     * Registers the catch-all proxy route on the data-plane router at startup.
+     * Registers one catch-all proxy route per {@code path_prefix} in the route
+     * table on the data-plane router at startup.
      *
      * @param router the Vert.x web router, observed during Quarkus startup
      */
     public void registerRoutes(@Observes Router router) {
-        String routePath = stripTrailingSlash(config.pathPrefix()) + "/*";
-        router.route(routePath)
-                .handler(BodyHandler.create())
-                .handler(ctx -> virtualThreadExecutor.execute(() -> forward(ctx)));
-        LOGGER.info(INFO.ROUTE_REGISTERED, config.pathPrefix(), upstreamBaseUrl);
+        for (ResolvedRoute route : routeTable.routes()) {
+            String routePath = stripTrailingSlash(route.pathPrefix()) + "/*";
+            router.route(routePath)
+                    .handler(BodyHandler.create())
+                    .handler(ctx -> virtualThreadExecutor.execute(() -> forward(ctx)));
+            LOGGER.info(INFO.ROUTE_REGISTERED, route.pathPrefix(), upstreamBaseUrl(route.upstream()));
+        }
     }
 
     /**
-     * Forwards a single request to the upstream. Runs on a virtual thread; the
-     * response is written back on the Vert.x context.
+     * Forwards a single request to the upstream resolved for its matching route.
+     * Runs on a virtual thread; the response is written back on the Vert.x context.
      *
      * @param ctx the routing context of the matched request
      */
     private void forward(RoutingContext ctx) {
-        String prefix = stripTrailingSlash(config.pathPrefix());
+        String rawUri = ctx.request().uri();
+        int queryStart = rawUri.indexOf('?');
+        String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
+        String rawQuery = queryStart < 0 ? "" : rawUri.substring(queryStart);
+
+        Optional<ResolvedRoute> match = routeTable.lookup(rawPath);
+        if (match.isEmpty()) {
+            ctx.vertx().runOnContext(v -> {
+                if (!ctx.response().ended()) {
+                    ctx.response().setStatusCode(404).end();
+                }
+            });
+            return;
+        }
+
+        String prefix = stripTrailingSlash(match.get().pathPrefix());
+        String upstreamBaseUrl = upstreamBaseUrl(match.get().upstream());
         // Everything that can throw (substring, URI parsing, send) stays inside the
         // try so any failure yields a 502 rather than an uncaught error that would
         // leave the client hanging on the virtual thread.
         String target = upstreamBaseUrl;
         try {
-            // Derive the remainder from the raw (still percent-encoded) request URI so
-            // the original path/query encoding is preserved without double-encoding.
-            String rawUri = ctx.request().uri();
-            int queryStart = rawUri.indexOf('?');
-            String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
-            String rawQuery = queryStart < 0 ? "" : rawUri.substring(queryStart);
             String remainder = rawPath.substring(prefix.length());
             target = upstreamBaseUrl + remainder + rawQuery;
 
@@ -186,6 +207,11 @@ public class ProxyRoute {
                 ctx.response().setStatusCode(502).end();
             }
         });
+    }
+
+    private static String upstreamBaseUrl(ResolvedUpstream upstream) {
+        return stripTrailingSlash("%s://%s:%d%s".formatted(upstream.scheme(), upstream.host(), upstream.port(),
+                upstream.basePath()));
     }
 
     private static String stripTrailingSlash(String value) {

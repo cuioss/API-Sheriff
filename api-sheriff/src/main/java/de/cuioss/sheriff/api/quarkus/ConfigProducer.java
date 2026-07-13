@@ -38,6 +38,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Singleton;
 
 /**
  * The framework-bound edge (ADR-0005 seam) that assembles the file-based
@@ -82,11 +83,16 @@ public class ConfigProducer {
 
     /**
      * Produces the bound global gateway document.
+     * <p>
+     * {@link Singleton} (a pseudo-scope, no client proxy) because
+     * {@link GatewayConfig} is a {@code record}: ArC cannot subclass a final type to
+     * build the proxy a normal scope such as {@code @ApplicationScoped} would require.
+     * The bean is immutable and assembled once at boot, so a single instance is exact.
      *
      * @return the immutable, validated {@link GatewayConfig}
      */
     @Produces
-    @ApplicationScoped
+    @Singleton
     public GatewayConfig gatewayConfig() {
         buildOnce();
         return gateway;
@@ -94,11 +100,16 @@ public class ConfigProducer {
 
     /**
      * Produces the assembled route table.
+     * <p>
+     * {@link Singleton} (a pseudo-scope, no client proxy) because {@link RouteTable}
+     * is a {@code record}: ArC cannot subclass a final type to build the proxy a
+     * normal scope such as {@code @ApplicationScoped} would require. The bean is
+     * immutable and assembled once at boot, so a single instance is exact.
      *
      * @return the immutable, longest-prefix-ordered {@link RouteTable}
      */
     @Produces
-    @ApplicationScoped
+    @Singleton
     public RouteTable routeTable() {
         buildOnce();
         return routeTable;
