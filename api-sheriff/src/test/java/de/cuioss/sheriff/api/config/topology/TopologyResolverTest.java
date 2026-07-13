@@ -25,10 +25,14 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Stream;
 
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
@@ -114,34 +118,23 @@ class TopologyResolverTest {
         assertEquals("/api", upstream.basePath());
     }
 
-    @Test
-    void rejectsMalformedUrl() throws Exception {
-        Path file = topologyFile("ORDERS=http://orders internal:8443\n");
+    @ParameterizedTest(name = "rejects {1}")
+    @MethodSource("invalidTopologies")
+    void rejectsInvalidTopology(String topologyContent, String scenario, String endpointAlias) throws Exception {
+        Path file = topologyFile(topologyContent);
         TopologyResolver resolver = resolverWith(Map.of());
-        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
+        List<EndpointConfig> endpoints = List.of(endpointFor(endpointAlias));
 
         assertThrows(TopologyResolutionException.class,
                 () -> resolver.resolve(file, endpoints));
     }
 
-    @Test
-    void rejectsUrlWithoutSchemeOrHost() throws Exception {
-        Path file = topologyFile("ORDERS=orders.internal:8443\n");
-        TopologyResolver resolver = resolverWith(Map.of());
-        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
-
-        assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints));
-    }
-
-    @Test
-    void rejectsMissingAliasReferencedByEnabledEndpoint() throws Exception {
-        Path file = topologyFile("OTHER=https://other.internal\n");
-        TopologyResolver resolver = resolverWith(Map.of());
-        List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));
-
-        assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints));
+    static Stream<Arguments> invalidTopologies() {
+        return Stream.of(
+                Arguments.of("ORDERS=http://orders internal:8443\n", "malformed url", "ORDERS"),
+                Arguments.of("ORDERS=orders.internal:8443\n", "url without scheme or host", "ORDERS"),
+                Arguments.of("OTHER=https://other.internal\n", "missing alias referenced by enabled endpoint",
+                        "MISSING"));
     }
 
     @Test
