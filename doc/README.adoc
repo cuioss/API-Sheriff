@@ -28,8 +28,10 @@ together*.
   *Where it and the archived manifest differ, `doc/client` governs.*
 
 | link:technical_aspects.adoc[Technical Aspects]
-| The CUI libraries API Sheriff builds on -- `cui-http` (downstream calls + inbound
-  security filtering), `token-sheriff-validation` (offline JWT validation),
+| The CUI libraries API Sheriff builds on -- `cui-http` (inbound security filtering,
+  forwarded-header resolution, control-plane calls -- see
+  link:adr/0008-data-plane-transport.adoc[ADR-0008]), `token-sheriff-validation` (offline JWT
+  validation),
   `token-sheriff-client` (the OIDC confidential-client engine used by the BFF variants),
   logging and testing.
 
@@ -87,8 +89,10 @@ configuration. Each has its own design section:
 == Implementation Plans
 
 Sequenced plans for building what these documents describe live under
-link:plan/README.adoc[`plan/`]: base implementation, configuration management, and the
-request pipeline. Each plan names the design documents that must be read before
+link:plan/README.adoc[`plan/`]: base implementation and configuration management (delivered),
+then endpoint anchors, the request pipeline, protocol processors, the TLS edge, the two BFF
+variants (server-session first), and release readiness -- the full sequence to the 1.0 cut.
+Rate limiting is out of scope. Each plan names the design documents that must be read before
 implementing it.
 
 == Architecture Decisions
@@ -111,7 +115,8 @@ implementing it.
 
 | link:adr/0004-topology-indirection.adoc[ADR-0004]
 | Configuration layout: portable endpoint files reference `base_url` aliases resolved by
-  `topology.properties`; a single URL per alias, overridable by `TOPOLOGY_<ALIAS>` env vars.
+  `topology.properties`; a single URL per alias. Amendment A1: env override expressed as a
+  visible in-file `${TOPOLOGY_<ALIAS>:-default}` placeholder, not a convention-named lookup.
 
 | link:adr/0005-module-structure.adoc[ADR-0005]
 | One Quarkus module for now (no separate core module yet); keep the framework-agnostic seam
@@ -120,6 +125,18 @@ implementing it.
 | link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]
 | Stream data-plane bodies with backpressure; use the `HttpResult<T>` materialize-the-body
   pattern on the control plane only. `max_body_bytes` is a streaming counter, not a buffer.
+
+| link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]
+| Anchors: namespace-scoped policy in `gateway.yaml` -- disjoint path namespaces carrying an
+  inherited, non-weakenable policy floor (auth/filter/headers/methods), single declared
+  membership per route, wholesale replacement, erased into the route table at boot.
+  *(Status: proposed.)*
+
+| link:adr/0008-data-plane-transport.adoc[ADR-0008]
+| Data plane: Vert.x `HttpClient` (streams, trailers, upgrades) shared per upstream tuple;
+  resilience via per-route programmatic SmallRye Fault Tolerance guards with a stream-aware
+  retry gate; gateway-side response caching rejected; `not_modified.enabled` = end-to-end
+  conditional pass-through; `cui-http`'s client stack is control-plane only.
 |===
 
 == Reading Order

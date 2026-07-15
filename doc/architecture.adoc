@@ -18,9 +18,13 @@ the active mode is a function of configuration.
 == Component Model
 
 An inbound request flows left to right through a fixed pipeline. The TLS edge terminates
-(or passes through) the connection; the security filter, route matcher, authentication layer,
-and zero-trust forward policy each act in turn; a request that fails any stage is rejected
-before it reaches the upstream. The event system and metrics observe every stage.
+(or passes through) the connection; a *security-headers/CORS stage* prepares the response
+headers applied to *every* response -- including rejections -- and answers CORS preflight
+`OPTIONS` requests before authentication (preflights carry no credentials by spec; see
+link:configuration.adoc#_security_headers[Configuration -- `security_headers`]); then the
+security filter, route matcher, authentication layer, and zero-trust forward policy each act
+in turn; a request that fails any stage is rejected before it reaches the upstream. The event
+system and metrics observe every stage.
 
 image::resources/diagrams/request-pipeline.svg[Inbound request pipeline: TLS edge, security filter, route match, authenticate, forward policy, then upstream, align=center]
 
@@ -37,11 +41,13 @@ start* on invalid configuration -- it never serves traffic against a partially v
 table. Only *Static mode* is supported initially (link:adr/0002-initial-scope.adoc[ADR-0002]);
 the manifest's dynamic `/api/gateway-config.json` discovery pattern is deferred.
 
-Configuration is layered: a global `gateway.yaml`, one *portable* `endpoints/*.yaml` file per
-service that references an abstract `base_url` alias, and a `topology.properties` that binds each
-alias to a concrete location (overridable by `TOPOLOGY_<ALIAS>` env vars). Endpoint files carry no
-real host, so a deployment is relocated by changing only the topology
-(link:adr/0004-topology-indirection.adoc[ADR-0004]).
+Configuration is layered: a global `gateway.yaml` (including the namespace-scoped `anchors`
+policy, link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]), one *portable* `endpoints/*.yaml`
+file per service that references an abstract `base_url` alias, and a `topology.properties`
+that binds each alias to a concrete location (environment overrides are visible in-file
+`${VAR:-default}` placeholders, link:adr/0004-topology-indirection.adoc[ADR-0004] +
+Amendment A1). Endpoint files carry no real host, so a deployment is relocated by changing
+only the topology.
 
 Immutability is a security property: a running node's behaviour is fully determined by an
 auditable, reproducible artifact. Changes are rolled out by restarting nodes (rolling
@@ -77,12 +83,14 @@ with `404` (deny-by-default). Routes from all endpoint files form one table orde
 most-specific-first; see link:configuration.adoc#_route_ordering[Configuration -- Route ordering]. Routing
 carries no dynamic rule language.
 
-Only routes of *enabled* endpoints enter the table: an endpoint switched off by `enabled: false`
-or `ENDPOINT_<ID>_ENABLED=false` contributes nothing (its paths fall through to `404`), which
+Only routes of *enabled* endpoints enter the table: an endpoint switched off by its resolved
+`enabled` value (file literal or `${ENDPOINT_<ID>_ENABLED:-...}` placeholder, ADR-0004 A1)
+contributes nothing (its paths fall through to `404`), which
 lets one config set be shipped across environments and toggled per environment (see
 link:configuration.adoc#_endpoint_identity[Configuration -- `endpoint`]). Orthogonally, a coarse
-*positive verb allowlist* -- `allowed_methods`, global with wholesale per-endpoint override and
-no inheritance -- gates which HTTP methods an endpoint serves at all: a routed request whose
+*positive verb allowlist* -- `allowed_methods`, global with wholesale per-anchor and
+per-endpoint replacement and no inheritance -- gates which HTTP methods an endpoint serves at
+all: a routed request whose
 method is outside the matched route's effective set is rejected `405` with an `Allow` header,
 above and beyond the per-route `match.methods` matcher (see
 link:configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`]).
@@ -153,28 +161,43 @@ TCP-peer gate, scheme/host/port/prefix only when `trust_scheme_host` opts in -- 
 gateway emits *freshly regenerated* canonical output from it: `X-Forwarded-*` by default,
 RFC 7239 opt-in and additive
 (link:adr/0003-forwarded-headers.adoc[ADR-0003]); inbound chains are never propagated.
-Everything else is stripped. This deny-by-default posture is the KrakenD-inspired security
-default.
+Everything else is stripped. This deny-by-default posture is the security default throughout.
 
 === Downstream Client
 
-Upstream calls use `cui-http`:
+The upstream client is split by plane
+(link:adr/0008-data-plane-transport.adoc[ADR-0008]):
 
-* `HttpHandler` -- immutable, thread-safe client wrapper; HTTPS-by-default with a TLS 1.2+
-  floor; per-route connect/read timeouts.
-* `ETagAwareHttpAdapter` -- optional ETag/304 caching.
-* `ResilientHttpAdapter` -- non-blocking retry with exponential backoff (parks no thread);
-  idempotency-aware.
-* `HttpResult<T>` -- sealed `Success`/`Failure`; failures carry an `HttpErrorCategory`
-  (`NETWORK_ERROR`, `SERVER_ERROR`, `CLIENT_ERROR`, `INVALID_CONTENT`, `CONFIGURATION_ERROR`)
-  and may carry fallback content for graceful degradation.
-* Per-route *circuit breaker* -- a small gateway-side component wrapped around the adapter
-  chain (stateless, per node): opens after the configured consecutive failures, half-opens
-  after `reset_ms`. `cui-http` supplies retry and timeouts but no breaker, so this is gateway
-  code by design.
-
-The adapters are `CompletableFuture`-based; under the virtual-thread model the gateway may
-also call the blocking JDK `send()` from a virtual-thread-per-request worker.
+* *Data plane -- Vert.x `HttpClient`.* Proxied traffic is dispatched on the Vert.x client
+  that already runs the edge: request and response bodies are piped as streams in both
+  directions, and the transport natively provides what the later protocol plans need --
+  HTTP trailers (gRPC), raw upgrade streams (WebSocket), upstream h2. One shared client and
+  connection pool per *distinct upstream target tuple* (resolved host + connect/read timeouts
+  + TLS context), options assembled once at boot; timeouts are millisecond-precision client
+  options.
+* *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per route, built at boot
+  from `upstream.retry` / `upstream.circuit_breaker` and invoked around the dispatch call in
+  the framework-bound edge layer (no annotations, no CDI interception on the hot path; the
+  framework-agnostic core carries only the resolved policy values, per
+  link:adr/0005-module-structure.adoc[ADR-0005]). Retry is *stream-aware*: an attempt is
+  retried only for an idempotent method *and only when zero request-body bytes have been sent
+  upstream* -- there is no replay buffer. The breaker is stateless per node: opens after the
+  configured consecutive failures, half-opens after `reset_ms`; state transitions surface as
+  WARN LogRecords and metrics.
+* *Control plane -- `cui-http`.* The gateway's own small, bounded JSON calls (OIDC discovery,
+  JWKS, token exchange, revocation -- made chiefly inside the token-sheriff libraries) use
+  `HttpHandler` (immutable, thread-safe, HTTPS-by-default), `ResilientHttpAdapter`
+  (idempotency-aware retry), `ETagAwareHttpAdapter` (ETag/304 caching of the gateway's *own*
+  control resources), and `HttpResult<T>` (sealed `Success`/`Failure` with `HttpErrorCategory`
+  and fallback content).
+* *No gateway response cache.* Response caching of proxied traffic -- including serving a
+  cached body on an upstream `304` -- is rejected by design: a shared cache keyed by less
+  than the full authorization context is a cross-user data leak, and any variant materializes
+  proxied bodies (the ADR-0006 anti-pattern). Conditional requests instead pass through
+  end-to-end, governed per route by `upstream_defaults.not_modified.enabled`: enabled relays
+  `If-None-Match`/`If-Modified-Since` and the upstream's `304`/`ETag`/`Last-Modified`
+  untouched (a `304` has no body -- streaming-compatible, zero gateway state); disabled
+  strips the validators in both directions.
 
 *Two planes, two body shapes* (link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]). The
 `HttpResult<T>` *materialize-the-body* pattern is used on the *control plane* only -- the small,
@@ -187,8 +210,10 @@ the sink's write queue is full) and *never* materializes the proxied body into
 `HttpResult<byte[]>`/`HttpResult<String>`. Buffering a proxied body is the documented OOM /
 broken-SSE / lost-backpressure anti-pattern every mainstream proxy avoids by default; the
 `security_filter.max_body_bytes` cap is enforced as a *streaming byte counter*, not by holding
-the body. `HttpResult`'s control metadata (status, `HttpErrorCategory`) may still drive the
-`502`/`503`/`504` mapping as long as the body itself stays a stream.
+the body. The `502`/`503`/`504` failure mapping is driven by the gateway's own event types
+from the Vert.x client / fault-tolerance guard outcomes
+(link:adr/0008-data-plane-transport.adoc[ADR-0008]) -- `HttpResult` does not appear on the
+data plane.
 
 [[_event_system]]
 == Event System
@@ -237,8 +262,8 @@ names the category but leaks no internal detail. The consolidated status mapping
 | `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
 | `403` | Valid credentials lacking a required scope; failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `INPUT_VALIDATION`
-| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default or endpoint override); the response carries an `Allow` header listing the permitted set | `INPUT_VALIDATION`
-| `429` | Rate limit exceeded -- *reserved*; the feature is deferred | --
+| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `INPUT_VALIDATION`
+| `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
@@ -306,7 +331,8 @@ HTTP/3 / QUIC is deferred.
 
 | WebSocket
 | Proxied bidirectionally (Quarkus/Vert.x). Authentication is enforced on the handshake; the
-  established stream is relayed. A differentiator -- WebSocket is enterprise-only in KrakenD.
+  established stream is relayed. A differentiator against the evaluated competitors (see
+  link:features-analysis.adoc[Feature Analysis]).
 
 | gRPC (incl. gRPCS)
 | gRPC rides on HTTP/2, so it is largely covered by the standard HTTP/2 path: the gateway
@@ -333,8 +359,11 @@ behaviour applies to them.
 The gateway targets a virtual-thread-per-request model:
 
 * Inbound security validation is synchronous CPU work and runs inline on the request thread.
-* Downstream I/O uses either the `cui-http` async `CompletableFuture` adapters or blocking
-  JDK `HttpClient.send()` from a virtual-thread worker -- both are virtual-thread-friendly.
+* Data-plane downstream I/O is the shared Vert.x client's event-loop streaming
+  (link:adr/0008-data-plane-transport.adoc[ADR-0008]) -- the virtual thread coordinates the
+  request but never blocks on proxied body bytes. Control-plane calls (inside the
+  token-sheriff libraries) use the `cui-http` async `CompletableFuture` adapters or blocking
+  JDK `HttpClient.send()` from a virtual-thread worker -- both virtual-thread-friendly.
 * Offline token validation (`TokenValidator`) is thread-safe and cache-backed; a single
   instance is created at startup and shared.
 
@@ -366,12 +395,13 @@ shared objects are immutable.
   a profile share one pipeline instance rather than each compiling its own. Built at boot,
   referenced by every matching route's `RouteRuntime`.
 
-| `HttpHandler` (downstream client) + its connection pool
-| Immutable and thread-safe after construction. One `HttpHandler` per *distinct upstream target
+| Data-plane Vert.x `HttpClient` + its connection pool
+| Immutable options, thread-safe client. One Vert.x client per *distinct upstream target
   tuple* (resolved host + connect/read timeouts + TLS context) -- *deduplicated across routes*,
-  so N routes to the same backend with the same timeouts share one handler and one pooled JDK
-  `HttpClient`/connection pool, rather than opening N pools. This is the single biggest "reuse a
-  large object" lever.
+  so N routes to the same backend with the same options share one client and one connection
+  pool, rather than opening N pools (link:adr/0008-data-plane-transport.adoc[ADR-0008]). This
+  is the single biggest "reuse a large object" lever. Per-route resilience guards (SmallRye FT)
+  are built once at boot and wrap the shared client per route.
 
 | `TokenValidator`
 | A single shared, cache-backed, thread-safe instance created at startup (already the rule --
@@ -383,8 +413,10 @@ shared objects are immutable.
 
 | `RouteTable` / per-route `RouteRuntime`
 | Assembled once at boot (matchers, effective auth, effective `allowed_methods`, filter
-  pipelines, forward sets, upstream client chain, circuit breaker, protocol processor). The
-  request path *looks up* an immutable `RouteRuntime`; it compiles nothing.
+  pipelines, forward sets, shared upstream client reference, resilience guard, protocol
+  processor) -- with any anchor policy already resolved into these effective values
+  (link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]); the runtime never consults an anchor.
+  The request path *looks up* an immutable `RouteRuntime`; it compiles nothing.
 
 | Event counters (`GatewayEventCounter`, cui-http `SecurityEventCounter`)
 | Shared, lock-free (`ConcurrentHashMap` + `AtomicLong`); safe to increment concurrently.

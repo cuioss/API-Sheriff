@@ -1,0 +1,125 @@
+= ADR-0007 -- Anchors: Namespace-Scoped Policy Inheritance
+:toc:
+:toclevels: 2
+
+== Status
+
+Proposed.
+
+== Context
+
+The configuration model (link:../configuration.adoc[Configuration Model]) groups routes into
+endpoint files sharing one `base_url` alias and an endpoint-level `auth` default. That is the
+only grouping mechanism: there is no policy level *above* the endpoint, and no formal owner of
+a URL namespace. Two problems follow as the route population grows:
+
+* *Duplication.* A deployment-wide invariant like "every call under `/api` must present a valid
+  bearer token from the configured IdP" must be restated in every endpoint file whose routes
+  live under `/api` -- and equally for the security-filter profile and response-header posture
+  of a surface like `/bff`.
+* *No namespace guarantee.* Nothing prevents a new endpoint file from placing a route under
+  `/api` with a weaker posture. The invariant lives in the operator's head, not in the model --
+  a fail-open risk for a security gateway.
+
+The obvious alternative -- keep duplicating everything per endpoint (the KrakenD position) --
+is maximally explicit but scales poorly for hand-authored files and leaves the fail-open risk
+unaddressed: with duplication the policy floor exists in N places, and one omission is an open
+endpoint.
+
+=== Research findings
+
+How comparable products bundle endpoints and inherit configuration:
+
+* *Kong* -- plugins attach at global / service / route / consumer scope; the most specific
+  scope wins and *replaces the whole plugin config* -- no merging. Tags are metadata only and
+  never carry policy.
+* *APISIX* -- named *Plugin Config* objects bundle plugin settings and are referenced by ID
+  from routes; route-level config overrides the referenced bundle per plugin, wholesale.
+  Grouping by *named reference*, not by URL.
+* *Traefik* -- no inheritance; named middlewares composed as an explicit ordered list per
+  router, entrypoints may prepend a default chain.
+* *Kubernetes Gateway API (GEP-713 policy attachment)* -- hierarchical policies with separate
+  *defaults* and *overrides* semantics; widely criticised for a discoverability problem
+  ("why does my route behave this way?") that required extra status machinery to mitigate.
+* *Azure API Management* -- global -> product -> API -> operation policy scopes; the child
+  policy places an explicit `<base/>` element marking where the parent chain executes -- the
+  child *sees and controls* its inheritance.
+* *NGINX* -- server/location directive inheritance; array directives (`add_header`,
+  `proxy_set_header`) silently *replace* rather than merge at lower levels -- the canonical
+  cautionary tale for implicit merge expectations.
+* *KrakenD* -- deliberately no inheritance; everything flat per endpoint, viable because
+  configs are typically machine-generated.
+* *OpenAPI* -- global `security` requirement overridden per operation *by replacement*.
+
+Three lessons condense out:
+
+. *Nobody deep-merges.* Every surviving design overrides at whole-block granularity. The model
+  already commits to this for endpoint -> route `auth` ("whole block replaces, no merge").
+. *Grouping is usually by named reference, not URL prefix* -- but reference-based grouping
+  cannot express "nothing may appear under `/api` without this posture". For a security
+  gateway, binding policy to a *namespace the anchor owns* buys boot-time namespace
+  enforcement, which the reference model cannot.
+. *Keep the hierarchy shallow and the effective result visible.* Gateway API shows where deep
+  attachment models end up; the existing boot-time materialization (`RouteTable` carries the
+  *effective* auth and methods) is the right antidote and must absorb any new layer.
+
+== Decision
+
+* *Introduce anchors*: named policy scopes declared in `gateway.yaml`, each *owning* a URL
+  path namespace (`path_prefix`) and optionally carrying policy blocks (`auth`,
+  `security_filter`, `security_headers`, `allowed_methods`).
+* *Anchor prefixes are pairwise disjoint* (no anchor prefix is a prefix of another); overlap
+  fails the boot.
+* *Exactly one anchor per route.* Membership is *declared* at the endpoint level (`anchor:`)
+  and may be overridden per route -- never derived silently. A route exposed on two surfaces
+  (e.g. the same upstream under `/api` with bearer and under `/bff` with session) is two
+  routes, one per anchor. Multi-anchor membership is rejected by construction -- it would
+  reintroduce the merge-order ambiguity every surveyed product avoids.
+* *Namespace enforcement at boot.* When an `anchors` block is configured: every enabled
+  route's `match.path_prefix` must fall inside its *declared* anchor's `path_prefix`, and
+  every route whose path falls inside *any* anchor's namespace must declare that anchor.
+  A mismatch (declared anchor vs. actual path) or an undeclared squatter fails the boot.
+  When no `anchors` block is configured, nothing changes.
+* *Inheritance chain and semantics*: `gateway` defaults -> `anchor` -> `endpoint` -> `route`,
+  with *wholesale block replacement at every step, never a merge* -- the one rule the model
+  already has, extended by one rung.
+* *The auth floor cannot be weakened.* If an anchor declares `auth.require` of `bearer` or
+  `session`, a member endpoint/route whose *effective* auth resolves to `require: none` fails
+  the boot. Overriding between non-`none` postures (e.g. anchor `bearer`, route `session`) is
+  a replacement, not a weakening, and is allowed. Non-auth overrides that relax anchor limits
+  follow the existing convention: replacement plus a boot-log WARN.
+* *Endpoint `auth` becomes optional for anchored endpoints* whose anchor declares `auth`; the
+  existing "every endpoint file declares an `auth` block" rule applies unchanged to endpoints
+  without an anchor-provided posture. Every route still has a non-ambiguous effective auth --
+  resolvable from route, endpoint, or anchor -- or the boot fails.
+* *Anchors vanish at runtime.* They are resolved during `RouteTable` assembly into the same
+  materialized per-route effective values that already exist (effective auth, effective
+  `allowed_methods`, now effective filter/headers). The request pipeline never sees an anchor;
+  there is no runtime lookup, and the boot log can print the effective posture per route --
+  the discoverability answer to the Gateway API lesson.
+
+== Consequences
+
+* Namespace invariants become *structural*: "everything under `/api` presents a bearer token"
+  is declared once and enforced at boot; a forgotten declaration is a refused boot, not an
+  open endpoint. This inverts the fail-open risk of the duplication alternative.
+* Endpoint files shed repeated posture blocks and keep locality: overrides are declared in the
+  endpoint file, and the materialized result is visible in the boot log.
+* One more rung in a still-shallow chain (four levels, one override rule). The complexity
+  ceiling observed in Gateway API is avoided by forbidding merge, forbidding multi-membership,
+  and erasing anchors before runtime.
+* The same-upstream-two-surfaces case costs one extra route entry per surface -- accepted; the
+  two surfaces need different auth anyway.
+* Must land *before* the request pipeline (Plan 04) freezes route selection; retrofitting
+  namespace enforcement into an existing pipeline is substantially harder. See
+  link:../plan/03-endpoint-anchors.adoc[Plan 03].
+
+== References
+
+* https://developer.konghq.com/gateway/entities/plugin/[Kong -- plugin scopes and precedence]
+* https://apisix.apache.org/docs/apisix/terminology/plugin-config/[APISIX -- Plugin Config objects]
+* https://doc.traefik.io/traefik/middlewares/overview/[Traefik -- middleware composition]
+* https://gateway-api.sigs.k8s.io/geps/gep-713/[Kubernetes Gateway API -- GEP-713 policy attachment]
+* https://learn.microsoft.com/en-us/azure/api-management/api-management-howto-policies[Azure APIM -- policy scopes and `<base/>`]
+* link:../configuration.adoc[Configuration Model] -- the wholesale-replacement convention this
+  decision extends

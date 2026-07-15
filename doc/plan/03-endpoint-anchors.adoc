@@ -1,0 +1,230 @@
+= Plan 03 -- Endpoint Anchors (Namespace-Scoped Policy)
+:toc:
+:toclevels: 3
+:sectnums:
+
+[IMPORTANT]
+====
+*Ordering: this plan must land before link:04-request-pipeline.adoc[Plan 04 -- Request
+Pipeline].* Anchors are a boot-time concept that changes what the route table materializes;
+retrofitting namespace enforcement after the request pipeline freezes route selection is
+substantially harder.
+====
+
+== Goal
+
+Implement *anchors* as decided in link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] and
+specified in link:../configuration.adoc#_anchors[Configuration Model -- Anchors]: named policy
+scopes in `gateway.yaml` that own disjoint URL path namespaces (`/api`, `/bff`, ...), carry
+policy blocks (`auth`, `security_filter`, `security_headers`, `allowed_methods`) inherited by
+member endpoints/routes with wholesale-replacement semantics, and are enforced and fully
+materialized at boot. Additionally (D4), replace the convention-named, Java-class-level env
+overrides with one transparent in-file `${ENV_VAR}` / `${ENV_VAR:-default}` substitution
+mechanism across all three config artifacts. At the end of this plan the configuration
+subsystem is *feature-complete for anchors and substitution*: parsed, validated, resolved into
+the `RouteTable`'s effective per-route values, and invisible at runtime.
+
+== Required Reading (before implementation)
+
+Read these documents *in full* before touching code; the semantics are specified there, not
+here:
+
+. link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] -- the decision, the research behind it,
+  and the non-negotiables (single membership, no merge, non-weakenable auth floor, boot-time
+  erasure).
+. link:../configuration.adoc[Configuration Model] -- the
+  link:../configuration.adoc#_anchors[Anchors] section, the updated `gateway.yaml` and
+  endpoint exhibits, and the updated
+  link:../configuration.adoc#_configuration_validation_rules_summary[validation-rules summary].
+. Plan 02 (delivered; document archived under
+  `.plan/local/archived-plans/2026-07-13-implement-configuration-management/`) -- the config
+  subsystem this plan extends: loading pipeline, `ConfigValidator` conventions
+  (collect *all* violations), `RouteTableBuilder` materialization, fail-fast CDI wiring.
+. link:../architecture.adoc[Architecture], section "Configuration Subsystem" -- immutability
+  as a security property, refuse-to-start semantics.
+
+== Prerequisites
+
+* Plan 02 delivered (it is): schemas, loader, `ConfigValidator`, `RouteTable`, fail-fast boot.
+* The Plan-02 landing-gap fixes (separate plan, in flight). *Coordination note:* that plan
+  wires `EndpointEnablementResolver` into the producer; D4 below *replaces* the
+  convention-named env-override mechanism entirely (the resolver classes' env lookups are
+  removed). If this plan starts before the gap-fix plan merges, drop the enablement-wiring
+  item there instead of wiring code D4 deletes.
+
+== Design Decisions
+
+Decided in ADR-0007 / the configuration doc; restated here only as implementation directives.
+
+=== D1 -- Schema changes
+
+* `gateway.schema.json`: new optional `anchors` object -- map of anchor name
+  (`[a-z][a-z0-9_-]*`) to `{path_prefix (required), auth, security_filter, security_headers,
+  allowed_methods}`, `additionalProperties: false` at every level; the policy sub-blocks reuse
+  the exact structures already defined for their endpoint/route counterparts (extract shared
+  `$defs` rather than duplicating).
+* `endpoint.schema.json`: new optional `anchor` string on the `endpoint` block and on each
+  route; `auth` on the `endpoint` block changes from required to optional (its
+  conditional mandatoriness moves to the cross-cutting validator, which can see the anchor).
+
+=== D2 -- Model and resolution
+
+* New record `AnchorConfig` (name, pathPrefix, optional policy blocks) under
+  `config.model`; `GatewayConfig` gains `Map<String, AnchorConfig> anchors` (empty map when
+  absent). `EndpointConfig` and `RouteConfig` gain `Optional<String> anchor`.
+* Resolution lives where effective values already live: `RouteTableBuilder` resolves the
+  chain gateway -> anchor -> endpoint -> route per block (wholesale replacement) and
+  materializes the results into `ResolvedRoute`. This extends the existing effective-auth and
+  effective-`allowed_methods` materialization with effective `security_filter` and
+  `security_headers`; the pipeline (Plan 04) reads only the materialized `ResolvedRoute`
+  values (compiled into its own `RouteRuntime`), never an anchor.
+* Boot log: on success, report per route the effective posture (anchor name, effective
+  `auth.require`, filter profile) at INFO -- one line per route, the discoverability
+  requirement from ADR-0007.
+
+=== D3 -- Validation rules (ConfigValidator, all-violations convention)
+
+One rule per bullet, mirroring the updated validation-rules summary:
+
+. anchor-prefix disjointness (no anchor prefix is a prefix of another);
+. declared anchor exists;
+. route path inside its declared anchor's prefix;
+. no undeclared squatter: an enabled route whose path lies inside any anchor namespace must
+  declare that anchor;
+. auth-floor: effective `require: none` under an anchor requiring `bearer`/`session` fails;
+. endpoint-auth conditional mandatoriness: endpoint without `auth` and without an
+  anchor-provided `auth` fails;
+. effective-auth completeness re-checked against the extended chain (the existing
+  effective-auth -> `token_validation`/`oidc` rules now consider anchor-provided auth).
+
+Weakening non-auth overrides (route filter limits above anchor limits, etc.) follow the
+existing boot-WARN convention in `RouteTableBuilder`.
+
+=== D4 -- Unified `${ENV_VAR}` substitution replaces convention-named env overrides
+
+Today the environment can override configuration through two *invisible* channels implemented
+at the Java-class level: `TOPOLOGY_<ALIAS>` (ADR-0004) and `ENDPOINT_<ID>_ENABLED` -- naming
+conventions a reader cannot discover from the files they affect. The gateway always runs in a
+container, so env override is the normal case, not the exception -- it must be *transparent in
+the artifact*, not folklore in resolver code.
+
+Decision:
+
+* *One substitution mechanism* for all three artifacts (`gateway.yaml`, `endpoints/*.yaml`,
+  `topology.properties`), shell-style, resolved *once* on the parsed scalar values *before*
+  schema validation:
+** `${VAR}` -- required; an unset variable fails the boot (the existing secrets semantics,
+   unchanged);
+** `${VAR:-default}` -- optional override; the literal default applies when the variable is
+   unset. This is the form that expresses "file value as default, environment wins" -- the
+   role the convention-named overrides played, now visible in place:
++
+[source,yaml]
+----
+enabled: ${ENDPOINT_APP1_ENABLED:-true}
+----
++
+[source,properties]
+----
+APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
+----
+* *The convention-named Java-level lookups are removed* (`TOPOLOGY_<ALIAS>` inside
+  `TopologyResolver`, the `ENDPOINT_<ID>_ENABLED` machinery). The familiar variable *names*
+  survive as a documented convention in the sample configs; the *mechanism* is the visible
+  placeholder.
+* *Validation operates on the resolved document.* Substitution happens before schema
+  validation and before every cross-cutting rule, so an env-supplied value cannot bypass the
+  anchor auth floor, the secrets rule, or any other check -- and a substitution producing a
+  type-invalid value fails the schema gate with the usual file/pointer error.
+* *Secrets rule unchanged*: fields classified as secrets must still be `${VAR}` references
+  (no default, no literal).
+* *Doc-first cascade (same PR)*: amend link:../adr/0004-topology-indirection.adoc[ADR-0004]
+  (the single-URL-per-alias decision *stands*; the override channel changes from convention
+  env var to in-file placeholder) and rewrite the affected `configuration.adoc` passages
+  (topology env-override section, endpoint `enabled` comment, validation-rules bullets that
+  name `TOPOLOGY_<ALIAS>` / `ENDPOINT_<ID>_ENABLED`).
+
+== Work Breakdown
+
+. *Schemas* (D1) -- extend both schema files; refactor shared block definitions into `$defs`.
+  Review field-by-field against link:../configuration.adoc[the doc]; the doc governs.
+. *Model records* (D2) -- `AnchorConfig`, extended `GatewayConfig`/`EndpointConfig`/
+  `RouteConfig`/`ResolvedRoute`; contract tests via the established `cui-test-value-objects` /
+  `cui-test-generator` patterns; `package-info.java` untouched packages excepted.
+. *Loader* -- bind the new blocks; no new pipeline stages (anchors ride the existing
+  gateway.yaml parse).
+. *`${ENV_VAR}` substitution* (D4) -- generalize the existing secret resolver into the single
+  pre-schema substitution pass (`${VAR}` required / `${VAR:-default}` optional) over all three
+  artifacts; remove the convention-named env lookups (`TOPOLOGY_<ALIAS>` in `TopologyResolver`,
+  the `ENDPOINT_<ID>_ENABLED` machinery). Tests: default applies when unset, env wins when
+  set, unset-without-default fails boot, substitution result is schema-type-checked, secret
+  fields still reject literals and defaults.
+. *Validator rules* (D3) -- each rule with valid + violating fixtures; all violations
+  collected in one pass with file/pointer context, per the Plan 02 convention.
+. *RouteTable materialization* (D2) -- chain resolution, effective-value materialization,
+  weakening WARNs, per-route effective-posture INFO log (new LogRecord, documented in
+  `doc/LogMessages.adoc`).
+. *Sample configs* -- extend `api-sheriff/src/test/resources/config/` sets and the runnable
+  `integration-tests/src/main/docker/sheriff-config/` example with an `anchors` block
+  (`api` + `bff`) and anchored endpoint files; keep the anchor-less variants as fixtures for
+  the "no anchors configured => unchanged" path.
+. *Tests* -- beyond per-rule fixtures: a Quarkus fail-fast test for an anchor violation
+  (squatter route) asserting refused boot; property-based `@GeneratorsSource` tests for
+  namespace containment/disjointness permutations; an assertion that `ResolvedRoute` carries
+  anchor-derived effective values with route-level overrides winning.
+. *Integration test* -- the mounted example config uses anchors; the existing routed-request
+  IT keeps passing (proving materialization is behaviour-neutral for a conforming config);
+  extend the negative script check (`verify-invalid-config-fails.sh`) with an anchor-violation
+  config variant.
+. *Docs & cleanup* -- the D4 doc-first cascade (ADR-0004 amendment, `configuration.adoc`
+  override passages); `doc/LogMessages.adoc` for the new records; verify the
+  link:../configuration.adoc#_anchors[Anchors] section, exhibits, field reference, and
+  validation summary match the implementation field-for-field (the doc changes landed with
+  ADR-0007; fix the *doc* in the same PR if implementation review finds a gap). Flip ADR-0007
+  to `Accepted` in the same PR that merges the implementation.
+. *(Optional, if time permits)* -- start an operator-facing configuration guide (there is
+  none today; `doc/configuration.adoc` is design-level). A thin "configuring API Sheriff"
+  walkthrough seeded from the sample config set; may be split out.
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-03-endpoint-anchors`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+== Acceptance Criteria
+
+* Both schemas validate the new blocks; an unknown key inside `anchors` fails the boot.
+* All seven D3 rules enforced with at least one negative test each; violations reported
+  together with file/pointer context in one pass.
+* `ResolvedRoute` carries anchor-derived effective auth, methods, filter, and headers;
+  route/endpoint overrides replace wholesale; the auth floor is non-weakenable (negative test).
+* A config *without* an `anchors` block behaves exactly as before (regression suite green,
+  anchor-less fixtures untouched).
+* Per-route effective-posture INFO log emitted and documented in `doc/LogMessages.adoc`.
+* `${VAR}` / `${VAR:-default}` substitution works across all three artifacts with the D4 test
+  matrix green; no convention-named env lookup remains in Java code (grep for
+  `TOPOLOGY_`/`ENDPOINT_` env access is clean); ADR-0004 amended and `configuration.adoc`
+  consistent with the placeholder mechanism.
+* `./mvnw -Ppre-commit clean verify -DskipTests` and `./mvnw clean install` pass; coverage of
+  the changed `config` packages >= 80%; integration tests (including the anchor-violation
+  negative script) pass locally and on CI.
+* ADR-0007 status flipped to Accepted.
+
+== Out of Scope
+
+* *Consuming* the materialized `security_filter` / `security_headers` values at runtime --
+  that is Plan 04's pipeline; this plan only guarantees they are resolved and carried.
+* Anchor-level `forward` policy, rate limits, or any block not listed in D1 (add later only
+  with a doc-first change).
+* Multi-anchor membership, anchor nesting/composition, derived (undeclared) membership --
+  rejected by ADR-0007, not deferred.
+* Dynamic configuration (ADR-0002).
