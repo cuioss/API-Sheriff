@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.config;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -31,7 +32,11 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
 
+import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.generator.junit.parameterized.GeneratorType;
+import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
@@ -51,7 +56,13 @@ import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
  * ordering, same-prefix disjointness enforcement, and the materialization of
  * effective auth, effective {@code allowed_methods}, and the three-level
  * retry / not-modified override chain.
+ * <p>
+ * The example-based cases above pin each invariant with one concrete path; the
+ * {@link PropertyBasedInvariants} nested class complements — never replaces — them by
+ * re-asserting the same invariants over generated prefix / host / method
+ * permutations, so a rule that happens to hold only for the chosen literal is caught.
  */
+@EnableGeneratorController
 class RouteTableBuilderTest {
 
     private final RouteTableBuilder builder = new RouteTableBuilder();
@@ -80,6 +91,16 @@ class RouteTableBuilderTest {
 
     private static RouteConfig routeWithPrefix(String id, String pathPrefix, HttpMethod... methods) {
         return RouteConfig.builder().id(id).match(match(pathPrefix, methods)).build();
+    }
+
+    private static RouteConfig routeWithPrefixAndHost(String id, String pathPrefix, String host,
+            HttpMethod... methods) {
+        MatchConfig match = MatchConfig.builder()
+                .pathPrefix(pathPrefix)
+                .methods(List.of(methods))
+                .host(Optional.of(host))
+                .build();
+        return RouteConfig.builder().id(id).match(match).build();
     }
 
     private static RouteConfig routeWithHeader(String id, String pathPrefix, HeaderMatcher header) {
@@ -390,6 +411,136 @@ class RouteTableBuilderTest {
             ResolvedRoute resolved = find(table, "r");
             assertFalse(resolved.retryEnabled(), "absent retry toggle should inherit the endpoint value");
             assertTrue(resolved.notModifiedEnabled(), "absent not-modified toggle should inherit the endpoint value");
+        }
+    }
+
+    @Nested
+    @DisplayName("Invariants over generated prefix / host / method permutations")
+    class PropertyBasedInvariants {
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should order any generated prefix family longest-first, regardless of declaration order")
+        void shouldOrderByLongestPrefixFirstForAnyGeneratedSegment(String segment) {
+            String shortPrefix = "/" + segment;
+            String midPrefix = shortPrefix + "/mid";
+            String longPrefix = midPrefix + "/leaf";
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("short", shortPrefix, HttpMethod.GET),
+                            routeWithPrefix("long", longPrefix, HttpMethod.GET),
+                            routeWithPrefix("mid", midPrefix, HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of("long", "mid", "short"),
+                    table.routes().stream().map(ResolvedRoute::id).toList(),
+                    () -> "routes must be ordered by descending prefix length for segment: " + segment);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should match any generated prefix only on a segment boundary")
+        void shouldMatchOnSegmentBoundaryOnlyForAnyGeneratedSegment(String segment) {
+            String prefix = "/" + segment;
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("target", prefix, HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("segment-boundary matching for prefix " + prefix,
+                    () -> assertEquals("target", table.lookup(prefix).orElseThrow().id(),
+                            "an exact prefix match must resolve the route"),
+                    () -> assertEquals("target", table.lookup(prefix + "/child").orElseThrow().id(),
+                            "a child path must match on the segment boundary"),
+                    () -> assertTrue(table.lookup(prefix + "-suffix").isEmpty(),
+                            "a mere leading-substring match must not resolve the route"));
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept any generated same-prefix pair made disjoint by method")
+        void shouldAcceptSamePrefixRoutesDisjointByMethodForAnyGeneratedSegment(String segment) {
+            String prefix = "/" + segment;
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("reader", prefix, HttpMethod.GET),
+                            routeWithPrefix("writer", prefix, HttpMethod.POST)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(2, table.routes().size(),
+                    () -> "method-disjoint same-prefix routes must both survive for prefix: " + prefix);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should reject any generated same-prefix pair overlapping on method")
+        void shouldRejectSamePrefixRoutesOverlappingOnMethodForAnyGeneratedSegment(String segment) {
+            String prefix = "/" + segment;
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("first", prefix, HttpMethod.GET),
+                            routeWithPrefix("second", prefix, HttpMethod.GET)))
+                    .build();
+            GatewayConfig config = gateway().build();
+            ResolvedTopology topology = topologyWith("ORDERS");
+
+            assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(config, List.of(endpoint), topology),
+                    () -> "method-overlapping same-prefix routes must be rejected for prefix: " + prefix);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept any generated same-prefix pair made disjoint by host")
+        void shouldAcceptSamePrefixRoutesDisjointByHostForAnyGeneratedSegment(String segment) {
+            String prefix = "/" + segment;
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(
+                            routeWithPrefixAndHost("alpha", prefix, segment + "-alpha.example.com", HttpMethod.GET),
+                            routeWithPrefixAndHost("beta", prefix, segment + "-beta.example.com", HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(2, table.routes().size(),
+                    () -> "host-disjoint same-prefix routes must both survive for prefix: " + prefix);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should reject any generated same-prefix pair sharing one host and method")
+        void shouldRejectSamePrefixRoutesSharingHostForAnyGeneratedSegment(String segment) {
+            String prefix = "/" + segment;
+            String host = segment + ".example.com";
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefixAndHost("first", prefix, host, HttpMethod.GET),
+                            routeWithPrefixAndHost("second", prefix, host, HttpMethod.GET)))
+                    .build();
+            GatewayConfig config = gateway().build();
+            ResolvedTopology topology = topologyWith("ORDERS");
+
+            assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(config, List.of(endpoint), topology),
+                    () -> "same-prefix routes sharing host and method must be rejected for prefix: " + prefix);
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Should accept any generated same-prefix pair made disjoint by header presence")
+        void shouldAcceptSamePrefixRoutesDisjointByHeaderForAnyGeneratedSegment(String segment) {
+            String prefix = "/" + segment;
+            String headerName = "X-" + segment;
+            RouteConfig present = routeWithHeader("present", prefix,
+                    HeaderMatcher.builder().name(headerName).present(Optional.of(true)).build());
+            RouteConfig absent = routeWithHeader("absent", prefix,
+                    HeaderMatcher.builder().name(headerName).present(Optional.of(false)).build());
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(present, absent)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(2, table.routes().size(),
+                    () -> "presence-disjoint same-prefix routes must both survive for prefix: " + prefix);
         }
     }
 }
