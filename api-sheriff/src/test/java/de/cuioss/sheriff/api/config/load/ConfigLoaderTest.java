@@ -178,4 +178,35 @@ class ConfigLoaderTest {
         assertEquals(1, loaded.gateway().version());
         assertTrue(loaded.endpoints().isEmpty());
     }
+
+    @Test
+    void rejectsForwardedBlockOmittingTrustedProxies() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trust_scheme_host: true
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("forwarded")),
+                () -> "expected a schema violation for a forwarded block omitting trusted_proxies, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void acceptsForwardedBlockDeclaringEmptyTrustedProxies() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: []
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertTrue(loaded.gateway().forwarded().orElseThrow().trustedProxies().isEmpty(),
+                "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
+    }
 }
