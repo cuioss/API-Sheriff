@@ -63,12 +63,12 @@ class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("container boots healthy from the mounted configuration")
+    @DisplayName("container reports ready — its dependencies are available, not merely the process alive")
     void managementHealthReportsUp() {
         given()
                 .baseUri(managementBaseUri())
                 .when()
-                .get("/q/health/live")
+                .get("/q/health/ready")
                 .then()
                 .statusCode(200)
                 .body("status", is("UP"));
