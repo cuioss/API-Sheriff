@@ -1,0 +1,189 @@
+= Plan 07 -- BFF Foundation + Variant 2 (Server Session)
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Build the Backend-For-Frontend foundation and the *stateful* shape first
+(link:../variants/02-bff-session.adoc[Variant 2], operator decision 2026-07-15): API Sheriff
+becomes a full OIDC confidential client driving the `token-sheriff-client` engine -- auth-code
++ PKCE login, server-side token store, opaque `__Host-` session cookie, `require: session`
+runtime with content negotiation, fixed CSRF defence, transparent refresh, RP-initiated +
+back-channel logout, and RFC 9470 step-up. Plan 08 adds the stateless cookie shape as a
+delta on this foundation.
+
+== Required Reading (before implementation)
+
+. link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] -- *entire document*;
+  it is the behavioural spec this plan implements (login, store, CSRF, logout incl. the
+  logout-`state` cookie and the back-channel logout-token checks, refresh, step-up).
+. `TokenSheriff/doc/client` (`CLIENT-1..22`) -- *authoritative for all BFF concerns*; where
+  it and anything else differ, `doc/client` governs (see `doc/README.adoc`).
+. link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer] --
+  the canonical engine-dependency statement: the engine performs the OAuth legs (auth-code +
+  PKCE, refresh/rotation, RFC 7009 revocation, step-up legs, logout triggering) and wires
+  `token-sheriff-validation` internally; API Sheriff implements *only* the browser-facing
+  side. Do not re-implement flow legs in gateway code.
+. link:../configuration.adoc#_oidc[Configuration -- `oidc`] -- every field of the block
+  (parsed and validated since Plan 02), the reserved-gateway-paths rule (exact match, OIDC
+  host only, *before* the route table), and the `require: session` content-negotiation
+  semantics.
+. link:../variants/03-bff-cookie.adoc[Variant 3] -- read for the shared/delta boundary, so
+  the foundation built here keeps the binding step pluggable.
+
+== Prerequisites
+
+* Plans 03 + 04 delivered (anchors give the `bff` namespace floor; the pipeline provides
+  stage 4 and the reserved-path hook). Plans 05/06 are *not* required.
+* Keycloak in the compose stack (present since Plan 01, so far unused -- "the `integration`
+  realm finally earns its keep" moves here if Plan 04's bearer ITs left anything unclaimed).
+
+== Design Decisions
+
+=== D1 -- Engine dependency (requires dependency approval)
+
+[IMPORTANT]
+====
+New dependencies -- *require explicit user approval before adding*:
+
+* `de.cuioss.sheriff.token:token-sheriff-client-quarkus:0.9.1` (direct; the core
+  `token-sheriff-client` engine arrives transitively). Released line, no snapshots.
+====
+
+The engine owns: authorization-request construction (PKCE, `state`, `nonce`, mix-up
+defence), the code exchange, token validation wiring, refresh with rotation + reuse
+detection, RFC 7009 revocation, step-up authorization legs, end-session URL construction.
+The gateway owns: the reserved HTTP endpoints, the session store, the cookie, CSRF, content
+negotiation, and the back-channel logout receiver's *logout-token checks* (the validation
+library has no logout-token pipeline -- variant doc, Logout).
+
+=== D2 -- Reserved gateway paths
+
+`oidc.redirect_uri` path, `oidc.logout.path`, its return path, and
+`oidc.logout.backchannel_path` are matched *exactly, before the route table, only on the
+OIDC host* (configuration doc). Registered ahead of the catch-all in the edge layer; a proxy
+route `path_prefix: /auth` never swallows `/auth/callback`.
+
+=== D3 -- Session store (`mode: server`)
+
+In-memory store keyed by opaque session id, holding access + refresh + raw ID token and
+metadata (`expiry`, `acr`, `auth_time`, `sid`); secondary index by `sid`/`sub` for O(1)
+back-channel destruction (variant doc, Token Storage). `memory` is the only store --
+single-node / sticky-session deployments; a shared store is deliberately unsupported.
+TTL (`ttl_seconds`) is absolute from login. Session cookie: `HttpOnly`, `Secure`,
+`SameSite=Lax`, `__Host-` prefix, opaque id only.
+
+=== D4 -- `require: session` runtime (stage 4)
+
+Replaces Plan 04's boot-time rejection: resolve session -> token near expiry? refresh
+(single-flight per session) -> inject `Authorization: Bearer` (the automatic injection,
+never configured); enforce `required_scopes` against the *mediated* token's granted scopes
+(-> `403`). Unauthenticated: content negotiation -- a *navigation* request (accepts
+`text/html`) is redirected into the auth-code flow; anything else gets `401`
+`application/problem+json` (configuration doc `require: session`).
+
+=== D5 -- CSRF (fixed behaviour, no knob)
+
+Per the variant doc CSRF section, verbatim: `Origin` exact-match against
+`session.csrf.trusted_origins` on unsafe methods; `Sec-Fetch-Site: same-origin` accepted
+when `Origin` absent; everything else `403` + `CSRF_REJECTED` event.
+
+=== D6 -- Logout, both channels
+
+RP-initiated per the variant doc: revoke (engine), destroy session, expire cookie, redirect
+to `end_session_endpoint` with `id_token_hint` + exact-match `post_logout_redirect_uri` +
+session-bound `state` carried in the short-lived single-use `+__Host-sheriff-logout+`
+cookie; verify on the return leg, then `final_redirect`. Back-channel: signature via the
+issuer/JWKS infrastructure, then the gateway-code logout-token checks (`events` contains the
+back-channel event, `nonce` absent, `sub`/`sid` present), destroy via the secondary index.
+
+=== D7 -- Refresh and step-up
+
+Refresh within `leeway_seconds` through the engine, single-flighted per session; reuse
+detection -> family revoked; failure -> destroy session + `on_failure` semantics. Step-up
+(RFC 9470): parse `insufficient_user_authentication` challenges, attempt silent
+satisfaction, else re-drive the code flow with elevated parameters and replay -- engine legs,
+gateway orchestration.
+
+=== D8 -- Readiness
+
+Extend readiness: for `mode: server`, issuer reachability at startup (architecture, Health)
+via the engine/validation health checks -- reuse, don't rebuild.
+
+== Work Breakdown
+
+. *Dependency* (D1, after approval); verify the engine API surface against 0.9.1 before
+  coding (the docs were verified against pre-release source).
+. *Reserved endpoints* (D2) -- callback, logout, logout-return, back-channel; exact-match
+  registration + unit tests proving a `/auth` proxy route does not swallow them.
+. *Session store + cookie* (D3) -- store contract + memory implementation (TTL eviction,
+  secondary index), cookie codec; unit tests incl. expiry and O(1) back-channel lookup.
+. *Login flow* (D1/D2) -- engine-driven code flow; state/nonce round-trip; session creation.
+. *Stage 4 session auth* (D4) -- negotiation, injection, scope enforcement; remove the
+  boot-time `session` rejection.
+. *CSRF* (D5) -- fixed check + events; parameterized positive/negative tests
+  (trusted origin, untrusted, `Sec-Fetch-Site` variants, absent both).
+. *Logout* (D6) -- both channels; unit tests incl. logout-token check matrix and the
+  logout-`state` cookie round-trip.
+. *Refresh + step-up* (D7) -- single-flight, failure semantics; step-up orchestration.
+. *Readiness* (D8) + metrics/LogRecords for the new events (`CSRF_REJECTED`, session
+  lifecycle, refresh outcomes); document in `doc/LogMessages.adoc`.
+. *Integration tests* (per the link:README.adoc[convention]: complete in this plan) --
+  scripted (browser-less) auth-code flow against compose Keycloak: follow the `302` chain
+  with a cookie jar, submit the Keycloak login form, land on the callback, assert the
+  session cookie; steady-state call through a `require: session` route asserting the echo
+  upstream received the injected bearer and *no* session cookie; XHR-style unauthenticated
+  call -> `401` problem+json, navigation -> `302` to the IdP; CSRF rejection (`403`) on an
+  unsafe method with a foreign `Origin`; RP-initiated logout round-trip ending at
+  `final_redirect` with the session gone; back-channel logout post destroying the session
+  (next call unauthenticated); refresh exercised via a short-token-lifetime realm client.
+  Step-up: unit/mock-level mandatory; Keycloak-level IT only if the realm supports ACR
+  step-up cleanly (record the decision either way).
+. *Benchmarks* (README convention) -- a session-mediated proxied-route WRK benchmark
+  (pre-established session cookie, steady-state mediation: cookie -> store lookup -> bearer
+  injection -> upstream), so BFF mediation overhead is measured against the Plan 04 bearer
+  and plain-proxy baselines. Login-flow throughput is *not* benchmarked (IdP-bound, not
+  gateway hot path).
+. *Docs* -- deviations discovered during implementation go into the variant doc /
+  `configuration.adoc` in the same PR (docs govern).
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-07-bff-server-session`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+If the plan has to be split into multiple PRs (likely -- it is the largest plan), the
+workflow applies to each PR and the build must be green after every one; the boot-time
+`session` rejection falls only in the PR that completes stage 4.
+
+== Acceptance Criteria
+
+* A browser-shaped client completes login -> steady-state mediated calls -> logout against
+  compose Keycloak, entirely through the gateway; the upstream only ever sees the injected
+  bearer.
+* All fixed security behaviours (CSRF, state verification both flows, exact
+  `post_logout_redirect_uri`, logout-token checks) have negative tests.
+* No OAuth leg is implemented in gateway code (review checklist item -- the engine boundary
+  from the architecture doc holds).
+* Integration-test suite green locally and on CI, covering every behaviour above.
+* The session-mediation benchmark runs in the benchmark profile and publishes via the pages
+  pipeline.
+* Quality gate + full verify pass; coverage >= 80% on new packages.
+
+== Out of Scope (explicit)
+
+* `session.mode: cookie` -- Plan 08 (the binding step is kept pluggable here).
+* Shared/external session stores (deliberate non-feature -- variant doc trade-off).
+* `token-sheriff-client` BFF UI/legs beyond what the engine ships (no custom consent pages,
+  no IdP admin).
+* Multi-IdP / per-route OIDC (one global `oidc` block -- one deployment, one BFF shape).

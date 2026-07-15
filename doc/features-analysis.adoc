@@ -104,8 +104,10 @@ set of things well, with zero mandatory external dependencies.
   CORS. Cheap, high value, on-brand.
 
 | *Per-route timeouts, retry, circuit breaker*
-| Traefik/KrakenD built-ins. Retry and timeouts are delivered by `cui-http`; the breaker is
-  gateway code -- component ownership is stated in
+| Traefik/KrakenD built-ins. All three are gateway-side per
+  link:adr/0008-data-plane-transport.adoc[ADR-0008]: retry and the breaker are per-route
+  programmatic SmallRye Fault-Tolerance guards (retry stream-aware), timeouts are options on
+  the shared Vert.x data-plane client -- component ownership is stated in
   link:architecture.adoc#_downstream_client[Architecture -- Downstream Client].
 
 | *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*
@@ -118,17 +120,18 @@ set of things well, with zero mandatory external dependencies.
 | KrakenD (TLS 1.3 default) + Traefik (mTLS, custom certs). Expected of a security gateway.
 |===
 
-=== Tier 3 -- Later
+=== Tier 3 -- Out of Scope (evaluated, not adopted)
 
 [cols="1,3"]
 |===
 | Feature | Rationale
 
 | *Per-node in-memory rate limiting*
-| KrakenD CE / Traefik token-bucket -- explicitly per-node and stateless. Avoid the
-  Redis-backed distributed variant (that is what makes Tyk stateful). The `rate_limit` field
-  is reserved in the link:configuration.adoc[configuration schema] but the feature is
-  *deferred* -- it is not part of the initial release.
+| KrakenD CE / Traefik token-bucket -- explicitly per-node and stateless; the Redis-backed
+  distributed variant is what makes Tyk stateful. Evaluated, and *out of scope* (see the
+  link:plan/README.adoc[plan roadmap]): the `rate_limit` field stays reserved in the
+  link:configuration.adoc[configuration schema] -- accepted and ignored, no `429` is ever
+  produced.
 |===
 
 == Features to Avoid

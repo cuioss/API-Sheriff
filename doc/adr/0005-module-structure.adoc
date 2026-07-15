@@ -10,7 +10,7 @@ Accepted.
 
 API Sheriff's production code currently lives in a single deployable Quarkus module
 (`api-sheriff`), alongside the `integration-tests` and `benchmarks` coordinator modules. As the
-request pipeline (link:../plan/03-request-pipeline.adoc[Plan 03]) lands, that module gains a
+request pipeline (link:../plan/04-request-pipeline.adoc[Plan 04]) lands, that module gains a
 substantial body of logic that is *not* inherently Quarkus-specific: the immutable
 configuration model and validators (Plan 02, delivered),
 the event/counter system, the route table and matchers, the forward policy, and the boot-time
@@ -49,7 +49,7 @@ Concretely:
   MicroProfile Config, Vert.x, or Micrometer -- e.g. `de.cuioss.sheriff.api.config.model`,
   `...config.validation`, `...events`, `...routing`, `...forward`, `...pipeline`. These types
   take their collaborators through *constructor parameters*, never field/CDI injection, and are
-  assembled once at boot (see link:../plan/03-request-pipeline.adoc[Plan 03]'s `RouteRuntime`).
+  assembled once at boot (see link:../plan/04-request-pipeline.adoc[Plan 04]'s `RouteRuntime`).
 * *Confine framework wiring to an edge layer.* CDI producers/observers, the Vert.x route
   handler, config-source plumbing, health/metrics binding, and the RFC 9457 exception edge live
   in dedicated packages (e.g. `...quarkus`, `...edge`) that *may* depend on the framework and
@@ -79,7 +79,7 @@ Negative / to watch:
 
 * The boundary is enforced by an arch-gate rule rather than by module compilation, so it is
   only as strong as that rule -- the rule must be present and part of the quality gate from the
-  first pipeline PR (Plan 03), or the seam silently erodes.
+  first pipeline PR (Plan 04), or the seam silently erodes.
 * If the framework-agnostic surface grows large and stable, the argument for a real module
   strengthens; this ADR is explicitly a *"not yet"*, not a *"never"*.
 

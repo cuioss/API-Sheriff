@@ -20,15 +20,17 @@ Two structural principles shape the layout:
 * *Zero-trust and deny-by-default* throughout: nothing is forwarded, routed, or trusted unless
   it is explicitly configured.
 
-The model draws the best of the evaluated competitors (see link:features-analysis.adoc[Feature Analysis]):
+The model rests on a small set of adopted patterns:
 
-* *Endpoint-centric routes* with per-route timeout and circuit breaker -- from KrakenD.
-* *Composable, bounded matchers* (path, method, host, header) -- from Traefik.
-* *Validated-then-immutable, atomic config* -- from APISIX standalone mode + KrakenD GitOps.
-* *Zero-trust forwarding* (deny-by-default allowlists) -- from KrakenD.
-* *Alias -> URL indirection with env override* -- 12-factor "config in the environment"; the
-  single-URL alias and decompose-on-read model follow Kong / Spring / Traefik (see
-  link:adr/0004-topology-indirection.adoc[ADR-0004]).
+* *Endpoint-centric routes* with per-route timeout and circuit breaker.
+* *Composable, bounded matchers* (path, method, host, header).
+* *Validated-then-immutable, atomic config.*
+* *Zero-trust forwarding* (deny-by-default allowlists).
+* *Alias -> URL indirection with env override* -- config in the environment; a single-URL alias,
+  decomposed on read (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
+
+The provenance of these patterns -- what was adopted from which evaluated product and why -- is
+recorded in the link:features-analysis.adoc[Feature Analysis] and the ADRs, not here.
 
 The schema is intentionally declarative; there is no rule language and no runtime mutation API.
 
@@ -42,7 +44,8 @@ Configuration is three kinds of artifact:
 
 | `gateway.yaml`
 | *Global* settings: schema version, TLS, security-response headers, filter defaults, the
-  `forwarded`-header policy, and the `oidc` block (BFF variants). No routes.
+  link:#_anchors[`anchors`] (namespace-scoped policy), the `forwarded`-header policy, and the
+  `oidc` block (BFF variants). No routes.
 
 | `endpoints/*.yaml`
 | *One file per endpoint* -- a service / host / app, or a logical group. Each file binds to one
@@ -70,12 +73,20 @@ conf/
   startup.
 * Each endpoint's `base_url` alias is *resolved* against the topology (env var wins over the file,
   see link:#_topology[Topology]); the resolved URL is *decomposed once* into
-  `{scheme, host, port, base-path}` (the Kong "accept URL, store components" model).
+  `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
 * The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias,
   a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
 * Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
   commit. Topology values may be literal (they are locations, not secrets) but are still
   overridable by env.
+* *Environment override mechanism* (link:adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
+  Amendment A1], implementation lands with link:plan/03-endpoint-anchors.adoc[Plan 03]): every
+  override point is a *visible in-file placeholder* -- `${VAR}` (required; unset fails the
+  boot, the secrets semantics) or `${VAR:-default}` (file default, environment wins) --
+  resolved once, before schema validation, across all three artifacts. The
+  `TOPOLOGY_<ALIAS>` / `ENDPOINT_<ID>_ENABLED` names used throughout this document are the
+  *conventional variable names* written inside those placeholders, not invisible
+  code-level lookups.
 * On any validation error the process exits non-zero and logs the offending file/alias -- it does
   not start a degraded gateway.
 
@@ -99,13 +110,14 @@ file-and-JSON-pointer error before any immutable value object is built:
 
 | `schema/gateway.schema.json`
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
-  `security_headers`, `security_defaults`, `allowed_methods`, `upstream_defaults`, `forwarded`,
-  `token_validation` and `oidc`.
+  `security_headers`, `security_defaults`, `allowed_methods`, `anchors`, `upstream_defaults`,
+  `forwarded`, `token_validation` and `oidc`.
 
 | `schema/endpoint.schema.json`
-| A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`, `auth`,
-  `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's `match`, `auth`,
-  `security_filter`, `forward`, `upstream` and reserved `rate_limit`.
+| A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
+  `anchor`, `auth`, `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's
+  `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream` and reserved
+  `rate_limit`.
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -151,11 +163,21 @@ security_defaults:                 # default inbound filter profile; overridable
   profile: strict                  # default | strict | lenient  (maps to cui-http presets)
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
-                                   #   (global default). An endpoint may REPLACE this wholesale
-                                   #   (no inheritance -- see endpoint.allowed_methods). A routed
-                                   #   request whose method is not in the EFFECTIVE list is
-                                   #   rejected 405. TRACE and CONNECT are never permitted and
+                                   #   (global default). An anchor or endpoint may REPLACE this
+                                   #   wholesale (no inheritance -- see endpoint.allowed_methods).
+                                   #   A routed request whose method is not in the EFFECTIVE list
+                                   #   is rejected 405. TRACE and CONNECT are never permitted and
                                    #   cannot be listed. Omit => the standard set shown here.
+
+anchors:                           # OPTIONAL namespace-scoped policy (see "Anchors"); each
+  api:                             #   anchor OWNS a disjoint path namespace and carries the
+    path_prefix: /api              #   policy floor for every route inside it
+    auth: { require: bearer }      # every /api route presents a bearer token; a member route
+                                   #   may replace this block but never weaken it to `none`
+    security_filter: { profile: strict }
+  bff:
+    path_prefix: /bff
+    auth: { require: session }     # the BFF surface: mediated OIDC session per the oidc block
 
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
@@ -207,6 +229,55 @@ oidc:                              # only used by the BFF variants (2 and 3)
     honor_upstream_challenge: true
 ----
 
+[[_anchors]]
+== Anchors -- Namespace-Scoped Policy
+
+Anchors (decision: link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]) are *named policy scopes
+that own a URL path namespace*. They are declared in `gateway.yaml` and answer one question the
+per-endpoint model cannot: "how is an invariant like _every call under `/api` presents a valid
+bearer token_ declared once and *enforced*, instead of restated in every endpoint file?"
+
+Semantics -- deliberately few rules:
+
+* *Ownership.* Each anchor declares a `path_prefix`; anchor prefixes are pairwise disjoint
+  (no anchor prefix is a prefix of another). The anchor owns everything under its prefix.
+* *Membership: exactly one anchor per route, declared, never derived.* An endpoint file
+  declares `anchor: <name>` as the default for its routes; a route may override it. When any
+  `anchors` block is configured, membership and namespace must agree *both ways*: a route whose
+  declared anchor does not contain its `match.path_prefix` fails the boot, and a route whose
+  path falls inside an anchor namespace without declaring that anchor fails the boot. No
+  `anchors` block => this section does not apply.
+* *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
+  `allowed_methods`. Resolution follows one chain -- *gateway defaults -> anchor -> endpoint ->
+  route* -- and every step *replaces the whole block, never merges* (the same rule as
+  endpoint -> route `auth` today). The chain applies per block *at the scopes where the block
+  exists*: `auth` -> anchor, endpoint, route; `allowed_methods` -> anchor, endpoint (there is
+  no route-level `allowed_methods` -- routes constrain via `match.methods` *within* the
+  effective list); `security_filter` -> anchor, route; `security_headers` -> anchor *only*
+  (below).
+* *`security_headers` resolves at gateway -> anchor level only* -- endpoints and routes cannot
+  override it. Rationale: response headers (and the CORS preflight answer) are emitted
+  *before* route selection, but an anchor is identifiable from the raw path prefix alone -- so
+  stage-0 header preparation and preflight handling use the anchor's block when the request
+  path lies inside an anchor namespace, and the gateway block otherwise (including every
+  pre-routing rejection).
+* *The auth floor cannot be weakened.* Where the anchor declares `require: bearer` or
+  `require: session`, a member whose *effective* auth resolves to `require: none` fails the
+  boot. Replacing one non-`none` posture with another (anchor `bearer`, route `session`) is
+  allowed. Non-auth overrides that relax anchor limits are replacements logged as boot WARNs.
+* *Anchored endpoints may omit `auth`.* The endpoint-level `auth` block becomes optional when
+  the endpoint's anchor declares one; every route must still resolve to an unambiguous
+  effective auth (route, else endpoint, else anchor) or the boot fails.
+* *Anchors vanish at runtime.* They are resolved during route-table assembly into the
+  materialized per-route *effective* values (auth, `allowed_methods`, filter, headers); the
+  request pipeline never consults an anchor. The boot log reports the effective posture per
+  route.
+
+The one modelling consequence: a service exposed on two surfaces -- the same upstream reachable
+under `/api` with bearer *and* under `/bff` with a session -- is *two routes* (in the same
+endpoint file, sharing the `base_url` alias), one per anchor. Multi-anchor membership does not
+exist; it would reintroduce merge-order ambiguity.
+
 == Endpoint Configuration Files (`endpoints/*.yaml`)
 
 One file per endpoint (service / host / app) or logical group. The file binds to a single
@@ -219,17 +290,23 @@ from the topology at startup.
 endpoint:
   id: app1                         # unique endpoint name (mandatory); a duplicate id across
                                    #   endpoint files fails the boot
-  enabled: true                    # default true. false => this endpoint is inert: its routes
-                                   #   are not added to the table and its base_url alias need
-                                   #   not resolve. Overridable per environment by the env var
-                                   #   ENDPOINT_APP1_ENABLED (wins over the file), the same
-                                   #   indirection topology uses
+  enabled: ${ENDPOINT_APP1_ENABLED:-true}   # default true. false => this endpoint is inert:
+                                   #   its routes are not added to the table and its base_url
+                                   #   alias need not resolve. The ${VAR:-default} placeholder
+                                   #   makes the env override visible in-file (ADR-0004 A1);
+                                   #   a plain literal (enabled: true) is equally valid
   base_url: APP1                   # alias; resolved from topology.properties / env
-  auth:                            # MANDATORY: default auth posture for every route in
-    require: bearer                #   this file; a route may override it (below)
-  allowed_methods: [GET, POST]     # optional per-endpoint verb allowlist; REPLACES the global
-                                   #   gateway.allowed_methods wholesale for this endpoint (no
-                                   #   inheritance, no merge). Omit => the global list applies
+  anchor: api                      # anchor membership (see "Anchors"): default for every route
+                                   #   in this file, overridable per route; the route paths must
+                                   #   lie inside the anchor's path_prefix. Mandatory for routes
+                                   #   inside a configured anchor namespace
+  auth:                            # default auth posture for every route in this file; a route
+    require: bearer                #   may override it (below). MANDATORY unless the endpoint's
+                                   #   anchor declares an auth block (see "Anchors")
+  allowed_methods: [GET, POST]     # optional per-endpoint verb allowlist; REPLACES the
+                                   #   anchor/global allowed_methods wholesale for this
+                                   #   endpoint (no inheritance, no merge). Omit => the
+                                   #   anchor's list applies, else the global list
   routes:                          # merged into one table across all endpoint files
                                    #   (see "Route ordering"); no match => 404
     - id: orders-api
@@ -338,11 +415,13 @@ Deny-by-default extends to omitted configuration:
 | Omitted block | Effect
 
 | `auth` (route level)
-| The route inherits the *endpoint's* `auth` block. The authentication posture is defined per
-  endpoint file -- `endpoint.auth` is *mandatory*, and anonymous access is
-  `auth: { require: none }`, written out; there is no implicit default. A route-level `auth`
-  block *replaces* the endpoint default wholesale (no field merging). An endpoint file without
-  an `auth` block fails the boot.
+| The route inherits the *endpoint's* `auth` block (or, when the endpoint omits one, its
+  *anchor's* -- see link:#_anchors[Anchors]). The authentication posture is defined per
+  endpoint file -- `endpoint.auth` is *mandatory unless the endpoint's anchor declares an
+  `auth` block*, and anonymous access is `auth: { require: none }`, written out; there is no
+  implicit default. A route-level `auth` block *replaces* the endpoint/anchor default
+  wholesale (no field merging). An endpoint file with neither its own nor an anchor-provided
+  `auth` block fails the boot.
 
 | `enabled` (endpoint level)
 | The endpoint is *active* (`enabled: true`). Set `false` -- or the env override
@@ -350,29 +429,32 @@ Deny-by-default extends to omitted configuration:
   link:#_endpoint_identity[`endpoint`]).
 
 | `allowed_methods` (endpoint level)
-| The *global* `gateway.allowed_methods` applies (which itself defaults to the standard verb
-  set when omitted). No inheritance/merge -- see link:#_allowed_methods[`allowed_methods`].
+| The *anchor's* `allowed_methods` applies if the route's anchor declares one, else the
+  *global* `gateway.allowed_methods` (which itself defaults to the standard verb set when
+  omitted). No inheritance/merge -- see link:#_allowed_methods[`allowed_methods`].
 
 | `security_filter`
 | The global `security_defaults.profile` applies with the preset's limits.
 
 | `forward`
 | Nothing is forwarded: no request headers and no query parameters cross to the upstream
-  beyond the *automatic* injections (the mediated `Authorization: Bearer` on session routes
-  and the regenerated forwarding-header set -- see `forward` below). A route that needs
-  client input must list it.
+  beyond the *automatic* injections (the mediated `Authorization: Bearer` on session routes,
+  the regenerated forwarding-header set -- see `forward` below -- and, when the route's
+  `not_modified` toggle is enabled, the conditional-request validators, see
+  link:#_upstream_defaults[`upstream_defaults`]). A route that needs client input must list
+  it.
 
 | `rate_limit`
-| No rate limiting (the feature is deferred regardless; the field is reserved).
+| No rate limiting (the feature is out of scope regardless; the field is reserved).
 |===
 
 [[_topology]]
 == Topology (`topology.properties`)
 
-Each `base_url` alias maps to *one URL* -- the concrete location of the current installation. A URL
-is the majority idiom for a human-authored, env-overridden target (12-factor resource handle;
-Traefik `url`, Spring `uri`, Nginx `proxy_pass`); the gateway decomposes it once on load into its
-components. See link:adr/0004-topology-indirection.adoc[ADR-0004].
+Each `base_url` alias maps to *one URL* -- the concrete location of the current installation.
+One atomic URL is the unit of authoring and of override; the gateway decomposes it once on load
+into its components. Rationale and the researched alternatives:
+link:adr/0004-topology-indirection.adoc[ADR-0004].
 
 [source,properties]
 ----
@@ -383,16 +465,19 @@ KEYCLOAK=https://kc.internal:8443
 
 === Environment-variable override (takes precedence)
 
-Any alias may be overridden by an environment variable `TOPOLOGY_<ALIAS>`, which *wins over* the
-file. This lets an operator relocate a backend without touching any file:
+Any alias may be overridden per environment: the entry declares its override point as an
+in-file placeholder (link:adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
+Amendment A1]), with the file value as the default and the environment winning when set:
 
-[source,bash]
+[source,properties]
 ----
-TOPOLOGY_APP1=https://app1.mycompany.com
+APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
 ----
 
-Precedence, highest first: `TOPOLOGY_<ALIAS>` env var -> `topology.properties` entry. An alias
-referenced by an endpoint file that resolves to neither is a *boot failure*.
+An operator relocates a backend by setting `TOPOLOGY_APP1=https://app1.mycompany.com` --
+no file edit. Precedence, highest first: the `TOPOLOGY_<ALIAS>` environment variable -> the
+placeholder's default. A `${VAR}` placeholder without a default whose variable is unset, or
+an alias referenced by an endpoint file that resolves to nothing, is a *boot failure*.
 
 === Resolution semantics
 
@@ -404,7 +489,7 @@ referenced by an endpoint file that resolves to neither is a *boot failure*.
   `upstream.path: /orders` therefore reaches `<resolved APP1>/orders/42`.
 * Component overrides (e.g. changing only the port) are intentionally *not* supported initially; the
   whole URL is the unit of override. A `TOPOLOGY_<ALIAS>_PORT`-style escape hatch may be added later
-  if a real partial-override need appears (Kong's component model) -- see
+  if a real partial-override need appears -- see
   link:adr/0004-topology-indirection.adoc[ADR-0004].
 
 == Field Reference
@@ -432,15 +517,18 @@ enablement fields:
   `base_url` alias *need not resolve* -- so an endpoint whose backend is absent in a given
   environment can be shipped in the config set and simply switched off there. A disabled
   endpoint is still *schema-validated* (typos are caught), it is just not activated. Overridable
-  per environment by the environment variable *`ENDPOINT_<ID>_ENABLED`* (`true`/`false`), which
-  *wins over the file value* -- the same file-plus-env-override indirection
-  link:#_topology[topology] uses. `<ID>` is the upper-cased `id` with hyphens mapped to
-  underscores (endpoint `order-api` -> `ENDPOINT_ORDER_API_ENABLED`).
+  per environment via the in-file placeholder form -- `enabled: ${ENDPOINT_ORDER_API_ENABLED:-true}`
+  -- where the environment variable *wins over the placeholder default* (ADR-0004 Amendment A1,
+  the same mechanism link:#_topology[topology] uses). By convention `<ID>` in the variable name
+  is the upper-cased `id` with hyphens mapped to underscores (endpoint `order-api` ->
+  `ENDPOINT_ORDER_API_ENABLED`).
 |===
 
 The endpoint's other fields are documented under their own headings: `base_url`
-(link:#_topology[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004]), `auth`
-(link:#_auth[`auth`]), `allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
+(link:#_topology[Topology] / link:adr/0004-topology-indirection.adoc[ADR-0004]), `anchor`
+(link:#_anchors[Anchors] -- the normative reference for both the gateway `anchors` block and
+the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
+`allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
 `routes` (link:#_route_ordering[Route ordering] + the per-route field headings).
 
 === `tls`
@@ -583,7 +671,8 @@ UTF-8, doubled slashes) cannot bypass the allowlist. `/api/orders/{id}` matches
 === `auth`
 
 Whether authentication is required is defined *per endpoint file*: `endpoint.auth` is
-mandatory and is the default posture for every route in the file. A route-level `auth` block
+mandatory (unless the endpoint's anchor declares an `auth` block -- see
+link:#_anchors[Anchors]) and is the default posture for every route in the file. A route-level `auth` block
 replaces the endpoint default wholesale for that route (no field merging). "Effective auth"
 below means the route's own block if present, else the endpoint's. `required_scopes` is valid
 at either level; because override is wholesale, a route-level block that omits it *drops*
@@ -595,7 +684,7 @@ is called out in the boot log, so weakening is always an explicit, audited choic
 |===
 | Value | Behaviour
 
-| `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block fails the boot (see "Defaults for omitted blocks").
+| `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see "Defaults for omitted blocks").
 | `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; enforce `required_scopes`. link:variants/01-base-gateway.adoc[Variant 1].
 | `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. `required_scopes` on a session route are enforced against the *mediated* access token's granted scopes -- so they must be requested in `oidc.scopes` at login, or every request on the route fails with `403`.
 |===
@@ -755,11 +844,14 @@ Matchers compose with AND semantics; a route matches only if every declared matc
 === `forward`
 
 Deny-by-default. `headers_allow` / `query_allow` are allowlists; anything not listed is not
-forwarded. `set_headers` adds *static*, gateway-controlled headers. Two injections happen
-*automatically* and are never written in `set_headers`: the mediated `Authorization: Bearer`
-on `require: session` routes (Variants 2/3 -- the gateway sets it from the session's access
-token, and an inbound `Authorization` header from the client is always stripped on those
-routes), and the regenerated forwarding-header set per the `forwarded` policy.
+forwarded. `set_headers` adds *static*, gateway-controlled headers. Three injections happen
+*automatically* and are never written in `set_headers` / `headers_allow`: the mediated
+`Authorization: Bearer` on `require: session` routes (Variants 2/3 -- the gateway sets it
+from the session's access token, and an inbound `Authorization` header from the client is
+always stripped on those routes), the regenerated forwarding-header set per the `forwarded`
+policy, and -- when the route's `not_modified` toggle is enabled -- the conditional-request
+validators `If-None-Match` / `If-Modified-Since`
+(link:#_upstream_defaults[`upstream_defaults`], ADR-0008).
 
 === `upstream`
 
@@ -767,13 +859,14 @@ The target is `resolved(endpoint.base_url) + upstream.path + remainder`, where *
 the request path after stripping the matched `match.path_prefix` -- so path parameters survive
 the mapping (`/api/orders/42` -> `.../orders/42`), and `upstream.path` *replaces* the matched
 prefix rather than prepending to the full request path. Allowed query parameters
-(`forward.query_allow`) are appended unchanged. `connect_timeout_ms` / `read_timeout_ms`
-map to `cui-http` `HttpHandler` (whose builder takes *whole seconds*; a value that is not a
-multiple of 1000 ms -- i.e. does not represent a whole number of seconds -- is rejected at
-boot, fail-fast rather than silently rounded); `retry` maps to `ResilientHttpAdapter` + `RetryConfig`
-(`idempotent_only` retries idempotent methods only -- GET, HEAD, OPTIONS, PUT, DELETE; never
-POST or PATCH). `circuit_breaker` is a small *gateway-side* component wrapped around the
-downstream call -- stateless, per node; `cui-http` supplies retry and timeouts but no breaker
+(`forward.query_allow`) are appended unchanged. `connect_timeout_ms` / `read_timeout_ms` are
+millisecond-precision options on the shared per-upstream-tuple data-plane client
+(link:adr/0008-data-plane-transport.adoc[ADR-0008]). `retry` and `circuit_breaker` map to the
+per-route resilience guard assembled at boot (SmallRye Fault Tolerance, programmatic --
+ADR-0008): retry applies to idempotent methods only (`idempotent_only` -- GET, HEAD, OPTIONS,
+PUT, DELETE; never POST or PATCH) *and* only while no request-body byte has been sent
+upstream; the breaker is stateless per node, opens after `failures` consecutive failures and
+half-opens after `reset_ms`
 (see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
 written literally here -- only the alias-relative `path`.
 
@@ -795,7 +888,15 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
   see link:#_upstream[`upstream`].
 
 | `not_modified.enabled`
-| Whether the route participates in conditional-request / HTTP `304 Not Modified` handling.
+| End-to-end conditional-request *pass-through* for the route
+  (link:adr/0008-data-plane-transport.adoc[ADR-0008]). *Enabled* (default): the
+  conditional-request headers (`If-None-Match`, `If-Modified-Since`) are implicitly part of
+  the route's effective `forward.headers_allow`, and upstream `304` responses plus the
+  validator response headers (`ETag`, `Last-Modified`) relay untouched. *Disabled*: the
+  validators are stripped in *both* directions, deliberately forcing full `200` exchanges --
+  for upstreams whose ETags are inconsistent across nodes or leak inode/version detail. In
+  *neither* state does the gateway cache response bodies or answer `304` from a cache --
+  gateway-side response caching is rejected by design (ADR-0008).
 |===
 
 *Resolution (wholesale, no merge).* Each route's effective `retry` / `not_modified` toggle is,
@@ -821,10 +922,10 @@ upstream_defaults:
 === `rate_limit`
 
 Reserved schema for per-node, in-memory token-bucket rate limiting
-(`requests_per_second`, `burst`). The feature is *deferred* and not part of the initial
-release (link:features-analysis.adoc[Feature Analysis, Tier 3]); the field is documented so
-the schema need not change when it ships. Until then it is accepted and ignored, and no
-`429` is ever produced.
+(`requests_per_second`, `burst`). The feature is *out of scope* (see
+link:plan/README.adoc[the plan roadmap]); the field is documented only so the schema need not
+change should that decision ever be revisited. It is accepted and ignored, and no `429` is
+ever produced.
 
 === `metadata`
 
@@ -834,8 +935,11 @@ discovery is added later (link:adr/0002-initial-scope.adoc[ADR-0002]).
 
 === `security_headers`
 
-Response-header middleware applied to every response the gateway returns (global; a route
-cannot disable it).
+Response-header middleware applied to every response the gateway returns. Resolved at
+*gateway -> anchor* scope only (an anchor may replace the block wholesale for its namespace --
+see link:#_anchors[Anchors]); endpoints and routes can neither override nor disable it.
+Responses emitted before route selection (CORS preflight, pre-routing rejections) use the
+anchor block when the request path lies inside an anchor namespace, else the gateway block.
 
 [cols="1,3"]
 |===
@@ -870,18 +974,19 @@ The global inbound-filter baseline: `profile` selects the `cui-http` preset
 [[_allowed_methods]]
 === `allowed_methods`
 
-A *positive allowlist of HTTP verbs*, declarable at two scopes -- `gateway.yaml` (global) and
-per `endpoint` -- with *explicit no-inheritance semantics*. It is a coarse, defence-in-depth
-verb gate that sits *above* the per-route `match.methods` matcher: `match.methods` selects which
-route serves a verb; `allowed_methods` decides whether the gateway will serve the verb *at all*
-for that endpoint.
+A *positive allowlist of HTTP verbs*, declarable at three scopes -- `gateway.yaml` (global),
+per link:#_anchors[anchor], and per `endpoint` -- with *explicit no-inheritance semantics*.
+It is a coarse, defence-in-depth verb gate that sits *above* the per-route `match.methods`
+matcher: `match.methods` selects which route serves a verb; `allowed_methods` decides whether
+the gateway will serve the verb *at all* for that endpoint.
 
 *Resolution (no inheritance).* Each route's *effective* `allowed_methods` is materialized once
 at boot:
 
-* the *endpoint's* `allowed_methods` if the endpoint declares one -- it *replaces* the global
-  list wholesale for that endpoint (no merge, no union, no intersection -- exactly the
-  wholesale-replace rule the `auth` block uses); else
+* the *endpoint's* `allowed_methods` if the endpoint declares one -- it *replaces* the
+  anchor/global list wholesale for that endpoint (no merge, no union, no intersection --
+  exactly the wholesale-replace rule the `auth` block uses); else
+* the *anchor's* `allowed_methods` if the route's anchor declares one; else
 * the *global* `gateway.allowed_methods` if declared; else
 * the standard set `{GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS}`.
 
@@ -1008,26 +1113,39 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * Every `endpoint.id` is unique across all endpoint files (in one file or across files); a
   duplicate endpoint `id` fails the boot.
 * Every route has a unique `id` (across all endpoint files) and a resolvable `endpoint.base_url`.
-* An endpoint is *enabled* unless `enabled: false` (file) or `ENDPOINT_<ID>_ENABLED=false` (env,
-  which wins). A *disabled* endpoint is schema-validated but otherwise inert: its routes are not
-  merged into the table, its `base_url` alias is *exempt* from the resolution requirement below,
-  and it takes no part in the disjointness / passthrough-collision checks.
-* Every `base_url` alias *of an enabled endpoint* resolves via `TOPOLOGY_<ALIAS>` or
-  `topology.properties` to a well-formed URL; otherwise boot fails.
-* Every endpoint file declares an `auth` block (the default posture for its routes); omitting
-  it fails the boot. Routes may override it per route (see "Defaults for omitted blocks").
+* An endpoint is *enabled* unless its resolved `enabled` value is `false` (file literal, or a
+  `${ENDPOINT_<ID>_ENABLED:-...}` placeholder resolved against the environment -- ADR-0004
+  Amendment A1). A *disabled* endpoint is schema-validated but otherwise inert: its routes are
+  not merged into the table, its `base_url` alias is *exempt* from the resolution requirement
+  below, and it takes no part in the disjointness / passthrough-collision checks.
+* Every `base_url` alias *of an enabled endpoint* resolves (after placeholder substitution)
+  to a well-formed URL; otherwise boot fails.
+* Every endpoint file declares an `auth` block (the default posture for its routes) *unless*
+  its anchor declares one (see link:#_anchors[Anchors]); an endpoint with neither fails the
+  boot. Routes may override it per route (see "Defaults for omitted blocks").
+* Anchor `path_prefix` values are pairwise disjoint -- no anchor prefix is a prefix of another;
+  overlap fails the boot.
+* When an `anchors` block is configured: every enabled route's `match.path_prefix` lies inside
+  its *declared* anchor's `path_prefix`, and every enabled route whose path lies inside any
+  anchor's namespace declares exactly that anchor. A membership/namespace mismatch, a missing
+  declaration inside an anchor namespace, or a reference to an undefined anchor fails the boot.
+* Where a route's anchor declares `auth.require` of `bearer` or `session`, the route's
+  *effective* auth must not resolve to `require: none` -- the anchor floor cannot be weakened;
+  violation fails the boot. Non-auth overrides that relax anchor limits are logged as boot
+  WARNs (weakening-override convention).
 * A route whose *effective* auth is `require: bearer` requires a `token_validation` block with
   at least one issuer.
 * A route whose *effective* auth is `require: session` requires an `oidc` block.
 * Any two routes with an identical `match.path_prefix` -- same file or not -- must be statically
   disjoint (both declare different `host` values, or non-overlapping `methods`, or same-name
   header matchers with different exact values); otherwise the boot fails (see "Route ordering").
-* `allowed_methods` (global or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`, `PATCH`,
-  `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint `allowed_methods`
-  *replaces* the global list wholesale (no inheritance).
+* `allowed_methods` (global, anchor, or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`,
+  `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint
+  `allowed_methods` *replaces* the anchor/global list wholesale, an anchor's replaces the
+  global (no inheritance).
 * Every method in a route's `match.methods` must be a member of that route's *effective*
-  `allowed_methods` (the endpoint's list if declared, else the global list, else the standard
-  set); a route matching a verb its endpoint forbids fails the boot (see
+  `allowed_methods` (the endpoint's list if declared, else the anchor's, else the global list,
+  else the standard set); a route matching a verb its endpoint forbids fails the boot (see
   link:#_allowed_methods[`allowed_methods`]).
 * A route whose `match.host` equals (case-insensitively) a key in `tls.passthrough_sni`
   fails the boot -- the route and the passthrough declaration contradict each other
@@ -1036,9 +1154,10 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   base-path; otherwise the boot fails.
 * `forwarded.trusted_proxies` must be present (may be empty = forwarding headers are never
   trusted); the trust-all CIDRs `0.0.0.0/0` *and* `::/0` are rejected as unsafe.
-* `upstream.connect_timeout_ms` / `read_timeout_ms` values wired through the `cui-http`
-  `HttpHandler` must represent a whole number of seconds (multiples of 1000 ms); anything
-  else fails the boot (no silent rounding).
+* `upstream.connect_timeout_ms` / `read_timeout_ms` must be positive integers; they are
+  millisecond-precision options on the data-plane client
+  (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second
+  restriction, which existed only for the `cui-http` `HttpHandler` builder).
 * Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
   literals.
 * `session.mode: cookie` requires `session.encryption_key`; `previous_key` is optional and

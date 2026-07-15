@@ -27,16 +27,68 @@ The plans build strictly on one another:
   config mounted into the integration containers.
 | Plan 01
 
-| link:03-request-pipeline.adoc[03 -- Request Pipeline]
+| link:03-endpoint-anchors.adoc[03 -- Endpoint Anchors]
+| Namespace-scoped policy (link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]): `anchors` in
+  `gateway.yaml` owning disjoint path namespaces, declared membership, wholesale-replacement
+  inheritance with a non-weakenable auth floor, all materialized into the route table at boot.
+  Plus: transparent in-file `${ENV_VAR:-default}` substitution replacing the convention-named
+  Java-level env overrides (amends ADR-0004's override channel).
+| Plans 01 + 02
+
+| link:04-request-pipeline.adoc[04 -- Request Pipeline]
 | The data plane for standard HTTP verbs: cui-http inbound filtering (basic + per-route),
   route selection, protocol-processor loading, offline bearer validation, zero-trust forward
   policy with regenerated forwarding headers (cui-http:2.1), dispatch with
   retry/circuit breaker, plus the event system, metrics, logging, and RFC 9457 error edge.
-| Plans 01 + 02
+| Plans 01 + 02 + 03
+
+| link:05-protocol-processors.adoc[05 -- Protocol Processors]
+| WebSocket upgrade proxying (full pipeline on the handshake, then bidirectional relay) and
+  gRPC over upstream h2 with *trailer* relay + a gRPC-status rejection mapping -- both native
+  to the ADR-0008 Vert.x transport. GraphQL already rides the HTTP processor. In-repo Quarkus
+  gRPC echo upstream for ITs. Closes the ADR-0002 protocol promise and with it the
+  link:../variants/01-base-gateway.adoc[Variant 1] scope.
+| Plan 04
+
+| link:06-tls-edge.adoc[06 -- TLS Edge: SNI Passthrough + mTLS]
+| Accept-time SNI split: `passthrough_sni` connections relayed as opaque L4 TCP to the
+  topology-resolved backend, everything else terminated with `mtls` client-CA verification;
+  the two L4/L7 guards (boot collision rule, runtime Host-smuggle `404`); Toxiproxy joins
+  the compose stack.
+| Plan 04 (independent of 05)
+
+| link:07-bff-server-session.adoc[07 -- BFF Foundation + Variant 2 (Server Session)]
+| The headline differentiator, *stateful shape first* (operator decision 2026-07-15):
+  `token-sheriff-client` 0.9.1 as the OIDC confidential-client engine; reserved gateway
+  paths; in-memory session store + opaque `__Host-` cookie; `require: session` runtime with
+  content negotiation; fixed CSRF defence; transparent refresh; RP-initiated + back-channel
+  logout; RFC 9470 step-up (link:../variants/02-bff-session.adoc[Variant 2]).
+| Plans 03 + 04; consumes `oidc` config from Plan 02
+
+| link:08-bff-cookie.adoc[08 -- Variant 3 (Cookie, Stateless)]
+| The token-binding delta on the Plan 07 foundation: AES-256-GCM encrypted token cookie,
+  `previous_key` rotation, single-flight refresh with the reuse-as-failure rule,
+  back-channel endpoint deliberately `404`
+  (link:../variants/03-bff-cookie.adoc[Variant 3]).
+| Plan 07
+
+| link:09-release-readiness.adoc[09 -- Release Readiness (1.0 cut)]
+| The operator configuration guide, the ADR-0005 module-extraction checkpoint, a
+  full-surface security audit, benchmark completion with per-variant baselines, native +
+  container hardening, the 1.0.0 release (and the flip of the pre-1.0 rules).
+| All of 05-08
 |===
 
-Later plans (not yet written): WebSocket + gRPC processors, TLS passthrough/mTLS, the two
-BFF variants (`token-sheriff-client`), rate limiting.
+Sequencing rationale: 05 and 06 are small increments on a freshly-built pipeline and transport
+(do them while that knowledge is hot; 05 also completes what ADR-0002 promises for the initial
+scope). The BFF track (07 -> 08) is the largest and riskiest block and lands on a stabilized
+data plane; within it the *stateful* server-session shape comes first (operator decision,
+2026-07-15), the stateless cookie variant is its delta. 05 and 06 are mutually independent
+and independent of the BFF track -- they can be reordered or interleaved freely if priorities
+shift (e.g. pull 07 forward for a BFF demo); within that block the only hard edges are
+08 -> 07 and 09 -> everything (all of 05-07 already require 04, and 07 additionally 03). Explicitly *not* on the roadmap: *rate limiting* (out of scope -- the `rate_limit`
+config stays reserved/accepted-and-ignored, no `429` is produced), and, deferred by
+link:../adr/0002-initial-scope.adoc[ADR-0002], dynamic configuration/discovery and HTTP/3.
 
 == Conventions
 
@@ -46,8 +98,19 @@ BFF variants (`token-sheriff-client`), rate limiting.
   reviewers and watch checks -> handle *every* review comment (fix or justified reply, then
   resolve) -> merge -> `git checkout main && git pull`. Builds must be green after every PR,
   not only at plan completion.
+* *Integration tests are part of the plan, never deferred*: a plan is complete only when
+  every behaviour it delivers is exercised by the `integration-tests` suite (positive and
+  negative paths) and the full integration profile is green -- locally and on CI -- before
+  the plan's final merge. A follow-up plan may *extend* coverage; it never *supplies* missing
+  coverage for a predecessor.
+* *Benchmarks follow the same rule for the hot path*: every plan that adds a runtime
+  data-plane behaviour ships a WRK benchmark for it in the same plan (following the existing
+  lua/sh + metadata conventions so the pages pipeline picks it up unchanged), so regressions
+  stay attributable to the plan that caused them. Boot-time-only plans (02, 03) are exempt --
+  nothing on the hot path to measure. Plan 09 consolidates baselines and regression
+  thresholds; it does not create missing coverage.
 * *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
   with an IMPORTANT block and requires explicit user approval before it is added
-  (CLAUDE.md rule). The remaining snapshot dependency (`token-sheriff-*:1.0.0-SNAPSHOT`)
-  additionally needs a CI-resolvability check before merge.
+  (CLAUDE.md rule). TokenSheriff artifacts use the released line (currently `0.9.1`), never
+  snapshots.
 * Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.
