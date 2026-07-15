@@ -1,5 +1,5 @@
 #!/bin/bash
-# Internal health check script for JWT Integration Tests
+# Internal health check script for API Gateway Integration Tests
 # Uses /dev/tcp for connection testing (Docker best practice)
 
 # Check if the application port is listening using /dev/tcp
