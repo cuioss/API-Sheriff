@@ -98,4 +98,28 @@ class ConfigProducerTest {
                 "a valid configuration should assemble without failing startup");
         assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
     }
+
+    @Test
+    void shouldNotFailBootWhenDisabledEndpointAliasIsUnresolvable() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/disabled.yaml"), """
+                endpoint:
+                  id: disabled
+                  enabled: false
+                  base_url: MISSING_ALIAS
+                  auth:
+                    require: none
+                  routes:
+                    - id: disabled-route
+                      match:
+                        path_prefix: /disabled
+                        methods: ["GET"]
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "a disabled endpoint whose base_url alias resolves to nothing must not fail boot");
+        assertTrue(producer.routeTable().routes().isEmpty(),
+                "a disabled endpoint contributes no route to the assembled table");
+    }
 }
