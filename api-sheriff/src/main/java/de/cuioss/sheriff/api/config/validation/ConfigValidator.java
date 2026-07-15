@@ -19,7 +19,10 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import de.cuioss.sheriff.api.config.load.ConfigError;
@@ -29,7 +32,9 @@ import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.OidcConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
+import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
+import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
 
 /**
@@ -71,7 +76,9 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateWholeSecondTimeouts(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors));
 
     private final List<ValidationRule> rules;
 
@@ -242,6 +249,55 @@ public final class ConfigValidator {
                                 "server session mode requires a store"));
                     }
                 }));
+    }
+
+    private static void validatePassthroughHostCollision(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        Map<String, String> passthrough = passthroughSni(gateway);
+        if (passthrough.isEmpty()) {
+            return;
+        }
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                routeHost(route).ifPresent(host -> {
+                    for (String sniHost : passthrough.keySet()) {
+                        if (sniHost.toLowerCase(Locale.ROOT).equalsIgnoreCase(host)) {
+                            errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
+                                    "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
+                                            .formatted(route.id(), sniHost)));
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    private static void validatePassthroughAliasResolvable(GatewayConfig gateway, ResolvedTopology topology,
+            List<ConfigError> errors) {
+        for (Map.Entry<String, String> entry : passthroughSni(gateway).entrySet()) {
+            String alias = entry.getValue();
+            Optional<ResolvedUpstream> upstream = topology.lookup(alias);
+            if (upstream.isEmpty()) {
+                errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
+                        "unresolved topology alias '%s' referenced by passthrough_sni host '%s'"
+                                .formatted(alias, entry.getKey())));
+                continue;
+            }
+            String basePath = upstream.get().basePath();
+            if (!basePath.isEmpty()) {
+                errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
+                        "passthrough_sni alias '%s' must resolve to an origin without a base path, but resolved to '%s'"
+                                .formatted(alias, basePath)));
+            }
+        }
+    }
+
+    private static Map<String, String> passthroughSni(GatewayConfig gateway) {
+        return gateway.tls().map(TlsConfig::passthroughSni).orElseGet(Map::of);
+    }
+
+    private static Optional<String> routeHost(RouteConfig route) {
+        return route.match().host().map(host -> host.toLowerCase(Locale.ROOT)).filter(host -> !host.isEmpty());
     }
 
     private static String effectiveRequire(EndpointConfig endpoint, RouteConfig route) {

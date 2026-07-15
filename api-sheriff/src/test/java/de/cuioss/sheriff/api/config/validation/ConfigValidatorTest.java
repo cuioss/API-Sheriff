@@ -43,6 +43,7 @@ import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
 
@@ -78,6 +79,21 @@ class ConfigValidatorTest {
         return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
     }
 
+    private static RouteConfig routeWithHost(String id, String host, HttpMethod... methods) {
+        MatchConfig match = MatchConfig.builder()
+                .pathPrefix("/" + id)
+                .methods(List.of(methods))
+                .host(Optional.of(host))
+                .build();
+        return RouteConfig.builder().id(id).match(match).build();
+    }
+
+    private static GatewayConfig gatewayWithPassthrough(Map<String, String> passthroughSni) {
+        return validGateway()
+                .tls(Optional.of(TlsConfig.builder().passthroughSni(passthroughSni).build()))
+                .build();
+    }
+
     private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
             RouteConfig... routes) {
         return EndpointConfig.builder()
@@ -108,6 +124,31 @@ class ConfigValidatorTest {
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report no violations for a route host that no passthrough_sni host claims")
+        void shouldAcceptRouteHostWithoutPassthroughCollision() {
+            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(),
+                    routeWithHost("orders-list", "api.example.com", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
+                    topologyWith("ORDERS", "SECURE"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report no violations for a passthrough_sni alias resolving without a base path")
+        void shouldAcceptResolvablePassthroughAlias() {
+            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
+                    topologyWith("ORDERS", "SECURE"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
         }
@@ -363,6 +404,46 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations for a valid bearer config, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject a route whose match.host collides case-insensitively with a passthrough_sni host")
+        void shouldRejectRouteHostCollidingWithPassthroughSni() {
+            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(),
+                    routeWithHost("orders-list", "SECURE.EXAMPLE.COM", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
+                    topologyWith("ORDERS", "SECURE"));
+
+            assertHasError(errors, "/tls/passthrough_sni",
+                    "route 'orders-list' matches host 'secure.example.com'");
+        }
+
+        @Test
+        @DisplayName("Should reject a passthrough_sni alias that does not resolve")
+        void shouldRejectUnresolvedPassthroughAlias() {
+            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "MISSING"));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/tls/passthrough_sni",
+                    "unresolved topology alias 'MISSING' referenced by passthrough_sni host 'secure.example.com'");
+        }
+
+        @Test
+        @DisplayName("Should reject a passthrough_sni alias resolving to an upstream carrying a base path")
+        void shouldRejectPassthroughAliasWithBasePath() {
+            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+            ResolvedTopology topology = new ResolvedTopology(Map.of(
+                    "ORDERS", new ResolvedUpstream("https", "orders.internal", 443, ""),
+                    "SECURE", new ResolvedUpstream("https", "secure.internal", 443, "/api")));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topology);
+
+            assertHasError(errors, "/tls/passthrough_sni", "must resolve to an origin without a base path");
         }
     }
 

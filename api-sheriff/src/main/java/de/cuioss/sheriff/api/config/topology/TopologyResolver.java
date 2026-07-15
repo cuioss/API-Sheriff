@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -37,16 +38,32 @@ import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Resolves topology aliases to decomposed upstreams for enabled endpoints (pipeline
- * step 6).
+ * Resolves topology aliases to decomposed upstreams for enabled endpoints and for the
+ * supplied additional aliases (pipeline step 6).
  * <p>
  * Each alias (pattern {@code [A-Z][A-Z0-9_]*}) is resolved with the precedence
  * {@code TOPOLOGY_<ALIAS>} environment variable over the {@code topology.properties}
  * file value, validated as a well-formed absolute URL, and decomposed once into a
- * {@link ResolvedUpstream} (ADR-0004). Only aliases referenced by <em>enabled</em>
- * endpoints are resolved; an alias referenced by an enabled endpoint that resolves
- * to neither an environment nor a file value is a boot failure, while a disabled
- * endpoint's alias need not resolve.
+ * {@link ResolvedUpstream} (ADR-0004).
+ * <p>
+ * Two alias sources are resolved, and they fail <em>asymmetrically</em>:
+ * <ul>
+ * <li>An <em>enabled</em> endpoint's {@code base_url} alias must resolve or the boot
+ * fails: an unresolved one throws {@link TopologyResolutionException}.</li>
+ * <li>An {@code additionalAliases} entry (the {@code tls.passthrough_sni} targets)
+ * resolves regardless of endpoint enablement, because passthrough is a TLS-level
+ * concern — but an unresolved one is <em>skipped silently</em> (omitted from the
+ * result), never thrown. This asymmetry is deliberate: this resolver runs
+ * <em>before</em>
+ * {@link de.cuioss.sheriff.api.config.validation.ConfigValidator} in the boot
+ * pipeline, so throwing here would abort the boot at step 6 and make the validator's
+ * unresolved-passthrough-alias rule unreachable. Skipping leaves that validator rule
+ * the sole reporter of the failure and keeps violation collection to a single pass.
+ * A <em>malformed</em> (as opposed to unresolved) URL still throws from either
+ * source.</li>
+ * <li>A <em>disabled</em> endpoint's {@code base_url} alias remains exempt from
+ * resolution entirely and need not resolve.</li>
+ * </ul>
  * <p>
  * Framework-agnostic (ADR-0005): the environment lookup is constructor-injected.
  *
@@ -81,15 +98,23 @@ public final class TopologyResolver {
 
     /**
      * Resolves and decomposes the topology aliases referenced by the enabled
-     * endpoints.
+     * endpoints together with the supplied additional aliases.
      *
-     * @param topologyFile     the {@code topology.properties} file (may be absent)
-     * @param enabledEndpoints the endpoints already filtered to those enabled
+     * @param topologyFile      the {@code topology.properties} file (may be absent)
+     * @param enabledEndpoints  the endpoints already filtered to those enabled
+     * @param additionalAliases aliases to resolve independently of endpoint
+     *                          enablement (the {@code tls.passthrough_sni} targets);
+     *                          an entry that resolves to no value is skipped rather
+     *                          than thrown, leaving
+     *                          {@link de.cuioss.sheriff.api.config.validation.ConfigValidator}
+     *                          to report it
      * @return the immutable resolved topology
-     * @throws TopologyResolutionException when a referenced alias is unresolved or
-     *                                     resolves to a malformed URL
+     * @throws TopologyResolutionException when an alias referenced by an enabled
+     *                                     endpoint is unresolved, or when any
+     *                                     resolved alias carries a malformed URL
      */
-    public ResolvedTopology resolve(Path topologyFile, List<EndpointConfig> enabledEndpoints) {
+    public ResolvedTopology resolve(Path topologyFile, List<EndpointConfig> enabledEndpoints,
+            Collection<String> additionalAliases) {
         Map<String, String> fileAliases = readProperties(topologyFile);
         Map<String, ResolvedUpstream> resolved = new LinkedHashMap<>();
         for (EndpointConfig endpoint : enabledEndpoints) {
@@ -102,6 +127,16 @@ public final class TopologyResolver {
                 throw new TopologyResolutionException(
                         "Unresolved topology alias '%s' referenced by enabled endpoint '%s'"
                                 .formatted(alias, endpoint.id()));
+            }
+            resolved.put(alias, decompose(alias, value.trim()));
+        }
+        for (String alias : additionalAliases) {
+            if (resolved.containsKey(alias)) {
+                continue;
+            }
+            String value = resolveValue(alias, fileAliases);
+            if (value == null) {
+                continue;
             }
             resolved.put(alias, decompose(alias, value.trim()));
         }
