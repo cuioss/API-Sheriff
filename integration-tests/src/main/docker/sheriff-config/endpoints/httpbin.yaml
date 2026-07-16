@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # The single proxied endpoint the integration suite exercises. Its /proxy route
 # is the only route in the assembled RouteTable, so a request that echoes proves
 # the gateway sourced its upstream from this mounted configuration (not from a

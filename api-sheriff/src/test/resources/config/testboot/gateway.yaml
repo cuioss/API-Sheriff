@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../../main/resources/schema/gateway.schema.json
 # Minimal valid boot configuration for the @QuarkusTest container.
 # The sibling endpoints/proxy.yaml + topology.properties add the single /proxy
 # route that ProxyRouteTest exercises, so ConfigProducer assembles a RouteTable

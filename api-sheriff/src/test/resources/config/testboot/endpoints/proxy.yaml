@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../../../main/resources/schema/endpoint.schema.json
 # Proxy endpoint for the @QuarkusTest boot configuration.
 #
 # Declares the single /proxy route ProxyRouteTest exercises. Its upstream is the

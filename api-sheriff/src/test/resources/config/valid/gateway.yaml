@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../../main/resources/schema/gateway.schema.json
 version: 1
 metadata:
   config_version: "2024-05-01"

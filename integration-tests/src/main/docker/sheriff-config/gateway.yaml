@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
 # Global gateway document mounted into the api-sheriff container at
 # /app/sheriff-config (SHERIFF_CONFIG_DIR). Kept intentionally minimal: the proxy
 # integration suite only needs the single httpbin endpoint's /proxy route, and

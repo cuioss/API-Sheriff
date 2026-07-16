@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -49,14 +50,31 @@ class ConfigProducerTest {
               config_version: "2026-07-13"
             """;
 
+    private static final String PASSTHROUGH_HOST = "payments.example.com";
+    private static final String PASSTHROUGH_ALIAS = "PAYMENTS_BACKEND";
+    private static final String PASSTHROUGH_ORIGIN = "https://payments.internal:8443";
+
+    private static final String GATEWAY_WITH_PASSTHROUGH_SNI = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            tls:
+              passthrough_sni:
+                "%s": "%s"
+            """.formatted(PASSTHROUGH_HOST, PASSTHROUGH_ALIAS);
+
     @TempDir
     Path configDir;
 
-    private ConfigProducer producerForValidConfig() throws IOException {
-        Files.writeString(configDir.resolve("gateway.yaml"), VALID_GATEWAY);
+    private ConfigProducer producerForGateway(String gatewayYaml) throws IOException {
+        Files.writeString(configDir.resolve("gateway.yaml"), gatewayYaml);
         ConfigProducer producer = new ConfigProducer();
         producer.configDir = configDir.toString();
         return producer;
+    }
+
+    private ConfigProducer producerForValidConfig() throws IOException {
+        return producerForGateway(VALID_GATEWAY);
     }
 
     @Test
@@ -97,5 +115,67 @@ class ConfigProducerTest {
         assertDoesNotThrow(() -> producer.onStartup(null),
                 "a valid configuration should assemble without failing startup");
         assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
+    }
+
+    @Test
+    void shouldNotFailBootWhenDisabledEndpointAliasIsUnresolvable() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/disabled.yaml"), """
+                endpoint:
+                  id: disabled
+                  enabled: false
+                  base_url: MISSING_ALIAS
+                  auth:
+                    require: none
+                  routes:
+                    - id: disabled-route
+                      match:
+                        path_prefix: /disabled
+                        methods: ["GET"]
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "a disabled endpoint whose base_url alias resolves to nothing must not fail boot");
+        assertTrue(producer.routeTable().routes().isEmpty(),
+                "a disabled endpoint contributes no route to the assembled table");
+    }
+
+    /**
+     * Pins the {@code tls.passthrough_sni} wiring at {@code ConfigProducer}: the map is
+     * host -> alias, so the producer must hand the map's <em>values</em> (the aliases) to
+     * {@link de.cuioss.sheriff.api.config.topology.TopologyResolver}'s
+     * {@code additionalAliases}, never its {@code keySet()} (the SNI hosts).
+     * <p>
+     * The alias is resolvable via {@code topology.properties} while the host key is not a
+     * topology alias at all, which is what makes this test discriminating: with the
+     * correct {@code values()} wiring the alias resolves and the boot is clean, whereas a
+     * {@code keySet()} swap would hand the resolver the host, leave the alias unresolved,
+     * and trip {@code ConfigValidator}'s unresolved-passthrough-alias rule — failing this
+     * test. Asserting on an <em>unresolvable</em> alias instead would be vacuous: the
+     * resolver skips unresolved additional aliases silently, so the validator reports the
+     * same violation under either wiring.
+     */
+    @Test
+    void shouldResolvePassthroughSniAliasValueRatherThanHostKey() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_PASSTHROUGH_SNI);
+        Files.writeString(configDir.resolve("topology.properties"),
+                "%s=%s%n".formatted(PASSTHROUGH_ALIAS, PASSTHROUGH_ORIGIN));
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "the passthrough_sni alias value must reach the topology resolver and resolve");
+        assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
+    }
+
+    @Test
+    void shouldFailBootWhenPassthroughSniAliasIsUnresolvable() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_PASSTHROUGH_SNI);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "an unresolvable passthrough_sni alias should abort startup");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
     }
 }

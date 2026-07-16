@@ -1,5 +1,5 @@
 #!/bin/bash
-# Setup environment for JWT Integration Tests
+# Setup environment for API Gateway Integration Tests
 
 set -e
 
@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ROOT_DIR="$(dirname "$(dirname "$PROJECT_DIR")")"
 
-echo "🔧 Setting up JWT Integration Tests environment"
+echo "🔧 Setting up API Gateway Integration Tests environment"
 
 cd "${PROJECT_DIR}"
 

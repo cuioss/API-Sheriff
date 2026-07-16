@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.api.config.topology;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -42,8 +44,9 @@ import de.cuioss.sheriff.api.config.topology.TopologyResolver.TopologyResolution
 
 /**
  * Tests for {@link TopologyResolver}: file / environment resolution precedence, URL
- * decomposition with scheme-default ports, and the boot failures for malformed or
- * missing aliases referenced by enabled endpoints.
+ * decomposition with scheme-default ports, the boot failures for malformed or
+ * missing aliases referenced by enabled endpoints, and the throw/skip asymmetry
+ * between enabled-endpoint {@code base_url} aliases and additional aliases.
  */
 class TopologyResolverTest {
 
@@ -73,7 +76,8 @@ class TopologyResolverTest {
     void resolvesFromFileAndDecomposesComponents() throws Exception {
         Path file = topologyFile("ORDERS=https://orders.internal:8443/api\n");
 
-        ResolvedTopology topology = resolverWith(Map.of()).resolve(file, List.of(endpointFor("ORDERS")));
+        ResolvedTopology topology = resolverWith(Map.of())
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("https", upstream.scheme());
@@ -87,7 +91,7 @@ class TopologyResolverTest {
         Path file = topologyFile("USERS=https://users.internal\nORDERS=http://orders.internal\n");
 
         ResolvedTopology topology = resolverWith(Map.of())
-                .resolve(file, List.of(endpointFor("USERS"), endpointFor("ORDERS")));
+                .resolve(file, List.of(endpointFor("USERS"), endpointFor("ORDERS")), List.of());
 
         assertEquals(443, topology.lookup("USERS").orElseThrow().port());
         assertEquals(80, topology.lookup("ORDERS").orElseThrow().port());
@@ -99,7 +103,7 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=https://file.host:1000/file\n");
 
         ResolvedTopology topology = resolverWith(Map.of("TOPOLOGY_ORDERS", "https://env.host:2000/env"))
-                .resolve(file, List.of(endpointFor("ORDERS")));
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("env.host", upstream.host());
@@ -110,7 +114,8 @@ class TopologyResolverTest {
     void trimsSurroundingWhitespaceBeforeParsing() throws Exception {
         Path file = topologyFile("ORDERS=  https://orders.internal:8443/api  \n");
 
-        ResolvedTopology topology = resolverWith(Map.of()).resolve(file, List.of(endpointFor("ORDERS")));
+        ResolvedTopology topology = resolverWith(Map.of())
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("orders.internal", upstream.host());
@@ -126,7 +131,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(endpointFor(endpointAlias));
 
         assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints));
+                () -> resolver.resolve(file, endpoints, List.of()));
     }
 
     static Stream<Arguments> invalidTopologies() {
@@ -141,8 +146,47 @@ class TopologyResolverTest {
     void resolvesNothingWhenNoEnabledEndpointsAndToleratesAbsentFile() {
         Path absent = directory.resolve("does-not-exist.properties");
 
-        ResolvedTopology topology = resolverWith(Map.of()).resolve(absent, List.of());
+        ResolvedTopology topology = resolverWith(Map.of()).resolve(absent, List.of(), List.of());
 
         assertTrue(topology.aliases().isEmpty());
+    }
+
+    @Test
+    void resolvesAdditionalAliasNotReferencedByAnyEnabledEndpoint() throws Exception {
+        Path file = topologyFile("ORDERS=https://orders.internal\nSECURE=https://secure.internal:8443\n");
+
+        ResolvedTopology topology = resolverWith(Map.of())
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of("SECURE"));
+
+        ResolvedUpstream upstream = topology.lookup("SECURE").orElseThrow();
+        assertEquals("secure.internal", upstream.host());
+        assertEquals(8443, upstream.port());
+    }
+
+    @Test
+    void skipsUnresolvableAdditionalAliasWithoutThrowing() throws Exception {
+        Path file = topologyFile("ORDERS=https://orders.internal\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
+
+        ResolvedTopology topology = assertDoesNotThrow(
+                () -> resolver.resolve(file, endpoints, List.of("MISSING")),
+                "an unresolvable additional alias must be skipped, not thrown");
+
+        assertAll("the unresolvable additional alias is omitted, leaving ConfigValidator to report it",
+                () -> assertTrue(topology.lookup("MISSING").isEmpty(), "MISSING must be absent from the topology"),
+                () -> assertTrue(topology.lookup("ORDERS").isPresent(), "ORDERS must still resolve"));
+    }
+
+    @Test
+    void stillThrowsForUnresolvableEnabledEndpointAliasAlongsideSkippedAdditionalAlias() throws Exception {
+        Path file = topologyFile("SECURE=https://secure.internal\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));
+        List<String> additionalAliases = List.of("SECURE");
+
+        assertThrows(TopologyResolutionException.class,
+                () -> resolver.resolve(file, endpoints, additionalAliases),
+                "an unresolvable enabled-endpoint base_url alias must still fail the boot");
     }
 }

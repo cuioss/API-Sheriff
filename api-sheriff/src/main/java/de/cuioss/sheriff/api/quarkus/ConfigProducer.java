@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.quarkus;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import de.cuioss.sheriff.api.config.ConfigLogMessages;
 import de.cuioss.sheriff.api.config.RouteTableBuilder;
@@ -29,6 +30,7 @@ import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.Metadata;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.RouteTable;
+import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.topology.TopologyResolver;
 import de.cuioss.sheriff.api.config.validation.ConfigValidator;
 import de.cuioss.tools.logging.CuiLogger;
@@ -122,7 +124,8 @@ public class ConfigProducer {
         try {
             ConfigLoader.LoadedConfig loaded = new ConfigLoader(directory, new EnvSecretResolver()).load();
             List<EndpointConfig> enabled = loaded.endpoints().stream().filter(EndpointConfig::enabled).toList();
-            ResolvedTopology topology = new TopologyResolver().resolve(directory.resolve(TOPOLOGY_FILE), enabled);
+            ResolvedTopology topology = new TopologyResolver().resolve(directory.resolve(TOPOLOGY_FILE), enabled,
+                    loaded.gateway().tls().map(TlsConfig::passthroughSni).map(Map::values).orElse(List.of()));
             List<ConfigError> violations = new ConfigValidator().validate(loaded.gateway(), enabled, topology);
             if (!violations.isEmpty()) {
                 abort(violations);

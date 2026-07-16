@@ -112,6 +112,7 @@
     "forwarded": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["trusted_proxies"],
       "properties": {
         "trusted_proxies": { "type": "array", "items": { "type": "string" } },
         "trust_scheme_host": { "type": "boolean" },
