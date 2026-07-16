@@ -130,7 +130,15 @@ for i in {1..30}; do
     fi
     if [ $i -eq 30 ]; then
         echo "❌ Quarkus service failed to start within 30 seconds"
-        echo "Check logs with: docker compose logs api-sheriff"
+        # Capture the app container log + health payloads so a startup failure is
+        # diagnosable from CI artifacts (uploaded via the failsafe-reports folder).
+        DIAG_DIR="target/failsafe-reports"
+        mkdir -p "$DIAG_DIR"
+        echo "----- docker compose logs api-sheriff -----"
+        docker compose logs --no-color api-sheriff 2>&1 | tee "$DIAG_DIR/api-sheriff-app.log"
+        echo "----- /q/health -----"
+        curl -s http://localhost:19000/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-health.json"
+        echo ""
         exit 1
     fi
     echo "⏳ Waiting for Quarkus... (attempt $i/30)"
