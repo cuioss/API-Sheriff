@@ -137,6 +137,13 @@ implementing it.
   resilience via per-route programmatic SmallRye Fault Tolerance guards with a stream-aware
   retry gate; gateway-side response caching rejected; `not_modified.enabled` = end-to-end
   conditional pass-through; `cui-http`'s client stack is control-plane only.
+
+| link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]
+| Asymmetric alias-resolution failure: an unresolvable enabled-endpoint `base_url` alias
+  throws and aborts boot, while an unresolvable additional (`passthrough_sni`) alias is
+  skipped silently -- the configuration validator stays the single authoritative reporter
+  of alias-resolvability violations.
+  *(Status: proposed.)*
 |===
 
 == Reading Order

@@ -70,6 +70,20 @@
             <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
         </dependency>
 
+        <!-- Token Sheriff: client engine + Quarkus extensions (versions managed by token-sheriff-bom) -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.token</groupId>
+            <artifactId>token-sheriff-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>de.cuioss.sheriff.token</groupId>
+            <artifactId>token-sheriff-client-quarkus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>de.cuioss.sheriff.token</groupId>
+            <artifactId>token-sheriff-validation-quarkus</artifactId>
+        </dependency>
+
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -78,7 +92,7 @@
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-junit5</artifactId>
+            <artifactId>quarkus-junit</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

@@ -53,9 +53,9 @@
     <dependencies>
         <!-- Core benchmark common utilities (gson, HdrHistogram, commons-io are transitive) -->
         <dependency>
-            <groupId>de.cuioss.sheriff.oauth</groupId>
+            <groupId>de.cuioss.sheriff.token</groupId>
             <artifactId>benchmarking-common</artifactId>
-            <version>${version.oauth-sheriff}</version>
+            <version>${version.token-sheriff}</version>
         </dependency>
 
         <!-- CUI Java Tools for logging -->
