@@ -39,8 +39,11 @@ right for the *control plane* -- the small, bounded JSON calls the gateway makes
 discovery, JWKS, token exchange, revocation) -- but it is *not* used for the *data plane*:
 proxied client bodies (large responses, downloads, SSE, chunked/long-lived streams) are
 *streamed* with backpressure and never buffered into an `HttpResult<byte[]>`/`HttpResult<String>`.
-The boundary, and the competitor evidence behind it, is
-link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006].
+The whole cui-http client stack described in this section -- `HttpHandler`,
+`ResilientHttpAdapter`, `ETagAwareHttpAdapter` -- is *control-plane only*; the proxied data
+plane runs on the Vert.x `HttpClient` with per-route fault-tolerance guards. The boundary,
+and the evidence behind it, is link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006] +
+link:adr/0008-data-plane-transport.adoc[ADR-0008].
 
 == HTTP Security Validation
 

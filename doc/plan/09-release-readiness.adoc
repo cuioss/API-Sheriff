@@ -1,0 +1,93 @@
+= Plan 09 -- Release Readiness (1.0 Cut)
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Turn the feature-complete gateway (Plans 01-08) into a releasable 1.0: an operator-facing
+configuration guide (none exists today -- `doc/` is design documentation), the deliberate
+ADR-0005 module-structure checkpoint, a full security-audit sweep over the finished surface,
+benchmark-suite completion with per-variant overhead numbers, native-image and container
+hardening, and the versioned release itself. This plan adds *no features*; anything
+discovered here that is feature-shaped becomes its own follow-up.
+
+== Required Reading (before implementation)
+
+. link:../adr/0005-module-structure.adoc[ADR-0005], section "Revisit When" -- the explicit
+  criteria for extracting the framework-agnostic core module; this plan executes that
+  checkpoint.
+. link:../configuration.adoc[Configuration Model] + the shipped sample configs -- the source
+  material for the operator guide.
+. link:../architecture.adoc[Architecture] -- the security-audit scope map (trust boundaries,
+  error contract, forwarding, the no-response-cache rule).
+. link:README.adoc[Plan README] -- the conventions the release must retrospectively satisfy
+  (integration-test completeness per plan, pre-1.0 rules end here: 1.0 starts API stability).
+
+== Prerequisites
+
+* Plans 05-08 delivered; all integration suites green on `main`.
+
+== Work Breakdown
+
+. *Operator configuration guide* -- a task-oriented "configuring API Sheriff" document
+  (new top-level doc or `doc/guide/`): first boot with a minimal config, adding an endpoint,
+  anchors, topology + `${VAR:-default}` overrides in containers, TLS/mTLS/passthrough,
+  choosing and configuring a BFF variant, reading the boot log / effective-posture output,
+  every LogRecord an operator may see (link to `doc/LogMessages.adoc`). Seeded from the
+  integration sample configs so every snippet is *tested* configuration. The design docs
+  stay design docs; the guide never duplicates normative rules, it links them.
+. *ADR-0005 checkpoint* -- measure the framework-agnostic surface (package sizes, arch-gate
+  history); decide extract-vs-reaffirm with the user; record the outcome as an ADR-0005
+  amendment (and execute the mechanical extraction if chosen -- the arch-gate has kept it
+  package-to-module by construction).
+. *Security-audit sweep* -- full-surface audit (config validation gaps, header handling,
+  cookie/CSRF/logout flows, forwarding trust, error-detail leakage, container posture);
+  every finding triaged: fixed here, or explicitly risk-accepted with rationale. Fresh
+  dependency + container-image CVE pass.
+. *Benchmark consolidation* -- the per-plan benchmarks (README convention: each hot-path
+  plan shipped its own) are consolidated into one side-by-side report -- baseline
+  (`/q/health`), plain proxy, bearer, WebSocket, gRPC, passthrough relay, BFF mediation
+  (server + cookie) -- published via the existing pages pipeline, with regression thresholds
+  recorded as the baseline contract for post-1.0 work. This item creates *no* missing
+  coverage; a gap found here is a defect of the plan that skipped it.
+. *Native + container hardening* -- native build + ITs against the native image in CI
+  (not only JVM mode) if not already the default; distroless image review (user, filesystem,
+  exposed ports, JFR variant), resource-limit guidance measured (heap ceilings under the
+  benchmark load).
+. *Release mechanics* -- version 1.0.0, release notes generated from the plan/ADR trail,
+  tag + publish per cuioss release conventions; `doc/plan/README.adoc` updated to mark the
+  sequence delivered; declare the end of the pre-1.0 break-freely rules in `CLAUDE.md`
+  (from 1.0 on, breaking changes need deprecation strategy -- the rule flips).
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-09-release-readiness`
+  (several PRs expected -- guide, audit fixes, benchmarks, release -- each following the
+  standard workflow below).
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+== Acceptance Criteria
+
+* An operator can bring up a configured gateway (any variant) using only the guide and the
+  sample configs -- verified by walking the guide against a clean environment.
+* The ADR-0005 decision is recorded (amendment), and the codebase matches it.
+* Zero open unaccepted security findings; the audit report is archived in the repo.
+* Benchmark pages publish all suite results with recorded baselines.
+* Native-image integration tests green in CI; 1.0.0 tagged and released.
+
+== Out of Scope (explicit)
+
+* Any new gateway feature (rate limiting stays out of scope entirely; dynamic config and
+  HTTP/3 stay deferred per link:../adr/0002-initial-scope.adoc[ADR-0002]).
+* OpenTelemetry tracing (post-MVP hook per the architecture doc).
+* Multi-node/HA guidance beyond what the variants already document.

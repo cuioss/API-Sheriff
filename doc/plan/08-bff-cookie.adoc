@@ -1,0 +1,121 @@
+= Plan 08 -- Variant 3 (Cookie, Stateless)
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Add the *stateless* BFF shape (link:../variants/03-bff-cookie.adoc[Variant 3],
+`session.mode: cookie`) as a delta on the Plan 07 foundation: the token set travels only
+inside an AES-256-GCM encrypted `HttpOnly` cookie, decrypted per request -- no store, no
+sticky sessions, instances share only the encryption key. Login flow, CSRF, refresh,
+step-up, and RP-initiated logout are the *shared* foundation; this plan delivers the cookie
+token binding, key rotation, the concurrent-refresh mitigation, and the deliberate
+back-channel differences.
+
+== Required Reading (before implementation)
+
+. link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- *entire document*:
+  cookie design (contents incl. the raw ID token, attributes, key management, ~4 KB size
+  budget), statelessness properties, the concurrent-refresh race and its mitigation ladder,
+  the disabled back-channel and its consequences.
+. link:../variants/02-bff-session.adoc[Variant 2] + the delivered Plan 07 code -- the
+  shared/delta boundary; this plan must not fork the foundation.
+. link:../configuration.adoc#_oidc[Configuration -- `oidc.session`] -- cookie-mode
+  conditionals (`encryption_key` required, `previous_key` decrypt-only; `store` is
+  server-mode-only), already validated since Plan 02.
+
+== Prerequisites
+
+* Plan 07 delivered. No new Maven dependencies expected (AES-256-GCM via the JDK; the engine
+  is already wired) -- if one shows up, the approval rule applies.
+
+== Design Decisions
+
+=== D1 -- Token binding behind an interface
+
+Plan 07's binding step (store + opaque id) and this plan's (seal/unseal cookie) implement
+one gateway-side `SessionBinding` seam chosen at boot from `session.mode` -- the rest of the
+BFF (login, stage 4, CSRF, logout orchestration, refresh, step-up) is shared code and must
+stay shared (review checklist item).
+
+=== D2 -- Cookie codec
+
+AES-256-GCM authenticated encryption; plaintext = access + refresh + raw ID token (needed as
+`id_token_hint` -- a stateless gateway cannot drive RP-initiated logout without it) +
+minimal metadata; value = ciphertext + nonce + tag. Tamper -> authentication failure ->
+treated as no session. Keys by env indirection (`encryption_key`; the secrets rule applies);
+rotation: `previous_key` is decrypt-only, accepted cookies re-seal with the current key on
+next write. *Size budget*: the sealed cookie must stay within ~4 KB; exceeding it at seal
+time fails the login with a clear, logged error (no silent truncation; cookie splitting is a
+documented deployment consideration, not implemented).
+
+=== D3 -- Refresh under statelessness
+
+Per the variant doc, verbatim: single-flight per session *per instance*; a refreshed token
+re-seals into a new `Set-Cookie`; refresh-reuse rejection is an ordinary refresh failure
+(session ends, `on_failure` drives re-auth); IdP-side reuse tolerance is documented as an
+operator trade-off (availability vs. RFC 9700 theft detection), never a gateway default.
+
+=== D4 -- Back-channel logout is disabled (`404`)
+
+In `mode: cookie` the `backchannel_path` returns `404` -- there is no session to destroy,
+and accepting posts the gateway cannot act on is dead attack surface. IdP-side termination
+takes effect at the next refresh; the mitigation (short `ttl_seconds` / short access-token
+lifetimes) and the "choose Variant 2 for instant revocation" guidance stay documented.
+
+== Work Breakdown
+
+. *`SessionBinding` seam* (D1) -- extract from Plan 07 if not already shaped that way;
+  boot-time selection from validated config.
+. *Cookie codec* (D2) -- seal/unseal, rotation, size budget; unit tests: round-trip, tamper
+  rejection (flipped byte in each of ciphertext/nonce/tag), previous-key acceptance +
+  re-seal, oversized-set rejection, key material never logged.
+. *Refresh delta* (D3) -- re-seal on refresh, single-flight, reuse-as-failure path; unit
+  tests incl. a simulated concurrent-refresh race.
+. *Back-channel disable* (D4) + the cookie-mode readiness delta (no store health; issuer
+  reachability stays).
+. *Integration tests* (per the link:README.adoc[convention]: complete in this plan) -- the
+  Plan 07 IT suite re-run in cookie mode via a cookie-mode config set (login, steady-state
+  mediation, negotiation, CSRF, RP-initiated logout); plus cookie-specific ITs: a second
+  gateway instance (no shared state) serves a session created by the first (statelessness
+  proof); key rotation across a restart with `previous_key` keeps the session alive and
+  re-seals; tampered cookie -> unauthenticated, never `500`; `backchannel_path` -> `404` in
+  cookie mode.
+. *Benchmarks* (README convention) -- the Plan 07 session-mediation benchmark re-run in
+  cookie mode (per-request decrypt -> bearer injection), published as its own suite entry so
+  the store-lookup vs. decrypt-per-request cost comparison is visible.
+. *Docs* -- LogMessages additions; deviations back into the variant doc (docs govern).
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-08-bff-cookie`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+== Acceptance Criteria
+
+* Both `session.mode` values run the same foundation code path except the binding seam
+  (asserted structurally -- no duplicated flow logic).
+* Statelessness proven by the two-instance IT; rotation proven across restart.
+* Tampering and oversized token sets fail *safe* (unauthenticated / clear login error),
+  never as server errors or partial sessions.
+* Integration-test suite green locally and on CI in *both* modes.
+* The cookie-mode mediation benchmark runs in the benchmark profile and publishes via the
+  pages pipeline (comparable side by side with the Plan 07 server-mode entry).
+* Quality gate + full verify pass; coverage >= 80% on new packages.
+
+== Out of Scope (explicit)
+
+* Cookie splitting for oversized token sets (documented deployment consideration).
+* Shared caches/stores of any kind (the point of the variant).
+* Cross-instance refresh coordination (accepted trade-off per the variant doc; residual
+  effect is a rare forced re-login).

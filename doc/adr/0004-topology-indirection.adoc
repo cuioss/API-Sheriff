@@ -4,7 +4,9 @@
 
 == Status
 
-Accepted.
+Accepted; the *override channel* is superseded by link:#_amendment_a1[Amendment A1] below
+(in-file `${VAR:-default}` placeholder instead of the convention-named env var). The
+single-URL-per-alias model is unchanged.
 
 == Context
 
@@ -45,6 +47,8 @@ researched what the majority of widely-used systems do for human-authored, env-o
   `APP1=https://app1.internal:8443/app1`.
 * *Environment variable `TOPOLOGY_<ALIAS>` overrides the file and takes precedence.*
   Precedence, highest first: `TOPOLOGY_<ALIAS>` env var -> `topology.properties`.
+  *(Superseded by link:#_amendment_a1[Amendment A1]: the same precedence, expressed as a
+  visible in-file placeholder instead of a convention-named lookup.)*
 * *Decompose-on-read (Kong model).* On load, each resolved URL is validated and decomposed once into
   `{scheme, host, port, base-path}`; the rest of the gateway works with the structured components. A
   route's upstream is `resolved(base_url) + route.upstream.path + <request-path remainder after
@@ -65,6 +69,29 @@ researched what the majority of widely-used systems do for human-authored, env-o
   boot).
 * Partial override (port only) requires restating the whole URL until/unless the component escape
   hatch is added -- an accepted, low-cost trade.
+
+[[_amendment_a1]]
+== Amendment A1 (2026-07-15) -- Override channel becomes an in-file placeholder
+
+The *single-URL-per-alias* decision above is unchanged. What A1 supersedes is the *override
+channel*: the convention-named environment variable (`TOPOLOGY_<ALIAS>` wins over the file),
+which was implemented as an invisible Java-class-level lookup a reader cannot discover from
+the artifact. It is replaced by the unified in-file substitution mechanism decided with the
+anchors work (link:../plan/03-endpoint-anchors.adoc[Plan 03], D4): every override point is a
+visible shell-style placeholder in the artifact it affects --
+
+[source,properties]
+----
+APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
+----
+
+`${VAR}` is a required substitution (unset fails the boot); `${VAR:-default}` expresses "file
+value as default, environment wins" -- the role the convention override played. The familiar
+`TOPOLOGY_<ALIAS>` variable *names* survive as a sample-config convention; the *mechanism* is
+the placeholder, resolved once before schema validation. Everything else in this ADR
+(one URL per alias, decompose-on-read, no component split, no concrete host in endpoint
+files) stands. Implementation lands with Plan 03; `configuration.adoc`'s topology section is
+rewritten in the same PR.
 
 == References
 

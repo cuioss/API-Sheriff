@@ -125,9 +125,10 @@ Startup (once, shared):
   TokenValidator.builder().issuerConfig(...).build()
 
 Per request on a bearer route:
-  AccessTokenRequest.of(bearerToken, requestHeaders, requestUri, requestMethod)
-      // URI + method are REQUIRED when a DPoP proof is present: DpopProofValidator
-      // hard-fails htu/htm validation without them -- never use the 2-arg form here
+  new AccessTokenRequest(bearerToken, requestHeaders, requestUri, requestMethod)
+      // the 4-component record constructor (the of(..) factories exist only in 1- and
+      // 2-arg forms and omit URI/method). URI + method are REQUIRED when a DPoP proof is
+      // present: DpopProofValidator hard-fails htu/htm validation without them
   AccessTokenContent token = validator.createAccessToken(request)   // offline, cached JWKS
   token.providesScopes(route.requiredScopes)           // 403 if missing
   -> forward upstream

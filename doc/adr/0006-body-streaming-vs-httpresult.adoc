@@ -4,18 +4,19 @@
 
 == Status
 
-Accepted.
+Accepted. Completed by link:0008-data-plane-transport.adoc[ADR-0008], which names the client
+and the resilience mechanism on each plane.
 
 == Context
 
-`cui-http` offers two shapes for a downstream call:
-
-* the *async/streaming* client surface (`HttpHandler`, `ResilientHttpAdapter`,
-  `ETagAwareHttpAdapter`, JDK `HttpClient`), and
-* the `HttpResult<T>` *result object* -- a sealed `Success`/`Failure` that carries the
-  *fully-materialized, deserialized* response body as an in-memory `T`, plus status, ETag, an
-  `HttpErrorCategory`, and optional fallback content
-  (link:../technical_aspects.adoc#_httpresult_pattern[Technical Aspects -- HttpResult]).
+`cui-http`'s client stack is *typed and materializing by construction*: `HttpHandler` wraps
+the JDK `HttpClient`, and the adapters (`ResilientHttpAdapter`, `ETagAwareHttpAdapter`)
+return `HttpResult<T>` -- a sealed `Success`/`Failure` that carries the *fully-materialized,
+deserialized* response body as an in-memory `T`, plus status, ETag, an `HttpErrorCategory`,
+and optional fallback content
+(link:../technical_aspects.adoc#_httpresult_pattern[Technical Aspects -- HttpResult]).
+Materialization is not incidental -- the adapters' retry and ETag caching work *because* the
+body is a replayable / cacheable `T`.
 
 `HttpResult<T>` is excellent where the response is *small, bounded, and wanted as an object*.
 It is the wrong shape for the *proxy data plane*, where the gateway forwards arbitrary client
@@ -89,11 +90,11 @@ backpressure, and forces time-to-first-byte up to time-to-last-byte.
   bodies as *streams with backpressure*, in *both directions*: in Quarkus/Vert.x, pipe the
   client `ReadStream` to the upstream `WriteStream` (the *request* body) and the upstream
   `ReadStream` to the client `WriteStream` (the *response* body) via `pipeTo`/`Pipe`, pausing
-  the source when the sink's write queue is full and resuming on drain. The gateway does *not*
-  wrap the proxied body in `HttpResult<byte[]>` / `HttpResult<String>`. `HttpResult` may still be
-  used on the data plane for its *control metadata* (status, error category for the
-  `502`/`503`/`504` mapping) as long as the *body* is a stream, not a materialized `T` -- i.e.
-  never `HttpResult<byte[]>` for the proxied payload.
+  the source when the sink's write queue is full and resuming on drain. `HttpResult` does not
+  appear on the data plane at all: the transport and per-route resilience are named in
+  link:0008-data-plane-transport.adoc[ADR-0008] (shared Vert.x client + programmatic
+  fault-tolerance guards), and the `502`/`503`/`504` failure mapping is driven by the
+  gateway's own event types, not by `HttpErrorCategory`.
 * *`max_body_bytes` is a streaming counter, not a buffer.* The per-route body cap
   (link:../configuration.adoc#_security_filtering[`security_filter.max_body_bytes`]) is enforced
   by counting bytes as they flow through the pipe and aborting once the cap is exceeded; the
@@ -117,9 +118,9 @@ backpressure, and forces time-to-first-byte up to time-to-last-byte.
   hold-until-complete), matching every surveyed proxy's default.
 * The `HttpResult<T>` ergonomics are retained exactly where they help -- the small control-plane
   JSON calls -- without leaking their materialize-the-body cost onto the data plane.
-* Plan 03 replaces the interim `ofByteArray()` buffering proxy with the streaming pipe; the body
+* Plan 04 replaces the interim `ofByteArray()` buffering proxy with the streaming pipe; the body
   cap is re-expressed as a streaming counter (see
-  link:../plan/03-request-pipeline.adoc[Plan 03], dispatch/response stages).
+  link:../plan/04-request-pipeline.adoc[Plan 04], dispatch/response stages).
 
 == References
 

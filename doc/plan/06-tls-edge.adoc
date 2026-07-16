@@ -1,0 +1,137 @@
+= Plan 06 -- TLS Edge: SNI Passthrough + mTLS
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Activate the parsed-but-inert `tls` configuration blocks: `passthrough_sni` (connections
+whose SNI matches a configured hostname are relayed as opaque TCP at L4, without decryption,
+to the topology-resolved backend) and `mtls` (client-certificate verification on terminated
+connections). Deliver the two guards that keep the L4/L7 split unambiguous, and wire
+Toxiproxy into the integration stack for stream-level fault injection.
+
+== Required Reading (before implementation)
+
+. link:../configuration.adoc[Configuration Model], the `tls` field reference -- *the
+  authoritative spec*: SNI selection at accept time, case-insensitive exact matching, the
+  no-base-path alias rule, the two guards (boot-time `match.host` collision; runtime `404`
+  for terminated requests whose `Host` names a passthrough SNI), mTLS on terminated
+  connections only, no wildcard SNI entries initially.
+. link:../architecture.adoc[Architecture] -- the TLS edge in the component model; the
+  reserved-host `404` row of the error contract; "connections whose SNI is listed in
+  `tls.passthrough_sni` ... never reach the route table".
+. link:../adr/0004-topology-indirection.adoc[ADR-0004] (+ Amendment A1) -- passthrough
+  targets resolve through the same alias indirection routes use.
+. Plan 04 (delivered by then) -- the terminated listener and pipeline this plan fronts.
+
+== Prerequisites
+
+* Plan 04 delivered. Plan 05 is *not* required (independent tracks).
+* Coordination: if the Plan-02 gap-fix effort has not yet landed the two passthrough
+  *validation* rules (SNI/`match.host` collision, passthrough-alias-no-base-path), they are
+  delivered here; if it has, this plan only consumes them. Check before starting -- never
+  implement twice.
+
+== Design Decisions
+
+=== D1 -- Accept-time SNI split in a front listener
+
+The split happens *before* HTTP exists: a front TCP listener reads the TLS ClientHello
+(cleartext by design, RFC 6066), extracts the SNI, and decides:
+
+* *SNI mapped in `passthrough_sni`* -> pure L4 relay: the entire byte stream, ClientHello
+  included, is piped (Vert.x `NetSocket` <-> `NetSocket`, backpressured both ways) to the
+  `host:port` resolved from the alias at boot. The gateway never handshakes; the backend
+  presents its own certificate.
+* *Any other SNI, or none* -> hand the connection to the terminated stack (certificate,
+  `min_version`, `alpn`, `mtls`) and the full L7 pipeline.
+
+Implementation spike (first work item): choose between (a) a Vert.x `NetServer` front that
+parses the ClientHello and hands terminated connections to the HTTP stack over an internal
+channel, and (b) the Netty `SniHandler` integration point if Quarkus exposes one cleanly.
+The *behaviour* above is fixed either way; only the wiring is open. When `passthrough_sni`
+is empty (the default), the front listener is bypassed entirely -- zero cost for
+non-passthrough deployments.
+
+=== D2 -- mTLS on terminated connections
+
+`tls.mtls.enabled` + `client_ca` map to the terminated listener's client-auth options
+(require-and-verify against the configured CA). Passthrough connections are untouched -- the
+gateway never participates in that handshake (config spec). Failed client auth terminates the
+handshake; there is no HTTP-level fallback and no partial "optional mTLS" mode initially.
+
+=== D3 -- The two guards
+
+* *Boot*: a route whose `match.host` equals (case-insensitively) a passthrough SNI fails the
+  boot; every passthrough alias must resolve to a URL with no base-path. (`ConfigValidator`
+  rules -- here or already landed, see Prerequisites.)
+* *Runtime*: a *terminated* request whose `Host` header names a passthrough SNI is rejected
+  `404` before route selection -- the Host-smuggling guard, a new pipeline pre-check in
+  stage 2, with its own EventType.
+
+=== D4 -- Toxiproxy
+
+`ghcr.io/shopify/toxiproxy` (pinned) joins docker-compose between gateway and upstreams
+(anticipated by Plan 01 D2): needed here for stream-level fault tests (mid-stream reset on a
+passthrough relay) and available onward for breaker/timeout ITs.
+
+== Work Breakdown
+
+. *Spike + decision* (D1): ClientHello/SNI wiring approach; record the choice in this plan
+  doc (amendment) and, if architecturally relevant, in `architecture.adoc`.
+. *Passthrough relay* (D1) -- accept-time split, L4 pipe with backpressure, connection
+  lifecycle (half-close, abort propagation), boot-time alias resolution; unit tests with raw
+  TLS clients against a TLS-enabled test backend.
+. *mTLS* (D2) -- listener options from config; handshake accept/reject tests (valid client
+  cert, wrong CA, no cert).
+. *Guards* (D3) -- validator rules (if still open) + the runtime Host guard; negative tests
+  for both; LogRecords documented.
+. *Toxiproxy* (D4) -- compose service (pinned, healthcheck), scripts extended.
+. *Integration tests* (per the link:README.adoc[convention]: complete in this plan) --
+  end-to-end TLS through the passthrough relay to a TLS-enabled backend container (client
+  verifies the *backend's* certificate, proving the gateway never terminated); terminated
+  traffic on the same listener still fully served; Host-smuggle request -> `404`; mTLS
+  handshake accepted with the provisioned client cert and rejected without; mid-stream fault
+  via Toxiproxy propagates as connection abort, not a hang.
+. *Benchmarks* (README convention) -- a passthrough-relay WRK benchmark (wrk -> gateway L4
+  relay -> TLS backend) next to the terminated plain-proxy benchmark, so relay overhead is
+  measured; plus the empty-`passthrough_sni` no-regression comparison against the Plan 04
+  baseline used in the acceptance criteria.
+. *Docs* -- `doc/LogMessages.adoc`; any deviations back into the `tls` field reference
+  (doc-first rule).
+
+== Execution Workflow
+
+. Create a feature branch from up-to-date `main`: `feature/plan-06-tls-edge`.
+. Implement the work breakdown above.
+. Verify everything locally -- both must pass with zero errors/warnings:
+  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+== Acceptance Criteria
+
+* A connection with a mapped SNI reaches the backend without gateway termination (asserted
+  by certificate identity end-to-end); everything else terminates and serves L7 as before.
+* Empty `passthrough_sni` -> measurably zero-overhead path (benchmark comparison against the
+  Plan 04 baseline; no regression beyond noise).
+* Both guards enforced with negative tests; mTLS accept/reject proven at handshake level.
+* Integration-test suite green locally and on CI, covering every behaviour above.
+* The passthrough-relay benchmark runs in the benchmark profile and publishes via the pages
+  pipeline.
+* Quality gate + full verify pass; coverage >= 80% on new packages.
+
+== Out of Scope (explicit)
+
+* Wildcard SNI entries (config spec: list each host).
+* Per-SNI/per-route mTLS policies (global `tls.mtls` only).
+* Optional/want-style client auth, certificate-to-identity mapping (no L7 identity is
+  derived from client certs in this plan).
+* PROXY-protocol emission on the passthrough relay (revisit if a passthrough backend needs
+  client IPs).

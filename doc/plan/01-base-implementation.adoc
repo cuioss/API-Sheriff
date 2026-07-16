@@ -92,10 +92,10 @@ status verified as of 2026) condense to:
   static/minimal backends); saturates far above the gateway so the backend never pollutes
   the measurement. JSON-serializing echo servers are wrong for benchmarks.
 
-| *Fault injection (Plan 03)*
+| *Fault injection (Plan 04)*
 | `ghcr.io/shopify/toxiproxy` (pin `2.12.0`) between gateway and upstream
 | L4 toxics (timeout, latency, reset, disable) -- the only option that also faults
-  gRPC/WS/TLS streams; needed for circuit-breaker half-open tests. *Wired in Plan 03*, when
+  gRPC/WS/TLS streams; needed for circuit-breaker half-open tests. *Wired in Plan 04*, when
   the breaker exists; documented here so the compose topology anticipates it.
 
 | *gRPC / GraphQL upstreams (later protocol plans)*
@@ -106,7 +106,7 @@ status verified as of 2026) condense to:
 |===
 
 Keycloak (already present, realm files committed) stays: it becomes the token issuer in
-Plan 03. Testcontainers-based alternatives (dasniko `testcontainers-keycloak`, WireMock
+Plan 04. Testcontainers-based alternatives (dasniko `testcontainers-keycloak`, WireMock
 module, Quarkus `@QuarkusIntegrationTest` resource managers) were evaluated: the existing
 docker-compose approach is kept -- it matches TokenSheriff, gives stable hostnames/certs
 (needed later for SNI passthrough tests), and already has CI wiring. WireMock (JVM-mode unit
@@ -117,7 +117,7 @@ All compose images stay digest/tag-pinned (existing convention).
 === D3 -- Minimal proxy: a Vert.x catch-all route, property-configured
 
 One real end-to-end path, deliberately interim but on the final architecture line
-(link:03-request-pipeline.adoc[Plan 03] keeps the edge, replaces the internals):
+(link:04-request-pipeline.adoc[Plan 04] keeps the edge, replaces the internals):
 
 * A Vert.x route handler (`quarkus-vertx-http`, already present transitively) registered as
   catch-all on the data plane, executing per-request on a *virtual thread*.
@@ -126,11 +126,11 @@ One real end-to-end path, deliberately interim but on the final architecture lin
   `sheriff.proxy.path-prefix` and `sheriff.proxy.upstream-url`.
 * Forwarding: method + path remainder + query + body pass through; hop-by-hop headers
   stripped; JDK `HttpClient` blocking `send()` on the virtual thread (the `cui-http`
-  handler stack arrives with Plan 03's dependency approval). No security stages yet.
+  handler stack arrives with Plan 04's dependency approval). No security stages yet.
 * Unmatched path -> `404` (deny-by-default from day one).
 * The placeholder `/api/health` + `/api/info` endpoints and their tests remain for now
   (health is used by scripts/benchmarks); `ApiSheriff`/`GatewayResource` are deleted in
-  Plan 03.
+  Plan 04.
 * Rename the virtual-thread prefix from `jwt-validation` to `api-sheriff`.
 
 No new Maven dependencies are needed for this plan (Vert.x HTTP and JDK HttpClient are
@@ -143,9 +143,9 @@ already available).
   (Docker required), `./mvnw clean verify -pl benchmarks -Pbenchmark`. Fix anything red
   *before* changing behaviour, so regressions are attributable.
 . *Housekeeping* -- delete `TestDataGenerator` + the `generators` test-jar wiring (or keep
-  the wiring only if Plan 03 will publish real generators -- decide then; delete now),
+  the wiring only if Plan 04 will publish real generators -- decide then; delete now),
   `test-jwks.json`, unused PEM files, the empty stub `application.properties`; fix or delete
-  `benchmark-with-monitoring.sh` (it greps `jwt`/JMH -- delete, it returns with Plan 03's
+  `benchmark-with-monitoring.sh` (it greps `jwt`/JMH -- delete, it returns with Plan 04's
   benchmarks if needed); prune unused test dependencies flagged by the build. Pre-1.0 rule:
   remove, never deprecate.
 . *Parent + native alignment (D1)* -- `cui-java-parent` 1.4.5 -> 1.5.0; Mandrel builder
@@ -209,9 +209,9 @@ must be green after every one.
 
 * Real configuration files/schemas (Plan 02, delivered).
 * Security filtering, token validation, forward policy, events/metrics/error contract
-  (link:03-request-pipeline.adoc[Plan 03]).
+  (link:04-request-pipeline.adoc[Plan 04]).
 * gRPC/WebSocket/GraphQL processors, TLS passthrough, mTLS, BFF variants (later plans).
-* Toxiproxy wiring (arrives with the circuit breaker in Plan 03).
+* Toxiproxy wiring (arrives with the circuit breaker in Plan 04).
 
 [[_post_merge_amendments]]
 == Post-Merge Amendments
