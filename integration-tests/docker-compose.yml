@@ -60,6 +60,11 @@ services:
       - "19000:9000"  # Management interface (health/metrics, plain HTTP)
 
     environment:
+      # Activate the "it" Quarkus profile so the token-sheriff validation issuer
+      # (application.properties %it.sheriff.token.issuers.integration.*) is configured
+      # against the Docker Keycloak "integration" realm — the extension requires an
+      # enabled issuer to become ready.
+      - QUARKUS_PROFILE=it
       # File logging to mounted target directory
       - LOG_FILE_PATH=/logs/quarkus.log
       # Certificate paths (runtime override)
