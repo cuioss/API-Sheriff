@@ -261,7 +261,7 @@ public final class ConfigValidator {
             for (RouteConfig route : endpoint.routes()) {
                 routeHost(route).ifPresent(host -> {
                     for (String sniHost : passthrough.keySet()) {
-                        if (sniHost.toLowerCase(Locale.ROOT).equalsIgnoreCase(host)) {
+                        if (sniHost.equalsIgnoreCase(host)) {
                             errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
                                     "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
                                             .formatted(route.id(), sniHost)));
@@ -284,7 +284,7 @@ public final class ConfigValidator {
                 continue;
             }
             String basePath = upstream.get().basePath();
-            if (!basePath.isEmpty()) {
+            if (!basePath.isEmpty() && !"/".equals(basePath)) {
                 errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
                         "passthrough_sni alias '%s' must resolve to an origin without a base path, but resolved to '%s'"
                                 .formatted(alias, basePath)));

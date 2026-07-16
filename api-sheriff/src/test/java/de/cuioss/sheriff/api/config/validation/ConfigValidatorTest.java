@@ -152,6 +152,21 @@ class ConfigValidatorTest {
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
         }
+
+        @Test
+        @DisplayName("Should report no violations for a passthrough_sni alias resolving to a bare '/' base path")
+        void shouldAcceptPassthroughAliasWithTrailingSlashBasePath() {
+            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
+            ResolvedTopology topology = new ResolvedTopology(Map.of(
+                    "ORDERS", new ResolvedUpstream("https", "orders.internal", 443, ""),
+                    "SECURE", new ResolvedUpstream("https", "secure.internal", 443, "/")));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topology);
+
+            assertTrue(errors.isEmpty(),
+                    () -> "expected no violations for a topology URL ending in a bare '/', got: " + errors);
+        }
     }
 
     @Nested
