@@ -41,7 +41,6 @@
     </issueManagement>
 
     <properties>
-        <maven.compiler.release>25</maven.compiler.release>
         <version.quarkus>3.37.2</version.quarkus>
         <version.oauth-sheriff>0.8.0</version.oauth-sheriff>
         <version.json-schema-validator>1.5.9</version.json-schema-validator>
@@ -130,7 +129,7 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
                     <configuration>
-                        <release>${maven.compiler.release}</release>
+                        <release>25</release>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -303,6 +302,59 @@
                     ../target/site/jacoco/jacoco.xml
                 </sonar.coverage.jacoco.xmlReportPaths>
             </properties>
+        </profile>
+        <profile>
+            <!--
+                Local override of the inherited cui-java-parent 'pre-commit' profile's
+                OpenRewrite recipe list.
+
+                The parent (de.cuioss:cui-java-parent) activates the recipe
+                'org.openrewrite.java.migrate.UpgradeToJava21' — a Java-21-TARGETED
+                migration. On this Java 25 project (ADR-0001) its build-config migration
+                rewrites the maven-compiler-plugin release DOWN from 25 to 21, silently
+                regressing the language baseline and breaking any Java 22+ source once
+                committed.
+
+                Maven merges an inherited <activeRecipes> list by APPEND, so a single
+                recipe cannot be removed in isolation. This re-declares the full list
+                with combine.children="override" — identical to cui-java-parent's list,
+                except UpgradeToJava21 is replaced by UpgradeToJava25 so the modernization
+                migrations still run while the compiler release is pinned to the correct
+                25 baseline. Keep this list in sync if the parent's recipe set changes.
+            -->
+            <id>pre-commit</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.openrewrite.maven</groupId>
+                        <artifactId>rewrite-maven-plugin</artifactId>
+                        <configuration>
+                            <activeRecipes combine.children="override">
+                                <recipe>org.openrewrite.java.format.AutoFormat</recipe>
+                                <recipe>org.openrewrite.java.format.NormalizeLineBreaks</recipe>
+                                <recipe>org.openrewrite.java.format.RemoveTrailingWhitespace</recipe>
+                                <recipe>de.cuioss.rewrite.format.AnnotationNewlineFormat</recipe>
+                                <recipe>de.cuioss.rewrite.logging.CuiLoggerStandardsRecipe</recipe>
+                                <recipe>de.cuioss.rewrite.logging.CuiLogRecordPatternRecipe</recipe>
+                                <recipe>de.cuioss.rewrite.logging.InvalidExceptionUsageRecipe</recipe>
+                                <!-- Replaces the parent's UpgradeToJava21 (which downgrades the release to 21) -->
+                                <recipe>org.openrewrite.java.migrate.UpgradeToJava25</recipe>
+                                <recipe>org.openrewrite.java.migrate.RemoveSecurityManager</recipe>
+                                <recipe>org.openrewrite.java.migrate.util.JavaUtilAPIs</recipe>
+                                <recipe>org.openrewrite.java.OrderImports</recipe>
+                                <recipe>org.openrewrite.java.RemoveUnusedImports</recipe>
+                                <recipe>org.openrewrite.java.ShortenFullyQualifiedTypeReferences</recipe>
+                                <recipe>org.openrewrite.java.testing.junit5.JUnit5BestPractices</recipe>
+                                <recipe>org.openrewrite.java.testing.junit5.RemoveTryCatchFailBlocks</recipe>
+                                <recipe>org.openrewrite.staticanalysis.EqualsAvoidsNull</recipe>
+                                <recipe>org.openrewrite.staticanalysis.NoPrimitiveWrappersForToStringOrCompareTo</recipe>
+                                <recipe>org.openrewrite.staticanalysis.SimplifyBooleanExpression</recipe>
+                                <recipe>org.openrewrite.staticanalysis.UnnecessaryParentheses</recipe>
+                            </activeRecipes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 </project>
