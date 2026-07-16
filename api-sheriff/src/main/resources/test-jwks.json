@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "kid": "api-sheriff-it-test-key",
+      "use": "sig",
+      "alg": "RS256",
+      "n": "2qCA4oUlU5KjkUDZgu4cuNseOQGMnXi7djwQ2Bd_2tPMe2LgfCRULXVWJVWDauE7T8wrbqo_ULgDkfpkhPbYurjMeHxzkcVVfsd9JcQ5e5T1X96zXbcJG7tKazQcdSVGyL2dk81y16zs6SUzwCtrMMuNptdzIu_k46qDlN45v7FQHGZq5he50ZApQIjYfin3nFqhEJbkInHFFh_jfV6qmWKdNfwPOgQ0KBDo-ui_pj-pSGx47ZRWm0g-RvzML3HjL-p5G0XGCUaYPGXpPYvl6T7Ju2hHfQTF5V49YzNl8hoPrCx8GQqAIgNphyWkqxuSK1XznLdxFH82h9bEtFKwqQ",
+      "e": "AQAB"
+    }
+  ]
+}
