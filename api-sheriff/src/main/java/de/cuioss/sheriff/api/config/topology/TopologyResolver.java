@@ -131,14 +131,12 @@ public final class TopologyResolver {
             resolved.put(alias, decompose(alias, value.trim()));
         }
         for (String alias : additionalAliases) {
-            if (resolved.containsKey(alias)) {
-                continue;
+            if (!resolved.containsKey(alias)) {
+                String value = resolveValue(alias, fileAliases);
+                if (value != null) {
+                    resolved.put(alias, decompose(alias, value.trim()));
+                }
             }
-            String value = resolveValue(alias, fileAliases);
-            if (value == null) {
-                continue;
-            }
-            resolved.put(alias, decompose(alias, value.trim()));
         }
         return new ResolvedTopology(resolved);
     }

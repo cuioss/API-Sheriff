@@ -183,9 +183,10 @@ class TopologyResolverTest {
         Path file = topologyFile("SECURE=https://secure.internal\n");
         TopologyResolver resolver = resolverWith(Map.of());
         List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"));
+        List<String> additionalAliases = List.of("SECURE");
 
         assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of("SECURE")),
+                () -> resolver.resolve(file, endpoints, additionalAliases),
                 "an unresolvable enabled-endpoint base_url alias must still fail the boot");
     }
 }

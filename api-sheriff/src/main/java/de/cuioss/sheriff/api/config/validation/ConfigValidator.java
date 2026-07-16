@@ -61,6 +61,7 @@ public final class ConfigValidator {
 
     private static final int SUPPORTED_VERSION = 1;
     private static final String GATEWAY_FILE = "gateway.yaml";
+    private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
     private static final String TRUST_ALL_IPV4 = "0.0.0.0/0";
     private static final String TRUST_ALL_IPV6 = "::/0";
     private static final String WILDCARD_ORIGIN = "*";
@@ -262,7 +263,7 @@ public final class ConfigValidator {
                 routeHost(route).ifPresent(host -> {
                     for (String sniHost : passthrough.keySet()) {
                         if (sniHost.equalsIgnoreCase(host)) {
-                            errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
+                            errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                                     "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
                                             .formatted(route.id(), sniHost)));
                         }
@@ -278,14 +279,14 @@ public final class ConfigValidator {
             String alias = entry.getValue();
             Optional<ResolvedUpstream> upstream = topology.lookup(alias);
             if (upstream.isEmpty()) {
-                errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
+                errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                         "unresolved topology alias '%s' referenced by passthrough_sni host '%s'"
                                 .formatted(alias, entry.getKey())));
                 continue;
             }
             String basePath = upstream.get().basePath();
             if (!basePath.isEmpty() && !"/".equals(basePath)) {
-                errors.add(new ConfigError(GATEWAY_FILE, "/tls/passthrough_sni",
+                errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                         "passthrough_sni alias '%s' must resolve to an origin without a base path, but resolved to '%s'"
                                 .formatted(alias, basePath)));
             }
