@@ -41,7 +41,7 @@
     </issueManagement>
 
     <properties>
-        <version.quarkus>3.37.2</version.quarkus>
+        <version.quarkus>3.37.3</version.quarkus>
         <version.token-sheriff>0.9.2</version.token-sheriff>
         <version.json-schema-validator>1.5.9</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
