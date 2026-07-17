@@ -123,7 +123,10 @@ public class WrkResultPostProcessor {
         boolean hasWrkFiles = false;
         if (Files.exists(wrkDir)) {
             try (Stream<Path> files = Files.list(wrkDir)) {
-                hasWrkFiles = files.anyMatch(p -> p.getFileName().toString().endsWith(".txt"));
+                // Same suffix contract as parseBenchmarkMetadata: canonical WRK output
+                // files are *-results.txt, so both the presence check here and the
+                // metadata parse key off WRK_OUTPUT_FILE_SUFFIX (no bare *.txt drift).
+                hasWrkFiles = files.anyMatch(p -> p.getFileName().toString().endsWith(WRK_OUTPUT_FILE_SUFFIX));
             }
         }
 
@@ -325,36 +328,22 @@ public class WrkResultPostProcessor {
     }
 
     /**
-     * Find metadata for a benchmark based on its result file name.
+     * Find metadata for a benchmark by its exact name.
+     * <p>
+     * Metadata is keyed by the {@code benchmark_name} value read from the
+     * {@code === BENCHMARK METADATA ===} block of each {@value #WRK_OUTPUT_FILE_SUFFIX}
+     * result file, and the {@link BenchmarkData.Benchmark} name produced by the
+     * converter is that same {@code benchmark_name}. Matching is therefore an exact
+     * name lookup: the earlier bidirectional {@code contains()} fallback (plus the
+     * "single entry wins" heuristic) was nondeterministic whenever two benchmark
+     * names overlapped as substrings, and has been removed. A name with no exact
+     * metadata entry is a real mismatch — the caller logs it and skips that
+     * benchmark rather than silently binding to an unrelated run.
      *
-     * @param benchmarkFileName The benchmark file name from BenchmarkData
-     * @return The matching metadata or null if not found
+     * @param benchmarkName The benchmark name from {@link BenchmarkData.Benchmark}
+     * @return The metadata for the exactly-named benchmark, or {@code null} if none exists
      */
-    private BenchmarkMetadata findMetadataForBenchmark(String benchmarkFileName) {
-        if (benchmarkMetadataMap.containsKey(benchmarkFileName)) {
-            return benchmarkMetadataMap.get(benchmarkFileName);
-        }
-
-        String baseName = benchmarkFileName;
-        if (baseName.endsWith(".txt")) {
-            baseName = baseName.substring(0, baseName.length() - 4);
-        }
-        if (baseName.endsWith("-results")) {
-            baseName = baseName.substring(0, baseName.length() - 8);
-        }
-
-        for (Map.Entry<String, BenchmarkMetadata> entry : benchmarkMetadataMap.entrySet()) {
-            if (entry.getKey().equals(baseName) ||
-                    entry.getKey().contains(baseName) ||
-                    baseName.contains(entry.getKey())) {
-                return entry.getValue();
-            }
-        }
-
-        if (benchmarkMetadataMap.size() == 1) {
-            return benchmarkMetadataMap.values().iterator().next();
-        }
-
-        return null;
+    private BenchmarkMetadata findMetadataForBenchmark(String benchmarkName) {
+        return benchmarkMetadataMap.get(benchmarkName);
     }
 }
