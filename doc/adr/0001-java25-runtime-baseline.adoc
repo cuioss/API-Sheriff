@@ -34,7 +34,7 @@ no Java 21 (or any pre-25) deployment target for this product, and none is plann
 at 21 for a 25-only runtime is indirection that buys nothing: it forbids Java 22-25 language
 features, splits the local/CI toolchain story ("develop on 21, ship on 25"), and keeps a
 version around that plays no role in the delivered artifact. The parent POM
-(`de.cuioss:cui-java-parent:1.5.0`) and Quarkus 3.37.2 support a Java 25 *compile* baseline, so
+(`de.cuioss:cui-java-parent:1.5.1`) and Quarkus 3.37.2 support a Java 25 *compile* baseline, so
 the readiness gap the original ADR waited for is closed.
 
 == Decision
