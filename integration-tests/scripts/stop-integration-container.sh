@@ -6,18 +6,34 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# shellcheck source=lib-docker-compose.sh
+source "${SCRIPT_DIR}/lib-docker-compose.sh"
+
 echo "🛑 Stopping API Sheriff Integration Tests Docker containers"
 
 cd "${PROJECT_DIR}"
+
+# This runs at Maven's pre-clean phase as a best-effort cleanup. If Docker isn't
+# available or the daemon isn't running there is nothing to stop, so exit
+# cleanly rather than failing `clean install`.
+COMPOSE_BASE="$(resolve_compose_cmd || true)"
+if [[ -z "$COMPOSE_BASE" ]]; then
+    echo "ℹ️  Docker Compose not available — nothing to stop, skipping cleanup."
+    exit 0
+fi
+if ! docker_daemon_up; then
+    echo "ℹ️  Docker daemon not running — nothing to stop, skipping cleanup."
+    exit 0
+fi
 
 # Detect if JFR image is running to use matching compose files
 JFR_RUNNING=$(docker ps --format "{{.Image}}" | grep "^api-sheriff:jfr$" || true)
 
 if [[ -n "$JFR_RUNNING" ]]; then
-    COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.jfr.yml"
+    COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml -f docker-compose.jfr.yml"
     MODE="jfr"
 else
-    COMPOSE_CMD="docker compose -f docker-compose.yml"
+    COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
     MODE="distroless"
 fi
 

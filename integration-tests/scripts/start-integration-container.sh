@@ -8,9 +8,23 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ROOT_DIR="$(dirname "$PROJECT_DIR")"
 APP_TARGET_DIR="${ROOT_DIR}/api-sheriff/target"
 
+# shellcheck source=lib-docker-compose.sh
+source "${SCRIPT_DIR}/lib-docker-compose.sh"
+
 echo "🚀 Starting API Sheriff Integration Tests with Docker Compose"
 echo "Project directory: ${PROJECT_DIR}"
 echo "Root directory: ${ROOT_DIR}"
+
+# Resolve the compose command (docker compose plugin vs standalone docker-compose)
+COMPOSE_BASE="$(resolve_compose_cmd || true)"
+if [[ -z "$COMPOSE_BASE" ]]; then
+    echo "❌ Docker Compose not available (neither 'docker compose' nor 'docker-compose')"
+    exit 1
+fi
+if ! docker_daemon_up; then
+    echo "❌ Docker daemon not running — start Docker/Rancher Desktop first"
+    exit 1
+fi
 
 cd "${PROJECT_DIR}"
 
@@ -23,11 +37,11 @@ DISTROLESS_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^ap
 if [[ -n "$JFR_IMAGE" ]]; then
     AVAILABLE_IMAGE="$JFR_IMAGE"
     IMAGE_TYPE="jfr"
-    COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.jfr.yml"
+    COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml -f docker-compose.jfr.yml"
 elif [[ -n "$DISTROLESS_IMAGE" ]]; then
     AVAILABLE_IMAGE="$DISTROLESS_IMAGE"
     IMAGE_TYPE="distroless"
-    COMPOSE_CMD="docker compose -f docker-compose.yml"
+    COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
 else
     AVAILABLE_IMAGE=""
     IMAGE_TYPE="none"
@@ -134,8 +148,8 @@ for i in {1..30}; do
         # diagnosable from CI artifacts (uploaded via the failsafe-reports folder).
         DIAG_DIR="target/failsafe-reports"
         mkdir -p "$DIAG_DIR"
-        echo "----- docker compose logs api-sheriff -----"
-        docker compose logs --no-color api-sheriff 2>&1 | tee "$DIAG_DIR/api-sheriff-app.log"
+        echo "----- $COMPOSE_BASE logs api-sheriff -----"
+        $COMPOSE_BASE logs --no-color api-sheriff 2>&1 | tee "$DIAG_DIR/api-sheriff-app.log"
         echo "----- /q/health -----"
         curl -s http://localhost:19000/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-health.json"
         echo ""
@@ -146,7 +160,7 @@ for i in {1..30}; do
 done
 
 # Extract native startup time from logs
-NATIVE_STARTUP=$(docker compose logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
+NATIVE_STARTUP=$($COMPOSE_BASE logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
 if [ ! -z "$NATIVE_STARTUP" ]; then
     echo "⚡ Native app startup: ${NATIVE_STARTUP}s (application only)"
 fi
