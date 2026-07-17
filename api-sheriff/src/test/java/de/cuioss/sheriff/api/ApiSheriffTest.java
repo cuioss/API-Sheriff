@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.api;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 
 import org.junit.jupiter.api.Test;
@@ -25,12 +24,6 @@ import org.junit.jupiter.api.Test;
  * Test class for {@link ApiSheriff}.
  */
 class ApiSheriffTest {
-
-    @Test
-    void shouldCreateInstance() {
-        ApiSheriff sheriff = new ApiSheriff();
-        assertNotNull(sheriff);
-    }
 
     @Test
     void shouldReturnStatus() {
