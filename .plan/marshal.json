@@ -229,7 +229,10 @@
       "bundle": "pm-dev-java",
       "workflow_skill_extensions": {
         "triage": "pm-dev-java:ext-triage-java"
-      }
+      },
+      "project_skills": [
+        "project:run-integration-tests"
+      ]
     },
     "java-cui": {
       "bundle": "pm-dev-java-cui"
