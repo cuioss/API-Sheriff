@@ -24,8 +24,18 @@ The plans build strictly on one another:
 | 02 -- Configuration Management (delivered)
 | JSON Schemas for `gateway.yaml` / `endpoints/*.yaml`, the loading/resolution/validation
   pipeline (topology indirection, fail-fast boot), immutable `GatewayConfig` + `RouteTable`,
-  config mounted into the integration containers.
+  config mounted into the integration containers. (The landing-gap fixes -- enablement
+  filter, passthrough validation rules, ADR-0009 asymmetry -- merged separately, PR #64.)
 | Plan 01
+
+| link:02b-reconciliation.adoc[02b -- Doc/Code Reconciliation & Quality Debt]
+| The 2026-07-17 adversarial-review sweep: docs and delivered code re-agree (whole-second
+  timeout rule actually removed, ADR-0009 flipped Accepted, README ports fixed, library
+  claims deduplicated, dead `jwks: inline` deleted), test hygiene (vacuous tests deleted,
+  Hamcrest removed, the invalid-config negative script wired into the build), and the
+  benchmark harness made trustworthy (aggregated error counters, error-rate gating,
+  value-asserting parser tests). No features.
+| Plans 01 + 02 (independent of 03; land before or alongside it)
 
 | link:03-endpoint-anchors.adoc[03 -- Endpoint Anchors]
 | Namespace-scoped policy (link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]): `anchors` in
@@ -38,8 +48,9 @@ The plans build strictly on one another:
 | link:04-request-pipeline.adoc[04 -- Request Pipeline]
 | The data plane for standard HTTP verbs: cui-http inbound filtering (basic + per-route),
   route selection, protocol-processor loading, offline bearer validation, zero-trust forward
-  policy with regenerated forwarding headers (cui-http:2.1), dispatch with
-  retry/circuit breaker, plus the event system, metrics, logging, and RFC 9457 error edge.
+  policy with regenerated forwarding headers (cui-http:2.1.0), dispatch with
+  retry/circuit breaker, hardened edge limits + graceful drain, plus the event system,
+  metrics, logging, and RFC 9457 error edge.
 | Plans 01 + 02 + 03
 
 | link:05-protocol-processors.adoc[05 -- Protocol Processors]
@@ -59,10 +70,11 @@ The plans build strictly on one another:
 
 | link:07-bff-server-session.adoc[07 -- BFF Foundation + Variant 2 (Server Session)]
 | The headline differentiator, *stateful shape first* (operator decision 2026-07-15):
-  `token-sheriff-client` 0.9.1 as the OIDC confidential-client engine; reserved gateway
-  paths; in-memory session store + opaque `__Host-` cookie; `require: session` runtime with
-  content negotiation; fixed CSRF defence; transparent refresh; RP-initiated + back-channel
-  logout; RFC 9470 step-up (link:../variants/02-bff-session.adoc[Variant 2]).
+  `token-sheriff-client` 0.9.2 as the OIDC confidential-client engine (already on the
+  classpath); reserved gateway paths; pending-authorization record; in-memory session store
+  + opaque `__Host-` cookie; `require: session` runtime with content negotiation; fixed
+  CSRF defence; transparent refresh; RP-initiated + back-channel logout; RFC 9470 step-up
+  (link:../variants/02-bff-session.adoc[Variant 2]).
 | Plans 03 + 04; consumes `oidc` config from Plan 02
 
 | link:08-bff-cookie.adoc[08 -- Variant 3 (Cookie, Stateless)]
@@ -79,7 +91,9 @@ The plans build strictly on one another:
 | All of 05-08
 |===
 
-Sequencing rationale: 05 and 06 are small increments on a freshly-built pipeline and transport
+Sequencing rationale: 02b is a pure correction sweep with no feature content -- it runs
+first (or alongside 03) so nothing later builds on documentation that contradicts the code
+or on a benchmark harness that cannot detect failure. 05 and 06 are small increments on a freshly-built pipeline and transport
 (do them while that knowledge is hot; 05 also completes what ADR-0002 promises for the initial
 scope). The BFF track (07 -> 08) is the largest and riskiest block and lands on a stabilized
 data plane; within it the *stateful* server-session shape comes first (operator decision,
@@ -90,14 +104,29 @@ shift (e.g. pull 07 forward for a BFF demo); within that block the only hard edg
 config stays reserved/accepted-and-ignored, no `429` is produced), and, deferred by
 link:../adr/0002-initial-scope.adoc[ADR-0002], dynamic configuration/discovery and HTTP/3.
 
+== Execution Workflow (every plan)
+
+The same fixed sequence applies to every plan (and to every PR, when a plan splits into
+several -- the build must be green after each one, not only at plan completion):
+
+. Create a feature branch from up-to-date `main` (each plan names its branch).
+. Implement the plan's work breakdown.
+. Verify locally -- both must pass with zero errors/warnings: the quality gate
+  (`verify -Ppre-commit`) and the full verify (`verify`), run via the canonical build
+  commands in `CLAUDE.md`.
+. Commit and push the branch.
+. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
+. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
+  checks are green.
+. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
+  reason for not fixing + resolve; when uncertain, ask the user before acting.
+. Merge the PR, then `git checkout main && git pull`.
+
+Each plan's own *Execution Workflow* section only names its branch and any plan-specific
+deviation (e.g. an expected multi-PR split); it does not restate this sequence.
+
 == Conventions
 
-* Every plan carries an *Execution Workflow* section -- the same fixed sequence each time:
-  feature branch off `main` -> implement -> `./mvnw -Ppre-commit clean verify -DskipTests` +
-  `./mvnw clean install` (both green) -> commit -> push -> PR -> wait ~5 minutes for the AI
-  reviewers and watch checks -> handle *every* review comment (fix or justified reply, then
-  resolve) -> merge -> `git checkout main && git pull`. Builds must be green after every PR,
-  not only at plan completion.
 * *Integration tests are part of the plan, never deferred*: a plan is complete only when
   every behaviour it delivers is exercised by the `integration-tests` suite (positive and
   negative paths) and the full integration profile is green -- locally and on CI -- before
@@ -106,11 +135,14 @@ link:../adr/0002-initial-scope.adoc[ADR-0002], dynamic configuration/discovery a
 * *Benchmarks follow the same rule for the hot path*: every plan that adds a runtime
   data-plane behaviour ships a WRK benchmark for it in the same plan (following the existing
   lua/sh + metadata conventions so the pages pipeline picks it up unchanged), so regressions
-  stay attributable to the plan that caused them. Boot-time-only plans (02, 03) are exempt --
-  nothing on the hot path to measure. Plan 09 consolidates baselines and regression
+  stay attributable to the plan that caused them. Plans with no new hot-path behaviour
+  (02, 02b, 03) are exempt -- nothing to measure (02b instead repairs the harness itself). Plan 09 consolidates baselines and regression
   thresholds; it does not create missing coverage.
 * *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
   with an IMPORTANT block and requires explicit user approval before it is added
-  (CLAUDE.md rule). TokenSheriff artifacts use the released line (currently `0.9.1`), never
-  snapshots.
+  (CLAUDE.md rule). TokenSheriff artifacts use the released line (currently `0.9.2`, managed
+  by `token-sheriff-bom`), never snapshots -- the whole stack (validation + client modules)
+  is already in the build since PR #68, so Plans 04 and 07 wire existing dependencies rather
+  than adding them. The remaining approval-gated additions are `cui-http:2.1.0` and
+  `quarkus-smallrye-fault-tolerance` (Plan 04).
 * Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.

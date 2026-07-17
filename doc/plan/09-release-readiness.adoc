@@ -34,17 +34,24 @@ discovered here that is feature-shaped becomes its own follow-up.
   (new top-level doc or `doc/guide/`): first boot with a minimal config, adding an endpoint,
   anchors, topology + `${VAR:-default}` overrides in containers, TLS/mTLS/passthrough,
   choosing and configuring a BFF variant, reading the boot log / effective-posture output,
-  every LogRecord an operator may see (link to `doc/LogMessages.adoc`). Seeded from the
+  every LogRecord an operator may see (link to `doc/LogMessages.adoc`), and the
+  observability surface: metrics, health, and how to enable per-request access logging
+  (the Quarkus HTTP access log -- the gateway deliberately ships events + metrics, not its
+  own access-log implementation; say so explicitly). Seeded from the
   integration sample configs so every snippet is *tested* configuration. The design docs
   stay design docs; the guide never duplicates normative rules, it links them.
 . *ADR-0005 checkpoint* -- measure the framework-agnostic surface (package sizes, arch-gate
   history); decide extract-vs-reaffirm with the user; record the outcome as an ADR-0005
   amendment (and execute the mechanical extraction if chosen -- the arch-gate has kept it
   package-to-module by construction).
-. *Security-audit sweep* -- full-surface audit (config validation gaps, header handling,
-  cookie/CSRF/logout flows, forwarding trust, error-detail leakage, container posture);
-  every finding triaged: fixed here, or explicitly risk-accepted with rationale. Fresh
-  dependency + container-image CVE pass.
+. *Security-audit sweep* -- full-surface audit driven by
+  link:../security-threat-model.adoc[the Threat Model & CVE-Derived Validation Baseline]:
+  every COVERED/PARTIAL catalogue assertion must have a passing test, and every GAP row must
+  be closed or explicitly risk-accepted with rationale (config validation gaps, header
+  handling, cookie/CSRF/logout flows, forwarding trust, error-detail leakage, container
+  posture are all catalogue entries). Fresh dependency + container-image CVE pass; any new
+  CVE in a comparable gateway/OAuth stack is triaged into a new catalogue row. Consider a
+  short ADR recording that this baseline is a 1.0 release gate.
 . *Benchmark consolidation* -- the per-plan benchmarks (README convention: each hot-path
   plan shipped its own) are consolidated into one side-by-side report -- baseline
   (`/q/health`), plain proxy, bearer, WebSocket, gRPC, passthrough relay, BFF mediation
@@ -53,8 +60,10 @@ discovered here that is feature-shaped becomes its own follow-up.
   coverage; a gap found here is a defect of the plan that skipped it.
 . *Native + container hardening* -- native build + ITs against the native image in CI
   (not only JVM mode) if not already the default; distroless image review (user, filesystem,
-  exposed ports, JFR variant), resource-limit guidance measured (heap ceilings under the
-  benchmark load).
+  exposed ports, JFR variant, the default `quarkus.log.file.path` working under a read-only
+  root), resource-limit guidance measured (heap ceilings under the benchmark load);
+  graceful-shutdown drain re-verified under load (the Plan 04 behaviour, now with the full
+  feature set); SBOM generation for the released image as part of the CVE pass.
 . *Release mechanics* -- version 1.0.0, release notes generated from the plan/ADR trail,
   tag + publish per cuioss release conventions; `doc/plan/README.adoc` updated to mark the
   sequence delivered; declare the end of the pre-1.0 break-freely rules in `CLAUDE.md`
@@ -62,19 +71,9 @@ discovered here that is feature-shaped becomes its own follow-up.
 
 == Execution Workflow
 
-. Create a feature branch from up-to-date `main`: `feature/plan-09-release-readiness`
-  (several PRs expected -- guide, audit fixes, benchmarks, release -- each following the
-  standard workflow below).
-. Implement the work breakdown above.
-. Verify everything locally -- both must pass with zero errors/warnings:
-  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
-. Commit and push the branch.
-. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
-. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
-  checks are green.
-. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
-  reason for not fixing + resolve; when uncertain, ask the user before acting.
-. Merge the PR, then `git checkout main && git pull`.
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-09-release-readiness`. Several PRs are expected -- guide, audit fixes,
+benchmarks, release -- each following the standard workflow.
 
 == Acceptance Criteria
 

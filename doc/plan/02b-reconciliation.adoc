@@ -1,0 +1,157 @@
+= Plan 02b -- Doc/Code Reconciliation & Quality Debt
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Bring the design documentation and the delivered code back into agreement, and clear the
+test/benchmark quality debt surfaced by the 2026-07-17 adversarial review -- *before*
+Plan 03 builds on either. This plan adds no features; every item is a correction of
+something that already claims to exist, a deletion of something worthless, or a repair of a
+measurement instrument. It is independent of link:03-endpoint-anchors.adoc[Plan 03] (no
+overlapping files beyond trivial doc passages) and can land before it or in parallel.
+
+Scope guard: everything Plan 03 explicitly owns stays there -- the `${VAR:-default}`
+placeholder mechanism, the `EndpointEnablementResolver`/`TOPOLOGY_<ALIAS>` removal, anchors,
+prefix normalization, CIDR/scheme/secrets validator hardening. This plan must not touch
+those.
+
+== Required Reading (before implementation)
+
+. The review findings condensed into this plan (each work item cites its evidence inline).
+. link:../adr/0008-data-plane-transport.adoc[ADR-0008] -- documents the whole-second
+  timeout rule as *removed*; item 1 below makes that true.
+. link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] -- fully implemented,
+  still marked Proposed; item 2 flips it.
+
+== Work Breakdown
+
+=== Code-side: make the docs' past tense true
+
+. *Remove `validateWholeSecondTimeouts`* (and its tests) from `ConfigValidator`. ADR-0008
+  (Accepted) and the `configuration.adoc` validation summary both state the rule was
+  removed and "millisecond-precision timeouts become legal configuration" -- the code still
+  rejects `read_timeout_ms: 2500` today. Add a positive test: a non-whole-second timeout
+  boots.
+. *Flip ADR-0009 to Accepted* -- `TopologyResolver` + `validatePassthroughAliasResolvable`
+  implement it word for word; update the status line and the ADR index table in
+  `doc/README.adoc`.
+. *Remove `jwks.source: inline`* from the schema enum, `IssuerConfig.Jwks`, and
+  `configuration.adoc`: the option is selectable but no field can carry inline key material,
+  so it is a dead branch (pre-1.0 rule: delete). Re-add with a content field only if an
+  air-gapped deployment need materializes.
+
+=== Documentation corrections (doc-vs-code, doc-vs-doc)
+
+. *Root `README.adoc` ports*: `/q/health` and `/q/metrics` live on the management port
+  `9000` (plain HTTP), not `8443` -- fix the endpoint/port table and the `docker run`
+  example (map 9000); remove the duplicated OAuthSheriff metrics link.
+. *Library-dependency claims*: `architecture.adoc` §Library Dependencies and
+  `technical_aspects.adoc` §Library Summary both state the token-sheriff stack is a future,
+  approval-pending addition and that core jars arrive only transitively -- the pom has all
+  three modules as *direct* dependencies at 0.9.2 today. Fix both statements, then
+  *deduplicate*: `technical_aspects.adoc` owns the coordinates table, `architecture.adoc`
+  links it (the duplicated table is how the same error got into two files).
+. *`doc/README.adoc`*: drop the stale "No production code is described as existing here"
+  sentence (the same file says Plans 01/02 are delivered).
+. *Upstream-project naming*: reconcile `TokenSheriff` / `OAuthSheriff` / `token-sheriff` --
+  the repo is `cuioss/TokenSheriff`; retarget the OAuthSheriff links in the root README and
+  `benchmarks/doc/performance-scoring.adoc`, and give the many bare `TokenSheriff/doc/client`
+  references one resolvable URL (state it once in `doc/README.adoc`, link there elsewhere).
+. *`doc/LogMessages.adoc` identifiers*: rendered IDs are not zero-padded
+  (`ApiSheriff-1:`, not `ApiSheriff-001:`); fix the IDs and range headings so an operator
+  grepping logs finds them.
+. *Version references*: ADR-0001 names `cui-java-parent:1.5.0`; the pom says `1.5.1` (and
+  `CLAUDE.md` still says `1.4.4` -- update it in the same PR). Verify against the pom at
+  edit time.
+. *`architecture.adoc` §Metrics attribution*: port 9000 is the Quarkus management-interface
+  default, not something set in `application.properties` -- correct the sentence.
+. *Configuration-location facts* in `configuration.adoc`: document the `sheriff.config.dir`
+  property (the knob that locates the whole config set), fix the sample tree's `conf/` to
+  the shipped default `config`, and document the `.yaml`-only endpoint-file listing and the
+  `[A-Z][A-Z0-9_]*` topology alias-name constraint as current behaviour (Plan 03 hardens
+  both; until then the doc must not hide them).
+. *`forwarded.trusted_proxies` "MANDATORY" ambiguity*: the field is required *within* a
+  `forwarded` block, but the block itself is optional -- say so explicitly (a config with no
+  `forwarded` block is legal and means "no inbound forwarding headers are trusted").
+. *Session-store requiredness*: the validator requires `store` when `session.mode: server`;
+  the doc implies `memory` is a default. Decide doc-first and align -- keep the code's
+  explicit-store requirement and document it (an explicit store keeps the config
+  self-describing).
+. *Violation-aggregation wording*: qualify the "every violation ... reported together,
+  never one at a time" claim in `configuration.adoc` §Schemas per the ADR-0009 asymmetry
+  (an unresolvable enabled-endpoint alias and, until Plan 03 moves it, same-prefix
+  disjointness abort individually).
+. *Terminology*: `technical_aspects.adoc` titles the upstream-call section "Downstream API
+  Communication" while the config model says `upstream` throughout -- rename the section
+  and sweep the remaining downstream/upstream mismatches.
+
+=== Test hygiene
+
+. *Delete vacuous tests*: `ApiSheriffTest.shouldCreateInstance`, `ApiSheriffProducerTest`
+  (constructor-only assertions), and `ValidationRuleTest` (all four tests exercise lambdas
+  the test itself defines -- they verify Java, not production code).
+. *Resolve the Hamcrest contradiction*: the forbidden-frameworks rule bans Hamcrest, yet
+  every REST-assured test imports `org.hamcrest.Matchers`. Migrate the five affected
+  classes to `.extract()` + JUnit assertions; new tests follow the same style (Plan 04
+  already mandates it for its ITs).
+. *Wire `verify-invalid-config-fails.sh` into the `integration-tests` profile*
+  (exec-maven-plugin execution): it is the only automated proof of the "never serve on
+  partial configuration" property and is currently referenced by nothing. Wire or delete
+  `verify-environment.sh` in the same pass.
+. *Small gaps*: add the `::/0` trust-all negative case to `ConfigValidatorTest` (only the
+  IPv4 form is tested); assert that `MissingVariableException`/binding messages never
+  contain a resolved secret *value* (pins today's behaviour; Plan 03 D5 extends it);
+  convert `WrkResultPostProcessorTest`'s CWD-relative resource paths to classpath loading;
+  drop the unused `awaitility` dependency from `integration-tests/pom.xml`.
+
+=== Benchmark harness correctness
+
+. *Fix the wrk counter aggregation*: `done()` runs in a fresh Lua state, so the per-thread
+  `success_count`/`non_200_count` the scripts print are not aggregated totals -- plumb
+  counters via `setup()`/the thread table in all three scripts, delete the never-used
+  `error_count`, and make the run *fail* above an error-rate threshold (today a gateway
+  that starts serving 404s benchmarks as an improvement).
+. *`WrkResultPostProcessor` matching*: replace the bidirectional-`contains()` metadata
+  matching (nondeterministic on overlapping names) with an exact naming contract; reconcile
+  the `*.txt` vs `*-results.txt` suffix handling; add value-asserting tests (the synthetic
+  fixtures have known numbers -- P50, RPS -- that no test currently checks, so a unit
+  conversion bug would pass).
+
+=== Optional stopgap (explicitly optional, throwaway)
+
+* The interim proxy (`ProxyRoute`, replaced wholesale by Plan 04) buffers unbounded bodies
+  and has no request timeout. If Plan 04 is not imminent when this plan lands, add the
+  two-line mitigations (a `BodyHandler` size limit, an `HttpRequest` timeout) as disposable
+  insurance. Skip if Plan 04 starts right after.
+
+== Execution Workflow
+
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-02b-reconciliation`. One PR is expected.
+
+== Acceptance Criteria
+
+* A config with `read_timeout_ms: 2500` boots (test); the whole-second rule and its tests
+  are gone.
+* ADR-0009 reads Accepted, and the `doc/README.adoc` index agrees.
+* No documentation places `/q/*` on 8443; the library coordinates table exists exactly
+  once; no doc claims the token-sheriff modules are pending approval.
+* `jwks.source: inline` no longer exists in schema, model, or doc.
+* Zero `org.hamcrest` imports in the repository; the vacuous test classes are deleted.
+* `verify -Pintegration-tests` executes the invalid-config negative script and fails if the
+  container accepts an invalid config.
+* A benchmark run with an induced non-2xx upstream fails the run; the post-processor tests
+  assert concrete metric values.
+* Quality gate + full verify pass.
+
+== Out of Scope (explicit)
+
+* Everything Plan 03 owns: placeholder substitution, convention-env-lookup removal, anchors,
+  validator hardening (CIDR parsing, scheme allowlist, prefix normalization, secrets-rule
+  enforcement, `.yml` rejection, binding-message redaction).
+* Every runtime enforcement gap of the interim proxy (auth, verb gate, forward policy,
+  streaming, timeouts from config) -- Plan 04 replaces that edge; only the optional stopgap
+  above may touch it.
+* The `sheriff.config.dir`-related *behaviour* (only its documentation is in scope).
