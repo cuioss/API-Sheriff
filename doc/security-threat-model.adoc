@@ -1,0 +1,1061 @@
+= API Sheriff -- Threat Model & CVE-Derived Validation Baseline
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 2
+
+This document is the security contract API Sheriff validates *against*. It has three
+parts:
+
+. *Trust boundaries and STRIDE* -- the assets, the boundaries a request crosses, and the
+  threat categories per boundary.
+. *Failure catalogue* -- every failure class that has produced a real, cited CVE in a
+  comparable API gateway, reverse proxy, or OAuth/OIDC stack (the gateways surveyed in
+  link:archive/others/README.adoc[the competitive analysis] -- APISIX, Kong, Traefik,
+  KrakenD, Tyk, Gravitee -- plus the canonical proxy/JOSE CVEs). Each class carries the
+  transferable lesson, the API Sheriff control that defeats it, a *status*, and a *testable
+  assertion*.
+. *Validation matrix* -- every control mapped to the plan that owns it and the assertion
+  that proves it, so this document doubles as a release gate.
+
+[IMPORTANT]
+====
+*How to use this document.* It is normative for the security posture, not for behaviour --
+where a control's behaviour is specified, link:configuration.adoc[the configuration model]
+and link:architecture.adoc[the architecture] govern; this document names the *threat* the
+control exists to answer and the *assertion* that proves it still does. Every catalogue
+entry's assertion is meant to become a test (unit, integration, or benchmark) so a
+regression re-opens a known-historical hole loudly. Status values:
+
+* *COVERED* -- a plan, ADR, or delivered code owns the control; the assertion has (or will
+  have) a test.
+* *PARTIAL* -- the control exists but the assertion is not fully pinned, or only one half of
+  an equivalence class is closed.
+* *GAP* -- no plan yet owns this control; the "Gaps to bake in" section collects these as
+  recommended plan amendments (the original goal: learn from others' failures *before*
+  shipping the feature).
+* *ELIMINATED* -- the failure class does not apply because a design decision removed the
+  surface entirely (recorded so an audit can confirm the surface stays removed).
+====
+
+== Foundation libraries (what is already owned upstream)
+
+API Sheriff is not implementing these controls from scratch -- two audited libraries own
+large parts of the catalogue, and the residual gateway work is exactly the part they
+deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
+of the local `cui-http` (2.1.0) and `TokenSheriff` (0.9.2) trees.
+
+*`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
+canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
+percent-encoding, collapses `..`/dot-segments and duplicate slashes, rejects
+traversal/`%00`/overlong/backslash *unconditionally*); header name/value CR/LF/NUL rejection
+(`CharacterValidationStage`, unconditional); collection count + length limits
+(`RequestCollectionValidator`, `LengthValidationStage`); the forwarded-header trust engine
+(`ForwardedHeaderResolver` -- CIDR-validated `trustedProxies`, right-to-left drop-untrusted,
+per-value sanitization, canonical `X-Forwarded-*`/RFC 7239 regeneration, NiFi aliases); the
+shared `SecurityEventCounter`; and reusable attack corpora (OWASP/ZAP/ModSec-CRS/Apache/Nginx/
+IIS-CVE databases + encoding/traversal generators) shipped in its *test-jar*.
+
+*`cui-http` deliberately does NOT provide* (gateway/web-server owns): request-level *framing*
+/ smuggling defence (CL vs TE, chunked, HEAD-with-body, hop-by-hop `Connection` abuse) --
+explicitly "infrastructure layer"; a *streaming* body-size limiter (the `BODY` pipeline is
+removed; `max_body_bytes` must be a gateway stream counter); *matrix-param (`;`) handling*;
+an *encoded-slash policy* (`%2f` is decoded to `/`); and the *TCP-peer gate* (the resolver
+trusts headers, not the socket -- it never sees the peer address). It also does not reject
+`0.0.0.0/0`/`::/0` (Plan 03 D5 does).
+
+*`token-sheriff-validation` provides, fail-closed:* JWT algorithm pinning
+(`SignatureAlgorithmPreferences` -- allow-list, `none`/HMAC/embedded-`jwk` rejected, so
+RS256->HS256 key-confusion is structurally impossible), an *in-library* guard for the
+CVE-2022-21449 ECDSA "psychic signature" (`r|s == 0` rejected before the JDK verifier) and a
+<2048-bit RSA floor; `iss`/`aud`/`azp`/`exp`/`nbf`/`iat`(+skew)/`sub` validation; JWKS from
+the configured/discovered endpoint *only* (token-supplied `jku`/`x5u`/`jwk` ignored) behind
+an `EgressPolicy` that blocks loopback/link-local/cloud-metadata on the initial fetch *and
+every refresh* (DNS-rebinding-safe), with TTL cache, rotation grace, and unknown-`kid` that
+cannot drive a fetch storm; the 4-arg `AccessTokenRequest(token, headers, uri, method)` for
+DPoP; server-side DPoP proof validation + replay cache; a Quarkus JWKS-readiness health
+check; an RFC 9457 exception mapper that interpolates no secret/message. It ships a
+`generators`-classifier test-jar with adversarial token/key corpora (`JkuX5uAttackTest`,
+`PsychicSignatureAttackTest`, ...).
+
+*`token-sheriff-client` (BFF engine) provides, fail-closed:* auth-code + PKCE (`S256` only,
+`plain` not implementable); `FlowContext` bundling `state`+`nonce`+PKCE-verifier+`redirect_uri`
+(+`acr_values`/`max_age`) with constant-time `state`/`nonce` verification; RFC 9207 `iss`
+mix-up defence (incl. absent-`iss` rejection); refresh rotation with reuse detection ->
+family revocation + RFC 7009 revoke, single-flighted per session (`RefreshTokenFamily`,
+`TokenLifecycleManager`); RP-initiated logout with *exact-match* `post_logout_redirect_uri`
+and state verify (`PostLogoutRedirectValidator`); RFC 9470 step-up parsing/re-drive;
+callback HPP defence (`CallbackParameters.parse(rawQuery)` rejects duplicate `code`/`state`);
+DPoP/mTLS sender-constraint requesting with downgrade rejection.
+
+*The engine/validation libs deliberately leave to the gateway* (the true BFF residual): the
+*back-channel logout-token receiver and its `events`/`sub`/`sid`-required + `nonce`-forbidden
+checks* (no library support at all -- signature reuse only); *persistence* of the
+`FlowContext` (session-bound, single-use discard, return-URL -- the engine gives the DTO
+shape, not the store); the *concrete `TokenStore`* (server session vs encrypted cookie);
+*scope enforcement* (the lib exposes `providesScopes()`/`getScopes()` but enforces nothing);
+and calling `CallbackParameters.parse(rawQuery)` on the *raw* query (the `of(Map)` path cannot
+re-detect duplicates). The stateless cookie variant additionally cannot share the in-memory
+`RefreshTokenFamily` across instances (a documented Plan 08 trade-off).
+
+This attribution is folded into the *Owner* column of the validation matrix and the per-entry
+status below.
+
+== Assets
+
+What an attacker wants, ranked by blast radius:
+
+[cols="1,3"]
+|===
+| Asset | Why it matters
+
+| Upstream reachability
+| The gateway is the only sanctioned path to the backends. Reaching an upstream *without*
+  passing auth/filtering is the top-line failure -- every "auth bypass" CVE below is an
+  attack on this asset.
+
+| Mediated tokens (BFF variants)
+| Access / refresh / ID tokens held server-side (session mode) or inside the encrypted
+  cookie (cookie mode). Theft = account takeover; leakage to the browser defeats the entire
+  BFF rationale.
+
+| Session / flow secrets
+| Session-id cookie, the pending-authorization record (`state`/`nonce`/PKCE verifier), the
+  cookie encryption key(s). Forgery or replay = impersonation.
+
+| Client identity signal
+| The real client IP / scheme the gateway asserts to upstreams via regenerated forwarding
+  headers. Spoofing it corrupts every downstream IP-based decision.
+
+| Configuration integrity
+| The immutable route table and policy. There is no runtime mutation surface by design (see
+  GW-10); the boot-time config *is* the trust anchor.
+
+| Availability
+| A single process fronting everything. Resource-exhaustion classes (GW-07, GW-08) target
+  this.
+|===
+
+== Trust boundaries
+
+A request crosses these boundaries; each is a place a control must hold.
+
+[cols="1,2,3"]
+|===
+| # | Boundary | What is untrusted across it
+
+| B1
+| Client -> TLS edge
+| Everything: TLS ClientHello/SNI, all request bytes, framing, every header including
+  `Forwarded`/`X-Forwarded-*`/`Connection`, the raw path and its encoding, the body.
+
+| B2
+| TLS edge -> pipeline (terminated L7)
+| The normalized request. The boundary's job is to hand the pipeline *one* canonical form
+  and reject ambiguity (framing, encoding) here.
+
+| B3
+| Pipeline -> upstream (data plane)
+| The gateway is now the client. What it *emits* is trusted by the upstream, so the gateway
+  must strip inbound trust signals and regenerate its own (forwarding headers, mediated
+  bearer). The upstream's *response* is untrusted coming back.
+
+| B4
+| Gateway <-> IdP (control plane, BFF)
+| OIDC discovery/JWKS/token/revocation/logout traffic. Tokens and logout tokens received
+  here are untrusted until validated; JWKS key sources must be pinned (no token-supplied
+  `jku`).
+
+| B5
+| Browser <-> BFF session
+| The session cookie and any BFF-API request it authenticates. Cross-site requests carry the
+  cookie ambiently (CSRF); the cookie itself is a theft target.
+
+| B6
+| Operator -> configuration
+| Config files are operator-authored (semi-trusted) but env-substituted values and secrets
+  cross a boundary; a config that would serve traffic in a partially-valid state is a
+  failure (fail-closed boot).
+
+| B7
+| Data-plane network -> management surface
+| Health/metrics on the management port. Must not be reachable from, or confused with, the
+  public data-plane port; there is no admin/mutation API to expose (GW-10).
+|===
+
+.Boundary geometry
+----
+        B1                B2                      B3
+client ----> [ TLS edge ] --> [ L7 pipeline ] --------> upstream
+  |          (terminate/         (normalize,      (regenerated
+  |           SNI split)          filter, auth,     headers,
+  |                               forward policy)    mediated bearer)
+  |                                   |  ^
+  |  B5 (session cookie / BFF API)    |  | B4 (OIDC: discovery/JWKS/token/logout)
+  +-----------------------------------+  +--> IdP
+
+  B6 operator --> [ immutable config, fail-closed boot ]
+  B7 management port (health/metrics) -- never on the data-plane port, no mutation API
+----
+
+== STRIDE per boundary
+
+The threat categories that actually bite each boundary (empty cells omitted for brevity;
+"->" points at the catalogue entry that carries the control).
+
+[cols="1,4"]
+|===
+| Boundary | Principal STRIDE threats -> catalogue entry
+
+| B1 Client->edge
+| *Spoofing* forwarding identity -> <<gw-04>>. *Tampering* with framing/encoding ->
+  <<gw-02>>, <<gw-01>>. *DoS* (slowloris, h2 abuse, decompression) -> <<gw-07>>, <<gw-08>>.
+  *Info disclosure* via error paths -> <<gw-12>>.
+
+| B2 edge->pipeline
+| *Elevation* via path-confusion auth bypass -> <<gw-01>>. *Tampering* via header injection
+  / hop-by-hop abuse -> <<gw-03>>. *Repudiation* if the effective posture isn't logged
+  (boot posture log -> <<gw-01>>).
+
+| B3 pipeline->upstream
+| *Spoofing* the client to the upstream -> <<gw-04>>. *Elevation* via SSRF / upstream
+  redirect -> <<gw-05>>. *Tampering* via response injection on the return leg -> <<gw-03>>.
+
+| B4 gateway<->IdP
+| *Spoofing* tokens (alg confusion, `alg:none`, key confusion) -> <<bff-06>>. *Elevation*
+  via JWKS `jku`/`x5u` SSRF -> <<bff-07>>. *Tampering* IdP mix-up -> <<bff-05>>. *Info
+  disclosure* of secrets in error paths -> <<gw-12>>.
+
+| B5 browser<->BFF
+| *Spoofing* via CSRF on the cookie-authed API -> <<bff-11>>. *Tampering*/theft of the
+  cookie -> <<bff-10>>, <<bff-12>>. *Elevation* via `state`/code injection on the callback
+  -> <<bff-02>>, <<bff-03>>, <<bff-13>>. *Repudiation*/replay via missing `nonce` ->
+  <<bff-04>>; logout flaws -> <<bff-09>>.
+
+| B6 operator->config
+| *Tampering*/*Elevation* via env-substitution bypassing validation -> <<gw-11>>; secrets in
+  logs -> <<gw-12>>. *DoS* via config-expansion -> <<gw-07>>. Fail-closed boot is the
+  overarching control.
+
+| B7 network->management
+| *Info disclosure* / *Elevation* via an exposed control surface -> <<gw-10>>.
+|===
+
+== Gateway failure catalogue
+
+Each class: the mechanism, the *cited real CVEs* that prove it is not theoretical, the API
+Sheriff control, its status, and the assertion to test. CVE IDs marked *(unverified)* were
+sourced from advisory aggregators but not confirmed on an NVD/GHSA primary page during
+research -- cite the *class*, not the number, until confirmed.
+
+[#gw-01]
+=== GW-01 -- Path normalization / router-vs-enforcement desync (auth bypass)
+
+*The single most recurrent gateway CVE class.* The router matches on one representation of
+the path (raw, or partially decoded) while auth/block enforcement -- or the backend --
+acts on a different one, so a request skips the control bound to the path it ultimately
+reaches.
+
+*Evidence.* Traefik: CVE-2025-47952, CVE-2025-66490, CVE-2026-40912 (StripPrefixRegex
+Path/RawPath length desync), GHSA-xf64-8mw2-4gr2 (StripPrefix), GHSA-cxjq-mrr5-89rv
+(ReplacePathRegex) -- six-plus advisories in ~14 months. APISIX CVE-2021-43557 (`uri-blocker`
+checked raw `request_uri`, router matched normalized). Kong CVE-2021-27306 (JWT route bypass
+via `/public/../api`) and the external-authz path-traversal (Kong forwards un-normalized
+path, partial `%2E`/`%2F` decode). Envoy CVE-2021-29492 (`%2F`/`%5C` not decoded ->
+RBAC/JWT bypass). Systematized by Orange Tsai, "Breaking Parser Logic" (Black Hat 2018).
+
+*Control.* `cui-http`'s `URLPathValidationPipeline` already returns a *canonical* path
+(percent-decoded, dot-segments and duplicate slashes collapsed, traversal/`%00`/overlong/
+backslash rejected unconditionally). The gateway's residual job is the *invariant*: route,
+the `allowed_methods` verb gate, auth selection, `allowed_paths` matching, *and* the upstream
+remainder all consume that *same* canonical output -- byte-identical -- never the raw
+request-URI. Two things cui-http leaves to the gateway and this control must add: an
+*encoded-slash policy* (cui-http decodes `%2f` to a structural `/`; the gateway decides
+reject-vs-accept and applies it before routing) and *matrix-param (`;`) handling* (not
+touched by cui-http). This directly answers the code-review finding that the interim
+`ProxyRoute` looks the route up on the raw URI but relies on the router's normalized match
+(raw-vs-normalized divergence).
+
+*Status:* PARTIAL. Plan 04 stage 1 validates the raw path and stages 2-3 act on the
+normalized path, and Plan 03 D5 normalizes prefixes before disjointness -- but no plan yet
+states the *invariant* explicitly or tests the divergence. Recommend the assertion below be
+an explicit Plan 04 acceptance item (see Gaps).
+
+*Assertion.* For every encoded-traversal / encoded-slash / mixed-encoding / trailing-slash /
+matrix-param variant of a protected path: the request is either rejected at B2 or is
+routed, authorized, and forwarded against the *same* canonical path -- never authorized as
+public and dispatched to a protected upstream. Upstream request-count = 0 on every bypass
+attempt.
+
+[#gw-02]
+=== GW-02 -- HTTP request smuggling / desync
+
+Front-end and back-end disagree on where a request ends (CL vs TE, bare-LF chunk
+terminators, duplicate framing headers, HEAD-with-body, HTTP/2->1.1 downgrade), letting an
+attacker's body become a second request on a pooled connection.
+
+*Evidence.* HAProxy CVE-2021-40346 (htx integer overflow desync, all ACLs bypassed). Go
+`net/http` CVE-2025-22871 (bare-LF chunk terminator). Node/llhttp CVE-2022-35256. OpenResty
+`lua-nginx-module` CVE-2024-33452 (HEAD-with-body reinterpreted -- hit *both* Kong and
+APISIX). Kong CVE-2026-6338 (CL.0: attacker lists `Content-Length` in `Connection:` so Kong
+drops it). Netty CVE-2021-21295 (missing CL validation on h2->h1 downgrade). Context:
+PortSwigger "HTTP/1.1 Must Die" (2025).
+
+*Control.* Enforce a single unambiguous framing at B2: reject requests bearing both
+`Content-Length` and `Transfer-Encoding`; require strict CRLF and RFC-9112 chunk parsing;
+reject a body on a bodyless method; re-derive/validate framing after any header mutation
+(the `Connection`-list hop-by-hop cleanup must never remove `Content-Length`/
+`Transfer-Encoding` -- see GW-03); never pool an upstream connection whose framing wasn't
+fully validated. Prefer end-to-end HTTP/2 where possible.
+
+*Status:* GAP. Quarkus/Vert.x/Netty reject much of this by default, but API Sheriff sits
+*behind* other proxies (the whole forwarded-header design assumes it), so framing agreement
+is a first-class requirement, not an inherited default. No plan asserts it.
+
+*Assertion.* A request with both `Content-Length` and `Transfer-Encoding`, a HEAD/GET with a
+body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and never produces
+two upstream requests; a smuggling test corpus (CL.TE/TE.CL/TE.TE/CL.0) run through the
+gateway produces zero desyncs.
+
+[#gw-03]
+=== GW-03 -- Header injection (CRLF) and hop-by-hop header abuse
+
+(i) CR/LF/NUL in a header name/value splits the message (response splitting). (ii) A client
+names a *trust* header inside `Connection:` so the proxy strips it before the backend sees
+it -- deleting the origin's client-IP or auth signal.
+
+*Evidence.* Apache httpd CVE-2022-31813 (client `Connection` handling suppresses
+`X-Forwarded-*` to origin, defeating backend IP-auth). Netty CVE-2022-41915 (`DefaultHttpHeaders`
+iterator path skipped value validation -> CRLF response splitting). Traefik CVE-2024-45410
+(client names Traefik's own `X-Forwarded-*` as hop-by-hop). Kong CVE-2026-6338 (framing-header
+strip abuse, GW-02).
+
+*Control.* cui-http's `CharacterValidationStage` rejects CR/LF/NUL in header names and values
+*unconditionally* (ingress); the gateway feeds every inbound header through it and re-applies
+it before writing any response. Keep an explicit, closed hop-by-hop list the gateway honors;
+never let a client `Connection:` header steer stripping of framing or trust headers. Build the
+forwarded header set by regeneration from an allowlist, never by editing the client's map (the
+zero-trust forward policy) -- which also means client `X_Forwarded_For`-style underscore
+variants that cui-http does not canonicalize are dropped by the deny-by-default allowlist
+rather than reaching the upstream.
+
+*Status:* PARTIAL. Header CR/LF/NUL is cui-http (COVERED); zero-trust regeneration is Plan 04
+stage 5; the hop-by-hop-abuse-cannot-strip-framing property (the GW-02 tie-in) is not
+asserted.
+
+*Assertion.* CR/LF in a header value is rejected; a client `Connection: X-Forwarded-For`
+(or `Content-Length`) does not cause the gateway to drop the regenerated forwarding header
+or the framing header; response headers are validated before write.
+
+[#gw-04]
+=== GW-04 -- X-Forwarded / trusted-proxy spoofing
+
+IP-based auth, rate limiting, or "internal caller" trust reads a client-settable forwarding
+header as source identity. Any client sets `X-Forwarded-For: 127.0.0.1` and becomes
+"internal".
+
+*Evidence.* APISIX CVE-2022-24112 -- the flagship gateway RCE: the `batch-requests` plugin
+let the caller set `X-Real-IP` on re-dispatched sub-requests, the Admin-API IP allowlist
+trusted it, loopback was forged, chained with the default admin token (GW-10) to
+unauthenticated RCE. ZooKeeper CVE-2024-51504 (`IPAuthenticationProvider` honors client
+`X-Forwarded-For` by default). Traefik CVE-2026-35051 / CVE-2026-54764 / CVE-2026-39858 /
+CVE-2026-54763 *(unverified)* -- a chain of *incomplete* forwarded-header-stripping fixes
+(each patched one spelling/case/underscore/alias variant while a sibling survived).
+OAuth2-Proxy CVE-2026-40575 *(unverified)*. The "too-broad-trust" bug the
+link:features-analysis.adoc[feature analysis] already calls out.
+
+*Control.* Never derive trust from a client-settable header. Gate `Forwarded`/`X-Forwarded-*`
+on a *TCP-peer* check against an explicit trusted-proxy CIDR list (ADR-0003), parse the chain
+right-to-left discarding untrusted entries, and *regenerate* canonical output -- never
+append. Validate the CIDR list at boot (reject `0.0.0.0/0`, `::/0`, and split-range
+trust-all equivalents like `0.0.0.0/1`+`128.0.0.0/1`; reject malformed CIDRs). Canonicalize
+header names across the *whole* equivalence class (case, `-`/`_`, aliases) before stripping,
+or the strip is incomplete -- the Traefik fix-chain is the cautionary tale.
+
+*Status:* COVERED. ADR-0003 + Plan 04 stage 5 (TCP-peer gate, drop-and-regenerate) + Plan 03
+D5 (CIDR parsing, split-range trust-all rejection). The name-equivalence-class stripping is
+the one nuance to make explicit in the Plan 04 test set.
+
+*Assertion.* A spoofed inbound `X-Forwarded-For`/`X-Real-IP`/`Forwarded` from a non-trusted
+peer is ignored; the emitted chain is regenerated, not appended; case/underscore/alias
+variants of forwarding headers are all stripped; a `0.0.0.0/1`+`128.0.0.0/1` config is
+rejected at boot.
+
+[#gw-05]
+=== GW-05 -- SSRF via proxy features / upstream control
+
+A proxy feature lets the attacker influence the upstream destination (path-injected target,
+user-supplied upstream, followed cross-host redirect) -> the gateway makes requests from its
+trusted position to internal services / cloud metadata.
+
+*Evidence.* Apache httpd mod_proxy CVE-2021-40438 (crafted URI-path selects attacker origin;
+CISA Known-Exploited). The Capital-One-class metadata SSRF pattern.
+
+*Control.* The upstream is a *fixed, boot-resolved topology alias* -- never influenced by
+request content (link:adr/0004-topology-indirection.adoc[ADR-0004]). Restrict resolved alias
+URLs to `http`/`https` at boot (Plan 03 D5). Redirect following is disabled
+(`followRedirects(NEVER)` -- an SSRF-limiting default in the interim proxy, to be preserved).
+On the *control plane* (B4 -- OIDC discovery/JWKS/token), `token-sheriff-validation`'s
+`EgressPolicy` already blocks loopback/link-local/site-local/cloud-metadata targets on the
+initial fetch and every refresh (DNS-rebinding-safe); keep its secure defaults and only widen
+via `allowedEgressHost` for a trusted IdP. Operators should egress-restrict the gateway and
+avoid pointing a topology alias at link-local/metadata ranges (guide note, Plan 09).
+
+*Status:* COVERED (design). No request-controlled upstream exists; scheme allowlist is Plan
+03 D5; redirect-follow-off is a documented default.
+
+*Assertion.* No request input (path, header, body) can change the resolved upstream host; a
+topology alias with a non-http(s) scheme fails boot; the data-plane client does not follow
+upstream 3xx to a new host.
+
+[#gw-06]
+=== GW-06 -- TLS/SNI fail-open, upstream cert verification, mTLS bypass
+
+Failure modes: empty/unresolved SNI falls back to a *permissive* default (mTLS not required);
+a verify flag is silently inverted; SAN matching ignores SAN type or over-matches wildcards.
+
+*Evidence.* Traefik CVE-2026-32305 (fragmented ClientHello -> empty SNI -> permissive default
+TLS config, mTLS bypassed). Traefik CVE-2025-66491 (ingress-nginx `proxy-ssl-verify: on`
+mapped to Go `InsecureSkipVerify: true` -- verification *off* for ~5 months). Envoy
+CVE-2022-21656 (SAN type ignored -> wrong-CA cert matches), CVE-2020-15104 (wildcard SAN
+matches nested subdomains). KrakenD CVE-2026-39821 (punycode `xn--example-.com` normalizes
+to `example.com` -> host-based rule bypass).
+
+*Control.* Fail *closed*: empty/unresolved SNI must take the strictest policy or reject,
+never a permissive default. Reassemble the full ClientHello before routing on SNI (the
+Plan 06 `NetServer` front must not decide on a partial record). For any security-gating
+boolean (mTLS require, upstream verify), *test the behaviour* -- a real handshake fails when
+it must -- not merely that the flag parsed. Verify upstream certs by default. Normalize
+security-decision hostnames with a spec-conformant, tested routine.
+
+*Status:* PARTIAL. Plan 06 owns SNI-split + mTLS and now pre-decides the `NetServer` front;
+the *fail-closed-on-empty-SNI* rule, *full-ClientHello reassembly before routing*, and
+*assert-behaviour-not-flag* discipline should be explicit Plan 06 items (see Gaps).
+
+*Assertion.* A fragmented/empty-SNI ClientHello does not reach a passthrough or a
+no-client-cert default -- it is terminated under the strict policy or rejected; enabling mTLS
+causes a real no-cert handshake to fail (behaviour test); a punycode host that normalizes to
+a passthrough SNI is caught by the same collision rule.
+
+[#gw-07]
+=== GW-07 -- Slowloris / connection & body-size exhaustion / decompression bombs
+
+Slow partial requests pin workers; unbounded body buffering or decompression exhausts
+memory; config-file expansion bombs exhaust boot memory.
+
+*Evidence.* Apache httpd CVE-2007-6750 (Slowloris, pre-`mod_reqtimeout`). Envoy CVE-2022-29225
+(decompressor with no output cap -> OOM). KrakenD-triaged Go stdlib DoS CVEs (CVE-2026-42504
+MIME quadratic, CVE-2025-61723 PEM quadratic). The code review's own finding: the interim
+`ProxyRoute` buffers unbounded request *and* response bodies with no timeout in a 512 MB
+container.
+
+*Control.* Bound everything an attacker inflates: inbound header/line-size limits, an
+inbound idle/read timeout (slowloris), a max-in-flight admission cap, `max_body_bytes` as a
+*streaming* counter (never buffer the body -- link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]),
+and streamed responses (never materialized). The gateway is an *opaque* passthrough -- it does
+not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
+still cap body bytes. Apply explicit YAML `StreamReadConstraints` at config load (Plan 03 D5).
+
+*Status:* PARTIAL/COVERED. Streaming + `max_body_bytes` counter is ADR-0006 + Plan 04
+stage 6; edge limits + idle timeout + admission cap + graceful drain were added to Plan 04's
+edge-hardening item; YAML limits are Plan 03 D5. The interim-proxy stopgap is the optional
+Plan 02b item.
+
+*Assertion.* A slow-drip request is evicted at the idle timeout; a body exceeding
+`max_body_bytes` aborts mid-stream without full buffering; concurrent large requests do not
+grow heap without bound (admission cap holds); an oversized/alias-bomb config fails boot
+gracefully.
+
+[#gw-08]
+=== GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)
+
+Cheap multiplexed actions become expensive server work: open-then-`RST_STREAM` loops,
+endless CONTINUATION header frames, h2->h1 downgrade Content-Length smuggling, forwarded
+`Upgrade: h2c` bypassing controls.
+
+*Evidence.* CVE-2023-44487 (HTTP/2 Rapid Reset -- record DDoS, hit nginx/Envoy/Tomcat/Jetty/
+Go/gRPC/HAProxy/Node). Node CVE-2024-27983 and the CERT VU#421644 CONTINUATION-flood set
+(httpd CVE-2024-27316, Tomcat CVE-2024-24549, Envoy CVE-2024-27919, nghttp2 CVE-2024-28182,
+Go CVE-2023-45288). CVE-2019-9513 (PRIORITY flood). Netty CVE-2021-21295 (h2->h1 CL smuggling).
+
+*Control.* Rate-limit stream *creation and reset* per connection (not only concurrent
+streams); bound total CONTINUATION/header frame size and count per stream and drop
+over-limit connections; re-derive Content-Length on any downgrade; never forward client
+`Upgrade`/`Connection` (h2c) headers to the backend. API Sheriff terminates h2 via ALPN and
+proxies gRPC over upstream h2 (Plan 05) -- both the terminated and forced-h2-upstream sides
+inherit this requirement.
+
+*Status:* GAP. Quarkus/Netty ship some Rapid-Reset mitigation, but stream-reset rate limiting
+and CONTINUATION bounds must be verified and pinned, and h2c-upgrade non-forwarding asserted.
+Belongs to Plan 04 (terminated h2) and Plan 05 (gRPC h2 upstream).
+
+*Assertion.* A Rapid-Reset / CONTINUATION-flood load against the gateway does not exhaust
+CPU/memory (bounded, connection dropped); client `Upgrade: h2c`/`Connection` headers are not
+forwarded upstream; an h2->h1 path re-derives framing.
+
+[#gw-09]
+=== GW-09 -- WebSocket cross-site hijacking (CSWSH) / missing Origin check on upgrade
+
+The WS handshake is an HTTP Upgrade the browser sends with ambient cookies, and the
+Same-Origin Policy does *not* restrict cross-origin WebSocket connections -- only server-side
+`Origin` validation does. Accept-any-origin upgraders let an attacker page open an
+authenticated socket in the victim's context (CWE-1385).
+
+*Evidence.* Nginx-UI CVE-2026-34403, Mailpit CVE-2026-22689, Dozzle CVE-2026-44985 *(2026,
+GHSA-sourced; CVSS enrichment pending)* -- all `CheckOrigin -> true` on cookie-authenticated
+WS endpoints.
+
+*Control.* Validate `Origin` server-side on the upgrade handshake against an allowlist
+(reject unknown origins) *before* the relay is established; the handshake already runs the
+full pipeline incl. auth (Plan 05 D1), and Origin validation joins it for session-authed WS
+routes. Require `SameSite` on the session cookie and do not rely on ambient cookies alone to
+authenticate a socket.
+
+*Status:* GAP. Plan 05 D1 runs auth on the handshake but does not name `Origin` validation.
+Recommend adding it (see Gaps). Especially load-bearing once `require: session` WS routes
+exist (Plan 07).
+
+*Assertion.* A WebSocket upgrade with a foreign `Origin` on a session-authenticated route is
+rejected before any upstream dial; only allowlisted origins complete the handshake.
+
+[#gw-10]
+=== GW-10 -- Control-plane exposure / default credentials / config-driven code execution
+
+An exposed admin API, a functional default credential, or config-driven scripting turns any
+control-plane reachability into full compromise.
+
+*Evidence.* APISIX CVE-2020-13945 (built-in default admin token
+`edd1c9f0...`), CVE-2022-24112 (Admin-API IP bypass -> Lua `script` RCE), CVE-2021-45232
+(Dashboard: two web frameworks, one lacked the auth interceptor -> unauthenticated admin).
+Kong CVE-2020-11710 (sample compose bound Admin API to `0.0.0.0` -> `pre-function` Lua RCE).
+Trend Micro: unsandboxed Lua is the RCE amplifier behind every one.
+
+*Control.* API Sheriff has *no runtime configuration/mutation API and no config-driven
+scripting* -- configuration is immutable, loaded once, frozen (fail-closed boot). The only
+operational surface is health/metrics on the management port (B7), which carries no mutation
+capability and is not on the public data-plane port. There is *no shipped credential of any
+kind*. This eliminates the entire class -- an audit's job is to confirm it stays eliminated
+(no admin endpoint, no `script`/`eval` route field, no default secret creeps in).
+
+*Status:* ELIMINATED (by design -- immutability, no admin API, no scripting). Management-port
+separation is in `application.properties`; a single auth choke-point (the pipeline) avoids
+the APISIX dual-framework trap.
+
+*Assertion.* There is no route or endpoint that mutates configuration at runtime; the
+management port exposes no mutation; no default/functional credential ships; every
+authenticated route is unreachable without a positive auth result (fail-closed, single
+enforcement point).
+
+[#gw-11]
+=== GW-11 -- Pre-auth / config input handling (injection, path-from-ID, XML round-trip)
+
+Management-plane and pre-auth endpoints, and any path/identifier built from input, are the
+softest targets: SQLi, path traversal from a client-supplied ID, template/HTML injection,
+SAML XML round-trip.
+
+*Evidence.* Tyk CVE-2023-42283 / CVE-2023-42284 (two blind SQLi from one missing
+parameterization on analytics `api_id`/`api_version`), CVE-2021-23357 (APIID -> filesystem
+path traversal), CVE-2021-23365 (SAML XML round-trip auth bypass in the identity broker).
+Gravitee CVE-2019-25075 then CVE-2022-38723 (the *same* registration path-traversal, patched
+twice -- incomplete first fix).
+
+*Control.* API Sheriff has *no datastore* (no SQL surface -- ELIMINATED), *no registration/
+management endpoints*, and does *not do SAML* (OIDC only, via the validated token-sheriff
+stack). The residual surface is config-load input: never build a filesystem path from an
+unvalidated value, canonicalize-then-confine config file references to the config root, and
+enforce the secrets rule on the *pre-substitution* scalar (Plan 03 D5). The Gravitee
+double-patch is the lesson for the validator: close the whole *class* (canonicalize-then-
+contain + a full traversal/encoding regression corpus), not one spelling.
+
+*Status:* COVERED/ELIMINATED. No SQL, no SAML, no management endpoints; config-path handling
+and secrets-on-raw-value are Plan 03 D5.
+
+*Assertion.* No SQL or SAML code path exists; config file resolution cannot escape the config
+directory via `..`/encoding; a full traversal corpus is rejected; the secrets rule is
+evaluated on the raw scalar (a literal secret is rejected even if it would substitute to a
+valid value).
+
+[#gw-12]
+=== GW-12 -- Error-path secret leakage / information disclosure
+
+Secrets or internals leak through error messages, verbose responses, or health/info
+endpoints.
+
+*Evidence.* APISIX CVE-2022-29266 (`jwt-auth` surfaced the user's HMAC *secret key* in an
+error body from `lua-resty-jwt` -> forge tokens). The code review's own findings: binding
+errors can echo resolved secret values into the boot log; the interim `/api/info` leaks a
+version string.
+
+*Control.* Every gateway-generated rejection is `application/problem+json` naming the
+category only, no internal detail (link:architecture.adoc#_error_contract[error contract]).
+Sanitize/truncate config binding-error messages so no resolved scalar (secret) is ever logged
+(Plan 03 D5). `OidcConfig`/`Session` `toString()` redaction already holds; the binding path
+must not bypass it. Remove `/api/info`/`/api/health` from the public port (Plan 04 deletes
+the placeholder resources).
+
+*Status:* PARTIAL. Error contract is Plan 04; binding redaction is Plan 03 D5; placeholder
+removal is Plan 04.
+
+*Assertion.* No error response or log line contains a resolved secret value or a stack
+trace/internal detail; a bind failure adjacent to a resolved secret never surfaces the
+secret; problem+json bodies carry category only.
+
+== OAuth / OIDC / BFF failure catalogue
+
+These bite the BFF variants (Plans 07-08). The confidential-client *engine*
+(`token-sheriff-client`) and the *validation* library (`token-sheriff-validation`) own most
+of the cryptographic and flow legs; API Sheriff owns the browser-facing side. Each entry
+notes which side owns the control. Normative anchors: *RFC 9700* (OAuth 2.0 Security BCP,
+Jan 2025), *OAuth 2.0 for Browser-Based Apps BCP*, *RFC 9207* (`iss`), *RFC 9449* (DPoP),
+*OIDC Core*, *OIDC Back-Channel Logout 1.0*.
+
+[#bff-01]
+=== BFF-01 -- `redirect_uri` validation (exact match)
+
+Lax redirect-URI matching (wildcard, subdomain, path-prefix, traversal, parser discrepancy)
+delivers the authorization `code` to an attacker endpoint -> account takeover.
+
+*Evidence.* Keycloak CVE-2023-6927 (wildcard bypass), CVE-2024-8883 (`localhost` valid-URI ->
+arbitrary redirect), CVE-2026-3872 (`..;/` traversal past the allowed path). pixiv HackerOne
+#1861974 (path traversal leaked codes). RFC 9700 §2.1/§4.1: *exact string match*, no
+wildcards.
+
+*Control.* The BFF redirect URI is a single fixed server endpoint -- trivially exact-matchable.
+Register it statically, never templatize/wildcard it, canonicalize-and-reject
+`..`/`..;`/encoded traversal before matching. Engine constructs the authorization request;
+gateway config supplies the exact URI.
+
+*Status:* COVERED. Reserved-path exact-match registration (Plan 07 D2); one fixed
+`oidc.redirect_uri`.
+
+*Assertion.* Wildcard/subdomain/path-prefix/`..;/` variants of the redirect URI are all
+rejected; only the exact registered URI is accepted.
+
+[#bff-02]
+=== BFF-02 -- `state` / CSRF on the callback
+
+Without an unguessable, session-bound, single-use `state`, the callback can't prove it
+matches a flow this browser started -> login CSRF / code injection.
+
+*Evidence.* HedgeDoc GHSA-6wm6-3vpq-6qvv, PolarLearn GHSA-fhhm-574m-7rpw (missing `state` ->
+login CSRF). RFC 9700 §4.1.
+
+*Control.* The engine's `FlowContext` generates the `state` (32-byte SecureRandom) and
+verifies it constant-time on callback, fail-closed -- but it is an *in-memory DTO the gateway
+must persist and discard*: single-use is a *caller contract*, not enforced by the type. The
+Plan 07 D2b *pending-authorization record* is the gateway's job: persist the `FlowContext`,
+short TTL, add the return-URL (the engine's DTO has none), and *bind it to the initiating
+browser* with a short-lived `HttpOnly` `__Host-` binding cookie (a record retrievable by
+`state` alone can be delivered to a *different* browser -- the callback must require the
+matching binding cookie, not just a valid `state`). PKCE does not replace login-CSRF
+protection -- keep both.
+
+*Status (mode-split -- the single-use guarantee differs):*
+
+* *Server mode:* COVERED. The record is server-side; the gateway *discards it on first
+  callback* (true single-use) and the binding cookie ties it to the browser.
+* *Cookie mode:* PARTIAL (accepted risk). The record travels only in the sealed short-lived
+  `__Host-` login cookie (Plan 08 -- no server store to mark consumed), so within the cookie's
+  short TTL a captured login cookie *could* be replayed. Mitigation and accepted risk: the TTL
+  is minutes, the cookie is `HttpOnly`+`Secure`+`__Host-` (not JS-readable, HTTPS-only,
+  origin-locked), the browser binding still holds, and the exposure window is the login round
+  trip only. Documented as an explicit risk acceptance in Plan 08 (choose server mode if
+  strict single-use of the login step is required).
+
+*Assertion.* A callback with a missing/foreign/re-used `state` is rejected; the record is
+single-use (a replayed callback fails); return-URL is same-origin validated (no open
+redirect).
+
+[#bff-03]
+=== BFF-03 -- PKCE downgrade / authorization-code injection
+
+Code injected into a victim session, or PKCE stripped/downgraded to `plain`, lets the client
+redeem an attacker-influenced code.
+
+*Evidence.* RFC 9700 §4.5 (prevent code injection; PKCE `S256`). Documented code-injection
+technique writeups.
+
+*Control.* Always PKCE `S256` (reject `plain`); fail closed if a token response arrives for a
+flow whose verifier the gateway did not store (the pending-authorization record binds it);
+single-use codes, revoke-on-reuse. Engine performs the exchange; the record provides the
+verifier binding.
+
+*Status:* COVERED (engine + Plan 07 D2b binding). Verify the engine enforces `S256` and
+single-use on 0.9.2 (Plan 07 D1 verification step).
+
+*Assertion.* A token response with no matching stored verifier is rejected; `plain` PKCE is
+refused; a code redeemed twice fails and revokes issued tokens.
+
+[#bff-04]
+=== BFF-04 -- Missing / unvalidated `nonce` -> ID-token replay
+
+A `nonce` sent but never checked (or never sent) lets a captured ID token from another
+session be replayed -- it verifies cryptographically.
+
+*Evidence.* roadiz GHSA-3gx8-q682-38mx (nonce generated, never validated). OIDC Core
+§3.1.3.7.
+
+*Control.* Random `nonce` stored in the pending-authorization record; on ID-token validation
+require present-and-equal, then discard (single use). `token-sheriff-validation` performs the
+check; the record supplies the expected value.
+
+*Status:* COVERED (validation lib + Plan 07 D2b). Confirm the lib enforces it (Plan 07 D1).
+
+*Assertion.* An ID token whose `nonce` is absent or unequal to the stored value is rejected;
+replay of an ID token from another flow fails.
+
+[#bff-05]
+=== BFF-05 -- IdP mix-up (multi-issuer) and the `iss` defence
+
+A client federating multiple IdPs can be confused about which AS a response came from and
+send a code to the wrong (attacker) endpoint.
+
+*Evidence.* RFC 9207 (`iss` response param; reject mismatched/missing `iss`). RFC 9700 §4.4.
+
+*Control.* API Sheriff is *single-IdP by design* (one global `oidc` block -- Plan 07 Out of
+Scope), which structurally removes mix-up. Still verify `iss` on the callback if the engine
+supports RFC 9207 (defence-in-depth). If multi-IdP is ever added, per-IdP distinct redirect
+URIs + `iss` verification become mandatory.
+
+*Status:* ELIMINATED (single-IdP) + engine `iss` check where available.
+
+*Assertion.* Only one issuer is configurable; a callback carrying a mismatched `iss` is
+rejected.
+
+[#bff-06]
+=== BFF-06 -- JWT / ID-token validation (alg confusion, `alg:none`, `kid`, aud/iss/exp)
+
+The verifier honors the token's own `alg`/`kid` (RS256->HS256 key confusion, `alg:none`,
+`kid` path/SQL injection) or skips audience/issuer/expiry.
+
+*Evidence.* `jsonwebtoken` CVE-2015-9235 (`alg:none`) / CVE-2016-10555 (RS256->HS256)
+*(IDs unverified; the class is canonical)*, CVE-2022-23539 (unrestricted key type). Java
+CVE-2022-21449 "Psychic Signatures" (ECDSA `(0,0)` accepted -- forge any ES256 JWT/ID
+token/SAML). pac4j CVE-2026-29000 *(dependency relationship unverified)* (PlainJWT-in-JWE
+accepted via public key). Original: Auth0 "Critical vulnerabilities in JWT libraries".
+
+*Control.* `token-sheriff-validation` owns this fail-closed: `SignatureAlgorithmPreferences`
+is an *allow-list* (RS/PS/ES/EdDSA), with `none` and *all* HMAC algorithms globally rejected
+-- so RS256->HS256 key-confusion is structurally impossible, not merely checked. It also
+rejects an embedded-`jwk` header (CVE-2018-0114), enforces a <2048-bit RSA floor, and carries
+an *in-library* guard for the CVE-2022-21449 ECDSA "psychic signature" (`r|s == 0` rejected
+before the JDK verifier) -- defence-in-depth on top of the patched Java 25 runtime. `iss`/
+`aud`/`azp`/`exp`/`nbf`/`iat`(+skew)/`sub` are validated by the pipeline. Keys come only from
+configured/discovered JWKS (BFF-07). The gateway's residual is to *configure* the expected
+audience/issuer and, if desired, a narrower per-issuer `alg` list.
+
+*Status:* COVERED (validation lib, fail-closed, incl. in-library psychic-signature guard;
+patched JVM is belt-and-braces). Verify the wired issuer config sets `expectedAudience` (Plan
+04/07 D1).
+
+*Assertion.* Tokens with `alg:none`, RS256->HS256 confusion, a `kid` that resolves outside
+the configured JWKS, wrong `aud`/`iss`, or expired -> all rejected; the running JVM is a
+Psychic-Signatures-patched release.
+
+[#bff-07]
+=== BFF-07 -- JWKS handling (`jku`/`x5u` SSRF, rotation races, unbounded fetch)
+
+Trusting a per-token key URL fetches attacker keys (and is an SSRF primitive); naive
+"refresh on unknown `kid`" is a DoS/amplifier; no cache caps.
+
+*Evidence.* `jku`/`x5u` header-injection auth-bypass writeups (PortSwigger JWT). Rotation-race
+and unbounded-fetch discussions.
+
+*Control.* `token-sheriff-validation` owns this and is strong: token-header `jku`/`x5u`/`jwk`
+are ignored (they appear nowhere in its key resolution; embedded `jwk` is actively rejected);
+`HttpJwksLoader` fetches only from the configured/discovered endpoint behind an `EgressPolicy`
+that blocks internal/metadata ranges on the initial fetch *and every background refresh*
+(DNS-rebinding-safe, GW-05 tie-in); it caches with a TTL, keeps a bounded rotation grace
+window, and `getKeyInfo(kid)` never triggers an on-demand fetch -- so a flood of unknown
+`kid`s cannot drive a fetch storm. Its Quarkus JWKS-readiness health check already gates the
+ITs. Gateway residual: keep the secure egress defaults; widen only via `allowedEgressHost` for
+a trusted IdP.
+
+*Status:* COVERED (validation lib, fail-closed, SSRF-guarded). Nothing for the gateway to
+build.
+
+*Assertion.* A token-supplied `jku`/`x5u` is ignored; JWKS is fetched only from the
+configured endpoint; a flood of unknown-`kid` tokens does not cause unbounded outbound
+fetches; rotation across overlapping keys keeps validation working.
+
+[#bff-08]
+=== BFF-08 -- Refresh-token rotation / reuse-detection under concurrency
+
+A stolen refresh token is a long-lived bearer credential. Rotation without correct reuse
+detection either fails to revoke the family or forks it so attacker and victim both persist.
+
+*Evidence.* better-auth GHSA-392p-2q2v-4372 (concurrent redemption *forks the token family*).
+RFC 9700 §4.14 (rotate with reuse detection -> revoke the whole family on reuse).
+
+*Control.* The engine owns this fail-closed: `RefreshTokenFamily` + `TokenLifecycleManager`
+rotate on every refresh, single-flight *per session* (a `ConcurrentMap<sessionId, future>`
+spanning redeem+apply so a benign concurrent refresh does not self-classify as reuse), and on
+a superseded RT revoke the whole family (RFC 7009) and clear the store. *Caveat the gateway
+must respect:* the family map is *in-memory per instance* (bounded LRU) -- the stateless
+cookie variant (Plan 08), which runs multiple instances with no shared state, cannot share
+reuse detection across instances; that is the documented Plan 08 trade-off (single-flight per
+instance; IdP-side reuse tolerance is an operator decision, never a gateway default). Server
+mode keeps RTs in the store; cookie mode keeps them only inside the AES-GCM cookie.
+
+*Status (mode-split -- the guarantee is not universal):*
+
+* *Server mode:* COVERED. Single node / sticky session, one in-memory family map -> full
+  rotation + reuse -> family-revocation as the engine implements it.
+* *Cookie mode:* PARTIAL (accepted risk). Multiple instances, no shared state by design, so a
+  family cannot be tracked across instances -- an RT rotated on instance A and replayed against
+  instance B is *not* seen as reuse by B. This is inherent to the stateless variant, not a
+  defect. Documented as an explicit Plan 08 risk acceptance: mitigations are short
+  `ttl_seconds` / short access-token lifetimes and IdP-side reuse tolerance (an operator
+  availability-vs-detection choice); choose *Variant 2* for instant, node-spanning revocation.
+  If cross-instance detection is ever required, the engine's `TokenStore` SPI is the seam for a
+  shared family store -- but that reintroduces the external dependency the variant exists to
+  avoid.
+
+*Assertion.* A replayed rotated RT revokes the family and forces re-auth; concurrent
+refreshes on one session do not fork the family; cookie-mode never exposes the RT to the
+browser.
+
+[#bff-09]
+=== BFF-09 -- Logout (back-channel token validation, RP-initiated open redirect, fixation)
+
+Under-validated back-channel logout tokens allow forged logout (DoS) or accepting an ID token
+as a logout token; a lax `post_logout_redirect_uri` is an open redirect; incomplete session
+destruction leaves a fixated session.
+
+*Evidence.* OIDC Back-Channel Logout 1.0: logout token MUST carry `events` (with the
+back-channel member) and `sub`/`sid`, and MUST NOT carry `nonce`; validate sig/`iss`/`aud`/
+`iat`. Keycloak redirect CVEs (CVE-2023-6927/8883/2026-3872) apply to the post-logout URI.
+
+*Control.* Validate logout tokens strictly: signature+`iss`+`aud`, require `events`, require
+`sub`/`sid`, *reject any token containing `nonce`*, short `iat` window; destroy via the
+`sid`/`sub` secondary index (Plan 07 D6). Exact-match `post_logout_redirect_uri`. Destroy the
+server session and rotate/clear the cookie on any logout; revoke the RT family. Cookie-mode
+disables the back-channel endpoint (`404`, Plan 08 D4) -- no session to destroy.
+
+*Status:* COVERED. Plan 07 D6 (both channels, logout-token checks, logout-`state` cookie) +
+Plan 08 D4.
+
+*Assertion.* A logout token missing `events`/`sub`/`sid`, or *containing* `nonce`, or an ID
+token replayed as a logout token -> rejected; a non-registered `post_logout_redirect_uri` ->
+rejected; post-logout the session is gone and the cookie cleared; cookie-mode back-channel ->
+`404`.
+
+[#bff-10]
+=== BFF-10 -- Cookie hardening & token-leakage-to-browser
+
+Tokens reaching JS, or a weakly-flagged session cookie, defeat the BFF rationale; session
+fixation on login lets a pre-seeded session be adopted.
+
+*Evidence.* Browser-Based Apps BCP (BFF keeps tokens server-side). BFF cookie guidance
+(`__Host-`+`HttpOnly`+`Secure`+`SameSite`). Session-fixation guidance.
+
+*Control.* No token ever reaches the browser: server-mode holds them in the store; cookie-mode
+seals them in an `HttpOnly` AES-GCM cookie decrypted per request. Session cookie:
+`__Host-` + `HttpOnly` + `Secure` + `SameSite=Lax`, opaque id only (Plan 07 D3 / variant
+docs). Regenerate the session id on login and privilege change; destroy on logout.
+
+*Status:* COVERED. Plan 07 D3 + variant docs.
+
+*Assertion.* No response ever carries a token to the browser; the session cookie has
+`__Host-`+`HttpOnly`+`Secure`+`SameSite`; the session id is regenerated at login (fixation
+test).
+
+[#bff-11]
+=== BFF-11 -- CSRF on the cookie-authenticated BFF API (the classic BFF gap)
+
+Once auth is a cookie, every cross-site request carries it; `SameSite` alone is insufficient
+(Lax GET gaps, same-site subdomain attackers, browser inconsistencies). *Highest-probability
+real BFF bug.*
+
+*Evidence.* BFF security writeups repeatedly name this as the pattern's #1 gap.
+
+*Control.* Fixed CSRF defence on unsafe methods (Plan 07 D5): `Origin` exact-match against
+`session.csrf.trusted_origins`; `Sec-Fetch-Site: same-origin` accepted when `Origin` absent;
+else `403` + `CSRF_REJECTED`. Lock CORS to the SPA origin. This composes with the WebSocket
+Origin check (GW-09).
+
+*Status:* COVERED. Plan 07 D5 (fixed behaviour, no knob).
+
+*Assertion.* An unsafe-method request with a foreign `Origin` -> `403`; `Sec-Fetch-Site`
+variants behave per spec; CORS is limited to the configured origin.
+
+[#bff-12]
+=== BFF-12 -- Encrypted-cookie AES-GCM nonce / key rotation (stateless variant)
+
+AES-256-GCM nonce reuse under one key is catastrophic (leaks the GHASH subkey -> tag forgery;
+keystream reuse -> plaintext recovery); a key-rollover bug drops or forges sessions.
+
+*Evidence.* "Nonce-Disrespecting Adversaries" (practical GCM nonce-reuse attacks). RFC 9700 /
+crypto guidance.
+
+*Control.* Fresh random 96-bit nonce per seal from a CSPRNG (never counter/derived); cookie
+= `version‖key-id‖nonce‖ciphertext‖tag` with version+key-id+cookie-name in the GCM AAD
+(deterministic key selection, replay-across-format prevention); tamper -> treated as no
+session; `previous_key` decrypt-only with re-seal on next write; ~4 KB size budget enforced
+at seal (fail login loudly, no silent truncation). Plan 08 D2 (strengthened for this class).
+
+*Status:* COVERED. Plan 08 D2.
+
+*Assertion.* Each seal uses a unique random nonce; a flipped byte in ciphertext/nonce/tag ->
+unauthenticated (never `500`); a `previous_key`-sealed cookie decrypts and re-seals under the
+current key; an oversized token set fails login with a clear error; key material never logged.
+
+[#bff-13]
+=== BFF-13 -- Callback response hygiene (HPP duplicate params, code reuse, error reflection)
+
+Duplicate `code`/`state`/`iss` (HTTP parameter pollution) exploit parser disagreement; a
+reused code; a reflected `error_description`.
+
+*Evidence.* Keycloak CVE-2026-9689 (HPP in the OIDC redirect URI). OAuth parameter-pollution
+research. RFC 9700 §4.5.3 (single-use codes, revoke on reuse).
+
+*Control.* The engine's `CallbackParameters.parse(rawQuery)` already *rejects* duplicate
+security-relevant params (`code`/`state`, RFC 9700 §4.7.3 defence) rather than last-wins,
+`IssValidator` checks `iss` (incl. absent-`iss` rejection) and `CallbackHandler` verifies
+`state` *before* code redemption, and `InboundErrorNormalizer` sanitizes `error`/
+`error_description` (never reflected). The single load-bearing *gateway* obligation: feed the
+*raw* query string to `parse(rawQuery)` -- the `of(Map)` overload cannot re-detect duplicates
+because the map already collapsed them. Single-use codes/revoke-on-reuse are the AS's.
+
+*Status:* COVERED (engine), with a mandatory usage rule. Recommend Plan 07 state explicitly
+that the callback endpoint calls `CallbackParameters.parse(rawQuery)`, never `of(Map)`, and
+test a duplicate-`code` callback is rejected.
+
+*Assertion.* A callback with duplicate `code`/`state` reaches `parse(rawQuery)` and is
+rejected; `state`/`iss` are verified before `code`; `error_description` is never reflected.
+
+[#bff-14]
+=== BFF-14 -- Sender-constraining (DPoP / mTLS)
+
+Plain bearer tokens are replayable if stolen (logs, proxies, XSS, MITM). Sender-constraining
+binds a token to a client key.
+
+*Evidence.* RFC 9449 (DPoP: `cnf` binding, `jti` replay cache, `htu`/`htm`/`iat` checks),
+RFC 8705 (mTLS-bound). Misuse = not validating `cnf`, no `jti` cache, accepting bound and
+bearer interchangeably (downgrade).
+
+*Control.* Optional hardening, not a required control for the base threat model. The
+architecture already carries the hook: the 4-arg `AccessTokenRequest(token, headers, uri,
+method)` supplies the URI+method DPoP needs. Where the threat model warrants, issue DPoP/mTLS
+-bound access *and refresh* tokens, enforce the `cnf` binding and `jti` replay cache, and do
+not accept the same token as a plain bearer (no downgrade). Neutralizes RT theft (BFF-08)
+even with imperfect rotation.
+
+*Status:* PARTIAL (hook present; full enforcement post-1.0 unless prioritized). Record as a
+deliberate future hardening in Plan 09's audit, not a base requirement.
+
+*Assertion.* If enabled: a bound token presented without its key -> rejected; a replayed DPoP
+`jti` -> rejected; the same token is not accepted as a plain bearer.
+
+== Validation matrix
+
+Every catalogue entry, its owning plan, and its status. This is the release-gate checklist:
+each COVERED/PARTIAL row must have a passing test before 1.0; each GAP row is a recommended
+plan amendment (next section).
+
+[cols="1,3,1,1"]
+|===
+| ID | Control (short) | Owner | Status
+
+| <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash) | cui-http (canonical path) + Plan 04 invariant / 03 D5 | PARTIAL
+| <<gw-02>> | Reject ambiguous HTTP framing | Gateway/web-server (cui-http out of scope) -- Plan 04 | GAP
+| <<gw-03>> | Header CR/LF reject; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + Plan 04 (hop-by-hop) | PARTIAL
+| <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation | cui-http resolver + ADR-0003 / Plan 04 (peer gate) / 03 D5 (trust-all) | COVERED
+| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) | ADR-0004 / Plan 03 D5 / token-sheriff `EgressPolicy` | COVERED
+| <<gw-06>> | Fail-closed SNI/mTLS; test behaviour not flag | Plan 06 | PARTIAL
+| <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 / Plan 04 / 03 D5 | PARTIAL
+| <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Plan 04 / 05 | GAP
+| <<gw-09>> | WebSocket Origin validation on upgrade | Plan 05 | GAP
+| <<gw-10>> | No admin API / no scripting / no default creds | Design / Plan 04 | ELIMINATED
+| <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path handling | Design / Plan 03 D5 | COVERED
+| <<gw-12>> | problem+json category-only; no secret in logs | cui-http + token-sheriff mappers / Plan 04 / 03 D5 | PARTIAL
+| <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) / Plan 07 D2 | COVERED
+| <<bff-02>> | Browser-bound `state`; single-use | Engine `FlowContext` + Plan 07 D2b (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
+| <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED
+| <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + Plan 07 D2b (persist) | COVERED
+| <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED
+| <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
+| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch | Validation lib (`EgressPolicy`) | COVERED
+| <<bff-08>> | RT rotation + family revoke; single-flight | Engine `RefreshTokenFamily` + Plan 08 D3 | COVERED (server) / PARTIAL-accepted (cookie: per-instance)
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + Plan 07 D6 (back-channel) / 08 D4 | COVERED
+| <<bff-10>> | Tokens never in browser; `__Host-` cookie; fixation | Engine `TokenStore` SPI + Plan 07 D3 | COVERED
+| <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Plan 07 D5 | COVERED
+| <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Plan 08 D2 (gateway `TokenStore` impl) | COVERED
+| <<bff-13>> | Reject duplicate callback params (HPP) | Engine `CallbackParameters.parse(rawQuery)` -- Plan 07 usage rule | COVERED
+| <<bff-14>> | DPoP/mTLS sender-constraining (optional) | Engine + validation lib (4-arg `AccessTokenRequest`) / Plan 09 | PARTIAL
+|===
+
+== Gaps to bake in (recommended plan amendments)
+
+The GAP/PARTIAL rows are where a *documented, real-world* failure class is not yet nailed by
+a plan. Baking these in now is the whole point of this exercise. Recommended (each is a
+small, additive change; a follow-up plan-edit pass can land them):
+
+. *GW-01 (Plan 04) -- make the single-canonical-path invariant explicit and tested.* cui-http
+  already hands back a canonical path; the gateway's job is to route, verb-gate, auth-select,
+  `allowed_paths`-match, and forward on *that same* value (never the raw URI), plus decide the
+  encoded-slash policy and handle matrix `;` params (both left open by cui-http). Assertion: an
+  encoded-traversal/encoded-slash/matrix-param corpus proves no authorize-as-public /
+  dispatch-to-protected divergence (upstream count = 0). Dominant gateway CVE class; the
+  direct fix for the code-review raw-vs-normalized finding.
+. *GW-02 (Plan 04) -- add explicit HTTP-framing rejection.* cui-http is explicitly out of
+  scope here, so this is entirely gateway/web-server: CL+TE both present, body on a bodyless
+  method, and `Connection`-list framing-strip attempts are rejected; a smuggling corpus
+  produces zero desyncs. Justified because API Sheriff runs behind other proxies by design.
+. *GW-08 (Plans 04/05) -- pin HTTP/2 abuse bounds.* Verify and assert stream-creation/reset
+  rate limiting (Rapid Reset), CONTINUATION frame count/size bounds, and non-forwarding of
+  client `Upgrade: h2c`/`Connection` to the upstream.
+. *GW-09 (Plan 05) -- WebSocket `Origin` validation on the upgrade handshake* against an
+  allowlist, before the relay is established (CSWSH). Load-bearing once `require: session` WS
+  routes exist.
+. *GW-06 (Plan 06) -- fail-closed SNI + behaviour tests.* Make explicit: empty/fragmented SNI
+  takes the strict policy or rejects (never a permissive default); the full ClientHello is
+  reassembled before SNI routing; every security-gating boolean (mTLS require, upstream
+  verify) has a *behaviour* test (a real handshake fails when it must), not just a flag-read.
+. *BFF-13 (Plan 07) -- pin the callback parsing *usage rule*.* The engine already rejects
+  HPP; the gateway must call `CallbackParameters.parse(rawQuery)` on the raw query (never the
+  duplicate-blind `of(Map)`) and test a duplicate-`code` callback is rejected. Also state
+  (Plan 07) that scope enforcement is the gateway's -- the validation lib exposes
+  `providesScopes()` but enforces nothing.
+. *Cross-cutting -- adopt this document as a release gate (Plan 09).* The security-audit
+  sweep validates every COVERED/PARTIAL assertion has a passing test and every GAP is closed
+  or explicitly risk-accepted; consider a short ADR recording "CVE-derived validation
+  baseline is a 1.0 release gate".
+
+None of these change the architecture; they are hardening assertions on features already
+planned (mostly *wiring* audited library controls correctly), sourced from failures other
+gateways and OAuth stacks actually shipped.
+
+== References
+
+*Normative*
+
+* RFC 9700 -- OAuth 2.0 Security Best Current Practice (Jan 2025)
+* OAuth 2.0 for Browser-Based Apps BCP (`draft-ietf-oauth-browser-based-apps`)
+* RFC 9207 -- Authorization Server Issuer Identification (`iss`)
+* RFC 9449 -- OAuth 2.0 Demonstrating Proof of Possession (DPoP); RFC 8705 -- mTLS-bound tokens
+* RFC 9470 -- OAuth 2.0 Step-up Authentication Challenge
+* RFC 7239 -- Forwarded HTTP Extension; RFC 9110/9112 -- HTTP semantics/1.1
+* OpenID Connect Core 1.0; OpenID Connect Back-Channel Logout 1.0
+* RFC 6265 -- HTTP State Management (`__Host-` prefix, cookie limits)
+
+*Research anchors*
+
+* Orange Tsai, "Breaking Parser Logic: Take Your Path Normalization Off and Pop 0days Out"
+  (Black Hat USA 2018)
+* James Kettle / PortSwigger, "HTTP Desync Attacks" (2019) and "HTTP/1.1 Must Die" (2025)
+* Tim McLean / Auth0, "Critical vulnerabilities in JSON Web Token libraries"
+* Neil Madden, "Psychic Signatures in Java" (CVE-2022-21449)
+* "Nonce-Disrespecting Adversaries" (practical AES-GCM nonce-reuse attacks)
+
+*Advisory indexes used*
+
+* Traefik security advisories (github.com/traefik/traefik/security/advisories)
+* KrakenD security advisories (krakend.io/security-advisories)
+* Apache APISIX advisories (apisix.apache.org/blog) and Kong changelog
+* NVD / GitHub Security Advisories / GitLab Advisory DB for the CVE IDs cited inline
+
+CVE IDs marked *(unverified)* in the catalogue were sourced from advisory aggregators and not
+confirmed on an NVD/GHSA primary page; cite the failure *class* until the number is confirmed.
+The catalogue is a living baseline -- new CVEs in comparable systems should be triaged into a
+new `GW-`/`BFF-` row with its assertion.

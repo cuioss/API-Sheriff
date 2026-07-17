@@ -23,15 +23,19 @@ Toxiproxy into the integration stack for stream-level fault injection.
   `tls.passthrough_sni` ... never reach the route table".
 . link:../adr/0004-topology-indirection.adoc[ADR-0004] (+ Amendment A1) -- passthrough
   targets resolve through the same alias indirection routes use.
+. link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] -- an unresolvable
+  passthrough alias is *skipped* by the resolver and reported by the validator's
+  passthrough-alias-resolvable rule; the relay wiring must consume the resolved map
+  accordingly (a missing entry means the validator already failed the boot).
 . Plan 04 (delivered by then) -- the terminated listener and pipeline this plan fronts.
 
 == Prerequisites
 
 * Plan 04 delivered. Plan 05 is *not* required (independent tracks).
-* Coordination: if the Plan-02 gap-fix effort has not yet landed the two passthrough
-  *validation* rules (SNI/`match.host` collision, passthrough-alias-no-base-path), they are
-  delivered here; if it has, this plan only consumes them. Check before starting -- never
-  implement twice.
+* The passthrough *validation* rules are already delivered (Plan-02 gap fixes, PR #64):
+  SNI/`match.host` collision, passthrough-alias-resolvable (ADR-0009 ownership), and
+  passthrough-alias-no-base-path all live in `ConfigValidator`. This plan only consumes
+  them -- do not implement them twice.
 
 == Design Decisions
 
@@ -47,12 +51,32 @@ The split happens *before* HTTP exists: a front TCP listener reads the TLS Clien
 * *Any other SNI, or none* -> hand the connection to the terminated stack (certificate,
   `min_version`, `alpn`, `mtls`) and the full L7 pipeline.
 
-Implementation spike (first work item): choose between (a) a Vert.x `NetServer` front that
-parses the ClientHello and hands terminated connections to the HTTP stack over an internal
-channel, and (b) the Netty `SniHandler` integration point if Quarkus exposes one cleanly.
-The *behaviour* above is fixed either way; only the wiring is open. When `passthrough_sni`
-is empty (the default), the front listener is bypassed entirely -- zero cost for
-non-passthrough deployments.
+[IMPORTANT]
+====
+*Fail-closed SNI (GW-06, doc/security-threat-model.adoc).* A fragmented ClientHello whose SNI
+cannot yet be read must NOT fall through to a permissive path -- Traefik CVE-2026-32305 is
+exactly this: split ClientHello -> empty SNI -> default TLS config that did not require client
+certs -> mTLS bypassed. Therefore: (a) reassemble the *full* ClientHello before deciding the
+SNI split (do not decide on a partial TLS record); (b) an empty/unresolved SNI takes the
+*terminated, strict* path (never a passthrough and never a no-client-cert default) or is
+rejected; (c) every security-gating boolean here (`mtls.enabled`, upstream/`min_version`) gets
+a *behaviour* test -- a real handshake fails when the control says it must -- not merely a
+config-parsed assertion (Traefik CVE-2025-66491 was an *inverted* verify flag that passed
+config parsing for ~5 months). The punycode host-normalization collision (KrakenD
+CVE-2026-39821) is covered by the same case-insensitive SNI/`match.host` collision rule
+applied to normalized hostnames.
+====
+
+Wiring approach (pre-decided, research 2026-07-17): Quarkus exposes *no* clean listener-level
+Netty `SniHandler` integration point for custom SNI-based TCP routing -- its SNI support is
+limited to TLS certificate selection on the HTTP server, and raw-TCP-listener support is an
+open feature request (quarkus#38873; the documented guidance is "inject the managed `Vertx`
+and create your own `NetServer`", discussion #25609). Option (a) it is: a Vert.x `NetServer`
+front that parses the ClientHello and hands terminated connections to the HTTP stack over an
+internal channel. The first work item is therefore a *wiring validation spike* of that
+approach (internal-handoff mechanics, port ownership), not an A/B decision. When
+`passthrough_sni` is empty (the default), the front listener is bypassed entirely -- zero
+cost for non-passthrough deployments.
 
 === D2 -- mTLS on terminated connections
 
@@ -72,14 +96,15 @@ handshake; there is no HTTP-level fallback and no partial "optional mTLS" mode i
 
 === D4 -- Toxiproxy
 
-`ghcr.io/shopify/toxiproxy` (pinned) joins docker-compose between gateway and upstreams
+`ghcr.io/shopify/toxiproxy` (pin the current release, e.g. `2.12.0`) joins docker-compose
+between gateway and upstreams
 (anticipated by Plan 01 D2): needed here for stream-level fault tests (mid-stream reset on a
 passthrough relay) and available onward for breaker/timeout ITs.
 
 == Work Breakdown
 
-. *Spike + decision* (D1): ClientHello/SNI wiring approach; record the choice in this plan
-  doc (amendment) and, if architecturally relevant, in `architecture.adoc`.
+. *Wiring-validation spike* (D1): prove the `NetServer`-front handoff mechanics (approach
+  pre-decided above); record anything architecturally relevant in `architecture.adoc`.
 . *Passthrough relay* (D1) -- accept-time split, L4 pipe with backpressure, connection
   lifecycle (half-close, abort propagation), boot-time alias resolution; unit tests with raw
   TLS clients against a TLS-enabled test backend.
@@ -103,17 +128,8 @@ passthrough relay) and available onward for breaker/timeout ITs.
 
 == Execution Workflow
 
-. Create a feature branch from up-to-date `main`: `feature/plan-06-tls-edge`.
-. Implement the work breakdown above.
-. Verify everything locally -- both must pass with zero errors/warnings:
-  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
-. Commit and push the branch.
-. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
-. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
-  checks are green.
-. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
-  reason for not fixing + resolve; when uncertain, ask the user before acting.
-. Merge the PR, then `git checkout main && git pull`.
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-06-tls-edge`.
 
 == Acceptance Criteria
 
@@ -122,6 +138,10 @@ passthrough relay) and available onward for breaker/timeout ITs.
 * Empty `passthrough_sni` -> measurably zero-overhead path (benchmark comparison against the
   Plan 04 baseline; no regression beyond noise).
 * Both guards enforced with negative tests; mTLS accept/reject proven at handshake level.
+* GW-06 fail-closed SNI proven: a fragmented/empty-SNI ClientHello does not reach a
+  passthrough or a no-client-cert default (terminated-strict or rejected); enabling mTLS
+  makes a real no-cert handshake fail (behaviour test, not a flag-read); the punycode
+  normalization case is caught by the SNI/`match.host` collision rule.
 * Integration-test suite green locally and on CI, covering every behaviour above.
 * The passthrough-relay benchmark runs in the benchmark profile and publishes via the pages
   pipeline.
@@ -133,5 +153,12 @@ passthrough relay) and available onward for breaker/timeout ITs.
 * Per-SNI/per-route mTLS policies (global `tls.mtls` only).
 * Optional/want-style client auth, certificate-to-identity mapping (no L7 identity is
   derived from client certs in this plan).
+* Client-certificate revocation checking (CRL/OCSP) -- not performed initially. There is
+  therefore *no selective per-certificate revocation*. The only lever is *emergency
+  trust-root replacement*: swapping `client_ca` (restart, per the immutable-config model)
+  invalidates the *entire* old trust root at once -- every client cert issued by it stops
+  being accepted, not just a compromised one -- so its blast radius is global and it forces
+  re-issuance for all legitimate clients. Documented as an operator consideration with that
+  blast radius stated explicitly; genuine per-cert revocation (CRL/OCSP) is future work.
 * PROXY-protocol emission on the passthrough relay (revisit if a passthrough backend needs
   client IPs).

@@ -38,20 +38,47 @@ protocol promise and, with it, the link:../variants/01-base-gateway.adoc[Variant
   basic checks, route selection, verb gate, thorough checks, *authentication on the
   handshake* (effective auth; `bearer` now, `session` works automatically once Plan 07
   lands), zero-trust forward policy on the handshake headers.
+* *`Origin` validation on the upgrade (GW-09, doc/security-threat-model.adoc).* The
+  Same-Origin Policy does *not* restrict cross-origin WebSocket connections -- only
+  server-side `Origin` checking does, so an accept-any-origin upgrader is a cross-site
+  hijack (CSWSH: Nginx-UI CVE-2026-34403, Dozzle CVE-2026-44985). Validate the handshake
+  `Origin` against an allowlist and reject unknown origins *before* the upstream is dialed.
+  For `require: session` WS routes (Plan 07) this reuses the BFF's
+  `session.csrf.trusted_origins` set -- the WS Origin check and the stage-0 CORS/CSRF posture
+  are the same trust decision. For a *bearer* WS route the origin allowlist is a new
+  `security_headers`-adjacent field, `allowed_origins`, defined *doc-first* in
+  `configuration.adoc` (schema, field reference, validation-rules summary) before
+  implementation with these fixed semantics: a list of *exact-match* origin strings
+  (scheme+host+port, no wildcards); matching is case-insensitive on host only; and the check
+  is *fail-closed* -- a WS upgrade on a bearer route whose `allowed_origins` is absent or empty
+  is rejected (there is no "any origin" default). The acceptance criteria assert the
+  missing/empty-allowlist rejection. Never authenticate a socket on the ambient session cookie
+  alone.
 * After the upstream confirms the upgrade, the established stream is relayed bidirectionally
   (Vert.x WebSocket/`NetSocket` pipes with backpressure, both directions). *No per-message
   filtering* -- the security filter operates on HTTP metadata only
   (architecture doc); `max_body_bytes` does not apply to frames. Close frames and ping/pong
-  relay transparently; a half-close on either side closes both.
+  relay transparently; a half-close on either side closes both. Long-lived relays are still
+  bounded resources: they count against the Plan 04 edge connection/in-flight accounting, and
+  an established relay is reclaimed after a *bounded idle timeout* -- pinned here as a
+  configurable per-route `websocket.idle_timeout_seconds` (default 300s), where "idle" means
+  no frame in *either* direction. WebSocket ping/pong counts as activity, so an application
+  that keeps the socket warm with heartbeats is never reclaimed -- the timeout only reaps
+  genuinely dead sockets. An IT asserts an idle established relay is closed after the timeout
+  while a heartbeated one survives. (Defined doc-first in `configuration.adoc`.)
 * Upgrade failure mapping: upstream refuses the upgrade -> the refusal status relays;
   upstream unreachable -> the standard `502`/`504` contract *before* `101`.
 
 === D2 -- gRPC processor: HTTP/2 metadata proxying with trailer relay
 
-* gRPC is the HTTP processor plus three deltas: the upstream connection must be HTTP/2
-  (`h2`/`h2c` via the shared per-tuple Vert.x client), response *trailers* relay to the
-  client (`grpc-status`/`grpc-message` live there), and request/response bodies stream as
-  opaque length-prefixed frames (no protobuf inspection -- explicitly out of scope).
+* gRPC is the HTTP processor plus three deltas: the upstream connection is forced to HTTP/2
+  (`h2`/`h2c` via the shared per-tuple Vert.x client -- note the protocol version thereby
+  joins the "distinct upstream target tuple" that keys client sharing), response *trailers*
+  relay to the client (`grpc-status`/`grpc-message` live there), and request/response bodies
+  stream as opaque length-prefixed frames (no protobuf inspection -- explicitly out of
+  scope). Whether the upstream actually speaks h2 is unknowable at boot (it is a remote
+  capability, not config); an upstream that fails h2 negotiation at dispatch maps to
+  `UNAVAILABLE` per the rejection table below.
 * *Gateway-rejection mapping for gRPC routes*: a gRPC client cannot consume
   `application/problem+json`. Rejections on `protocol: grpc` routes are emitted as
   trailers-only gRPC responses with the canonical mapping -- `UNAUTHENTICATED` (401),
@@ -61,6 +88,11 @@ protocol promise and, with it, the link:../variants/01-base-gateway.adoc[Variant
   the doc governs.
 * Streaming RPCs (client-, server-, bidi-streaming) need no special handling beyond
   streaming both directions without buffering -- which is the ADR-0006/0008 default.
+* *HTTP/2 abuse bounds carry over (GW-08).* The forced-h2 upstream and the terminated h2
+  edge inherit Plan 04 D3b's Rapid-Reset / CONTINUATION-flood limits; verify they hold on the
+  gRPC path too (a gRPC client opens many streams by nature -- the per-connection
+  stream-reset rate limit must not misfire on legitimate streaming, but must still bound an
+  abusive reset loop).
 
 === D3 -- Test upstreams
 
@@ -73,10 +105,11 @@ assertions.
 == Work Breakdown
 
 . *WebSocket processor* (D1) -- handshake-through-pipeline, relay, close semantics; unit
-  tests for auth-on-handshake (401 before upgrade, upstream never dialed), forward-policy
-  filtering of handshake headers, relay in both directions.
-. *gRPC processor* (D2) -- h2 upstream enforcement (boot error when the resolved alias
-  cannot speak h2 where declared), trailer relay, the rejection-mapping table; unit tests
+  tests for auth-on-handshake (401 before upgrade, upstream never dialed), *Origin validation
+  on the handshake* (GW-09: foreign origin rejected before any upstream dial; only allowlisted
+  origins complete), forward-policy filtering of handshake headers, relay in both directions.
+. *gRPC processor* (D2) -- forced-h2 upstream client wiring (negotiation failure at
+  dispatch -> `UNAVAILABLE`), trailer relay, the rejection-mapping table; unit tests
   per mapping row.
 . *Error-contract doc update* (D2, same PR) -- the gRPC status mapping into
   `architecture.adoc`; new LogRecords into `doc/LogMessages.adoc`.
@@ -84,33 +117,28 @@ assertions.
   healthcheck.
 . *Integration tests* (per the link:README.adoc[convention]: complete in this plan) --
   WebSocket: authenticated echo round-trip through the gateway, unauthenticated handshake
-  rejected `401` before any upstream contact, unmatched WS path `404`; gRPC: unary + streaming
+  rejected `401` before any upstream contact, *foreign-`Origin` handshake rejected before any
+  upstream contact* (GW-09), *bearer WS route with missing/empty `allowed_origins` rejected*
+  (fail-closed), *an idle established relay reclaimed after `idle_timeout_seconds` while a
+  heartbeated relay survives*, unmatched WS path `404`; gRPC: unary + streaming
   echo through the gateway with metadata injection asserted, `grpc-status` relay from the
   failing method, `UNAUTHENTICATED` trailers-only rejection on a bearer gRPC route without a
   token.
 . *Benchmarks* (README convention) -- a WebSocket echo benchmark (connection + message
   round-trip throughput through the gateway vs. direct-to-upstream) and a gRPC unary echo
-  benchmark against the in-repo echo service. *Tooling note*: `wrk` speaks HTTP/1.1 only --
-  neither WebSocket nor gRPC load can ride the existing lua scripts. Use `ghz` (pinned
-  container) for gRPC and a pinned WebSocket load tool (or a small in-repo Vert.x load
-  driver) for WS, emitting the same `=== BENCHMARK METADATA ===` block so the existing
-  post-processor and pages pipeline consume them unchanged; tool choice is recorded in this
-  plan as an amendment when made.
+  benchmark against the in-repo echo service. *Tooling (decided, research 2026-07-17)*:
+  `wrk` speaks HTTP/1.1 only -- neither WebSocket nor gRPC load can ride the existing lua
+  scripts. gRPC load uses `ghz` via its official image `ghcr.io/bojand/ghz` (pin the
+  current release, e.g. `0.121.0`); WebSocket load uses `k6` via `grafana/k6` (pinned tag;
+  the `k6/websockets` module -- the old third-party `obvionaoe/ghz` Docker Hub image is
+  stale, do not use it). Both wrappers emit the same `=== BENCHMARK METADATA ===` block so
+  the existing post-processor and pages pipeline consume them unchanged.
 . *Docs* -- variant-1 doc note that the protocol scope is complete; README sweep.
 
 == Execution Workflow
 
-. Create a feature branch from up-to-date `main`: `feature/plan-05-protocol-processors`.
-. Implement the work breakdown above.
-. Verify everything locally -- both must pass with zero errors/warnings:
-  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
-. Commit and push the branch.
-. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
-. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
-  checks are green.
-. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
-  reason for not fixing + resolve; when uncertain, ask the user before acting.
-. Merge the PR, then `git checkout main && git pull`.
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-05-protocol-processors`.
 
 == Acceptance Criteria
 

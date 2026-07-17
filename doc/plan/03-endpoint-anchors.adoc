@@ -36,21 +36,24 @@ here:
   link:../configuration.adoc#_anchors[Anchors] section, the updated `gateway.yaml` and
   endpoint exhibits, and the updated
   link:../configuration.adoc#_configuration_validation_rules_summary[validation-rules summary].
-. Plan 02 (delivered; document archived under
-  `.plan/local/archived-plans/2026-07-13-implement-configuration-management/`) -- the config
-  subsystem this plan extends: loading pipeline, `ConfigValidator` conventions
-  (collect *all* violations), `RouteTableBuilder` materialization, fail-fast CDI wiring.
+. Plan 02 (delivered; its plan document is not kept in the repository -- the delivered
+  config subsystem itself is the reference) -- the subsystem this plan extends: loading
+  pipeline, `ConfigValidator` conventions (collect *all* violations), `RouteTableBuilder`
+  materialization, fail-fast CDI wiring.
 . link:../architecture.adoc[Architecture], section "Configuration Subsystem" -- immutability
   as a security property, refuse-to-start semantics.
 
 == Prerequisites
 
 * Plan 02 delivered (it is): schemas, loader, `ConfigValidator`, `RouteTable`, fail-fast boot.
-* The Plan-02 landing-gap fixes (separate plan, in flight). *Coordination note:* that plan
-  wires `EndpointEnablementResolver` into the producer; D4 below *replaces* the
-  convention-named env-override mechanism entirely (the resolver classes' env lookups are
-  removed). If this plan starts before the gap-fix plan merges, drop the enablement-wiring
-  item there instead of wiring code D4 deletes.
+* The Plan-02 landing-gap fixes are merged (PR #64). Note their end state:
+  `EndpointEnablementResolver` was left *unwired* -- `ConfigProducer` filters on the
+  file-resolved `enabled` value only, so the `ENDPOINT_<ID>_ENABLED` lookup is dead code
+  today (while `configuration.adoc` still advertises it). D4 below deletes that machinery
+  outright and makes the documented placeholder form the real mechanism.
+* link:02b-reconciliation.adoc[Plan 02b] (doc/code reconciliation) landed or running in
+  parallel -- it owns the doc-only fixes and quality-debt sweep; nothing in it overlaps
+  this plan's scope.
 
 == Design Decisions
 
@@ -128,6 +131,19 @@ enabled: ${ENDPOINT_APP1_ENABLED:-true}
 ----
 APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
 ----
+** *Grammar pinned down* (implementation directives; document them in `configuration.adoc`
+   in the same PR): placeholder syntax is `${NAME}` / `${NAME:-default}` with
+   `NAME` = `[A-Za-z_][A-Za-z0-9_]*`; the default is everything between the first `:-` and
+   the closing `}` (no nesting, no escaping inside the default); one scalar may contain
+   multiple placeholders; there is *no escape syntax* -- a scalar containing `${` that does
+   not match the grammar fails the boot with a clear error (a loud failure beats a silently
+   un-substituted literal).
+** *Secrets are classified on the pre-substitution value*: the loader must retain the raw
+   scalar so the secrets rule can verify that a secret-classified field was written as a
+   bare `${VAR}` reference (no default, no literal) -- after substitution the forms are
+   indistinguishable. This also closes a today-gap found in review: the documented secrets
+   rule is currently *unenforced* (a literal `client_secret` passes validation); implement
+   it as a D3-style validator rule with negative tests.
 * *The convention-named Java-level lookups are removed* (`TOPOLOGY_<ALIAS>` inside
   `TopologyResolver`, the `ENDPOINT_<ID>_ENABLED` machinery). The familiar variable *names*
   survive as a documented convention in the sample configs; the *mechanism* is the visible
@@ -138,16 +154,63 @@ APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
   type-invalid value fails the schema gate with the usual file/pointer error.
 * *Secrets rule unchanged*: fields classified as secrets must still be `${VAR}` references
   (no default, no literal).
-* *Doc-first cascade (same PR)*: amend link:../adr/0004-topology-indirection.adoc[ADR-0004]
-  (the single-URL-per-alias decision *stands*; the override channel changes from convention
-  env var to in-file placeholder) and rewrite the affected `configuration.adoc` passages
-  (topology env-override section, endpoint `enabled` comment, validation-rules bullets that
-  name `TOPOLOGY_<ALIAS>` / `ENDPOINT_<ID>_ENABLED`).
+* *Doc side already landed (2026-07-15)*:
+  link:../adr/0004-topology-indirection.adoc[ADR-0004] Amendment A1 and the affected
+  `configuration.adoc` passages (topology override section, endpoint `enabled` exhibit,
+  validation-rules bullets) already describe the placeholder mechanism -- the docs ran
+  doc-first and currently *over-state* the shipped behaviour (today only bare `${VAR}` is
+  substituted, and only as the secrets pass). The doc work remaining in this plan is
+  therefore verification plus caveat removal: implement the mechanism, drop the
+  "implementation lands with Plan 03" caveat, add the grammar rules above, and confirm every
+  passage matches the implemented semantics field-for-field.
+
+=== D5 -- Config-subsystem hardening (2026-07-17 adversarial review)
+
+Boot-time fixes that belong to the config plan; each is small and none changes the plan's
+shape:
+
+. *`trusted_proxies` CIDR validation* -- parse every entry as a real CIDR at validation time
+  (malformed entries rejected with file/pointer context). The trust-all guard is defined by
+  *address-space coverage, not prefix length*: compute the union of the parsed ranges per
+  address family and reject the config when that union covers the *entire* IPv4 or IPv6 space
+  -- this catches a single full-space CIDR (`0.0.0.0/0`, `::/0`) *and* complementary
+  combinations that sum to the whole space (e.g. `0.0.0.0/1` + `128.0.0.0/1`, or `::/1` +
+  `8000::/1`). Boot-WARN on individually very broad prefixes (shorter than `/8` v4 or `/32`
+  v6) that are broad but not total. Test matrix: single full-space prefix, complementary /1
+  pairs, malformed CIDR, and both families. The parsed range set is kept -- Plan 04's TCP-peer
+  gate consumes it instead of re-parsing strings per request.
+. *Upstream scheme allowlist* -- `TopologyResolver` currently accepts any URI scheme
+  (`ftp://host` resolves, then fails per-request at dispatch); restrict resolved alias URLs
+  to `http`/`https` at boot.
+. *Prefix normalization before disjointness* -- `path_prefix` values are compared byte-equal
+  today (`/api` vs `/api/` escape the same-prefix disjointness rule yet overlap at match
+  time); normalize (require leading `/`, strip trailing `/`) before every disjointness or
+  containment check -- the anchor rules of D3 inherit the same normalization. Additionally,
+  move the same-prefix route disjointness check out of `RouteTableBuilder` (which throws on
+  the first hit) into the all-violations `ConfigValidator` pass, per the
+  link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] single-reporter
+  principle -- this also makes the "all violations reported together" claim in
+  `configuration.adoc` true.
+. *Endpoint file extension* -- a `*.yml` file in `endpoints/` is silently ignored today (a
+  formerly-protected route disappears without any error); fail the boot on stray `.yml`
+  files with a "rename to `.yaml`" message, and document the `.yaml`-only rule.
+. *Binding-error redaction* -- binding failures currently copy raw Jackson messages into
+  `ConfigError`s, which can echo resolved values (including secrets) into the boot log;
+  sanitize/truncate binding messages so no resolved scalar value is ever logged. Negative
+  test: a bind failure adjacent to a resolved secret never surfaces the secret text.
+. *YAML parse limits* -- apply explicit `StreamReadConstraints` / alias-expansion limits to
+  the YAML loader (defence-in-depth against config-file expansion bombs).
+. *Header-matcher disjointness reconciliation (doc-first)* -- the code accepts opposite
+  `present: true` / `present: false` matchers on the same header as disjoint; the doc says
+  only differing exact values disjoin. The code's semantics are sound (the two can never
+  match the same request) -- amend `configuration.adoc` (Route ordering) to match, same PR.
 
 == Work Breakdown
 
 . *Schemas* (D1) -- extend both schema files; refactor shared block definitions into `$defs`.
   Review field-by-field against link:../configuration.adoc[the doc]; the doc governs.
+  Note: the doc's Schemas section already lists `anchors`/`anchor` as if shipped -- this
+  plan makes that description true.
 . *Model records* (D2) -- `AnchorConfig`, extended `GatewayConfig`/`EndpointConfig`/
   `RouteConfig`/`ResolvedRoute`; contract tests via the established `cui-test-value-objects` /
   `cui-test-generator` patterns; `package-info.java` untouched packages excepted.
@@ -161,6 +224,7 @@ APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
   fields still reject literals and defaults.
 . *Validator rules* (D3) -- each rule with valid + violating fixtures; all violations
   collected in one pass with file/pointer context, per the Plan 02 convention.
+. *Hardening* (D5) -- the seven fixes above, each with positive and negative tests.
 . *RouteTable materialization* (D2) -- chain resolution, effective-value materialization,
   weakening WARNs, per-route effective-posture INFO log (new LogRecord, documented in
   `doc/LogMessages.adoc`).
@@ -188,17 +252,8 @@ APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
 
 == Execution Workflow
 
-. Create a feature branch from up-to-date `main`: `feature/plan-03-endpoint-anchors`.
-. Implement the work breakdown above.
-. Verify everything locally -- both must pass with zero errors/warnings:
-  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
-. Commit and push the branch.
-. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
-. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
-  checks are green.
-. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
-  reason for not fixing + resolve; when uncertain, ask the user before acting.
-. Merge the PR, then `git checkout main && git pull`.
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-03-endpoint-anchors`.
 
 == Acceptance Criteria
 
@@ -212,9 +267,15 @@ APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
 * Per-route effective-posture INFO log emitted and documented in `doc/LogMessages.adoc`.
 * `${VAR}` / `${VAR:-default}` substitution works across all three artifacts with the D4 test
   matrix green; no convention-named env lookup remains in Java code (grep for
-  `TOPOLOGY_`/`ENDPOINT_` env access is clean); ADR-0004 amended and `configuration.adoc`
-  consistent with the placeholder mechanism.
-* `./mvnw -Ppre-commit clean verify -DskipTests` and `./mvnw clean install` pass; coverage of
+  `TOPOLOGY_`/`ENDPOINT_` env access is clean); `configuration.adoc` matches the implemented
+  placeholder semantics (grammar documented, "lands with Plan 03" caveat removed; ADR-0004
+  Amendment A1 already records the decision and needs no change).
+* D5 hardening in place: malformed or full-space `trusted_proxies` entries rejected
+  (negative tests include the `0.0.0.0/1` + `128.0.0.0/1` pair), non-http(s) alias schemes
+  fail the boot, `/api` vs `/api/` collide in the disjointness rules, a stray `.yml`
+  endpoint file fails the boot, the secrets rule rejects literal secret values, and binding
+  errors never echo resolved values.
+* Quality gate + full verify pass (canonical build commands, CLAUDE.md); coverage of
   the changed `config` packages >= 80%; integration tests (including the anchor-violation
   negative script) pass locally and on CI.
 * ADR-0007 status flipped to Accepted.

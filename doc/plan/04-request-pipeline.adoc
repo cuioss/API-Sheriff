@@ -58,26 +58,31 @@ the event system, metrics, structured logging, and the RFC 9457 error contract.
 
 == Design Decisions
 
-=== D1 -- cui-http 2.1 (mandatory)
+=== D1 -- cui-http 2.1.0 (mandatory)
 
 The `de.cuioss.http.forwarded` package (`ForwardedHeaderResolver`, `ResolvedForwarding`,
-`ForwardedResolverConfig`) exists only in `de.cuioss:cui-http:2.1` -- *it is absent from the
-released 2.0.0 jar*. This plan therefore pins `cui-http:2.1`.
+`ForwardedResolverConfig`) exists only in `de.cuioss:cui-http:2.1.0` (released 2026-07-11,
+the current latest) -- *it is absent from the released 2.0.0 jar*. This plan therefore pins
+`cui-http:2.1.0`.
+
+*Already present* (landed with PR #68, versions managed by `token-sheriff-bom:0.9.2`): the
+entire TokenSheriff stack -- `token-sheriff-validation-quarkus` *and* the BFF engine modules
+(`token-sheriff-client`, `token-sheriff-client-quarkus`) are direct dependencies of
+`api-sheriff` today, and the validation extension is live (the `%it` profile configures an
+issuer; its JWKS readiness check gates the ITs). This plan adds *no* TokenSheriff
+dependency -- it wires what is already on the classpath. The engine modules stay unused
+until Plan 07.
 
 [IMPORTANT]
 ====
 Dependency changes -- *require explicit user approval before adding*:
 
-* `de.cuioss:cui-http:2.1` (inbound security pipelines, forwarded resolver; its client stack
-  serves the control plane only -- ADR-0008).
-* `de.cuioss.sheriff.token:token-sheriff-validation-quarkus:0.9.1` (direct; core
-  `token-sheriff-validation` arrives transitively). 0.9.1 is the released TokenSheriff line --
-  no snapshot repository needed.
+* `de.cuioss:cui-http:2.1.0` (inbound security pipelines, forwarded resolver; its client
+  stack serves the control plane only -- ADR-0008).
 * `io.quarkus:quarkus-smallrye-fault-tolerance` (version from the Quarkus BOM) -- the
-  programmatic per-route resilience guards of ADR-0008.
-
-The BFF engine modules (`token-sheriff-client*`) are *not* added here -- they belong to the
-later variant plans.
+  programmatic per-route resilience guards of ADR-0008 (`Guard`/`TypedGuard` are the
+  current, non-deprecated programmatic surface; the older `FaultTolerance` API is
+  deprecated for removal in SmallRye FT 7).
 ====
 
 === D2 -- Edge implementation: Vert.x route handler, not a JAX-RS resource
@@ -96,7 +101,22 @@ over a `@Path("{p:.*}")` RESTEasy resource:
   CPU work on that thread.
 
 Plan 01's placeholder `GatewayResource`/`ApiSheriff` and their tests are *removed* in this
-plan (pre-1.0 rule: delete, don't deprecate) once the pipeline serves real routes.
+plan (pre-1.0 rule: delete, don't deprecate) once the pipeline serves real routes -- this
+also removes the always-UP `/api/health` and the version-leaking `/api/info` from the public
+port. Once no JAX-RS resource remains, evaluate dropping `quarkus-resteasy`/
+`quarkus-resteasy-jackson` (check first whether `token-sheriff-client-quarkus`'s RFC 9457
+exception mapper needs them -- if so, keep and note why in the pom).
+
+*Edge hardening (same PR as the edge).* The listener itself must be bounded, not only the
+pipeline: explicit Vert.x `HttpServerOptions` limits (max header size, max initial-line
+length, max chunk size), an inbound idle/read timeout (slowloris guard), and a documented
+max-concurrent-requests bound (admission control before virtual-thread dispatch -- today
+nothing caps in-flight requests). Values come from `security_defaults` where the config
+models them and from fixed secure defaults where it does not (doc-first: record the chosen
+defaults in `configuration.adoc`). Graceful shutdown is part of the edge contract: on
+SIGTERM stop accepting, drain in-flight requests within the Quarkus shutdown timeout --
+the config-rollout story (restart-based, architecture doc) depends on it; assert draining
+in an IT.
 
 *Protocol processors.* The per-route `protocol` field selects a `ProtocolProcessor`
 (loaded per route at boot, from a small registry keyed by the config enum):
@@ -118,12 +138,22 @@ inbound request (virtual thread)
      including rejections); CORS preflight answered here, BEFORE auth
   1. BASIC CHECKS (gateway.yaml `security_defaults` profile, cui-http):
      PipelineFactory.createCommonPipelines(config, securityEventCounter)
-       - URLPathValidationPipeline on the raw path
+       - URLPathValidationPipeline on the raw path -> returns the CANONICAL path
+         (cui-http decodes %-encoding, collapses ../ and //, rejects
+         traversal/%00/overlong/backslash); this canonical value is the ONE
+         path used by every later stage (D3b GW-01 invariant)
        - URLParameterValidationPipeline / header pipelines on names+values
+         (header CR/LF/NUL rejected unconditionally by cui-http)
        - RequestCollectionValidator: header/parameter/cookie counts
+       - FRAMING GATE (gateway edge, D3b GW-02): reject CL+TE both present,
+         a body on a bodyless method, and any Connection-list attempt to strip
+         a framing/trust header
      violation -> 400 problem+json, INPUT_VALIDATION event                   [stage 1]
-  2. ROUTE SELECTION: RouteTable candidate match (path prefix AND methods AND
-     host AND headers), longest prefix wins; no candidate -> 404             [stage 2]
+  2. ROUTE SELECTION: RouteTable candidate match on the CANONICAL path (path
+     prefix AND methods AND host AND headers), longest prefix wins; no
+     candidate -> 404. Routing, the verb gate, auth, allowed_paths, and the
+     stage-6 remainder ALL consume this same canonical path -- never the raw
+     request-URI (D3b GW-01)                                                  [stage 2]
   2b. VERB GATE: matched route's effective allowed_methods (the anchor-aware
       effective set materialized at boot into ResolvedRoute); method outside
       it -> 405 + Allow header, INPUT_VALIDATION event                       [stage 2b]
@@ -173,6 +203,51 @@ inbound request (virtual thread)
 Every rejection path returns `application/problem+json` per the
 link:../architecture.adoc#_error_contract[error contract] table and never calls the upstream.
 
+=== D3b -- Threat-model hardening (2026-07-17 CVE review; see doc/security-threat-model.adoc)
+
+These are the gateway-owned controls the survey of real gateway CVEs demands. `cui-http` and
+the token-sheriff stack own large parts of the pipeline already (per-component
+canonicalization, header CR/LF/NUL rejection, collection limits, the forwarded resolver, JWT
+validation); D3b is the residual those libraries deliberately leave to the gateway. Each has a
+catalogue ID and a testable assertion.
+
+* *GW-01 -- single-canonical-path invariant.* cui-http's `URLPathValidationPipeline` returns a
+  canonical path; the gateway MUST route, verb-gate, auth-select, `allowed_paths`-match, and
+  compute the upstream remainder from *that same* value, never the raw `ctx.request().uri()`.
+  Two residuals cui-http leaves open, both *pinned to reject* (deterministic, consistent with
+  deny-by-default; a legitimate backend that needs these can be added later behind an explicit
+  opt-in): (a) *encoded-slash* -- cui-http decodes `%2f` to a structural `/`; a request whose
+  raw path contained an encoded slash is *rejected* at stage 1 (400) rather than silently
+  routed on the decoded form; (b) *matrix params* -- a path segment containing `;` is
+  *rejected* at stage 1 (400). Both decisions and the resulting canonical value are recorded
+  doc-first in `configuration.adoc` and mirrored in the threat model (GW-01) so the corpus has
+  one expected outcome. Test with cui-http's traversal/encoding attack corpus PLUS
+  encoded-slash and matrix-param cases: every variant is rejected at stage 1 or
+  routed+authorized+forwarded on one identical path (upstream count = 0 on any bypass attempt).
+  This is the dominant gateway CVE class (Traefik x6, APISIX CVE-2021-43557, Kong
+  CVE-2021-27306, Envoy CVE-2021-29492) and the fix for the interim-proxy raw-vs-normalized
+  finding.
+* *GW-02 -- HTTP framing / anti-smuggling gate.* cui-http is explicitly out of scope for
+  framing, so this is gateway/Vert.x: reject a request carrying both `Content-Length` and
+  `Transfer-Encoding`, a body on a bodyless method (HEAD/GET-with-body), and any
+  `Connection`-list attempt to strip a framing header; re-validate framing after any header
+  mutation; do not pool an upstream connection whose framing was not fully validated. Assert
+  against a CL.TE/TE.CL/TE.TE/CL.0 corpus: zero desyncs. Justified because API Sheriff sits
+  behind other proxies by design (the forwarded-header model assumes it).
+* *GW-03 tie-in -- hop-by-hop cannot strip trust.* Header CR/LF/NUL is cui-http's job (done);
+  the gateway ensures a client `Connection: X-Forwarded-For`/`Content-Length` never causes the
+  regenerated forwarding header or a framing header to be dropped (shares the GW-02 gate).
+* *GW-08 -- HTTP/2 abuse bounds (terminated h2).* Verify and pin: stream-creation/reset rate
+  limiting (Rapid Reset, CVE-2023-44487), CONTINUATION frame count/size bounds (CERT
+  VU#421644), and that client `Upgrade: h2c`/`Connection` headers are never forwarded upstream.
+  Assert a Rapid-Reset/CONTINUATION load does not exhaust CPU/memory (connection dropped).
+  Quarkus/Netty ship partial mitigation -- this item *verifies and tests* it rather than
+  assuming it. (gRPC's forced-h2 upstream inherits this in Plan 05.)
+* *GW-07 tie-in -- the edge bounds* (header/line-size limits, inbound idle timeout, in-flight
+  admission cap, graceful drain) are in the edge-hardening work-breakdown item; cui-http does
+  *not* provide a streaming body limiter, so `max_body_bytes` stays the gateway stream counter
+  (stages 3/6).
+
 === D4 -- Event system, metrics, logging (built here, low base package)
 
 * `de.cuioss.sheriff.api.events`: `EventCategory` (failure categories per architecture doc),
@@ -201,9 +276,8 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
 
 == Work Breakdown
 
-. *Dependencies* (after approval): cui-http 2.1,
-  token-sheriff-validation-quarkus 0.9.1 (released), quarkus-smallrye-fault-tolerance
-  (Quarkus BOM).
+. *Dependencies* (after approval): cui-http 2.1.0 and quarkus-smallrye-fault-tolerance
+  (Quarkus BOM). The TokenSheriff stack is already present (0.9.2 via `token-sheriff-bom`).
 . *Arch-gate* (ADR-0005 -- mandatory from this first pipeline PR): the ArchUnit rule
   asserting the framework-agnostic packages (`config.model`, `config.validation`, `events`,
   `routing`, `forward`, `pipeline`) carry no `io.quarkus..`, `io.vertx..`,
@@ -222,21 +296,31 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
   `SecurityConfiguration`/pipeline set per distinct profile shape, one Vert.x client
   (+ connection pool) per distinct upstream-target tuple -- routes sharing a shape/target
   share the instance, not a copy. Boot-time rejection of `grpc`/`websocket`/`session` (this
-  plan's scope guard). Remove the whole-second-timeout `ConfigValidator` rule and its tests
-  (obsolete per ADR-0008 -- millisecond timeouts are native now).
-. *Stages 0-3* -- security headers + CORS preflight, basic pipelines, route selection, the
-  `allowed_methods` verb gate (stage 2b -> 405 + `Allow`), thorough checks, allowed_paths
-  matcher, body cap. Unit tests use the cui-http *attack databases* (`OWASPTop10AttackDatabase`,
-  CVE databases, plus the legitimate-pattern databases for false-positive guarding) via
-  `@GeneratorsSource`-style parameterized tests; add a verb-gate test (method outside the
-  effective set -> 405 with the correct `Allow` set, upstream never called).
+  plan's scope guard). The whole-second-timeout `ConfigValidator` rule is removed by
+  link:02b-reconciliation.adoc[Plan 02b] (ADR-0008 already documents it as gone); verify it
+  is gone before wiring millisecond timeouts.
+. *Stages 0-3 + D3b GW-01/GW-02* -- security headers + CORS preflight, basic pipelines,
+  the canonical-path invariant (route+verb-gate+auth+allowed_paths+remainder all on the one
+  canonical path; encoded-slash and matrix `;` both rejected -> 400), the framing gate,
+  route selection, the `allowed_methods` verb gate (stage 2b -> 405 + `Allow`), thorough
+  checks, allowed_paths matcher, body cap. Unit tests reuse the cui-http *attack databases*
+  (`OWASPTop10AttackDatabase`, Apache/Nginx/IIS-CVE databases, plus the legitimate-pattern
+  databases for false-positive guarding) via `@ArgumentsSource`/`@GeneratorsSource` -- these
+  ship in cui-http's *test-jar* (add the `test-jar`/`tests`-classifier dependency, an approval
+  item). Add: a GW-01 divergence corpus (encoded-traversal / `%2f` / matrix-param / trailing
+  slash) asserting no authorize-as-public / dispatch-to-protected split (upstream count = 0);
+  a GW-02 smuggling corpus (CL+TE, HEAD-with-body, `Connection`-strip) asserting 400 and zero
+  desyncs; a verb-gate test (method outside the effective set -> 405 with the correct `Allow`
+  set, upstream never called).
 . *Stage 4* -- TokenValidator producer wiring from `token_validation` config (single shared
   validator at startup), bearer extraction, scope enforcement; tests with
-  `token-sheriff-validation`'s `generators` test-jar key material; JWKS over
+  `token-sheriff-validation`'s `generators`-classifier artifact
+  (`token-sheriff-validation-0.9.2-generators.jar`) for key material; JWKS over
   `cui-test-mockwebserver-junit5`.
 . *Stage 5* -- forward-policy filtering; TCP-peer gate + resolver wiring + regeneration
   (assert: spoofed inbound `X-Forwarded-For` from a non-trusted peer is ignored; chains are
-  regenerated, never appended).
+  regenerated, never appended). The gate consumes the CIDR list parsed at boot by Plan 03
+  D5 -- no per-request string parsing.
 . *Stage 6 + 7* -- dispatch via the shared Vert.x client through the route's FT guard,
   hop-by-hop header stripping, *body streaming with backpressure* (Vert.x
   `ReadStream.pipeTo`/`Pipe` in both directions -- no `HttpResult<byte[]>` materialization of
@@ -257,33 +341,30 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
     exactly the allow-listed headers/params + regenerated `X-Forwarded-*` and nothing else;
   * bearer route: real Keycloak token accepted (the `integration` realm finally earns its
     keep), tampered/expired token -> 401 problem+json, missing scope -> 403;
-  * filter rejection -> 400; unmatched route -> 404; upstream down -> 502; timeout -> 504;
-    breaker -> 503 with Retry-After (fault injection per the infrastructure chosen in
-    Plan 01);
+  * filter rejection -> 400; unmatched route -> 404; upstream down -> 502 (stopped upstream
+    container); timeout -> 504 (go-httpbin `/delay/<n>` beyond the route's read timeout);
+    breaker -> 503 with Retry-After (induced consecutive failures) -- no Toxiproxy needed
+    here, it joins the stack in Plan 06;
+  * graceful shutdown: SIGTERM during an in-flight request completes the response, then the
+    process exits within the shutdown timeout;
   * `/q/metrics` shows the `sheriff_*` meters moving.
+  * Assertion style: REST-assured's Hamcrest matchers conflict with the project's
+    forbidden-frameworks rule -- new ITs use `.extract()` + JUnit assertions (Plan 02b
+    migrates the existing ones).
 . *Benchmarks* -- extend the WRK suite with a bearer-validated proxied route (wrk ->
   gateway -> echo upstream) alongside Plan 01's plain-proxy benchmark, so validation overhead
-  is measured separately from proxy overhead.
+  is measured separately from proxy overhead. Precondition (Plan 02b): the lua error
+  counters aggregate correctly and runs fail above an error threshold -- without that, a
+  gateway that starts rejecting requests would benchmark as *faster*.
 . *Docs* -- update `doc/LogMessages.adoc`; note any deliberate deviations discovered during
   implementation back into `architecture.adoc` (the doc governs; deviations need a doc PR,
   not silent drift).
 
 == Execution Workflow
 
-. Create a feature branch from up-to-date `main`: `feature/plan-04-request-pipeline`.
-. Implement the work breakdown above.
-. Verify everything locally -- both must pass with zero errors/warnings:
-  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
-. Commit and push the branch.
-. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
-. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
-  checks are green.
-. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
-  reason for not fixing + resolve; when uncertain, ask the user before acting.
-. Merge the PR, then `git checkout main && git pull`.
-
-If the plan has to be split into multiple PRs, this workflow applies to each PR; the build
-must be green after every one.
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-04-request-pipeline`. A multi-PR split is acceptable; the workflow
+applies to each PR and the build must be green after every one.
 
 == Acceptance Criteria
 
@@ -296,9 +377,16 @@ must be green after every one.
 * Bearer validation works offline against Keycloak-issued tokens in ITs; upstream is never
   called on any rejection (assert via echo-side request counting).
 * Metrics/eventing surface matches the names in `architecture.adoc`.
+* Edge bounds enforced: header/line-size limits, inbound idle timeout, in-flight admission
+  cap, and graceful drain on SIGTERM -- each with a test; the chosen defaults are recorded
+  in `configuration.adoc` (doc-first).
+* D3b threat-model hardening (link:../security-threat-model.adoc[catalogue] GW-01/02/03/08)
+  each has a passing test: the single-canonical-path invariant (no bypass corpus reaches an
+  upstream), the framing/anti-smuggling gate (zero desyncs), and the HTTP/2 abuse bounds
+  (Rapid-Reset/CONTINUATION load stays bounded; client `h2c`/`Connection` never forwarded).
 * The ADR-0005 arch-gate rule exists, runs in the quality gate, and fails on a deliberate
   violation (verified once, then reverted).
-* `./mvnw -Ppre-commit clean verify -DskipTests`, `./mvnw clean install`, integration-tests
+* Quality gate + full verify (canonical build commands, CLAUDE.md), integration-tests
   profile, and the benchmark profile all pass locally and on CI; coverage >= 80% on new
   packages.
 
@@ -307,5 +395,5 @@ must be green after every one.
 * `require: session` / OIDC / BFF behaviour (variant plans; engine modules not yet added).
 * WebSocket upgrade and gRPC streaming processors (config-visible, boot-rejected here).
 * TLS `passthrough_sni` L4 relay and `mtls` (separate plan; needs listener-level work).
-* Rate limiting (deferred feature, reserved config).
+* Rate limiting (out of scope entirely, reserved config -- plan README).
 * HTTP/3 (ADR-0002).

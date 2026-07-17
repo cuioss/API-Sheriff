@@ -43,7 +43,13 @@ stay shared (review checklist item).
 
 AES-256-GCM authenticated encryption; plaintext = access + refresh + raw ID token (needed as
 `id_token_hint` -- a stateless gateway cannot drive RP-initiated logout without it) +
-minimal metadata; value = ciphertext + nonce + tag. Tamper -> authentication failure ->
+minimal metadata. Codec specifics (implementation directives): a fresh random 96-bit nonce
+per seal (never derived, never counter-based -- GCM nonce reuse under one key is
+catastrophic); the cookie value is `version || key-id || nonce || ciphertext || tag`,
+base64url-encoded, with `version` (one byte, format evolution) and `key-id` (which of
+current/previous sealed it -- deterministic key selection instead of try-both decryption)
+bound into the GCM *associated data* together with the cookie name, so a value cannot be
+replayed under a different format version or cookie. Tamper -> authentication failure ->
 treated as no session. Keys by env indirection (`encryption_key`; the secrets rule applies);
 rotation: `previous_key` is decrypt-only, accepted cookies re-seal with the current key on
 next write. *Size budget*: the sealed cookie must stay within ~4 KB; exceeding it at seal
@@ -57,6 +63,24 @@ re-seals into a new `Set-Cookie`; refresh-reuse rejection is an ordinary refresh
 (session ends, `on_failure` drives re-auth); IdP-side reuse tolerance is documented as an
 operator trade-off (availability vs. RFC 9700 theft detection), never a gateway default.
 
+*Why "per instance" is a hard boundary (BFF-08, confirmed by 0.9.2 source review).* The
+engine's reuse detection (`RefreshTokenFamily` / `TokenLifecycleManager`) is fail-closed but
+its family map is *in-memory per instance* (a bounded LRU). In the stateless cookie shape --
+multiple instances, no shared state by design -- a family therefore *cannot* be tracked
+across instances: an RT rotated on instance A and replayed against instance B is not seen as
+reuse by B. This is inherent to the variant, not a defect; the mitigations are exactly the
+documented ones (short `ttl_seconds` / short access-token lifetimes; IdP-side reuse tolerance
+as the operator's availability-vs-detection call). If cross-instance detection is ever
+required, the engine's `TokenStore` SPI is the seam for a shared family store -- but that
+reintroduces the external dependency the variant exists to avoid, so it stays out of scope
+(choose Variant 2 for instant, node-spanning revocation).
+
+*Release risk acceptance (BFF-08, threat model).* This per-instance limitation is an
+*explicit, documented accepted risk* of the stateless variant, not an open defect: the 1.0
+release records it as risk-accepted (with the short-lifetime mitigations above) rather than
+gating on a shared coordination store. The threat model's BFF-08 status is split accordingly
+(COVERED server / PARTIAL-accepted cookie).
+
 === D4 -- Back-channel logout is disabled (`404`)
 
 In `mode: cookie` the `backchannel_path` returns `404` -- there is no session to destroy,
@@ -68,6 +92,14 @@ lifetimes) and the "choose Variant 2 for instant revocation" guidance stay docum
 
 . *`SessionBinding` seam* (D1) -- extract from Plan 07 if not already shaped that way;
   boot-time selection from validated config.
+. *Pre-login state delta* (Plan 07 D2b) -- the pending-authorization record travels as a
+  sealed, short-lived `__Host-` login cookie (same codec, separate cookie name in the AAD),
+  which *is* the browser binding (it is `HttpOnly`+`Secure`+`__Host-`); the callback requires
+  the returned `state` to match the cookie's *and* the cookie to be present. Strict single-use
+  is unattainable statelessly -- the short TTL bounds the replay window. *Release risk
+  acceptance (BFF-02):* record this bounded-replay-window as an explicit accepted risk next to
+  the variant doc's statelessness properties (server mode gives true single-use; cookie mode
+  accepts the minutes-long window). The threat model's BFF-02 status is split accordingly.
 . *Cookie codec* (D2) -- seal/unseal, rotation, size budget; unit tests: round-trip, tamper
   rejection (flipped byte in each of ciphertext/nonce/tag), previous-key acceptance +
   re-seal, oversized-set rejection, key material never logged.
@@ -89,17 +121,8 @@ lifetimes) and the "choose Variant 2 for instant revocation" guidance stay docum
 
 == Execution Workflow
 
-. Create a feature branch from up-to-date `main`: `feature/plan-08-bff-cookie`.
-. Implement the work breakdown above.
-. Verify everything locally -- both must pass with zero errors/warnings:
-  `./mvnw -Ppre-commit clean verify -DskipTests` (quality gate) and `./mvnw clean install`.
-. Commit and push the branch.
-. Create the PR (`gh pr create --repo cuioss/API-Sheriff --base main ...`).
-. Wait ~5 minutes for the AI reviewers to complete, and `gh pr checks --watch` until all
-  checks are green.
-. Handle *every* review comment: fix + commit + push + reply + resolve, or reply with the
-  reason for not fixing + resolve; when uncertain, ask the user before acting.
-. Merge the PR, then `git checkout main && git pull`.
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-08-bff-cookie`.
 
 == Acceptance Criteria
 

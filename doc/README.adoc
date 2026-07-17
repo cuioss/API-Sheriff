@@ -61,6 +61,11 @@ together*.
 | link:configuration.adoc[Configuration Model]
 | The static, immutable YAML mapping schema: routing, URL/parameter whitelisting,
   security filtering, TLS (termination and passthrough), and per-route limits.
+
+| link:security-threat-model.adoc[Threat Model & CVE-Derived Validation Baseline]
+| Trust boundaries and STRIDE, plus a failure catalogue where every class that produced a
+  real CVE in a comparable gateway/proxy or OAuth/OIDC stack is mapped to an API Sheriff
+  control, a status, and a testable assertion. Doubles as the 1.0 security release gate.
 |===
 
 == Deployment Variants
@@ -90,7 +95,8 @@ configuration. Each has its own design section:
 
 Sequenced plans for building what these documents describe live under
 link:plan/README.adoc[`plan/`]: base implementation and configuration management (delivered),
-then endpoint anchors, the request pipeline, protocol processors, the TLS edge, the two BFF
+a doc/code reconciliation & quality-debt sweep, then endpoint anchors, the request pipeline,
+protocol processors, the TLS edge, the two BFF
 variants (server-session first), and release readiness -- the full sequence to the 1.0 cut.
 Rate limiting is out of scope. Each plan names the design documents that must be read before
 implementing it.
@@ -151,6 +157,8 @@ implementing it.
 . link:features-analysis.adoc[Feature Analysis] -- what to build and what not to.
 . link:architecture.adoc[Architecture] -- how the runtime fits together.
 . link:configuration.adoc[Configuration] -- the YAML contract.
+. link:security-threat-model.adoc[Threat Model] -- the trust boundaries and the CVE-derived
+  controls every variant must satisfy.
 . The link:variants/01-base-gateway.adoc[three variant sections] -- deployment modes.
 . link:technical_aspects.adoc[Technical Aspects] -- the CUI library APIs behind the design.
 . The link:adr/0001-java25-runtime-baseline.adoc[ADRs] -- the recorded decisions and their
