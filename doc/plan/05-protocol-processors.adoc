@@ -45,17 +45,27 @@ protocol promise and, with it, the link:../variants/01-base-gateway.adoc[Variant
   `Origin` against an allowlist and reject unknown origins *before* the upstream is dialed.
   For `require: session` WS routes (Plan 07) this reuses the BFF's
   `session.csrf.trusted_origins` set -- the WS Origin check and the stage-0 CORS/CSRF posture
-  are the same trust decision; a bearer WS route uses a configured `allowed_origins` (add the
-  field doc-first if a route needs it). Never authenticate a socket on the ambient session
-  cookie alone.
+  are the same trust decision. For a *bearer* WS route the origin allowlist is a new
+  `security_headers`-adjacent field, `allowed_origins`, defined *doc-first* in
+  `configuration.adoc` (schema, field reference, validation-rules summary) before
+  implementation with these fixed semantics: a list of *exact-match* origin strings
+  (scheme+host+port, no wildcards); matching is case-insensitive on host only; and the check
+  is *fail-closed* -- a WS upgrade on a bearer route whose `allowed_origins` is absent or empty
+  is rejected (there is no "any origin" default). The acceptance criteria assert the
+  missing/empty-allowlist rejection. Never authenticate a socket on the ambient session cookie
+  alone.
 * After the upstream confirms the upgrade, the established stream is relayed bidirectionally
   (Vert.x WebSocket/`NetSocket` pipes with backpressure, both directions). *No per-message
   filtering* -- the security filter operates on HTTP metadata only
   (architecture doc); `max_body_bytes` does not apply to frames. Close frames and ping/pong
   relay transparently; a half-close on either side closes both. Long-lived relays are still
-  bounded resources: they count against the Plan 04 edge connection/in-flight accounting,
-  and an idle-timeout policy for established relays is decided (and documented) here --
-  a silently dead socket must not live forever.
+  bounded resources: they count against the Plan 04 edge connection/in-flight accounting, and
+  an established relay is reclaimed after a *bounded idle timeout* -- pinned here as a
+  configurable per-route `websocket.idle_timeout_seconds` (default 300s), where "idle" means
+  no frame in *either* direction. WebSocket ping/pong counts as activity, so an application
+  that keeps the socket warm with heartbeats is never reclaimed -- the timeout only reaps
+  genuinely dead sockets. An IT asserts an idle established relay is closed after the timeout
+  while a heartbeated one survives. (Defined doc-first in `configuration.adoc`.)
 * Upgrade failure mapping: upstream refuses the upgrade -> the refusal status relays;
   upstream unreachable -> the standard `502`/`504` contract *before* `101`.
 
@@ -108,7 +118,9 @@ assertions.
 . *Integration tests* (per the link:README.adoc[convention]: complete in this plan) --
   WebSocket: authenticated echo round-trip through the gateway, unauthenticated handshake
   rejected `401` before any upstream contact, *foreign-`Origin` handshake rejected before any
-  upstream contact* (GW-09), unmatched WS path `404`; gRPC: unary + streaming
+  upstream contact* (GW-09), *bearer WS route with missing/empty `allowed_origins` rejected*
+  (fail-closed), *an idle established relay reclaimed after `idle_timeout_seconds` while a
+  heartbeated relay survives*, unmatched WS path `404`; gRPC: unary + streaming
   echo through the gateway with metadata injection asserted, `grpc-status` relay from the
   failing method, `UNAUTHENTICATED` trailers-only rejection on a bearer gRPC route without a
   token.

@@ -90,7 +90,7 @@ for i in {1..60}; do
     fi
     if [ $i -eq 60 ]; then
         echo "❌ Keycloak failed to start within 60 seconds"
-        echo "Check logs with: docker compose logs keycloak"
+        echo "Check logs with: ${COMPOSE_BASE} logs keycloak"
         exit 1
     fi
     echo "⏳ Waiting for Keycloak... (attempt $i/60)"
@@ -106,7 +106,7 @@ for i in {1..30}; do
     fi
     if [ $i -eq 30 ]; then
         echo "❌ go-httpbin upstream failed to start within 30 seconds"
-        echo "Check logs with: docker compose logs go-httpbin"
+        echo "Check logs with: ${COMPOSE_BASE} logs go-httpbin"
         exit 1
     fi
     echo "⏳ Waiting for go-httpbin... (attempt $i/30)"
@@ -123,7 +123,7 @@ if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
         fi
         if [ $i -eq 30 ]; then
             echo "❌ nginx-static backend failed to start within 30 seconds"
-            echo "Check logs with: docker compose logs nginx-static"
+            echo "Check logs with: ${COMPOSE_BASE} logs nginx-static"
             exit 1
         fi
         echo "⏳ Waiting for nginx-static... (attempt $i/30)"
@@ -184,4 +184,4 @@ echo "  curl -sf http://localhost:19000/q/health/live"
 echo "  curl -k https://localhost:1090/health/ready"
 echo ""
 echo "🛑 To stop: ./scripts/stop-integration-container.sh"
-echo "📋 To view logs: docker compose logs -f"
+echo "📋 To view logs: ${COMPOSE_BASE} logs -f"

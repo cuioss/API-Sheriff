@@ -153,8 +153,12 @@ branch `feature/plan-06-tls-edge`.
 * Per-SNI/per-route mTLS policies (global `tls.mtls` only).
 * Optional/want-style client auth, certificate-to-identity mapping (no L7 identity is
   derived from client certs in this plan).
-* Client-certificate revocation checking (CRL/OCSP) -- not performed initially; rotating the
-  `client_ca` (restart, per the immutable-config model) is the revocation mechanism.
-  Documented as an operator consideration.
+* Client-certificate revocation checking (CRL/OCSP) -- not performed initially. There is
+  therefore *no selective per-certificate revocation*. The only lever is *emergency
+  trust-root replacement*: swapping `client_ca` (restart, per the immutable-config model)
+  invalidates the *entire* old trust root at once -- every client cert issued by it stops
+  being accepted, not just a compromised one -- so its blast radius is global and it forces
+  re-issuance for all legitimate clients. Documented as an operator consideration with that
+  blast radius stated explicitly; genuine per-cert revocation (CRL/OCSP) is future work.
 * PROXY-protocol emission on the passthrough relay (revisit if a passthrough backend needs
   client IPs).

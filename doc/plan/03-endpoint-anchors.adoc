@@ -170,12 +170,15 @@ Boot-time fixes that belong to the config plan; each is small and none changes t
 shape:
 
 . *`trusted_proxies` CIDR validation* -- parse every entry as a real CIDR at validation time
-  (malformed entries rejected with file/pointer context). The trust-all guard stops being a
-  string comparison: reject any entry (or combination-equivalent single entry such as
-  `0.0.0.0/1`) whose parsed prefix length is `0`, and boot-WARN on very broad prefixes
-  (shorter than `/8`). Today `0.0.0.0/1` + `128.0.0.0/1` passes as full-internet trust and
-  garbage CIDRs are accepted silently. The parsed form is kept -- Plan 04's TCP-peer gate
-  consumes it instead of re-parsing strings per request.
+  (malformed entries rejected with file/pointer context). The trust-all guard is defined by
+  *address-space coverage, not prefix length*: compute the union of the parsed ranges per
+  address family and reject the config when that union covers the *entire* IPv4 or IPv6 space
+  -- this catches a single full-space CIDR (`0.0.0.0/0`, `::/0`) *and* complementary
+  combinations that sum to the whole space (e.g. `0.0.0.0/1` + `128.0.0.0/1`, or `::/1` +
+  `8000::/1`). Boot-WARN on individually very broad prefixes (shorter than `/8` v4 or `/32`
+  v6) that are broad but not total. Test matrix: single full-space prefix, complementary /1
+  pairs, malformed CIDR, and both families. The parsed range set is kept -- Plan 04's TCP-peer
+  gate consumes it instead of re-parsing strings per request.
 . *Upstream scheme allowlist* -- `TopologyResolver` currently accepts any URI scheme
   (`ftp://host` resolves, then fails per-request at dispatch); restrict resolved alias URLs
   to `http`/`https` at boot.

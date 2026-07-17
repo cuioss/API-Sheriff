@@ -214,14 +214,19 @@ catalogue ID and a testable assertion.
 * *GW-01 -- single-canonical-path invariant.* cui-http's `URLPathValidationPipeline` returns a
   canonical path; the gateway MUST route, verb-gate, auth-select, `allowed_paths`-match, and
   compute the upstream remainder from *that same* value, never the raw `ctx.request().uri()`.
-  Two residuals cui-http leaves open: (a) *encoded-slash policy* -- cui-http decodes `%2f` to a
-  structural `/`; pick reject (default, safest for prefix isolation) and apply it before
-  routing; (b) *matrix-param (`;`) handling* -- strip or reject `;` segments before matching.
-  Test with cui-http's traversal/encoding attack corpus PLUS encoded-slash and matrix-param
-  cases: every variant is rejected at stage 1 or routed+authorized+forwarded on one identical
-  path (upstream count = 0 on any bypass attempt). This is the dominant gateway CVE class
-  (Traefik x6, APISIX CVE-2021-43557, Kong CVE-2021-27306, Envoy CVE-2021-29492) and the fix
-  for the interim-proxy raw-vs-normalized finding.
+  Two residuals cui-http leaves open, both *pinned to reject* (deterministic, consistent with
+  deny-by-default; a legitimate backend that needs these can be added later behind an explicit
+  opt-in): (a) *encoded-slash* -- cui-http decodes `%2f` to a structural `/`; a request whose
+  raw path contained an encoded slash is *rejected* at stage 1 (400) rather than silently
+  routed on the decoded form; (b) *matrix params* -- a path segment containing `;` is
+  *rejected* at stage 1 (400). Both decisions and the resulting canonical value are recorded
+  doc-first in `configuration.adoc` and mirrored in the threat model (GW-01) so the corpus has
+  one expected outcome. Test with cui-http's traversal/encoding attack corpus PLUS
+  encoded-slash and matrix-param cases: every variant is rejected at stage 1 or
+  routed+authorized+forwarded on one identical path (upstream count = 0 on any bypass attempt).
+  This is the dominant gateway CVE class (Traefik x6, APISIX CVE-2021-43557, Kong
+  CVE-2021-27306, Envoy CVE-2021-29492) and the fix for the interim-proxy raw-vs-normalized
+  finding.
 * *GW-02 -- HTTP framing / anti-smuggling gate.* cui-http is explicitly out of scope for
   framing, so this is gateway/Vert.x: reject a request carrying both `Content-Length` and
   `Transfer-Encoding`, a body on a bodyless method (HEAD/GET-with-body), and any
@@ -296,7 +301,7 @@ when any bearer route exists, the `TokenValidator`'s issuer/JWKS loading status
   is gone before wiring millisecond timeouts.
 . *Stages 0-3 + D3b GW-01/GW-02* -- security headers + CORS preflight, basic pipelines,
   the canonical-path invariant (route+verb-gate+auth+allowed_paths+remainder all on the one
-  canonical path; encoded-slash rejected; matrix `;` stripped/rejected), the framing gate,
+  canonical path; encoded-slash and matrix `;` both rejected -> 400), the framing gate,
   route selection, the `allowed_methods` verb gate (stage 2b -> 405 + `Allow`), thorough
   checks, allowed_paths matcher, body cap. Unit tests reuse the cui-http *attack databases*
   (`OWASPTop10AttackDatabase`, Apache/Nginx/IIS-CVE databases, plus the legitimate-pattern

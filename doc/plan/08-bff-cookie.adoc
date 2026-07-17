@@ -75,6 +75,12 @@ required, the engine's `TokenStore` SPI is the seam for a shared family store --
 reintroduces the external dependency the variant exists to avoid, so it stays out of scope
 (choose Variant 2 for instant, node-spanning revocation).
 
+*Release risk acceptance (BFF-08, threat model).* This per-instance limitation is an
+*explicit, documented accepted risk* of the stateless variant, not an open defect: the 1.0
+release records it as risk-accepted (with the short-lifetime mitigations above) rather than
+gating on a shared coordination store. The threat model's BFF-08 status is split accordingly
+(COVERED server / PARTIAL-accepted cookie).
+
 === D4 -- Back-channel logout is disabled (`404`)
 
 In `mode: cookie` the `backchannel_path` returns `404` -- there is no session to destroy,
@@ -87,10 +93,13 @@ lifetimes) and the "choose Variant 2 for instant revocation" guidance stay docum
 . *`SessionBinding` seam* (D1) -- extract from Plan 07 if not already shaped that way;
   boot-time selection from validated config.
 . *Pre-login state delta* (Plan 07 D2b) -- the pending-authorization record travels as a
-  sealed, short-lived `__Host-` login cookie (same codec, separate cookie name in the AAD);
-  the callback requires the returned `state` to match the cookie's. Strict single-use is
-  unattainable statelessly -- the short TTL bounds the replay window; document that
-  trade-off next to the variant doc's statelessness properties.
+  sealed, short-lived `__Host-` login cookie (same codec, separate cookie name in the AAD),
+  which *is* the browser binding (it is `HttpOnly`+`Secure`+`__Host-`); the callback requires
+  the returned `state` to match the cookie's *and* the cookie to be present. Strict single-use
+  is unattainable statelessly -- the short TTL bounds the replay window. *Release risk
+  acceptance (BFF-02):* record this bounded-replay-window as an explicit accepted risk next to
+  the variant doc's statelessness properties (server mode gives true single-use; cookie mode
+  accepts the minutes-long window). The threat model's BFF-02 status is split accordingly.
 . *Cookie codec* (D2) -- seal/unseal, rotation, size budget; unit tests: round-trip, tamper
   rejection (flipped byte in each of ciphertext/nonce/tag), previous-key acceptance +
   re-seal, oversized-set rejection, key material never logged.

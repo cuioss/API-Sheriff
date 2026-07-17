@@ -78,13 +78,27 @@ provide: persistence, a return-URL field, and single-use enforcement (its single
 it *persists and guards* the engine's `FlowContext`.
 
 Decision: a *pending-authorization record* wrapping the engine `FlowContext`, gateway-side,
-keyed by `state`: short fixed TTL (minutes), strictly single-use (consumed or expired, never
-retried -- the enforcement the engine leaves open), plus the original request URL for the
-post-login redirect (same-origin-validated -- never an open redirect). Storage follows the
-binding seam: bounded in-memory map in this plan (oldest-eviction -- unauthenticated browsers
-create these records, so the bound is a DoS guard), sealed short-lived `__Host-` login cookie
-in the cookie variant (Plan 08). *Doc-first*: record the chosen design in the variant doc's
-Login Flow section in the same PR.
+with short fixed TTL (minutes), strictly single-use (consumed or expired, never retried -- the
+enforcement the engine leaves open), plus the original request URL for the post-login redirect
+(same-origin-validated -- never an open redirect).
+
+*Browser-bound, not `state`-keyed alone (security-critical).* A record retrievable by `state`
+value is not tied to the browser that started the flow -- an attacker could begin a flow and
+deliver its callback URL to a victim (login CSRF / code delivery to the wrong browser). So the
+record is *bound to the initiating browser* by a short-lived `HttpOnly`, `Secure`,
+`SameSite=Lax`, `__Host-` *binding cookie* set at redirect time, carrying an unguessable
+handle (server mode: the record id; cookie mode: the sealed record itself). The callback is
+valid only when *both* the returned `state` matches *and* the binding cookie resolves to the
+*same* record -- a callback arriving in a browser without the matching binding cookie is
+rejected. This is the pre-session analogue of the session cookie and composes with the engine's
+constant-time `state` check. Test: a callback replayed in a *different* browser (no binding
+cookie) is rejected even with a valid `state`.
+
+Storage follows the binding seam: bounded in-memory map in this plan (oldest-eviction --
+unauthenticated browsers create these records, so the bound is a DoS guard) with the binding
+cookie holding the record id; in the cookie variant (Plan 08) the binding cookie *is* the
+sealed record, so there is no server map. *Doc-first*: record the chosen design (incl. the
+binding cookie) in the variant doc's Login Flow section in the same PR.
 
 === D2c -- Threat-model residuals the engine leaves to the gateway (2026-07-17 CVE review)
 
@@ -143,8 +157,12 @@ RP-initiated per the variant doc: revoke (engine), destroy session, expire cooki
 to `end_session_endpoint` with `id_token_hint` + exact-match `post_logout_redirect_uri` +
 session-bound `state` carried in the short-lived single-use `+__Host-sheriff-logout+`
 cookie; verify on the return leg, then `final_redirect`. Back-channel: signature via the
-issuer/JWKS infrastructure, then the gateway-code logout-token checks (`events` contains the
-back-channel event, `nonce` absent, `sub`/`sid` present), destroy via the secondary index.
+issuer/JWKS infrastructure, then the *full* gateway-code logout-token checks -- validate
+`iss` and `aud` like an ID token, require `iat` within a short freshness window (replay
+guard), require `events` to contain the back-channel-logout event, require `nonce` *absent*,
+require `sub`/`sid` present -- then destroy via the secondary index. (The `iss`/`aud`/`iat`
+requirements match threat-model BFF-09; omitting freshness would let a captured valid logout
+token be replayed later.)
 
 === D7 -- Refresh and step-up
 
@@ -172,16 +190,19 @@ via the engine/validation health checks -- reuse, don't rebuild.
   duplicate-`code`-rejected test.
 . *Session store + cookie* (D3) -- store contract + memory implementation (TTL eviction,
   secondary index), cookie codec; unit tests incl. expiry and O(1) back-channel lookup.
-. *Pending-authorization record* (D2b) -- bounded single-use store + tests (TTL expiry,
-  single-use consumption, bound eviction, return-URL same-origin validation).
+. *Pending-authorization record* (D2b) -- bounded single-use store + browser-binding cookie
+  + tests (TTL expiry, single-use consumption, bound eviction, return-URL same-origin
+  validation, *cross-browser callback rejection* -- a valid `state` without the matching
+  binding cookie is refused).
 . *Login flow* (D1/D2/D2b) -- engine-driven code flow; state/nonce round-trip via the
   pending-authorization record; session creation; post-login redirect to the recorded URL.
 . *Stage 4 session auth* (D4) -- negotiation, injection, scope enforcement; remove the
   boot-time `session` rejection.
 . *CSRF* (D5) -- fixed check + events; parameterized positive/negative tests
   (trusted origin, untrusted, `Sec-Fetch-Site` variants, absent both).
-. *Logout* (D6) -- both channels; unit tests incl. logout-token check matrix and the
-  logout-`state` cookie round-trip.
+. *Logout* (D6) -- both channels; unit tests incl. the full logout-token check matrix
+  (`iss`/`aud` wrong, `iat` outside the freshness window, `events` missing, `nonce` present,
+  `sub`/`sid` absent -- each rejected) and the logout-`state` cookie round-trip.
 . *Refresh + step-up* (D7) -- single-flight, failure semantics; step-up orchestration.
 . *Readiness* (D8) + metrics/LogRecords for the new events (`CSRF_REJECTED`, session
   lifecycle, refresh outcomes); document in `doc/LogMessages.adoc`.

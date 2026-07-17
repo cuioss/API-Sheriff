@@ -95,12 +95,13 @@ Sequencing rationale: 02b is a pure correction sweep with no feature content -- 
 first (or alongside 03) so nothing later builds on documentation that contradicts the code
 or on a benchmark harness that cannot detect failure. 05 and 06 are small increments on a freshly-built pipeline and transport
 (do them while that knowledge is hot; 05 also completes what ADR-0002 promises for the initial
-scope). The BFF track (07 -> 08) is the largest and riskiest block and lands on a stabilized
+scope). The BFF track (07 then 08) is the largest and riskiest block and lands on a stabilized
 data plane; within it the *stateful* server-session shape comes first (operator decision,
 2026-07-15), the stateless cookie variant is its delta. 05 and 06 are mutually independent
 and independent of the BFF track -- they can be reordered or interleaved freely if priorities
-shift (e.g. pull 07 forward for a BFF demo); within that block the only hard edges are
-08 -> 07 and 09 -> everything (all of 05-07 already require 04, and 07 additionally 03). Explicitly *not* on the roadmap: *rate limiting* (out of scope -- the `rate_limit`
+shift (e.g. pull 07 forward for a BFF demo); within that block the only hard dependency edges
+are *08 depends on 07* and *09 depends on everything before it* (all of 05-07 already depend
+on 04, and 07 additionally on 03). Explicitly *not* on the roadmap: *rate limiting* (out of scope -- the `rate_limit`
 config stays reserved/accepted-and-ignored, no `429` is produced), and, deferred by
 link:../adr/0002-initial-scope.adoc[ADR-0002], dynamic configuration/discovery and HTTP/3.
 

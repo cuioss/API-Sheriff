@@ -37,14 +37,17 @@ else
     MODE="distroless"
 fi
 
-# Stop and remove containers
+# Stop and remove containers. --remove-orphans also tears down containers from
+# optional compose profiles (e.g. the benchmark nginx-static) that this base
+# COMPOSE_CMD does not list; without it those orphans linger and block network
+# removal, breaking the teardown.
 echo "📦 Stopping Docker containers ($MODE mode)..."
-$COMPOSE_CMD down
+$COMPOSE_CMD down --remove-orphans
 
 # Optional: Clean up images and volumes
 if [ "$1" = "--clean" ]; then
     echo "🧹 Cleaning up Docker images and volumes..."
-    $COMPOSE_CMD down --volumes --rmi all
+    $COMPOSE_CMD down --remove-orphans --volumes --rmi all
 fi
 
 echo "✅ API Sheriff Integration Tests stopped successfully"

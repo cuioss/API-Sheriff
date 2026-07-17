@@ -642,15 +642,25 @@ login CSRF). RFC 9700 §4.1.
 
 *Control.* The engine's `FlowContext` generates the `state` (32-byte SecureRandom) and
 verifies it constant-time on callback, fail-closed -- but it is an *in-memory DTO the gateway
-must persist and discard*: single-use is a *caller contract*, not enforced by the type. So the
-Plan 07 D2b *pending-authorization record* is the gateway's job precisely here: persist the
-`FlowContext` bound to the browser, short TTL, add the return-URL (the engine's DTO has none),
-and *discard after callback* (the one-time-use the engine does not enforce). Cookie-mode
-carries it in a sealed short-lived `__Host-` login cookie (Plan 08). PKCE does not replace
-login-CSRF protection -- keep both.
+must persist and discard*: single-use is a *caller contract*, not enforced by the type. The
+Plan 07 D2b *pending-authorization record* is the gateway's job: persist the `FlowContext`,
+short TTL, add the return-URL (the engine's DTO has none), and *bind it to the initiating
+browser* with a short-lived `HttpOnly` `__Host-` binding cookie (a record retrievable by
+`state` alone can be delivered to a *different* browser -- the callback must require the
+matching binding cookie, not just a valid `state`). PKCE does not replace login-CSRF
+protection -- keep both.
 
-*Status:* COVERED. Engine `FlowContext` (gen + constant-time verify) + Plan 07 D2b
-(persistence, return-URL, single-use discard -- the residual the engine leaves open).
+*Status (mode-split -- the single-use guarantee differs):*
+
+* *Server mode:* COVERED. The record is server-side; the gateway *discards it on first
+  callback* (true single-use) and the binding cookie ties it to the browser.
+* *Cookie mode:* PARTIAL (accepted risk). The record travels only in the sealed short-lived
+  `__Host-` login cookie (Plan 08 -- no server store to mark consumed), so within the cookie's
+  short TTL a captured login cookie *could* be replayed. Mitigation and accepted risk: the TTL
+  is minutes, the cookie is `HttpOnly`+`Secure`+`__Host-` (not JS-readable, HTTPS-only,
+  origin-locked), the browser binding still holds, and the exposure window is the login round
+  trip only. Documented as an explicit risk acceptance in Plan 08 (choose server mode if
+  strict single-use of the login step is required).
 
 *Assertion.* A callback with a missing/foreign/re-used `state` is rejected; the record is
 single-use (a replayed callback fails); return-URL is same-origin validated (no open
@@ -787,9 +797,19 @@ reuse detection across instances; that is the documented Plan 08 trade-off (sing
 instance; IdP-side reuse tolerance is an operator decision, never a gateway default). Server
 mode keeps RTs in the store; cookie mode keeps them only inside the AES-GCM cookie.
 
-*Status:* COVERED (engine) with the multi-instance caveat documented in Plan 08 D3. If a
-shared refresh-family store is ever wanted for cookie mode, the engine's `TokenStore` SPI is
-the seam (no shared implementation ships today).
+*Status (mode-split -- the guarantee is not universal):*
+
+* *Server mode:* COVERED. Single node / sticky session, one in-memory family map -> full
+  rotation + reuse -> family-revocation as the engine implements it.
+* *Cookie mode:* PARTIAL (accepted risk). Multiple instances, no shared state by design, so a
+  family cannot be tracked across instances -- an RT rotated on instance A and replayed against
+  instance B is *not* seen as reuse by B. This is inherent to the stateless variant, not a
+  defect. Documented as an explicit Plan 08 risk acceptance: mitigations are short
+  `ttl_seconds` / short access-token lifetimes and IdP-side reuse tolerance (an operator
+  availability-vs-detection choice); choose *Variant 2* for instant, node-spanning revocation.
+  If cross-instance detection is ever required, the engine's `TokenStore` SPI is the seam for a
+  shared family store -- but that reintroduces the external dependency the variant exists to
+  avoid.
 
 *Assertion.* A replayed rotated RT revokes the family and forces re-auth; concurrent
 refreshes on one session do not fork the family; cookie-mode never exposes the RT to the
@@ -950,13 +970,13 @@ plan amendment (next section).
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path handling | Design / Plan 03 D5 | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs | cui-http + token-sheriff mappers / Plan 04 / 03 D5 | PARTIAL
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) / Plan 07 D2 | COVERED
-| <<bff-02>> | Session-bound single-use `state` | Engine `FlowContext` + Plan 07 D2b (persist/discard) | COVERED
+| <<bff-02>> | Browser-bound `state`; single-use | Engine `FlowContext` + Plan 07 D2b (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED
 | <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + Plan 07 D2b (persist) | COVERED
 | <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch | Validation lib (`EgressPolicy`) | COVERED
-| <<bff-08>> | RT rotation + family revoke; single-flight | Engine `RefreshTokenFamily` + Plan 08 D3 (multi-instance caveat) | COVERED
+| <<bff-08>> | RT rotation + family revoke; single-flight | Engine `RefreshTokenFamily` + Plan 08 D3 | COVERED (server) / PARTIAL-accepted (cookie: per-instance)
 | <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway) | Engine (RP-initiated) + Plan 07 D6 (back-channel) / 08 D4 | COVERED
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie; fixation | Engine `TokenStore` SPI + Plan 07 D3 | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Plan 07 D5 | COVERED
