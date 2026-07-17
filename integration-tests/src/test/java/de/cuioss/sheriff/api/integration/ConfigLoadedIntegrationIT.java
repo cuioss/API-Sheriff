@@ -19,8 +19,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end proof that the gateway booted from the file-based configuration
@@ -41,15 +41,17 @@ class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("mounted-config /proxy route forwards to the resolved upstream")
     void mountedConfigRouteForwardsToUpstream() {
-        given()
+        var response = given()
                 .when()
                 .get("/proxy/get?probe=config")
                 .then()
                 .statusCode(200)
-                .contentType(containsString("application/json"))
-                .body("method", is("GET"))
-                .body("url", containsString("/anything/get"))
-                .body("args.probe[0]", is("config"));
+                .extract();
+
+        assertTrue(response.contentType().contains("application/json"));
+        assertEquals("GET", response.path("method"));
+        assertTrue(response.path("url").toString().contains("/anything/get"));
+        assertEquals("config", response.path("args.probe[0]"));
     }
 
     @Test
@@ -65,12 +67,14 @@ class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("container reports ready — its dependencies are available, not merely the process alive")
     void managementHealthReportsUp() {
-        given()
+        var response = given()
                 .baseUri(managementBaseUri())
                 .when()
                 .get("/q/health/ready")
                 .then()
                 .statusCode(200)
-                .body("status", is("UP"));
+                .extract();
+
+        assertEquals("UP", response.path("status"));
     }
 }

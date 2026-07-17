@@ -18,8 +18,8 @@ package de.cuioss.sheriff.api.integration;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Integration tests for API Sheriff Quarkus extension.
@@ -36,14 +36,16 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void apiSheriffHealthEndpoint() {
-        given()
+        var response = given()
                 .when()
                 .get("/api/health")
                 .then()
                 .statusCode(200)
                 .contentType("application/json")
-                .body("status", is("UP"))
-                .body("apiSheriff", containsString("API Sheriff is operational"));
+                .extract();
+
+        assertEquals("UP", response.path("status"));
+        assertTrue(response.path("apiSheriff").toString().contains("API Sheriff is operational"));
     }
 
     /**
@@ -51,14 +53,16 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void infoEndpoint() {
-        given()
+        var response = given()
                 .when()
                 .get("/api/info")
                 .then()
                 .statusCode(200)
                 .contentType("application/json")
-                .body("message", containsString("API Sheriff Gateway"))
-                .body("version", containsString("1.0.0-SNAPSHOT"));
+                .extract();
+
+        assertTrue(response.path("message").toString().contains("API Sheriff Gateway"));
+        assertTrue(response.path("version").toString().contains("1.0.0-SNAPSHOT"));
     }
 
     /**

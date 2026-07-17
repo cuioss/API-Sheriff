@@ -16,7 +16,7 @@
 package de.cuioss.sheriff.api.gateway.proxy;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.util.Map;
@@ -83,37 +83,43 @@ class ProxyRouteTest {
 
     @Test
     void shouldForwardMethodPathAndQuery() {
-        given()
+        var response = given()
                 .when().get("/proxy/orders/42?page=2&size=10")
                 .then()
                 .statusCode(200)
-                .body("method", is("GET"))
-                .body("target", is("/orders/42?page=2&size=10"));
+                .extract();
+
+        assertEquals("GET", response.path("method"));
+        assertEquals("/orders/42?page=2&size=10", response.path("target"));
     }
 
     @Test
     void shouldForwardBodyOnPost() {
-        given()
+        var response = given()
                 .contentType("text/plain")
                 .body("hello-upstream")
                 .when().post("/proxy/submit")
                 .then()
                 .statusCode(200)
-                .body("method", is("POST"))
-                .body("target", is("/submit"))
-                .body("body", is("hello-upstream"));
+                .extract();
+
+        assertEquals("POST", response.path("method"));
+        assertEquals("/submit", response.path("target"));
+        assertEquals("hello-upstream", response.path("body"));
     }
 
     @Test
     void shouldForwardCustomHeaderButStripHopByHop() {
-        given()
+        var response = given()
                 .header("X-Forward-Test", "custom-value")
                 .header("Connection", "keep-alive")
                 .when().get("/proxy/echo")
                 .then()
                 .statusCode(200)
-                .body("customHeader", is("custom-value"))
-                .body("connectionHeader", is(""));
+                .extract();
+
+        assertEquals("custom-value", response.path("customHeader"));
+        assertEquals("", response.path("connectionHeader"));
     }
 
     @Test

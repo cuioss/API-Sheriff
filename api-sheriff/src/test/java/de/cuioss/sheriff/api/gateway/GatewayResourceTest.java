@@ -16,8 +16,8 @@
 package de.cuioss.sheriff.api.gateway;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 
 import org.junit.jupiter.api.BeforeAll;
@@ -39,21 +39,25 @@ class GatewayResourceTest {
 
     @Test
     void shouldReturnHealthUp() {
-        given()
+        var response = given()
                 .when().get("/api/health")
                 .then()
                 .statusCode(200)
-                .body("status", is("UP"))
-                .body("apiSheriff", is("API Sheriff is operational"));
+                .extract();
+
+        assertEquals("UP", response.path("status"));
+        assertEquals("API Sheriff is operational", response.path("apiSheriff"));
     }
 
     @Test
     void shouldReturnInfo() {
-        given()
+        var response = given()
                 .when().get("/api/info")
                 .then()
                 .statusCode(200)
-                .body("message", is("API Sheriff Gateway"))
-                .body("version", notNullValue());
+                .extract();
+
+        assertEquals("API Sheriff Gateway", response.path("message"));
+        assertNotNull(response.path("version"));
     }
 }
