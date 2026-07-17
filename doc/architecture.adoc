@@ -273,8 +273,8 @@ names the category but leaks no internal detail. The consolidated status mapping
 == Metrics
 
 Metrics are exposed as Prometheus data via Quarkus Micrometer on the *management port*
-(`quarkus.management.enabled=true`, port `9000`), keeping the operational surface off the
-public data-plane port (the Keycloak pattern already used in `application.properties`).
+(`quarkus.management.enabled=true`; port `9000` is the Quarkus management-interface default),
+keeping the operational surface off the public data-plane port.
 
 The manifest requires *paths, errors, and average timing*. These map to:
 
@@ -436,47 +436,20 @@ and it is deliberately *per-node, per-route* aggregate health only (failure coun
 per-client data. Reuse is thus a throughput win with no confidentiality or integrity cost -- the
 immutability that makes the objects shareable is the same property that makes them safe to share.
 
-== Library Dependencies (Design Intent)
+== Library Dependencies
 
-These are the libraries the design assumes; adding them to the build is a separate, approved
-step. As a Quarkus application, API Sheriff's *direct* dependencies for the token-sheriff stack
-are the Quarkus extension modules (`token-sheriff-validation-quarkus`,
-`token-sheriff-client-quarkus`); the core jars listed alongside them arrive transitively.
+API Sheriff depends on the token-sheriff stack directly today: the pom declares
+`token-sheriff-client`, `token-sheriff-client-quarkus`, and `token-sheriff-validation-quarkus`
+as direct dependencies, with versions supplied by the `token-sheriff-bom` at `0.9.2`. The
+`token-sheriff-client` *core* jar is a direct dependency; only `token-sheriff-validation` core
+arrives transitively, through `token-sheriff-validation-quarkus`.
 
-[cols="2,2,2"]
-|===
-| Concern | Library | Coordinates
+The canonical concern/library/artifact mapping lives in
+link:technical_aspects.adoc#_library_summary[Technical Aspects -- Library Summary], which is the
+single owner of the coordinates table; this document links to it rather than duplicating it.
 
-| Inbound security filtering + downstream calls
-| cui-http (client + security, one jar)
-| `de.cuioss:cui-http` (2.x)
-
-| Offline JWT validation
-| token-sheriff-validation
-| `de.cuioss.sheriff.token:token-sheriff-validation`
-
-| Offline validation -- Quarkus integration
-| token-sheriff-validation-quarkus
-| `de.cuioss.sheriff.token:token-sheriff-validation-quarkus`
-
-| OIDC confidential-client engine (BFF variants only)
-| token-sheriff-client
-| `de.cuioss.sheriff.token:token-sheriff-client`
-
-| Engine -- Quarkus integration (RFC 9457 exception mapping)
-| token-sheriff-client-quarkus
-| `de.cuioss.sheriff.token:token-sheriff-client-quarkus`
-
-| Logging
-| cui-java-tools (`CuiLogger` / `LogRecord`)
-| `de.cuioss:cui-java-tools`
-
-| Runtime / DI / HTTP / metrics
-| Quarkus
-| `io.quarkus:*` (resteasy, arc, micrometer, smallrye-health)
-|===
-
-NOTE: The engine dependencies (`token-sheriff-client`, `-quarkus`) are needed by the BFF
-variants only; a pure base-gateway deployment needs just the validation stack (direct
-dependency `token-sheriff-validation-quarkus`, core transitive). See the Authentication Layer
-note above for the engine/BFF responsibility split.
+NOTE: The engine dependencies (`token-sheriff-client`, `-quarkus`) are exercised by the BFF
+variants only; a pure base-gateway deployment uses just the validation path. All three modules
+are present in the build regardless -- the split is a runtime-usage distinction, not a
+dependency-graph one. See the Authentication Layer note above for the engine/BFF responsibility
+split.
