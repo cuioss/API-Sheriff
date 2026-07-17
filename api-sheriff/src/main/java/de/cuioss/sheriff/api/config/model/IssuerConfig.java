@@ -47,8 +47,7 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
     /**
      * Key material for signature verification.
      *
-     * @param source the key source ({@code http} / {@code file} / {@code inline}),
-     *               mandatory
+     * @param source the key source ({@code http} / {@code file}), mandatory
      * @param url    the JWKS URL (for {@code source: http}), empty otherwise
      * @param file   the JWKS file path (for {@code source: file}), empty otherwise
      * @author API Sheriff Team
