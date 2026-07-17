@@ -7,7 +7,7 @@
 
 This document describes the CUI libraries and frameworks used by API Sheriff, covering HTTP client communication, security validation, OAuth token handling, logging, and testing.
 
-== Downstream API Communication
+== Upstream API Communication
 
 Library: **cui-http**
 
@@ -264,14 +264,14 @@ JUnit 5 extension wrapping OkHttp's MockWebServer for testing HTTP/HTTPS interac
 [source,java]
 ----
 @EnableMockWebServer
-class DownstreamClientTest {
+class UpstreamClientTest {
 
     @Test
     void shouldHandleSuccessResponse(MockWebServer server, URIBuilder uriBuilder) {
         server.enqueue(new MockResponse.Builder().body("{\"status\":\"ok\"}").build());
         // OkHttp 5.x mockwebserver3: MockResponse is immutable, built via Builder
         var uri = uriBuilder.addPathSegment("api").addPathSegment("data").build();
-        // call downstream client with uri, assert HttpResult
+        // call upstream client with uri, assert HttpResult
     }
 }
 ----
@@ -299,14 +299,18 @@ Tests are executed via Maven Failsafe plugin with the `integration-tests` profil
 
 == Library Summary
 
-NOTE: For the token-sheriff stack, the *direct* Maven dependencies of this Quarkus application
-are the `-quarkus` extension modules; the core artifacts arrive transitively through them.
+NOTE: The three token-sheriff modules this Quarkus application depends on --
+`token-sheriff-client`, `token-sheriff-client-quarkus`, and `token-sheriff-validation-quarkus`
+-- are *direct* Maven dependencies today, with versions supplied by the `token-sheriff-bom` at
+`0.9.2` (not a future, approval-pending addition). The `token-sheriff-client` *core* jar is a
+direct dependency, so the core artifacts do not arrive only transitively; only
+`token-sheriff-validation` core arrives transitively, through `token-sheriff-validation-quarkus`.
 
 [cols="2,2,1"]
 |===
 | Concern | Library | Artifact
 
-| Downstream HTTP calls
+| Upstream HTTP calls
 | cui-http
 | `de.cuioss:cui-http`
 
