@@ -55,7 +55,6 @@
         <dependency>
             <groupId>de.cuioss.sheriff.token</groupId>
             <artifactId>benchmarking-common</artifactId>
-            <version>${version.token-sheriff}</version>
         </dependency>
 
         <!-- CUI Java Tools for logging -->
