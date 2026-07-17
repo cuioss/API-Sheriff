@@ -65,7 +65,6 @@ public final class ConfigValidator {
     private static final String TRUST_ALL_IPV4 = "0.0.0.0/0";
     private static final String TRUST_ALL_IPV6 = "::/0";
     private static final String WILDCARD_ORIGIN = "*";
-    private static final int MILLIS_PER_SECOND = 1000;
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -74,7 +73,6 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateBaseUrlResolvable(endpoints, topology, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateWholeSecondTimeouts(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
@@ -186,35 +184,6 @@ public final class ConfigValidator {
                     }
                 }
             }
-        }
-    }
-
-    private static void validateWholeSecondTimeouts(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                route.upstream().ifPresent(upstream -> {
-                    upstream.connectTimeoutMs().ifPresent(value ->
-                            requireWholeSecond(endpoint, route, "connect_timeout_ms", value, errors));
-                    upstream.readTimeoutMs().ifPresent(value ->
-                            requireWholeSecond(endpoint, route, "read_timeout_ms", value, errors));
-                });
-            }
-        }
-    }
-
-    private static void requireWholeSecond(EndpointConfig endpoint, RouteConfig route, String field, int value,
-            List<ConfigError> errors) {
-        if (value <= 0) {
-            errors.add(new ConfigError(endpointFile(endpoint),
-                    "/endpoint/routes/%s/upstream/%s".formatted(route.id(), field),
-                    "%s must be a positive whole-second multiple of %d ms, was %d"
-                            .formatted(field, MILLIS_PER_SECOND, value)));
-            return;
-        }
-        if (value % MILLIS_PER_SECOND != 0) {
-            errors.add(new ConfigError(endpointFile(endpoint),
-                    "/endpoint/routes/%s/upstream/%s".formatted(route.id(), field),
-                    "%s must be a whole-second multiple of %d ms, was %d".formatted(field, MILLIS_PER_SECOND, value)));
         }
     }
 
