@@ -1,5 +1,5 @@
 = JWT Performance Scoring System
 
-This document is maintained in the OAuthSheriff repository.
+This document is maintained in the TokenSheriff repository.
 
-See: https://github.com/cuioss/OAuthSheriff/blob/main/benchmarking/doc/performance-scoring.adoc
+See: https://github.com/cuioss/TokenSheriff/blob/main/benchmarking/doc/performance-scoring.adoc
