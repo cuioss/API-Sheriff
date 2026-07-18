@@ -357,12 +357,16 @@ public final class ConfigValidator {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
-                Optional<String> anchorRequire = anchor.flatMap(AnchorConfig::auth).map(AuthConfig::require)
+                if (anchor.isEmpty()) {
+                    continue;
+                }
+                AnchorConfig anchorConfig = anchor.get();
+                Optional<String> anchorRequire = anchorConfig.auth().map(AuthConfig::require)
                         .filter(require -> !REQUIRE_NONE.equals(require));
                 if (anchorRequire.isPresent() && REQUIRE_NONE.equals(effectiveRequire(gateway, endpoint, route))) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
-                                    .formatted(route.id(), anchor.get().name(), anchorRequire.get())));
+                                    .formatted(route.id(), anchorConfig.name(), anchorRequire.get())));
                 }
             }
         }
