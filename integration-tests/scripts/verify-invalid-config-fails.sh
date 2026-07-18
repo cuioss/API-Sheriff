@@ -97,6 +97,11 @@ cat > "${SCHEMA_INVALID_DIR}/gateway.yaml" <<'YAML'
 version: "not-an-integer"
 unknown_key: true
 YAML
+# mktemp -d creates a 700-permission directory the container's non-root user
+# cannot read; without this the boot fails on "configuration file not found"
+# instead of exercising the validation under test.
+chmod 755 "${SCHEMA_INVALID_DIR}"
+chmod 644 "${SCHEMA_INVALID_DIR}/gateway.yaml"
 # Marker is the unknown property KEY (never a config value): the D5 binding-error
 # redaction guarantees raw scalar values are not echoed into fail-fast logs, so
 # asserting on the rejected value would contradict the redaction contract.
@@ -121,6 +126,8 @@ anchors:
     auth:
       require: none
 YAML
+chmod 755 "${ANCHOR_INVALID_DIR}"
+chmod 644 "${ANCHOR_INVALID_DIR}/gateway.yaml"
 assert_fails_to_boot "${ANCHOR_INVALID_DIR}" "an anchor-violation configuration" "pairwise disjoint"
 
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."
