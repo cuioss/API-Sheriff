@@ -149,6 +149,16 @@
             <classifier>generators</classifier>
             <scope>test</scope>
         </dependency>
+        <!-- token-sheriff-validation generators (JWKS / key material for the offline bearer-token
+             unit tests); the classifier variant is not BOM-managed, so pin it to the stack version
+             explicitly, mirroring the cui-http generators dependency above -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.token</groupId>
+            <artifactId>token-sheriff-validation</artifactId>
+            <version>${version.token-sheriff}</version>
+            <classifier>generators</classifier>
+            <scope>test</scope>
+        </dependency>
         <!-- ArchUnit: ADR-0005 framework-agnostic package-boundary gate (FrameworkAgnosticArchTest) -->
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
