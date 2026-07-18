@@ -29,6 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import de.cuioss.sheriff.api.config.ConfigLogMessages;
+import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
@@ -192,8 +193,8 @@ public final class ConfigValidator {
             for (int j = i + 1; j < routes.size(); j++) {
                 RouteWithOwner first = routes.get(i);
                 RouteWithOwner second = routes.get(j);
-                String firstPrefix = normalizePrefix(first.route().match().pathPrefix());
-                String secondPrefix = normalizePrefix(second.route().match().pathPrefix());
+                String firstPrefix = RouteTableBuilder.normalizePrefix(first.route().match().pathPrefix());
+                String secondPrefix = RouteTableBuilder.normalizePrefix(second.route().match().pathPrefix());
                 if (firstPrefix.equals(secondPrefix)
                         && overlaps(first.route().match(), second.route().match())) {
                     errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
@@ -610,22 +611,6 @@ public final class ConfigValidator {
     }
 
     /**
-     * Normalizes a path prefix — ensuring a leading {@code /} and stripping a
-     * trailing {@code /} (except for the bare root) — so {@code /api} and
-     * {@code /api/} compare identically.
-     *
-     * @param prefix the raw path prefix
-     * @return the normalized prefix
-     */
-    private static String normalizePrefix(String prefix) {
-        String normalized = prefix.startsWith("/") ? prefix : "/" + prefix;
-        while (normalized.length() > 1 && normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        return normalized;
-    }
-
-    /**
      * Whether {@code candidate} lies within the {@code container} namespace on a
      * segment boundary: an exact match, or a child path under {@code container/}.
      *
@@ -634,8 +619,8 @@ public final class ConfigValidator {
      * @return {@code true} when {@code candidate} is inside {@code container}
      */
     private static boolean prefixContains(String container, String candidate) {
-        String owner = normalizePrefix(container);
-        String child = normalizePrefix(candidate);
+        String owner = RouteTableBuilder.normalizePrefix(container);
+        String child = RouteTableBuilder.normalizePrefix(candidate);
         return child.equals(owner) || child.startsWith(owner + "/");
     }
 

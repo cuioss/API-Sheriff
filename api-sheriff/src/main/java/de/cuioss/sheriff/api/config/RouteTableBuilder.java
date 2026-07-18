@@ -109,13 +109,14 @@ public final class RouteTableBuilder {
     /**
      * Normalizes a path prefix — ensuring a leading {@code /} and stripping a
      * trailing {@code /} (except for the bare root) — so {@code /api} and
-     * {@code /api/} order identically. Shared with the same-prefix disjointness rule
-     * now owned by {@code ConfigValidator} (ADR-0009).
+     * {@code /api/} order identically. The single shared implementation: also used
+     * by the same-prefix disjointness rule and the anchor-namespace-containment rule
+     * owned by {@code ConfigValidator} (ADR-0009).
      *
      * @param prefix the raw path prefix
      * @return the normalized prefix
      */
-    static String normalizePrefix(String prefix) {
+    public static String normalizePrefix(String prefix) {
         String normalized = prefix.startsWith("/") ? prefix : "/" + prefix;
         while (normalized.length() > 1 && normalized.endsWith("/")) {
             normalized = normalized.substring(0, normalized.length() - 1);

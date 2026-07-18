@@ -41,6 +41,7 @@ diagnostics use the logger directly and are not catalogued.
 |ID |Component |Message |Description
 |ApiSheriff-100 |PROXY |Proxy request to upstream '%s' failed: %s |Logged when forwarding a request to the configured upstream fails; the gateway responds with 502
 |ApiSheriff-101 |CONFIG |Route '%s' overrides anchor '%s' %s policy (wholesale replacement) |Logged during route-table assembly when a route replaces an anchor-provided non-auth policy block (security_filter or allowed_methods) wholesale, so a weakening override is an explicit, audited choice (ADR-0007)
+|ApiSheriff-102 |CONFIG |trusted_proxies entry '%s' covers a very broad address range (prefix /%s) — review whether such broad proxy trust is intended |Logged during startup validation when a trusted_proxies CIDR entry is broad-but-not-total (shorter than /8 for IPv4, /32 for IPv6); total address-space coverage is rejected outright as a validation error
 |===
 
 == ERROR Level (200-299)
