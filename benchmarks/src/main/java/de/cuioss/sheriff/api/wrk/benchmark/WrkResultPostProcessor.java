@@ -32,6 +32,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import static de.cuioss.benchmarking.common.util.BenchmarkingLogMessages.ERROR;
@@ -198,17 +199,18 @@ public class WrkResultPostProcessor {
 
         if (benchmarkData.getBenchmarks() != null) {
             for (BenchmarkData.Benchmark benchmark : benchmarkData.getBenchmarks()) {
-                BenchmarkMetadata metadata = findMetadataForBenchmark(benchmark.getName());
+                Optional<BenchmarkMetadata> metadata = findMetadataForBenchmark(benchmark.getName());
 
-                if (metadata == null) {
+                if (metadata.isEmpty()) {
                     LOGGER.error(ERROR.NO_METADATA_FOR_BENCHMARK, benchmark.getName());
                     continue;
                 }
 
+                BenchmarkMetadata resolved = metadata.get();
                 prometheusMetricsManager.collectMetricsForWrkBenchmark(
-                        metadata.name,
-                        metadata.startTime,
-                        metadata.endTime,
+                        resolved.name,
+                        resolved.startTime,
+                        resolved.endTime,
                         structure.getBenchmarkResultsDir().toString()
                 );
             }
@@ -341,9 +343,9 @@ public class WrkResultPostProcessor {
      * benchmark rather than silently binding to an unrelated run.
      *
      * @param benchmarkName The benchmark name from {@link BenchmarkData.Benchmark}
-     * @return The metadata for the exactly-named benchmark, or {@code null} if none exists
+     * @return the metadata for the exactly-named benchmark, or an empty {@link Optional} if none exists
      */
-    private BenchmarkMetadata findMetadataForBenchmark(String benchmarkName) {
-        return benchmarkMetadataMap.get(benchmarkName);
+    private Optional<BenchmarkMetadata> findMetadataForBenchmark(String benchmarkName) {
+        return Optional.ofNullable(benchmarkMetadataMap.get(benchmarkName));
     }
 }
