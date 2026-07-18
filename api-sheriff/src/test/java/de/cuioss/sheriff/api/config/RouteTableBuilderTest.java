@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
@@ -45,17 +46,25 @@ import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.RouteTable;
+import de.cuioss.sheriff.api.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 /**
  * Tests for {@link RouteTableBuilder}: enabled-only merge, longest-prefix
- * ordering, same-prefix disjointness enforcement, and the materialization of
- * effective auth, effective {@code allowed_methods}, and the three-level
- * retry / not-modified override chain.
+ * ordering over normalized prefixes (same-prefix disjointness now lives in
+ * {@code ConfigValidator}, ADR-0009), the materialization of effective
+ * auth, effective {@code allowed_methods}, and the three-level retry / not-modified
+ * override chain, and the D1/D2 anchor resolution (gateway → anchor → endpoint →
+ * route with wholesale replacement, effective security filter/headers, the
+ * per-route effective-posture INFO log, and the weakening-override WARN).
  * <p>
  * The example-based cases above pin each invariant with one concrete path; the
  * {@link PropertyBasedInvariants} nested class complements — never replaces — them by
@@ -63,6 +72,7 @@ import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
  * permutations, so a rule that happens to hold only for the chosen literal is caught.
  */
 @EnableGeneratorController
+@EnableTestLogger
 class RouteTableBuilderTest {
 
     private final RouteTableBuilder builder = new RouteTableBuilder();
@@ -120,7 +130,33 @@ class RouteTableBuilderTest {
     }
 
     private static EndpointConfig.EndpointConfigBuilder endpoint(String id, String alias) {
-        return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias).auth(new AuthConfig("none", List.of()));
+        return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias)
+                .auth(Optional.of(new AuthConfig("none", List.of())));
+    }
+
+    private static EndpointConfig.EndpointConfigBuilder anchoredEndpoint(String id, String alias, String anchorName) {
+        return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias).anchor(Optional.of(anchorName))
+                .auth(Optional.empty());
+    }
+
+    private static AnchorConfig anchor(String name, String prefix, AuthConfig auth, SecurityFilterConfig filter,
+            List<HttpMethod> methods, SecurityHeadersConfig headers) {
+        return AnchorConfig.builder()
+                .name(name)
+                .pathPrefix(prefix)
+                .auth(Optional.ofNullable(auth))
+                .securityFilter(Optional.ofNullable(filter))
+                .securityHeaders(Optional.ofNullable(headers))
+                .allowedMethods(methods == null ? List.of() : methods)
+                .build();
+    }
+
+    private static SecurityFilterConfig filter(String profile) {
+        return SecurityFilterConfig.builder().profile(Optional.of(profile)).build();
+    }
+
+    private static SecurityHeadersConfig headers() {
+        return SecurityHeadersConfig.builder().frameDeny(Optional.of(true)).build();
     }
 
     private static ResolvedRoute find(RouteTable table, String id) {
@@ -161,15 +197,26 @@ class RouteTableBuilderTest {
         }
 
         @Test
-        @DisplayName("Should reject two same-prefix routes that overlap on method")
-        void shouldRejectNonDisjointSamePrefixRoutes() {
+        @DisplayName("Should normalize '/api' and '/api/' to the same prefix via the shared helper")
+        void shouldNormalizeTrailingSlashIdentically() {
+            assertEquals(RouteTableBuilder.normalizePrefix("/api"), RouteTableBuilder.normalizePrefix("/api/"),
+                    "'/api' and '/api/' must normalize identically");
+            assertEquals("/api", RouteTableBuilder.normalizePrefix("api/"),
+                    "normalization adds a leading slash and strips the trailing one");
+        }
+
+        @Test
+        @DisplayName("Should keep both same-prefix routes — same-prefix disjointness now lives in ConfigValidator")
+        void shouldKeepBothSamePrefixRoutes() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(routeWithPrefix("first", "/x", HttpMethod.GET),
                             routeWithPrefix("second", "/x", HttpMethod.GET)))
                     .build();
 
-            assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")));
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(2, table.routes().size(),
+                    "the builder no longer enforces disjointness — both same-prefix routes survive assembly");
         }
 
         @Test
@@ -267,18 +314,6 @@ class RouteTableBuilderTest {
                     "presence-disjoint same-prefix routes should both survive");
         }
 
-        @Test
-        @DisplayName("Should reject same-prefix routes whose header matchers only agree on presence")
-        void shouldRejectSamePrefixRoutesWithMatchingHeaderPresence() {
-            RouteConfig first = routeWithHeader("first", "/x",
-                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(true)).build());
-            RouteConfig second = routeWithHeader("second", "/x",
-                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(true)).build());
-            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(first, second)).build();
-
-            assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")));
-        }
     }
 
     @Nested
@@ -301,7 +336,8 @@ class RouteTableBuilderTest {
         @DisplayName("Should inherit the endpoint default auth when the route omits it")
         void shouldInheritEndpointAuth() {
             EndpointConfig endpoint = EndpointConfig.builder().id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("session", List.of())).routes(List.of(route("r", HttpMethod.GET))).build();
+                    .auth(Optional.of(new AuthConfig("session", List.of())))
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
@@ -349,6 +385,204 @@ class RouteTableBuilderTest {
             assertEquals(EnumSet.allOf(HttpMethod.class).size(), effective.size());
             assertTrue(effective.containsAll(EnumSet.allOf(HttpMethod.class)),
                     "the standard set should contain every representable verb");
+        }
+    }
+
+    @Nested
+    @DisplayName("Anchor chain resolution (gateway → anchor → endpoint → route)")
+    class AnchorResolution {
+
+        @Test
+        @DisplayName("Should materialize the anchor auth floor when endpoint and route both omit auth")
+        void shouldMaterializeAnchorAuthFloor() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, null)))
+                    .build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertEquals("bearer", resolved.effectiveAuth().require(), "the anchor auth floor should materialize");
+            assertEquals(Optional.of("api"), resolved.anchor(), "the resolving anchor name should be retained");
+        }
+
+        @Test
+        @DisplayName("Should let a route auth override replace the anchor floor wholesale between non-none postures")
+        void shouldLetRouteAuthReplaceAnchorFloor() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, null)))
+                    .build();
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
+                    .auth(Optional.of(new AuthConfig("session", List.of()))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals("session", find(table, "r").effectiveAuth().require());
+        }
+
+        @Test
+        @DisplayName("Should throw when no route, endpoint, or anchor auth resolves")
+        void shouldThrowWhenNoEffectiveAuthResolves() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", null, null, null, null))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
+            ResolvedTopology topology = topologyWith("ORDERS");
+
+            assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(config, List.of(endpoint), topology));
+        }
+
+        @Test
+        @DisplayName("Should materialize the anchor security_filter when the route omits it")
+        void shouldMaterializeAnchorSecurityFilter() {
+            GatewayConfig config = gateway().anchors(Map.of("api",
+                    anchor("api", "/api", new AuthConfig("bearer", List.of()), filter("strict"), null, null))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertEquals(Optional.of("strict"),
+                    resolved.effectiveSecurityFilter().flatMap(SecurityFilterConfig::profile));
+        }
+
+        @Test
+        @DisplayName("Should let the route security_filter replace the anchor block wholesale")
+        void shouldLetRouteSecurityFilterReplaceAnchor() {
+            GatewayConfig config = gateway().anchors(Map.of("api",
+                    anchor("api", "/api", new AuthConfig("bearer", List.of()), filter("strict"), null, null))).build();
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
+                    .securityFilter(Optional.of(filter("lenient"))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(Optional.of("lenient"),
+                    find(table, "r").effectiveSecurityFilter().flatMap(SecurityFilterConfig::profile),
+                    "the route security_filter should replace the anchor block wholesale");
+        }
+
+        @Test
+        @DisplayName("Should materialize the anchor allowed_methods when the endpoint declares none")
+        void shouldMaterializeAnchorAllowedMethods() {
+            GatewayConfig config = gateway().anchors(Map.of("api", anchor("api", "/api",
+                    new AuthConfig("bearer", List.of()), null, List.of(HttpMethod.GET), null))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of(HttpMethod.GET), find(table, "r").effectiveAllowedMethods(),
+                    "the anchor allowed_methods should materialize when the endpoint declares none");
+        }
+
+        @Test
+        @DisplayName("Should let the endpoint allowed_methods replace the anchor list wholesale")
+        void shouldLetEndpointReplaceAnchorAllowedMethods() {
+            GatewayConfig config = gateway().anchors(Map.of("api", anchor("api", "/api",
+                    new AuthConfig("bearer", List.of()), null, List.of(HttpMethod.GET), null))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .allowedMethods(List.of(HttpMethod.POST))
+                    .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.POST))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(List.of(HttpMethod.POST), find(table, "r").effectiveAllowedMethods());
+        }
+
+        @Test
+        @DisplayName("Should materialize the anchor security_headers, else fall back to the gateway block")
+        void shouldMaterializeAnchorSecurityHeadersElseGateway() {
+            SecurityHeadersConfig anchorHeaders = headers();
+            SecurityHeadersConfig gatewayHeaders = SecurityHeadersConfig.builder()
+                    .contentTypeNosniff(Optional.of(true)).build();
+            GatewayConfig config = gateway().securityHeaders(Optional.of(gatewayHeaders)).anchors(Map.of("api",
+                    anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, anchorHeaders))).build();
+            EndpointConfig anchored = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("anchored", "/api/orders", HttpMethod.GET))).build();
+            EndpointConfig plain = endpoint("public", "PUBLIC")
+                    .routes(List.of(routeWithPrefix("plain", "/public", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(config, List.of(anchored, plain), topologyWith("ORDERS", "PUBLIC"));
+
+            assertAll("security_headers resolves at gateway → anchor level only",
+                    () -> assertEquals(Optional.of(anchorHeaders), find(table, "anchored").effectiveSecurityHeaders(),
+                            "an anchored route should carry the anchor security_headers"),
+                    () -> assertEquals(Optional.of(gatewayHeaders), find(table, "plain").effectiveSecurityHeaders(),
+                            "an unanchored route should fall back to the gateway security_headers"));
+        }
+
+        @Test
+        @DisplayName("Should let a per-route anchor override the endpoint default membership")
+        void shouldLetRouteAnchorOverrideEndpointAnchor() {
+            GatewayConfig config = gateway().anchors(Map.of(
+                    "api", anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, null),
+                    "bff", anchor("bff", "/bff", new AuthConfig("session", List.of()), null, null, null))).build();
+            RouteConfig routeOnBff = RouteConfig.builder().id("r").anchor(Optional.of("bff"))
+                    .match(match("/bff/home", HttpMethod.GET)).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(routeOnBff)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertEquals(Optional.of("bff"), resolved.anchor(), "the per-route anchor override should win");
+            assertEquals("session", resolved.effectiveAuth().require());
+        }
+
+        @Test
+        @DisplayName("Should leave an unanchored route's anchor empty and behave exactly as before")
+        void shouldLeaveUnanchoredRouteEmpty() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertTrue(resolved.anchor().isEmpty(), "a route without any anchor ref carries no resolving anchor");
+            assertTrue(resolved.effectiveSecurityFilter().isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("Per-route effective-posture logging")
+    class PostureLogging {
+
+        @Test
+        @DisplayName("Should emit a per-route effective-posture INFO line during assembly")
+        void shouldEmitEffectivePostureInfo() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig("bearer", List.of()), filter("strict"),
+                            null, null)))
+                    .build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(routeWithPrefix("orders-read", "/api/orders", HttpMethod.GET))).build();
+
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "effective posture");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "orders-read");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "anchor='api'");
+        }
+
+        @Test
+        @DisplayName("Should WARN when a route replaces an anchor-provided security_filter wholesale")
+        void shouldWarnOnWeakeningSecurityFilterOverride() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", new AuthConfig("bearer", List.of()), filter("strict"),
+                            null, null)))
+                    .build();
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
+                    .securityFilter(Optional.of(filter("lenient"))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
+
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, "overrides anchor");
         }
     }
 
@@ -475,23 +709,6 @@ class RouteTableBuilderTest {
 
         @ParameterizedTest
         @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
-        @DisplayName("Should reject any generated same-prefix pair overlapping on method")
-        void shouldRejectSamePrefixRoutesOverlappingOnMethodForAnyGeneratedSegment(String segment) {
-            String prefix = "/" + segment;
-            EndpointConfig endpoint = endpoint("orders", "ORDERS")
-                    .routes(List.of(routeWithPrefix("first", prefix, HttpMethod.GET),
-                            routeWithPrefix("second", prefix, HttpMethod.GET)))
-                    .build();
-            GatewayConfig config = gateway().build();
-            ResolvedTopology topology = topologyWith("ORDERS");
-
-            assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(config, List.of(endpoint), topology),
-                    () -> "method-overlapping same-prefix routes must be rejected for prefix: " + prefix);
-        }
-
-        @ParameterizedTest
-        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
         @DisplayName("Should accept any generated same-prefix pair made disjoint by host")
         void shouldAcceptSamePrefixRoutesDisjointByHostForAnyGeneratedSegment(String segment) {
             String prefix = "/" + segment;
@@ -505,24 +722,6 @@ class RouteTableBuilderTest {
 
             assertEquals(2, table.routes().size(),
                     () -> "host-disjoint same-prefix routes must both survive for prefix: " + prefix);
-        }
-
-        @ParameterizedTest
-        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
-        @DisplayName("Should reject any generated same-prefix pair sharing one host and method")
-        void shouldRejectSamePrefixRoutesSharingHostForAnyGeneratedSegment(String segment) {
-            String prefix = "/" + segment;
-            String host = segment + ".example.com";
-            EndpointConfig endpoint = endpoint("orders", "ORDERS")
-                    .routes(List.of(routeWithPrefixAndHost("first", prefix, host, HttpMethod.GET),
-                            routeWithPrefixAndHost("second", prefix, host, HttpMethod.GET)))
-                    .build();
-            GatewayConfig config = gateway().build();
-            ResolvedTopology topology = topologyWith("ORDERS");
-
-            assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(config, List.of(endpoint), topology),
-                    () -> "same-prefix routes sharing host and method must be rejected for prefix: " + prefix);
         }
 
         @ParameterizedTest

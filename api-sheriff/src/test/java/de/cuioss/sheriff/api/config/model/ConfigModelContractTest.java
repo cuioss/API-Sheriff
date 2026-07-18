@@ -46,7 +46,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * contract is entirely value-based. This suite verifies:
  * <ul>
  *   <li>the record {@code equals}/{@code hashCode}/{@code toString} contract for
- *       every model record (top-level and nested),</li>
+ *       every model record (top-level and nested), including the D1/D2 anchor
+ *       additions ({@link AnchorConfig}, and the anchor / effective-policy fields on
+ *       {@link EndpointConfig}, {@link RouteConfig}, {@link ResolvedRoute}),</li>
  *   <li>the Lombok {@code @Builder} produces instances equal to the canonical
  *       constructor,</li>
  *   <li>the canonical constructors normalize absent optionals to
@@ -65,6 +67,17 @@ class ConfigModelContractTest {
         return new AuthConfig("bearer", List.of("read"));
     }
 
+    private static AnchorConfig anchorConfig() {
+        return AnchorConfig.builder()
+                .name("api")
+                .pathPrefix("/api")
+                .auth(Optional.of(auth()))
+                .securityFilter(Optional.of(securityFilterConfig()))
+                .securityHeaders(Optional.of(securityHeadersConfig()))
+                .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .build();
+    }
+
     private static GatewayConfig gatewayConfig() {
         return GatewayConfig.builder()
                 .version(1)
@@ -73,6 +86,7 @@ class ConfigModelContractTest {
                 .securityHeaders(Optional.of(securityHeadersConfig()))
                 .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"))))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(Optional.of(UpstreamDefaultsConfig.defaults()))
                 .forwarded(Optional.of(new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both"))))
                 .tokenValidation(Optional.of(tokenValidationConfig()))
@@ -140,7 +154,8 @@ class ConfigModelContractTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("orders-service")
-                .auth(auth())
+                .anchor(Optional.of("api"))
+                .auth(Optional.of(auth()))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .upstreamDefaults(Optional.of(UpstreamDefaultsConfig.defaults()))
                 .routes(List.of(routeConfig()))
@@ -151,6 +166,7 @@ class ConfigModelContractTest {
         return RouteConfig.builder()
                 .id("orders-read")
                 .protocol(Optional.of(Protocol.HTTP))
+                .anchor(Optional.of("api"))
                 .match(matchConfig())
                 .auth(Optional.of(auth()))
                 .securityFilter(Optional.of(securityFilterConfig()))
@@ -159,6 +175,26 @@ class ConfigModelContractTest {
                 .upstream(Optional.of(upstreamConfig()))
                 .rateLimit(Optional.of(new RateLimitConfig(Optional.of(100), Optional.of(200))))
                 .build();
+    }
+
+    private static ResolvedRoute resolvedRoute() {
+        return ResolvedRoute.builder()
+                .id("orders-read")
+                .protocol(Protocol.HTTP)
+                .anchor(Optional.of("api"))
+                .match(matchConfig())
+                .effectiveAuth(auth())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .effectiveSecurityFilter(Optional.of(securityFilterConfig()))
+                .effectiveSecurityHeaders(Optional.of(securityHeadersConfig()))
+                .retryEnabled(true)
+                .notModifiedEnabled(true)
+                .upstream(resolvedUpstream())
+                .build();
+    }
+
+    private static ResolvedUpstream resolvedUpstream() {
+        return new ResolvedUpstream("https", "orders.internal", 443, "");
     }
 
     private static MatchConfig matchConfig() {
@@ -231,6 +267,8 @@ class ConfigModelContractTest {
                     voCase("SecurityDefaultsConfig", new SecurityDefaultsConfig(Optional.of("strict")),
                             new SecurityDefaultsConfig(Optional.of("strict")),
                             new SecurityDefaultsConfig(Optional.of("lenient"))),
+                    voCase("AnchorConfig", anchorConfig(), anchorConfig(),
+                            AnchorConfig.builder().name("bff").pathPrefix("/bff").build()),
                     voCase("ForwardedConfig",
                             new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both")),
                             new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both")),
@@ -264,10 +302,13 @@ class ConfigModelContractTest {
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
-                            .id("other").baseUrl("svc").auth(auth()).build()),
+                            .id("other").baseUrl("svc").auth(Optional.of(auth())).build()),
                     voCase("AuthConfig", auth(), auth(), new AuthConfig("none", List.of())),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
+                    voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
+                            ResolvedRoute.builder().id("other").match(matchConfig()).effectiveAuth(auth())
+                                    .upstream(resolvedUpstream()).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
                             MatchConfig.builder().pathPrefix("/other").build()),
                     voCase("MatchConfig.HeaderMatcher",
@@ -323,22 +364,31 @@ class ConfigModelContractTest {
         }
 
         @Test
+        void anchorConfigBuilderMatchesConstructor() {
+            AnchorConfig viaCtor = new AnchorConfig("api", "/api", Optional.of(auth()), Optional.empty(),
+                    Optional.empty(), List.of(HttpMethod.GET));
+            AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").auth(Optional.of(auth()))
+                    .allowedMethods(List.of(HttpMethod.GET)).build();
+            assertEquals(viaCtor, viaBuilder);
+        }
+
+        @Test
         void gatewayConfigBuilderMatchesConstructor() {
             GatewayConfig viaCtor = new GatewayConfig(2, Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), List.of(HttpMethod.GET), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty());
+                    Optional.empty(), List.of(HttpMethod.GET), Map.of("api", anchorConfig()), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
-                    .build();
+                    .anchors(Map.of("api", anchorConfig())).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
         @Test
         void endpointConfigBuilderMatchesConstructor() {
-            AuthConfig auth = auth();
-            EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", auth,
-                    List.of(HttpMethod.GET), Optional.empty(), List.of());
+            EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", Optional.of("api"),
+                    Optional.of(auth()), List.of(HttpMethod.GET), Optional.empty(), List.of());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
-                    .auth(auth).allowedMethods(List.of(HttpMethod.GET)).build();
+                    .anchor(Optional.of("api")).auth(Optional.of(auth())).allowedMethods(List.of(HttpMethod.GET))
+                    .build();
             assertEquals(viaCtor, viaBuilder);
         }
     }
@@ -351,12 +401,13 @@ class ConfigModelContractTest {
 
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
-            GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null);
+            GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null);
             assertTrue(cfg.metadata().isEmpty());
             assertTrue(cfg.tls().isEmpty());
             assertTrue(cfg.securityHeaders().isEmpty());
             assertTrue(cfg.securityDefaults().isEmpty());
             assertTrue(cfg.allowedMethods().isEmpty());
+            assertTrue(cfg.anchors().isEmpty());
             assertTrue(cfg.upstreamDefaults().isEmpty());
             assertTrue(cfg.forwarded().isEmpty());
             assertTrue(cfg.tokenValidation().isEmpty());
@@ -365,10 +416,40 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigNormalizesAbsentCollectionsAndOptionals() {
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", auth(), null, null, null);
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null);
+            assertTrue(cfg.anchor().isEmpty());
+            assertTrue(cfg.auth().isEmpty());
             assertTrue(cfg.allowedMethods().isEmpty());
             assertTrue(cfg.upstreamDefaults().isEmpty());
             assertTrue(cfg.routes().isEmpty());
+        }
+
+        @Test
+        void routeConfigNormalizesAbsentAnchor() {
+            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null);
+            assertTrue(cfg.anchor().isEmpty());
+            assertTrue(cfg.auth().isEmpty());
+            assertTrue(cfg.securityFilter().isEmpty());
+        }
+
+        @Test
+        void anchorConfigNormalizesAbsentComponents() {
+            AnchorConfig cfg = new AnchorConfig("api", "/api", null, null, null, null);
+            assertTrue(cfg.auth().isEmpty());
+            assertTrue(cfg.securityFilter().isEmpty());
+            assertTrue(cfg.securityHeaders().isEmpty());
+            assertTrue(cfg.allowedMethods().isEmpty());
+        }
+
+        @Test
+        void resolvedRouteNormalizesAbsentOptionals() {
+            ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
+                    true, resolvedUpstream());
+            assertTrue(cfg.anchor().isEmpty());
+            assertTrue(cfg.effectiveSecurityFilter().isEmpty());
+            assertTrue(cfg.effectiveSecurityHeaders().isEmpty());
+            assertTrue(cfg.effectiveAllowedMethods().isEmpty());
+            assertEquals(Protocol.HTTP, cfg.protocol());
         }
 
         @Test
@@ -383,6 +464,7 @@ class ConfigModelContractTest {
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());
             assertTrue(new OidcConfig.Csrf(null).trustedOrigins().isEmpty());
+            assertTrue(new AnchorConfig("api", "/api", null, null, null, null).allowedMethods().isEmpty());
         }
     }
 
@@ -408,6 +490,17 @@ class ConfigModelContractTest {
         }
 
         @Test
+        void anchorsMapIsDecoupledAndUnmodifiable() {
+            Map<String, AnchorConfig> source = new HashMap<>();
+            source.put("api", anchorConfig());
+            GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(source).build();
+            source.put("bff", anchorConfig());
+            assertEquals(Map.of("api", anchorConfig()), cfg.anchors(),
+                    "mutating the source map after construction must not affect the record");
+            assertThrows(UnsupportedOperationException.class, () -> cfg.anchors().put("extra", anchorConfig()));
+        }
+
+        @Test
         void mapComponentIsDecoupledAndUnmodifiable() {
             Map<String, String> source = new HashMap<>();
             source.put("X-Gateway", "sheriff");
@@ -425,14 +518,32 @@ class ConfigModelContractTest {
     class MandatoryFields {
 
         @Test
-        void endpointConfigRequiresIdBaseUrlAndAuth() {
-            AuthConfig auth = auth();
+        void endpointConfigRequiresIdAndBaseUrl() {
             assertThrows(NullPointerException.class,
-                    () -> new EndpointConfig(null, true, "url", auth, List.of(), Optional.empty(), List.of()));
+                    () -> new EndpointConfig(null, true, "url", Optional.empty(), Optional.of(auth()), List.of(),
+                            Optional.empty(), List.of()));
             assertThrows(NullPointerException.class,
-                    () -> new EndpointConfig("id", true, null, auth, List.of(), Optional.empty(), List.of()));
-            assertThrows(NullPointerException.class,
-                    () -> new EndpointConfig("id", true, "url", null, List.of(), Optional.empty(), List.of()));
+                    () -> new EndpointConfig("id", true, null, Optional.empty(), Optional.of(auth()), List.of(),
+                            Optional.empty(), List.of()));
+        }
+
+        @Test
+        void endpointConfigAcceptsAnAbsentAuthBlock() {
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", Optional.of("api"), Optional.empty(), List.of(),
+                    Optional.empty(), List.of());
+            assertTrue(cfg.auth().isEmpty(), "an anchored endpoint may omit its auth block");
+        }
+
+        @Test
+        void anchorConfigRequiresNameAndPathPrefix() {
+            NullPointerException noName = assertThrows(NullPointerException.class,
+                    () -> new AnchorConfig(null, "/api", Optional.empty(), Optional.empty(), Optional.empty(),
+                            List.of()));
+            assertEquals("name", noName.getMessage());
+            NullPointerException noPrefix = assertThrows(NullPointerException.class,
+                    () -> new AnchorConfig("api", null, Optional.empty(), Optional.empty(), Optional.empty(),
+                            List.of()));
+            assertEquals("pathPrefix", noPrefix.getMessage());
         }
 
         @Test
@@ -470,43 +581,87 @@ class ConfigModelContractTest {
         @Test
         void routeConfigRequiresIdAndMatch() {
             MatchConfig match = matchConfig();
-            assertThrows(NullPointerException.class, () -> new RouteConfig(null, Optional.empty(), match,
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
-            assertThrows(NullPointerException.class, () -> new RouteConfig("id", Optional.empty(), null,
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+            assertThrows(NullPointerException.class, () -> new RouteConfig(null, Optional.empty(), Optional.empty(),
+                    match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+            assertThrows(NullPointerException.class, () -> new RouteConfig("id", Optional.empty(), Optional.empty(),
+                    null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+        }
+
+        @Test
+        void resolvedRouteRequiresIdMatchAuthAndUpstream() {
+            assertThrows(NullPointerException.class, () -> new ResolvedRoute(null, Protocol.HTTP, Optional.empty(),
+                    matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
+                    resolvedUpstream()));
+            assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(), null,
+                    auth(), List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream()));
+            assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
+                    matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream()));
+            assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
+                    matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, null));
         }
     }
 
     // --- New fields introduced for this deliverable ------------------------
 
     @Nested
-    @DisplayName("New endpoint-enablement / method-allowlist fields")
+    @DisplayName("Anchor, auth-optionality, and effective-policy fields (D1/D2)")
     class NewFields {
 
         @Test
-        void endpointConfigExposesIdEnabledAndAllowedMethods() {
+        void endpointConfigExposesAnchorAndOptionalAuth() {
             EndpointConfig cfg = EndpointConfig.builder()
                     .id("orders")
                     .enabled(true)
                     .baseUrl("orders-service")
-                    .auth(auth())
+                    .anchor(Optional.of("api"))
+                    .auth(Optional.of(auth()))
                     .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                     .build();
             assertEquals("orders", cfg.id());
             assertTrue(cfg.enabled());
+            assertEquals(Optional.of("api"), cfg.anchor());
+            assertEquals(Optional.of(auth()), cfg.auth());
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
         }
 
         @Test
         void endpointConfigEnabledDefaultsToFalseWhenUnsetOnTheRecord() {
-            EndpointConfig cfg = EndpointConfig.builder().id("orders").baseUrl("orders-service").auth(auth()).build();
+            EndpointConfig cfg = EndpointConfig.builder().id("orders").baseUrl("orders-service")
+                    .auth(Optional.of(auth())).build();
             assertFalse(cfg.enabled(), "the record itself applies no default; the YAML loader owns the true default");
         }
 
         @Test
-        void gatewayConfigExposesAllowedMethods() {
-            GatewayConfig cfg = GatewayConfig.builder().version(1).allowedMethods(List.of(HttpMethod.DELETE)).build();
-            assertEquals(List.of(HttpMethod.DELETE), cfg.allowedMethods());
+        void routeConfigExposesAnchorOverride() {
+            RouteConfig cfg = RouteConfig.builder().id("r").anchor(Optional.of("bff")).match(matchConfig()).build();
+            assertEquals(Optional.of("bff"), cfg.anchor());
+        }
+
+        @Test
+        void anchorConfigExposesEveryPolicyBlock() {
+            AnchorConfig cfg = anchorConfig();
+            assertEquals("api", cfg.name());
+            assertEquals("/api", cfg.pathPrefix());
+            assertEquals(Optional.of(auth()), cfg.auth());
+            assertTrue(cfg.securityFilter().isPresent());
+            assertTrue(cfg.securityHeaders().isPresent());
+            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
+        }
+
+        @Test
+        void resolvedRouteCarriesTheMaterializedEffectivePosture() {
+            ResolvedRoute cfg = resolvedRoute();
+            assertEquals(Optional.of("api"), cfg.anchor());
+            assertEquals("bearer", cfg.effectiveAuth().require());
+            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.effectiveAllowedMethods());
+            assertTrue(cfg.effectiveSecurityFilter().isPresent());
+            assertTrue(cfg.effectiveSecurityHeaders().isPresent());
+        }
+
+        @Test
+        void gatewayConfigExposesAnchors() {
+            GatewayConfig cfg = GatewayConfig.builder().version(1).anchors(Map.of("api", anchorConfig())).build();
+            assertEquals(Map.of("api", anchorConfig()), cfg.anchors());
         }
     }
 

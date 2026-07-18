@@ -1,0 +1,9 @@
+# Anchor-squatter gateway: declares an 'api' anchor owning /api. The sibling
+# endpoints/squatter.yaml places a route inside /api without declaring the anchor,
+# so the ADR-0007 namespace-membership rule refuses the boot (ConfigFailFastTest).
+version: 1
+metadata:
+  config_version: "anchor-squatter-test"
+anchors:
+  api:
+    path_prefix: /api

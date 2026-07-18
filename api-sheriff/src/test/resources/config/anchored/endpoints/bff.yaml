@@ -1,0 +1,11 @@
+# Anchored BFF endpoint. Its route lives inside the /bff namespace; the anchor
+# 'bff' supplies both the (public) auth posture and the allowed_methods list.
+endpoint:
+  id: bff
+  base_url: BFF
+  anchor: bff
+  routes:
+    - id: bff-home
+      match:
+        path_prefix: /bff/home
+        methods: [GET]

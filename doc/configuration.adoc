@@ -26,8 +26,10 @@ The model rests on a small set of adopted patterns:
 * *Composable, bounded matchers* (path, method, host, header).
 * *Validated-then-immutable, atomic config.*
 * *Zero-trust forwarding* (deny-by-default allowlists).
-* *Alias -> URL indirection with env override* -- config in the environment; a single-URL alias,
-  decomposed on read (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
+* *Alias -> URL indirection with an explicit in-file env placeholder* -- a single-URL alias,
+  decomposed on read, whose value an environment variable may supply or override only through an
+  explicit `${VAR}` placeholder written in the file -- never an automatic lookup (see
+  link:adr/0004-topology-indirection.adoc[ADR-0004]).
 
 The provenance of these patterns -- what was adopted from which evaluated product and why -- is
 recorded in the link:features-analysis.adoc[Feature Analysis] and the ADRs, not here.
@@ -64,7 +66,7 @@ config/
   endpoints/
     app1.yaml               # base_url: APP1     -> routes for /api/orders ...
     keycloak.yaml           # base_url: KEYCLOAK -> routes for /auth, /token
-  topology.properties       # APP1=..., KEYCLOAK=...   (env vars override)
+  topology.properties       # APP1=..., KEYCLOAK=...   (explicit ${VAR} placeholders let env vars override)
 ----
 
 The configuration directory is selected by the `sheriff.config.dir` property (a Quarkus
@@ -77,22 +79,29 @@ subdirectories, are ignored.
 
 * `gateway.yaml`, every file under `endpoints/`, and `topology.properties` are read once at
   startup.
-* Each endpoint's `base_url` alias is *resolved* against the topology (env var wins over the file,
-  see link:#_topology[Topology]); the resolved URL is *decomposed once* into
+* Each endpoint's `base_url` alias is *resolved* against the topology (an explicit in-file
+  `${VAR}` placeholder lets an environment value win over the placeholder's default, see
+  link:#_topology[Topology]); the resolved URL is *decomposed once* into
   `{scheme, host, port, base-path}` (see link:adr/0004-topology-indirection.adoc[ADR-0004]).
 * The document set is validated as a whole; unknown keys, unknown `version`, an unresolved alias,
   a malformed topology URL, or a route referencing a missing endpoint all *fail the boot*.
 * Secrets are never inlined: they are `${ENV_VAR}` references, so the config artifacts are safe to
   commit. Topology values may be literal (they are locations, not secrets) but are still
-  overridable by env.
+  overridable through an explicit in-file `${VAR}` placeholder.
 * *Environment override mechanism* (link:adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
-  Amendment A1], implementation lands with link:plan/03-endpoint-anchors.adoc[Plan 03]): every
-  override point is a *visible in-file placeholder* -- `${VAR}` (required; unset fails the
-  boot, the secrets semantics) or `${VAR:-default}` (file default, environment wins) --
-  resolved once, before schema validation, across all three artifacts. The
-  `TOPOLOGY_<ALIAS>` / `ENDPOINT_<ID>_ENABLED` names used throughout this document are the
-  *conventional variable names* written inside those placeholders, not invisible
-  code-level lookups.
+  Amendment A1]): every override point is a *visible in-file placeholder*, resolved once, before
+  schema validation, uniformly across `gateway.yaml`, `endpoints/*.yaml`, and
+  `topology.properties`. The grammar is fixed: `${NAME}` (required -- the variable must be set or
+  the boot fails, the secrets semantics) or `${NAME:-default}` (optional -- the literal
+  `default`, everything between the first `:-` and the closing brace, applies when the variable
+  is unset; an environment value wins over it). `NAME` matches `[A-Za-z_][A-Za-z0-9_]*`; several
+  placeholders may appear in one scalar; there is *no nesting and no escape syntax* -- a scalar
+  carrying a `${` that is not a well-formed placeholder *fails the boot* (a loud failure is
+  always preferred over a silently un-substituted literal). The `TOPOLOGY_<ALIAS>` /
+  `ENDPOINT_<ID>_ENABLED` names used throughout this document are the *conventional variable
+  names* written inside those placeholders, not invisible code-level lookups: an environment
+  value reaches a topology or enablement field only through an explicit in-file `${VAR}`
+  reference.
 * On any validation error the process exits non-zero and logs the offending file/alias -- it does
   not start a degraded gateway.
 
@@ -399,8 +408,11 @@ in the same file or across files -- must be *statically disjoint*, meaning one o
   prefix" pattern; give the fallback a different prefix or declare hosts on both);
 * their `methods` sets do not overlap (an omitted `methods` means all methods and overlaps
   everything); or
-* both declare a matcher on the *same header name* with different exact values
-  (e.g. `X-Tenant: a` vs `X-Tenant: b`; `present: true` establishes nothing).
+* both declare a matcher on the *same header name* that cannot both hold -- either different
+  exact values (e.g. `X-Tenant: a` vs `X-Tenant: b`), or *opposite presence assertions*
+  (`present: true` on one and `present: false` on the other, which no single request satisfies
+  at once). A lone `present: true`, with no opposing `present: false` at the same prefix and
+  header, establishes nothing.
 
 Any same-prefix pair that fails all three tests is rejected at boot; precedence never depends
 on file-system or declaration order. This keeps the canonical virtual-hosting case
@@ -1154,7 +1166,9 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * A route whose *effective* auth is `require: session` requires an `oidc` block.
 * Any two routes with an identical `match.path_prefix` -- same file or not -- must be statically
   disjoint (both declare different `host` values, or non-overlapping `methods`, or same-name
-  header matchers with different exact values); otherwise the boot fails (see "Route ordering").
+  header matchers with different exact values or opposite presence assertions -- `present: true`
+  on one and `present: false` on the other; a lone `present: true` establishes nothing);
+  otherwise the boot fails (see "Route ordering").
 * `allowed_methods` (global, anchor, or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`,
   `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint
   `allowed_methods` *replaces* the anchor/global list wholesale, an anchor's replaces the

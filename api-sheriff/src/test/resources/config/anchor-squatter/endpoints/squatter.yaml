@@ -1,0 +1,13 @@
+# Squatter endpoint: its route path lies inside the 'api' anchor namespace (/api)
+# but declares no anchor. Every route inside an anchor namespace must declare that
+# anchor (ADR-0007), so this config refuses boot.
+endpoint:
+  id: squatter
+  base_url: SQUATTER
+  auth:
+    require: none
+  routes:
+    - id: squatter-route
+      match:
+        path_prefix: /api/secret
+        methods: [GET]

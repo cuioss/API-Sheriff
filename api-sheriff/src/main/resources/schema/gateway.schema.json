@@ -11,6 +11,63 @@
       "type": "string",
       "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
     },
+    "allowedMethods": {
+      "type": "array",
+      "description": "Positive HTTP-verb allowlist. TRACE and CONNECT are never permitted and are excluded from the enum.",
+      "items": { "$ref": "#/$defs/httpVerb" }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["require"],
+      "properties": {
+        "require": { "type": "string", "enum": ["none", "bearer", "session"] },
+        "required_scopes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "securityFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": "string", "enum": ["default", "strict", "lenient"] },
+        "allowed_paths": { "type": "array", "items": { "type": "string" } },
+        "max_header_count": { "type": "integer" },
+        "max_header_value_length": { "type": "integer" },
+        "max_query_params": { "type": "integer" },
+        "max_param_value_length": { "type": "integer" },
+        "max_body_bytes": { "type": "integer" },
+        "allowed_header_names": { "type": "array", "items": { "type": "string" } },
+        "blocked_header_names": { "type": "array", "items": { "type": "string" } },
+        "allowed_content_types": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "securityHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hsts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_age": { "type": "integer" },
+            "include_subdomains": { "type": "boolean" }
+          }
+        },
+        "content_type_nosniff": { "type": "boolean" },
+        "frame_deny": { "type": "boolean" },
+        "cors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "allowed_origins": { "type": "array", "items": { "type": "string" } },
+            "allowed_methods": { "type": "array", "items": { "type": "string" } },
+            "allowed_headers": { "type": "array", "items": { "type": "string" } },
+            "allow_credentials": { "type": "boolean" }
+          }
+        }
+      }
+    },
     "upstreamDefaults": {
       "type": "object",
       "additionalProperties": false,
@@ -66,33 +123,7 @@
         }
       }
     },
-    "security_headers": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "hsts": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "max_age": { "type": "integer" },
-            "include_subdomains": { "type": "boolean" }
-          }
-        },
-        "content_type_nosniff": { "type": "boolean" },
-        "frame_deny": { "type": "boolean" },
-        "cors": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "allowed_origins": { "type": "array", "items": { "type": "string" } },
-            "allowed_methods": { "type": "array", "items": { "type": "string" } },
-            "allowed_headers": { "type": "array", "items": { "type": "string" } },
-            "allow_credentials": { "type": "boolean" }
-          }
-        }
-      }
-    },
+    "security_headers": { "$ref": "#/$defs/securityHeaders" },
     "security_defaults": {
       "type": "object",
       "additionalProperties": false,
@@ -101,9 +132,27 @@
       }
     },
     "allowed_methods": {
-      "type": "array",
-      "description": "Global positive HTTP-verb allowlist. TRACE and CONNECT are never permitted and are excluded from the enum.",
-      "items": { "$ref": "#/$defs/httpVerb" }
+      "$ref": "#/$defs/allowedMethods",
+      "description": "Global positive HTTP-verb allowlist. An anchor or endpoint may REPLACE this wholesale (no inheritance)."
+    },
+    "anchors": {
+      "type": "object",
+      "description": "Optional named, namespace-scoped policy anchors. Each anchor OWNS a disjoint path namespace (path_prefix) and carries the policy floor for every route inside it. Anchor prefixes must be pairwise disjoint (enforced in code).",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]*$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path_prefix"],
+          "properties": {
+            "path_prefix": { "type": "string" },
+            "auth": { "$ref": "#/$defs/auth" },
+            "security_filter": { "$ref": "#/$defs/securityFilter" },
+            "security_headers": { "$ref": "#/$defs/securityHeaders" },
+            "allowed_methods": { "$ref": "#/$defs/allowedMethods" }
+          }
+        }
+      }
     },
     "upstream_defaults": {
       "$ref": "#/$defs/upstreamDefaults",

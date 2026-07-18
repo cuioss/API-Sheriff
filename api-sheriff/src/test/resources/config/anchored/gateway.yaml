@@ -1,0 +1,27 @@
+# Valid api+bff anchored gateway configuration (ADR-0007), consumed by the
+# ConfigValidatorTest positive path and the ConfigFailFastTest clean-boot case.
+# The two anchors own disjoint namespaces (/api, /bff); the api floor is bearer
+# (satisfied by token_validation), the bff floor is the public 'none' posture.
+version: 1
+metadata:
+  config_version: "anchored-test"
+anchors:
+  api:
+    path_prefix: /api
+    auth:
+      require: bearer
+    security_filter:
+      profile: strict
+  bff:
+    path_prefix: /bff
+    auth:
+      require: none
+    allowed_methods: [GET, POST]
+token_validation:
+  issuers:
+    - name: main
+      issuer: https://idp.example.com
+      audience: api-sheriff
+      jwks:
+        source: http
+        url: https://idp.example.com/jwks

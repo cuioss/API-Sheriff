@@ -34,6 +34,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -208,5 +209,264 @@ class ConfigLoaderTest {
 
         assertTrue(loaded.gateway().forwarded().orElseThrow().trustedProxies().isEmpty(),
                 "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
+    }
+
+    @Test
+    void bindsAnchorsBlockAndInjectsTheMapKeyAsName() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    auth:
+                      require: bearer
+                    security_filter:
+                      profile: strict
+                    allowed_methods: ["GET", "POST"]
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        Map<String, AnchorConfig> anchors = loaded.gateway().anchors();
+        assertEquals(1, anchors.size(), "the anchors block should bind one anchor");
+        AnchorConfig api = anchors.get("api");
+        assertNotNull(api, "the anchor keyed 'api' should bind");
+        assertEquals("api", api.name(), "the map key is injected as the anchor name");
+        assertEquals("/api", api.pathPrefix());
+        assertEquals("bearer", api.auth().orElseThrow().require());
+        assertEquals(Optional.of("strict"), api.securityFilter().orElseThrow().profile());
+        assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), api.allowedMethods());
+    }
+
+    @Test
+    void rejectsUnknownKeyInsideAnAnchorBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    bogus_key: true
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file()) && error.pointer().contains("anchors")),
+                () -> "an unknown key inside an anchor block must fail the boot with a pointer, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void bindsAnchorReferencesOnEndpointAndRoute() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    auth:
+                      require: bearer
+                """);
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: API
+                  anchor: api
+                  routes:
+                    - id: api-read
+                      anchor: api
+                      match:
+                        path_prefix: /api/read
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        assertEquals(Optional.of("api"), endpoint.anchor(), "the endpoint anchor ref should bind");
+        RouteConfig route = endpoint.routes().getFirst();
+        assertEquals(Optional.of("api"), route.anchor(), "the route anchor ref should bind");
+    }
+
+    @Test
+    void bindsAnEndpointOmittingAuthWhenAnchored() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    auth:
+                      require: bearer
+                """);
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: API
+                  anchor: api
+                  routes:
+                    - id: api-read
+                      match:
+                        path_prefix: /api/read
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        assertTrue(endpoint.auth().isEmpty(),
+                "an anchored endpoint may omit its auth block and still bind at the schema level");
+        assertEquals(Optional.of("api"), endpoint.anchor());
+    }
+
+    @Test
+    void substitutedScalarIsSchemaTypeChecked() throws Exception {
+        writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION:-1}\"\n");
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(1, loaded.gateway().version(),
+                "a defaulted ${VAR} on an integer field must coerce to an integer and satisfy the schema");
+    }
+
+    @Test
+    void rejectsLiteralSecretValue() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "literal-not-a-reference"
+                  redirect_uri: "https://gw.example.com/callback"
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("client_secret")
+                                && error.message().contains("bare ${VAR}")),
+                () -> "a literal client_secret must be rejected by the secrets rule, got: " + exception.errors());
+    }
+
+    @Test
+    void rejectsDefaultedSecretValue() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET:-fallback}"
+                  redirect_uri: "https://gw.example.com/callback"
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class,
+                () -> loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("client_secret")),
+                () -> "a defaulted secret placeholder must be rejected — a secret must be a bare ${VAR} reference, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void strayYmlEndpointFileFailsTheBoot() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.file().contains("orders.yml")
+                                && error.message().contains("rename it to '.yaml'")),
+                () -> "a stray '.yml' endpoint file must fail the boot, got: " + exception.errors());
+    }
+
+    @Test
+    void bindingOrSchemaErrorNeverEchoesResolvedSecret() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                  bogus_unknown_key: "trigger-an-error"
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class,
+                () -> loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t-topsecret-value")).load());
+
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("s3cr3t-topsecret-value")),
+                () -> "no error may echo the resolved secret value, got: " + exception.errors());
+    }
+
+    @Test
+    void rejectsYamlExceedingAliasExpansionLimit() throws Exception {
+        // A collection anchor dereferenced far more than MAX_YAML_ALIASES (50) times. Jackson's YAMLParser
+        // consumes SnakeYAML's event stream directly and never runs the Composer, so this bomb is caught
+        // ONLY by ConfigLoader's SnakeYAML-native compose pre-pass — assert on the alias-specific diagnostic
+        // (not merely "some ConfigLoadException") so the test fails loudly if that guard ever regresses. Were
+        // the guard absent, this document would fail solely on the schema's additionalProperties rejection of
+        // the unrelated top-level keys, which carries no 'alias' diagnostic.
+        StringBuilder yaml = new StringBuilder("version: 1\nanchor_def: &a [1, 2, 3]\naliases:\n");
+        for (int i = 0; i < 60; i++) {
+            yaml.append("  - *a\n");
+        }
+        writeConfig("gateway.yaml", yaml.toString());
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+                "a YAML document exceeding the alias-expansion limit must fail the boot");
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.message().contains("bomb protection tripped")
+                                && error.message().contains("alias")),
+                () -> "the alias-expansion guard must raise its alias-specific diagnostic, not merely a schema "
+                        + "violation for the unrelated top-level keys, got: " + exception.errors());
+    }
+
+    @Test
+    void rejectsNestedCollectionAliasBomb() throws Exception {
+        // The classic billion-laughs shape: collection anchors chained through nested levels, then the
+        // deepest level dereferenced past MAX_YAML_ALIASES (50). SnakeYAML's guard counts total non-scalar
+        // alias EVENTS (not the exponential expansion), so both this nested form and a flat repeat trip it
+        // once the count crosses the limit — and both are missed by Jackson's Composer-less readTree path.
+        StringBuilder yaml = new StringBuilder("""
+                version: 1
+                l0: &l0 ["lol", "lol"]
+                l1: &l1 [*l0, *l0]
+                l2: &l2 [*l1, *l1]
+                boom:
+                """);
+        for (int i = 0; i < 60; i++) {
+            yaml.append("  - *l2\n");
+        }
+        writeConfig("gateway.yaml", yaml.toString());
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+                "a nested/exponential alias bomb must fail the boot");
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.message().contains("bomb protection tripped")
+                                && error.message().contains("alias")),
+                () -> "a nested alias bomb must trip the alias-count guard, got: " + exception.errors());
+    }
+
+    @Test
+    void acceptsAModestNumberOfCollectionAliasesWithinTheLimit() throws Exception {
+        // A handful of legitimate collection aliases (well under MAX_YAML_ALIASES) must NOT trip the guard —
+        // the pre-pass rejects bombs, not ordinary anchor reuse. The unrelated top-level keys still fail the
+        // schema, but the point is that the compose pre-pass raises no alias diagnostic for this document.
+        writeConfig("gateway.yaml", """
+                version: 1
+                base: &b ["a", "b"]
+                reuse: [*b, *b, *b]
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
+                () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
+                        + exception.errors());
     }
 }

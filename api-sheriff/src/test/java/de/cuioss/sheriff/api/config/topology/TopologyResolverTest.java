@@ -27,15 +27,18 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import de.cuioss.sheriff.api.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
@@ -43,10 +46,12 @@ import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.topology.TopologyResolver.TopologyResolutionException;
 
 /**
- * Tests for {@link TopologyResolver}: file / environment resolution precedence, URL
- * decomposition with scheme-default ports, the boot failures for malformed or
- * missing aliases referenced by enabled endpoints, and the throw/skip asymmetry
- * between enabled-endpoint {@code base_url} aliases and additional aliases.
+ * Tests for {@link TopologyResolver}: file resolution, URL decomposition with
+ * scheme-default ports, the D4 {@code ${VAR}} / {@code ${VAR:-default}} substitution
+ * over {@code topology.properties} values (there is no convention-named
+ * {@code TOPOLOGY_<ALIAS>} environment precedence path), the boot failures for
+ * malformed or missing aliases referenced by enabled endpoints, and the throw/skip
+ * asymmetry between enabled-endpoint {@code base_url} aliases and additional aliases.
  */
 class TopologyResolverTest {
 
@@ -58,7 +63,7 @@ class TopologyResolverTest {
                 .id(alias.toLowerCase(Locale.ROOT))
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig("none", List.of()))
+                .auth(Optional.of(new AuthConfig("none", List.of())))
                 .build();
     }
 
@@ -69,7 +74,7 @@ class TopologyResolverTest {
     }
 
     private static TopologyResolver resolverWith(Map<String, String> environment) {
-        return new TopologyResolver(environment::get);
+        return new TopologyResolver(new EnvSecretResolver(environment::get));
     }
 
     @Test
@@ -99,15 +104,43 @@ class TopologyResolverTest {
     }
 
     @Test
-    void environmentOverrideWinsOverFile() throws Exception {
-        Path file = topologyFile("ORDERS=https://file.host:1000/file\n");
+    @DisplayName("An in-file ${VAR} placeholder resolves the topology value from the environment")
+    void resolvesInFilePlaceholderFromEnvironment() throws Exception {
+        Path file = topologyFile("ORDERS=${ORDERS_URL}\n");
 
-        ResolvedTopology topology = resolverWith(Map.of("TOPOLOGY_ORDERS", "https://env.host:2000/env"))
+        ResolvedTopology topology = resolverWith(Map.of("ORDERS_URL", "https://env.host:2000/env"))
                 .resolve(file, List.of(endpointFor("ORDERS")), List.of());
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("env.host", upstream.host());
         assertEquals(2000, upstream.port());
+        assertEquals("/env", upstream.basePath());
+    }
+
+    @Test
+    @DisplayName("An in-file ${VAR:-default} placeholder applies its literal default when the variable is unset")
+    void appliesDefaultForUnsetInFilePlaceholder() throws Exception {
+        Path file = topologyFile("ORDERS=${ORDERS_URL:-https://default.host:3000/def}\n");
+
+        ResolvedTopology topology = resolverWith(Map.of())
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
+
+        ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
+        assertEquals("default.host", upstream.host());
+        assertEquals(3000, upstream.port());
+        assertEquals("/def", upstream.basePath());
+    }
+
+    @Test
+    @DisplayName("A ${VAR} placeholder on an enabled endpoint alias fails the boot when the variable is unset")
+    void throwsWhenEnabledEndpointPlaceholderNamesUnsetVariable() throws Exception {
+        Path file = topologyFile("ORDERS=${ORDERS_URL}\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
+
+        assertThrows(TopologyResolutionException.class,
+                () -> resolver.resolve(file, endpoints, List.of()),
+                "an unresolved ${VAR} on an enabled endpoint alias must fail the boot");
     }
 
     @Test
@@ -188,5 +221,17 @@ class TopologyResolverTest {
         assertThrows(TopologyResolutionException.class,
                 () -> resolver.resolve(file, endpoints, additionalAliases),
                 "an unresolvable enabled-endpoint base_url alias must still fail the boot");
+    }
+
+    @Test
+    @DisplayName("A resolved alias URL with a non-http(s) scheme fails the boot (D5 scheme allowlist)")
+    void rejectsNonHttpScheme() throws Exception {
+        Path file = topologyFile("ORDERS=ftp://orders.internal:21\n");
+        TopologyResolver resolver = resolverWith(Map.of());
+        List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
+
+        assertThrows(TopologyResolutionException.class,
+                () -> resolver.resolve(file, endpoints, List.of()),
+                "a non-http(s) topology alias scheme must be rejected at boot");
     }
 }

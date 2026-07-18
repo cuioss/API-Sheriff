@@ -23,17 +23,21 @@ import lombok.Builder;
 /**
  * A single {@code routes[]} entry of an endpoint file.
  * <p>
- * An absent {@code auth} block inherits the endpoint's {@code auth} wholesale; a
- * route-level block replaces it wholesale (no field merging). An absent
- * {@code protocol} means {@link Protocol#HTTP}.
+ * An absent {@code auth} block inherits the endpoint's (or anchor's) {@code auth}
+ * wholesale; a route-level block replaces it wholesale (no field merging). An
+ * absent {@code protocol} means {@link Protocol#HTTP}. {@code anchor}, when
+ * present, overrides the endpoint's default anchor membership for this route
+ * (ADR-0007).
  *
  * @param id             the route id, unique across all endpoint files (mandatory)
  * @param protocol       the served protocol, empty meaning HTTP
+ * @param anchor         the per-route anchor override, empty when the endpoint
+ *                       anchor applies
  * @param match          the matcher set (mandatory)
  * @param auth           the route-level auth override, empty when inheriting the
- *                       endpoint default
- * @param securityFilter the route-level security filter, empty when the global
- *                       default applies
+ *                       endpoint/anchor default
+ * @param securityFilter the route-level security filter, empty when the anchor or
+ *                       global default applies
  * @param forward        the forwarding allowlist, empty when nothing is forwarded
  * @param upstream       the upstream target settings, empty when omitted
  * @param rateLimit      the reserved rate-limit block, empty when omitted
@@ -41,9 +45,9 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record RouteConfig(String id, Optional<Protocol> protocol, MatchConfig match, Optional<AuthConfig> auth,
-Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward, Optional<UpstreamConfig> upstream,
-Optional<RateLimitConfig> rateLimit) {
+public record RouteConfig(String id, Optional<Protocol> protocol, Optional<String> anchor, MatchConfig match,
+Optional<AuthConfig> auth, Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward,
+Optional<UpstreamConfig> upstream, Optional<RateLimitConfig> rateLimit) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match} and normalizing
@@ -53,6 +57,7 @@ Optional<RateLimitConfig> rateLimit) {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(match, "match");
         protocol = Objects.requireNonNullElse(protocol, Optional.empty());
+        anchor = Objects.requireNonNullElse(anchor, Optional.empty());
         auth = Objects.requireNonNullElse(auth, Optional.empty());
         securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());
         forward = Objects.requireNonNullElse(forward, Optional.empty());

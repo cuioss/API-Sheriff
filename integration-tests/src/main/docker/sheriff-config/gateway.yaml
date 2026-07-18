@@ -1,9 +1,21 @@
 # yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
 # Global gateway document mounted into the api-sheriff container at
-# /app/sheriff-config (SHERIFF_CONFIG_DIR). Kept intentionally minimal: the proxy
-# integration suite only needs the single httpbin endpoint's /proxy route, and
-# require: none there means no token_validation / oidc block is required here.
+# /app/sheriff-config (SHERIFF_CONFIG_DIR). The proxy integration suite exercises
+# the single httpbin endpoint's /proxy route under the 'api' anchor; the disjoint
+# 'bff' anchor demonstrates the two-anchor namespace model (ADR-0007). Anchor
+# materialization is behaviour-neutral for this conforming config, so the existing
+# routed-request IT keeps passing. require: none on the anchor means no
+# token_validation / oidc block is required here.
 version: 1
 metadata:
   config_version: "integration-test"
 allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+anchors:
+  api:
+    path_prefix: /proxy
+    auth:
+      require: none
+  bff:
+    path_prefix: /bff
+    auth:
+      require: none

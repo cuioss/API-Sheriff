@@ -35,6 +35,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * echo backend the {@code UPSTREAM} topology alias resolves to — is the observable
  * proof the mounted configuration was loaded; any other path staying {@code 404}
  * confirms deny-by-default over exactly the mounted route set.
+ * <p>
+ * The mounted {@code gateway.yaml} now declares two disjoint anchors ({@code api}
+ * at {@code /proxy}, {@code bff} at {@code /bff}, ADR-0007) and the httpbin endpoint
+ * is anchored to {@code api}. Anchor materialization is behaviour-neutral for this
+ * conforming config, so the routed-request assertions are unchanged; the additional
+ * {@code /bff} assertion proves an anchor is a policy <em>namespace</em>, not a
+ * route — a declared anchor with no populated endpoint serves nothing.
  */
 class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
 
@@ -60,6 +67,16 @@ class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
         given()
                 .when()
                 .get("/no-such-route/resource")
+                .then()
+                .statusCode(404);
+    }
+
+    @Test
+    @DisplayName("a declared anchor is a namespace, not a route — the empty /bff anchor serves nothing")
+    void declaredAnchorNamespaceWithoutEndpointServesNothing() {
+        given()
+                .when()
+                .get("/bff/home")
                 .then()
                 .statusCode(404);
     }
