@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -295,10 +296,13 @@ public final class ConfigLoader {
         loaderOptions.setNestingDepthLimit(MAX_YAML_NESTING_DEPTH);
         loaderOptions.setCodePointLimit(MAX_YAML_STRING_LENGTH);
         try (Reader reader = Files.newBufferedReader(path)) {
-            for (Node ignored : new Yaml(loaderOptions).composeAll(reader)) {
-                // Iterating forces the Composer to walk the node graph; the alias-count and
-                // nesting-depth caps throw a YAMLException here if the document is a bomb.
-                Objects.requireNonNull(ignored);
+            // Advancing the iterator forces the Composer to walk the node graph; the
+            // alias-count and nesting-depth caps throw a YAMLException from next() if the
+            // document is a bomb. The composed nodes themselves carry no information this
+            // pass needs.
+            Iterator<Node> documents = new Yaml(loaderOptions).composeAll(reader).iterator();
+            while (documents.hasNext()) {
+                documents.next();
             }
             return true;
         } catch (YAMLException e) {
