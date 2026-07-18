@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.quarkus;
 
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
@@ -75,6 +76,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         OidcConfig.Refresh.class,
         OidcConfig.StepUp.class,
         AuthConfig.class,
+        AnchorConfig.class,
         RouteConfig.class,
         MatchConfig.class,
         MatchConfig.HeaderMatcher.class,

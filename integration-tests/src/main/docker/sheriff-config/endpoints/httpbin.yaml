@@ -3,14 +3,15 @@
 # is the only route in the assembled RouteTable, so a request that echoes proves
 # the gateway sourced its upstream from this mounted configuration (not from a
 # removed static ProxyConfiguration). The UPSTREAM topology alias resolves to the
-# go-httpbin echo backend (topology.properties), overridable per environment by
-# TOPOLOGY_UPSTREAM (the benchmark overlay repoints it at nginx-static).
+# go-httpbin echo backend (topology.properties), overridable per environment by an
+# in-file ${VAR} placeholder (the benchmark overlay repoints it at nginx-static).
+# The endpoint is anchored to the 'api' namespace (/proxy); it declares no auth
+# block of its own and inherits the anchor's require: none posture (ADR-0007).
 endpoint:
   id: httpbin
   enabled: true
   base_url: UPSTREAM
-  auth:
-    require: none
+  anchor: api
   routes:
     - id: httpbin-proxy
       match:

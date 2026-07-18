@@ -29,8 +29,10 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
 
 import de.cuioss.sheriff.api.config.load.ConfigError;
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardedConfig;
@@ -46,13 +48,24 @@ import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.generator.junit.parameterized.GeneratorType;
+import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
- * rule, the structural {@code TRACE}/{@code CONNECT} rejection, and the
- * single-pass aggregation contract that reports every violation together rather
- * than stopping at the first.
+ * rule (including the seven ADR-0007 anchor / effective-auth rules), the D5
+ * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
+ * full-space rejection and broad-prefix boot-WARN, and the same-prefix
+ * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
+ * {@code TRACE}/{@code CONNECT} rejection, and the single-pass aggregation contract
+ * that reports every violation together rather than stopping at the first.
  */
+@EnableGeneratorController
+@EnableTestLogger
 class ConfigValidatorTest {
 
     private final ConfigValidator validator = new ConfigValidator();
@@ -100,7 +113,7 @@ class ConfigValidatorTest {
                 .id(id)
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig("none", List.of()))
+                .auth(Optional.of(new AuthConfig("none", List.of())))
                 .allowedMethods(allowedMethods)
                 .routes(List.of(routes))
                 .build();
@@ -111,6 +124,38 @@ class ConfigValidatorTest {
                         .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
                 () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
                         + messageContains + "', but got: " + errors);
+    }
+
+    private static AnchorConfig anchor(String name, String prefix, String require) {
+        return AnchorConfig.builder()
+                .name(name)
+                .pathPrefix(prefix)
+                .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                .build();
+    }
+
+    private static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
+        return validGateway().anchors(anchors).build();
+    }
+
+    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName, Optional<AuthConfig> auth,
+            RouteConfig... routes) {
+        return EndpointConfig.builder()
+                .id(id)
+                .enabled(true)
+                .baseUrl(alias)
+                .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                .auth(auth)
+                .routes(List.of(routes))
+                .build();
+    }
+
+    private static RouteConfig anchoredRoute(String id, String prefix, String anchorName, HttpMethod... methods) {
+        return RouteConfig.builder()
+                .id(id)
+                .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                .match(match(prefix, methods))
+                .build();
     }
 
     @Nested
@@ -224,7 +269,7 @@ class ConfigValidatorTest {
         void shouldRejectBearerWithoutIssuer() {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("bearer", List.of()))
+                    .auth(Optional.of(new AuthConfig("bearer", List.of())))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -239,7 +284,7 @@ class ConfigValidatorTest {
         void shouldRejectSessionWithoutOidc() {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("session", List.of()))
+                    .auth(Optional.of(new AuthConfig("session", List.of())))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -270,7 +315,7 @@ class ConfigValidatorTest {
                     .build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("none", List.of()))
+                    .auth(Optional.of(new AuthConfig("none", List.of())))
                     .routes(List.of(route))
                     .build();
 
@@ -282,7 +327,7 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject a trust-all CIDR in forwarded.trusted_proxies")
+        @DisplayName("Should reject a single full-space IPv4 CIDR in forwarded.trusted_proxies")
         void shouldRejectTrustAllCidr() {
             GatewayConfig gateway = validGateway()
                     .forwarded(Optional.of(ForwardedConfig.builder().trustedProxies(List.of("0.0.0.0/0")).build()))
@@ -291,11 +336,11 @@ class ConfigValidatorTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/forwarded/trusted_proxies", "trust-all CIDR is not permitted: 0.0.0.0/0");
+            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv4 address space");
         }
 
         @Test
-        @DisplayName("Should reject the IPv6 trust-all CIDR in forwarded.trusted_proxies")
+        @DisplayName("Should reject a single full-space IPv6 CIDR in forwarded.trusted_proxies")
         void shouldRejectTrustAllIpv6Cidr() {
             GatewayConfig gateway = validGateway()
                     .forwarded(Optional.of(ForwardedConfig.builder().trustedProxies(List.of("::/0")).build()))
@@ -304,7 +349,134 @@ class ConfigValidatorTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/forwarded/trusted_proxies", "trust-all CIDR is not permitted: ::/0");
+            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv6 address space");
+        }
+
+        @Test
+        @DisplayName("Should reject a complementary /1 IPv4 pair that together cover the whole address space")
+        void shouldRejectComplementaryIpv4HalfPair() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("0.0.0.0/1", "128.0.0.0/1")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv4 address space");
+        }
+
+        @Test
+        @DisplayName("Should reject a complementary /1 IPv6 pair that together cover the whole address space")
+        void shouldRejectComplementaryIpv6HalfPair() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("::/1", "8000::/1")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv6 address space");
+        }
+
+        @Test
+        @DisplayName("Should reject a malformed trusted_proxies CIDR entry with file/pointer context")
+        void shouldRejectMalformedCidr() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("not-a-cidr")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: not-a-cidr");
+        }
+
+        @Test
+        @DisplayName("Should reject a trusted_proxies CIDR whose prefix length is out of range")
+        void shouldRejectOutOfRangePrefixLength() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("10.0.0.0/33")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: 10.0.0.0/33");
+        }
+
+        @Test
+        @DisplayName("Should boot-WARN a very broad but not total CIDR without failing the boot")
+        void shouldWarnBroadButNotTotalCidr() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("10.0.0.0/4")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
+                    () -> "a broad-but-not-total CIDR must not fail the boot, got: " + errors);
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, "very broad address range");
+        }
+
+        @Test
+        @DisplayName("Should accept tightly scoped IPv4 and IPv6 trusted_proxies CIDRs without warning")
+        void shouldAcceptTightlyScopedCidrs() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("10.0.0.0/8", "2001:db8::/32")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
+                    () -> "well-scoped CIDRs must not fail the boot, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject two enabled routes sharing a normalized prefix and overlapping on method")
+        void shouldRejectNonDisjointSamePrefixRoutes() {
+            RouteConfig first = RouteConfig.builder().id("first").match(match("/api", HttpMethod.GET)).build();
+            RouteConfig second = RouteConfig.builder().id("second").match(match("/api", HttpMethod.GET)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), first, second);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "share prefix '/api' and are not disjoint");
+        }
+
+        @Test
+        @DisplayName("Should collide '/api' with '/api/' in the same-prefix disjointness rule after normalization")
+        void shouldCollideTrailingSlashPrefixInDisjointness() {
+            RouteConfig first = RouteConfig.builder().id("first").match(match("/api", HttpMethod.GET)).build();
+            RouteConfig second = RouteConfig.builder().id("second").match(match("/api/", HttpMethod.GET)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), first, second);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "are not disjoint");
+        }
+
+        @Test
+        @DisplayName("Should accept two same-prefix routes made disjoint by method")
+        void shouldAcceptSamePrefixRoutesDisjointByMethod() {
+            RouteConfig reader = RouteConfig.builder().id("reader").match(match("/api", HttpMethod.GET)).build();
+            RouteConfig writer = RouteConfig.builder().id("writer").match(match("/api", HttpMethod.POST)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), reader, writer);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.message().contains("not disjoint")),
+                    () -> "method-disjoint same-prefix routes must not collide, got: " + errors);
         }
 
         @Test
@@ -368,7 +540,7 @@ class ConfigValidatorTest {
                     .build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("bearer", List.of()))
+                    .auth(Optional.of(new AuthConfig("bearer", List.of())))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -419,6 +591,161 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("The seven anchor / effective-auth rules (ADR-0007)")
+    class AnchorRules {
+
+        @Test
+        @DisplayName("Rule 1: Should reject anchor prefixes where one contains another")
+        void shouldRejectOverlappingAnchorPrefixes() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "api", anchor("api", "/api", null),
+                    "apiv1", anchor("apiv1", "/api/v1", null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors", "pairwise disjoint");
+        }
+
+        @Test
+        @DisplayName("Rule 2: Should reject a reference to an undefined anchor")
+        void shouldRejectUndefinedAnchorReference() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "ghost",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    anchoredRoute("r", "/other", null, HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/anchor", "references undefined anchor 'ghost'");
+        }
+
+        @Test
+        @DisplayName("Rule 3: Should reject a route whose path lies outside its declared anchor namespace")
+        void shouldRejectRoutePathOutsideDeclaredAnchor() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    anchoredRoute("r", "/billing", "api", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "is not inside its declared anchor 'api'");
+        }
+
+        @Test
+        @DisplayName("Rule 4: Should reject an undeclared squatter route inside an anchor namespace")
+        void shouldRejectUndeclaredSquatter() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null,
+                    Optional.of(new AuthConfig("none", List.of())),
+                    anchoredRoute("r", "/api/secret", null, HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "does not declare it");
+        }
+
+        @Test
+        @DisplayName("Rule 5: Should reject an effective 'none' auth that weakens a non-none anchor floor")
+        void shouldRejectWeakenedAuthFloor() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", "bearer")));
+            RouteConfig weakening = RouteConfig.builder().id("r").anchor(Optional.of("api"))
+                    .match(match("/api/x", HttpMethod.GET))
+                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(), weakening);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "weakens the anchor 'api' floor 'bearer'");
+        }
+
+        @Test
+        @DisplayName("Rule 6: Should reject an endpoint that declares no auth and whose anchor provides none")
+        void shouldRejectEndpointWithoutAnyAuthSource() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(),
+                    anchoredRoute("r", "/api/x", "api", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/auth", "declares no auth block and no anchor provides one");
+        }
+
+        @Test
+        @DisplayName("Rule 7: Should carry an anchor-provided bearer posture into the effective-auth completeness check")
+        void shouldPropagateAnchorAuthIntoEffectiveAuthCheck() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", "bearer")));
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(),
+                    anchoredRoute("r", "/api/x", "api", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/token_validation", "requires token_validation with at least one issuer");
+        }
+
+        @Test
+        @DisplayName("Should accept a well-formed anchored configuration")
+        void shouldAcceptValidAnchoredConfig() {
+            GatewayConfig gateway = validGateway()
+                    .anchors(Map.of("api", anchor("api", "/api", "bearer")))
+                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .build();
+            EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api", Optional.empty(),
+                    anchoredRoute("r", "/api/orders", "api", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            assertTrue(errors.isEmpty(), () -> "a valid anchored config should have no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report multiple anchor violations together in one pass")
+        void shouldAggregateAnchorViolations() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "api", anchor("api", "/api", null),
+                    "apiv1", anchor("apiv1", "/api/v1", null)));
+            EndpointConfig squatter = anchoredEndpoint("s", "S", null,
+                    Optional.of(new AuthConfig("none", List.of())),
+                    anchoredRoute("sr", "/api/secret", null, HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(squatter), topologyWith("S"));
+
+            assertAll("both the disjointness and squatter violations surface together",
+                    () -> assertTrue(errors.size() >= 2, () -> "expected at least two violations, got: " + errors),
+                    () -> assertHasError(errors, "/anchors", "pairwise disjoint"),
+                    () -> assertHasError(errors, "/endpoint/routes", "does not declare it"));
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("A nested anchor prefix is never disjoint from its parent for any generated segment")
+        void shouldRejectNestedAnchorPrefixesForAnyGeneratedSegment(String segment) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "outer", anchor("outer", "/" + segment, null),
+                    "inner", anchor("inner", "/" + segment + "/sub", null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors", "pairwise disjoint");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 5)
+        @DisplayName("Sibling anchor prefixes sharing a leading substring stay disjoint for any generated segment")
+        void shouldAcceptDisjointSiblingAnchorsForAnyGeneratedSegment(String segment) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "alpha", anchor("alpha", "/" + segment + "-a", null),
+                    "beta", anchor("beta", "/" + segment + "-b", null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(),
+                    () -> "sibling anchors sharing only a leading substring must stay disjoint, got: " + errors);
+        }
+    }
+
+    @Nested
     @DisplayName("The TRACE / CONNECT verbs")
     class StructuralVerbRejection {
 
@@ -443,7 +770,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = GatewayConfig.builder().version(2).build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("MISSING")
-                    .auth(new AuthConfig("none", List.of()))
+                    .auth(Optional.of(new AuthConfig("none", List.of())))
                     .allowedMethods(List.of(HttpMethod.GET))
                     .routes(List.of(route("orders-post", HttpMethod.POST)))
                     .build();

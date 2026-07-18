@@ -29,9 +29,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
+import de.cuioss.sheriff.api.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
@@ -41,10 +41,13 @@ import org.jspecify.annotations.Nullable;
  * Resolves topology aliases to decomposed upstreams for enabled endpoints and for the
  * supplied additional aliases (pipeline step 6).
  * <p>
- * Each alias (pattern {@code [A-Z][A-Z0-9_]*}) is resolved with the precedence
- * {@code TOPOLOGY_<ALIAS>} environment variable over the {@code topology.properties}
- * file value, validated as a well-formed absolute URL, and decomposed once into a
- * {@link ResolvedUpstream} (ADR-0004).
+ * Each alias (pattern {@code [A-Z][A-Z0-9_]*}) is read from the
+ * {@code topology.properties} file, run through the same {@code ${VAR}} /
+ * {@code ${VAR:-default}} substitution engine (D4) as the YAML documents, validated as
+ * a well-formed absolute URL, and decomposed once into a {@link ResolvedUpstream}
+ * (ADR-0004). There is no convention-named {@code TOPOLOGY_<ALIAS>} environment
+ * precedence path — environment values reach a topology value only through an explicit
+ * in-file {@code ${VAR}} placeholder.
  * <p>
  * Two alias sources are resolved, and they fail <em>asymmetrically</em>:
  * <ul>
@@ -65,7 +68,7 @@ import org.jspecify.annotations.Nullable;
  * resolution entirely and need not resolve.</li>
  * </ul>
  * <p>
- * Framework-agnostic (ADR-0005): the environment lookup is constructor-injected.
+ * Framework-agnostic (ADR-0005): the substitution engine is constructor-injected.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -76,24 +79,24 @@ public final class TopologyResolver {
     private static final int HTTP_PORT = 80;
     private static final int HTTPS_PORT = 443;
 
-    private final UnaryOperator<@Nullable String> environment;
+    private final EnvSecretResolver resolver;
 
     /**
-     * Creates a resolver backed by the process environment
-     * ({@link System#getenv(String)}).
+     * Creates a resolver backed by a {@link EnvSecretResolver} over the process
+     * environment ({@link System#getenv(String)}).
      */
     public TopologyResolver() {
-        this(System::getenv);
+        this(new EnvSecretResolver());
     }
 
     /**
-     * Creates a resolver backed by the supplied environment lookup.
+     * Creates a resolver backed by the supplied substitution engine.
      *
-     * @param environment maps an environment-variable name to its value, or
-     *                    {@code null} when undefined
+     * @param resolver the {@code ${VAR}} / {@code ${VAR:-default}} substitution engine
+     *                 applied to each topology value before decomposition
      */
-    public TopologyResolver(UnaryOperator<@Nullable String> environment) {
-        this.environment = Objects.requireNonNull(environment, "environment");
+    public TopologyResolver(EnvSecretResolver resolver) {
+        this.resolver = Objects.requireNonNull(resolver, "resolver");
     }
 
     /**
@@ -142,11 +145,16 @@ public final class TopologyResolver {
     }
 
     private @Nullable String resolveValue(String alias, Map<String, String> fileAliases) {
-        String override = environment.apply("TOPOLOGY_" + alias);
-        if (override != null) {
-            return override;
+        String value = fileAliases.get(alias);
+        if (value == null) {
+            return null;
         }
-        return fileAliases.get(alias);
+        try {
+            return resolver.resolve(value);
+        } catch (EnvSecretResolver.MissingVariableException | EnvSecretResolver.MalformedPlaceholderException e) {
+            throw new TopologyResolutionException(
+                    "Cannot resolve placeholder in topology alias '%s': %s".formatted(alias, e.getMessage()), e);
+        }
     }
 
     private static Map<String, String> readProperties(Path topologyFile) {
@@ -180,6 +188,11 @@ public final class TopologyResolver {
                     "Topology URL for alias '%s' must be absolute with scheme and host: %s".formatted(alias, url));
         }
         String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
+        if (!"http".equals(scheme) && !"https".equals(scheme)) {
+            throw new TopologyResolutionException(
+                    "Topology URL for alias '%s' must use an http or https scheme, but was '%s': %s"
+                            .formatted(alias, scheme, url));
+        }
         int port = uri.getPort() != -1 ? uri.getPort() : defaultPort(scheme);
         String basePath = uri.getPath() == null ? "" : uri.getPath();
         return new ResolvedUpstream(scheme, uri.getHost(), port, basePath);

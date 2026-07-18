@@ -51,6 +51,47 @@ public final class ConfigLogMessages {
                 .identifier(2)
                 .template("Configuration loaded successfully (config_version='%s')")
                 .build();
+
+        /**
+         * The materialized effective posture of a single route, printed once per
+         * route during route-table assembly (the ADR-0007 discoverability answer:
+         * anchors vanish at runtime, so the boot log reports the resolved posture).
+         */
+        public static final LogRecord ROUTE_POSTURE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(3)
+                .template("Route '%s' effective posture: anchor='%s', auth.require='%s', filter='%s'")
+                .build();
+    }
+
+    /**
+     * Warn-level messages (WARN range 100-199).
+     */
+    @UtilityClass
+    public static final class WARN {
+
+        /**
+         * A route replaces an anchor-provided non-auth policy block (wholesale
+         * replacement). Logged so a weakening override is always an explicit, audited
+         * choice (ADR-0007).
+         */
+        public static final LogRecord ANCHOR_POLICY_OVERRIDDEN = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(101)
+                .template("Route '%s' overrides anchor '%s' %s policy (wholesale replacement)")
+                .build();
+
+        /**
+         * A {@code trusted_proxies} CIDR entry covers a very broad — but not total —
+         * address range (shorter than {@code /8} for IPv4 or {@code /32} for IPv6).
+         * Broad proxy trust widens the set of hosts able to spoof forwarded headers,
+         * so an overly broad prefix is surfaced as a boot WARN for review (D5).
+         */
+        public static final LogRecord BROAD_TRUSTED_PROXY = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(102)
+                .template("trusted_proxies entry '%s' covers a very broad address range (prefix /%s) — review whether such broad proxy trust is intended")
+                .build();
     }
 
     /**

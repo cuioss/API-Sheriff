@@ -34,6 +34,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -208,5 +209,207 @@ class ConfigLoaderTest {
 
         assertTrue(loaded.gateway().forwarded().orElseThrow().trustedProxies().isEmpty(),
                 "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
+    }
+
+    @Test
+    void bindsAnchorsBlockAndInjectsTheMapKeyAsName() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    auth:
+                      require: bearer
+                    security_filter:
+                      profile: strict
+                    allowed_methods: ["GET", "POST"]
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        Map<String, AnchorConfig> anchors = loaded.gateway().anchors();
+        assertEquals(1, anchors.size(), "the anchors block should bind one anchor");
+        AnchorConfig api = anchors.get("api");
+        assertNotNull(api, "the anchor keyed 'api' should bind");
+        assertEquals("api", api.name(), "the map key is injected as the anchor name");
+        assertEquals("/api", api.pathPrefix());
+        assertEquals("bearer", api.auth().orElseThrow().require());
+        assertEquals(Optional.of("strict"), api.securityFilter().orElseThrow().profile());
+        assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), api.allowedMethods());
+    }
+
+    @Test
+    void rejectsUnknownKeyInsideAnAnchorBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    bogus_key: true
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file()) && error.pointer().contains("anchors")),
+                () -> "an unknown key inside an anchor block must fail the boot with a pointer, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void bindsAnchorReferencesOnEndpointAndRoute() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    auth:
+                      require: bearer
+                """);
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: API
+                  anchor: api
+                  routes:
+                    - id: api-read
+                      anchor: api
+                      match:
+                        path_prefix: /api/read
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        assertEquals(Optional.of("api"), endpoint.anchor(), "the endpoint anchor ref should bind");
+        RouteConfig route = endpoint.routes().getFirst();
+        assertEquals(Optional.of("api"), route.anchor(), "the route anchor ref should bind");
+    }
+
+    @Test
+    void bindsAnEndpointOmittingAuthWhenAnchored() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    auth:
+                      require: bearer
+                """);
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: API
+                  anchor: api
+                  routes:
+                    - id: api-read
+                      match:
+                        path_prefix: /api/read
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        EndpointConfig endpoint = loaded.endpoints().getFirst();
+        assertTrue(endpoint.auth().isEmpty(),
+                "an anchored endpoint may omit its auth block and still bind at the schema level");
+        assertEquals(Optional.of("api"), endpoint.anchor());
+    }
+
+    @Test
+    void substitutedScalarIsSchemaTypeChecked() throws Exception {
+        writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION:-1}\"\n");
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(1, loaded.gateway().version(),
+                "a defaulted ${VAR} on an integer field must coerce to an integer and satisfy the schema");
+    }
+
+    @Test
+    void rejectsLiteralSecretValue() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "literal-not-a-reference"
+                  redirect_uri: "https://gw.example.com/callback"
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("client_secret")
+                                && error.message().contains("bare ${VAR}")),
+                () -> "a literal client_secret must be rejected by the secrets rule, got: " + exception.errors());
+    }
+
+    @Test
+    void rejectsDefaultedSecretValue() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET:-fallback}"
+                  redirect_uri: "https://gw.example.com/callback"
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class,
+                () -> loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("client_secret")),
+                () -> "a defaulted secret placeholder must be rejected — a secret must be a bare ${VAR} reference, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void strayYmlEndpointFileFailsTheBoot() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.file().contains("orders.yml")
+                                && error.message().contains("rename it to '.yaml'")),
+                () -> "a stray '.yml' endpoint file must fail the boot, got: " + exception.errors());
+    }
+
+    @Test
+    void bindingOrSchemaErrorNeverEchoesResolvedSecret() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                  bogus_unknown_key: "trigger-an-error"
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class,
+                () -> loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t-topsecret-value")).load());
+
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("s3cr3t-topsecret-value")),
+                () -> "no error may echo the resolved secret value, got: " + exception.errors());
+    }
+
+    @Test
+    void rejectsYamlExceedingAliasExpansionLimit() throws Exception {
+        StringBuilder yaml = new StringBuilder("version: 1\nanchor_def: &a [1, 2, 3]\naliases:\n");
+        for (int i = 0; i < 60; i++) {
+            yaml.append("  - *a\n");
+        }
+        writeConfig("gateway.yaml", yaml.toString());
+
+        assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+                "a YAML document exceeding the alias-expansion limit must fail the boot");
     }
 }

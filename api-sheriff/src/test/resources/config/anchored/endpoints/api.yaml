@@ -1,0 +1,12 @@
+# Anchored API endpoint. It omits the endpoint-level auth block: the anchor 'api'
+# declares the bearer floor that materializes as the route's effective posture
+# (ADR-0007 auth-optional-for-anchored-endpoints).
+endpoint:
+  id: api
+  base_url: API
+  anchor: api
+  routes:
+    - id: api-orders
+      match:
+        path_prefix: /api/orders
+        methods: [GET]

@@ -17,39 +17,44 @@ package de.cuioss.sheriff.api.config;
 
 import java.io.Serial;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
-import de.cuioss.sheriff.api.config.model.MatchConfig;
-import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.RouteTable;
+import de.cuioss.sheriff.api.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
+import de.cuioss.tools.logging.CuiLogger;
 
 /**
  * Assembles the immutable {@link RouteTable} from the validated configuration
  * (pipeline step 8).
  * <p>
  * The builder merges the routes of the <em>enabled endpoints only</em> — disabled
- * endpoints contribute no rows — orders them by descending {@code path_prefix}
- * length (most specific first), enforces same-prefix disjointness, and
- * materializes each route's effective auth, effective {@code allowed_methods}, and
- * effective retry / not-modified toggles into a {@link ResolvedRoute}. The three
- * inheritance chains are resolved here, once, so the request pipeline never
- * re-implements them.
+ * endpoints contribute no rows — orders them by descending normalized
+ * {@code path_prefix} length (most specific first), and
+ * materializes each route's effective auth, effective {@code allowed_methods},
+ * effective {@code security_filter} / {@code security_headers}, and effective retry
+ * / not-modified toggles into a {@link ResolvedRoute}. The inheritance chains
+ * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
+ * step — ADR-0007) are resolved here, once, so the request pipeline never
+ * re-implements them and never consults an anchor. The effective posture of each
+ * route is emitted to the boot log; a non-auth override that replaces an
+ * anchor-provided block is logged as a boot WARN.
  * <p>
  * Framework-agnostic (ADR-0005): the collaborators are supplied as method
  * arguments and the builder carries no framework imports.
@@ -59,7 +64,11 @@ import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
  */
 public final class RouteTableBuilder {
 
+    private static final CuiLogger LOGGER = new CuiLogger(RouteTableBuilder.class);
+
     private static final List<HttpMethod> STANDARD_ALLOWED_METHODS = List.copyOf(EnumSet.allOf(HttpMethod.class));
+
+    private static final String NONE = "none";
 
     /**
      * Builds the route table from the enabled endpoints and the resolved topology.
@@ -68,8 +77,8 @@ public final class RouteTableBuilder {
      * @param endpoints the endpoints to merge; disabled entries are skipped
      * @param topology  the resolved topology providing each endpoint's upstream
      * @return the immutable, longest-prefix-ordered route table
-     * @throws RouteTableException when an enabled endpoint's alias does not resolve
-     *                             or two same-prefix routes are not disjoint
+     * @throws RouteTableException when an enabled endpoint's alias does not resolve,
+     *                             or a route has no resolvable effective auth
      */
     public RouteTable build(GatewayConfig gateway, List<EndpointConfig> endpoints, ResolvedTopology topology) {
         Objects.requireNonNull(gateway, "gateway");
@@ -85,21 +94,52 @@ public final class RouteTableBuilder {
                     "unresolved topology alias for enabled endpoint '%s': %s".formatted(endpoint.id(),
                             endpoint.baseUrl())));
             UpstreamDefaultsConfig defaults = resolveDefaults(gateway, endpoint);
-            List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint);
             for (RouteConfig route : endpoint.routes()) {
-                resolved.add(resolveRoute(route, endpoint, upstream, defaults, allowedMethods));
+                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
+                resolved.add(resolveRoute(gateway, route, endpoint, anchor, upstream, defaults));
             }
         }
 
-        resolved.sort(Comparator.comparingInt((ResolvedRoute route) -> route.pathPrefix().length()).reversed()
-                .thenComparing(ResolvedRoute::pathPrefix));
-        enforceDisjointness(resolved);
+        resolved.sort(Comparator
+                .comparingInt((ResolvedRoute route) -> normalizePrefix(route.pathPrefix()).length()).reversed()
+                .thenComparing((ResolvedRoute route) -> normalizePrefix(route.pathPrefix())));
         return new RouteTable(resolved);
     }
 
-    private static ResolvedRoute resolveRoute(RouteConfig route, EndpointConfig endpoint, ResolvedUpstream upstream,
-            UpstreamDefaultsConfig defaults, List<HttpMethod> allowedMethods) {
-        AuthConfig auth = route.auth().orElse(endpoint.auth());
+    /**
+     * Normalizes a path prefix — ensuring a leading {@code /} and stripping a
+     * trailing {@code /} (except for the bare root) — so {@code /api} and
+     * {@code /api/} order identically. Shared with the same-prefix disjointness rule
+     * now owned by {@code ConfigValidator} (ADR-0009).
+     *
+     * @param prefix the raw path prefix
+     * @return the normalized prefix
+     */
+    static String normalizePrefix(String prefix) {
+        String normalized = prefix.startsWith("/") ? prefix : "/" + prefix;
+        while (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static Optional<AnchorConfig> resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route) {
+        return route.anchor().or(endpoint::anchor).map(name -> gateway.anchors().get(name)).filter(Objects::nonNull);
+    }
+
+    private static ResolvedRoute resolveRoute(GatewayConfig gateway, RouteConfig route, EndpointConfig endpoint,
+            Optional<AnchorConfig> anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults) {
+        AuthConfig auth = route.auth().or(endpoint::auth).or(() -> anchor.flatMap(AnchorConfig::auth))
+                .orElseThrow(() -> new RouteTableException(
+                        "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
+                                .formatted(route.id())));
+        List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint, anchor);
+        Optional<SecurityFilterConfig> securityFilter = route.securityFilter()
+                .or(() -> anchor.flatMap(AnchorConfig::securityFilter));
+        Optional<SecurityHeadersConfig> securityHeaders = anchor.flatMap(AnchorConfig::securityHeaders)
+                .or(gateway::securityHeaders);
+        warnOnWeakeningOverride(route, endpoint, anchor);
         boolean retryEnabled = route.upstream()
                 .flatMap(UpstreamConfig::retry)
                 .flatMap(UpstreamConfig.Retry::enabled)
@@ -108,16 +148,44 @@ public final class RouteTableBuilder {
                 .flatMap(UpstreamConfig::notModified)
                 .flatMap(UpstreamConfig.NotModified::enabled)
                 .orElse(defaults.notModifiedEnabled());
-        return ResolvedRoute.builder()
+        ResolvedRoute resolved = ResolvedRoute.builder()
                 .id(route.id())
                 .protocol(route.protocol().orElse(Protocol.HTTP))
+                .anchor(anchor.map(AnchorConfig::name))
                 .match(route.match())
                 .effectiveAuth(auth)
                 .effectiveAllowedMethods(allowedMethods)
+                .effectiveSecurityFilter(securityFilter)
+                .effectiveSecurityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
                 .upstream(upstream)
                 .build();
+        logPosture(resolved);
+        return resolved;
+    }
+
+    private static void logPosture(ResolvedRoute route) {
+        String anchorName = route.anchor().orElse(NONE);
+        String filter = route.effectiveSecurityFilter().flatMap(SecurityFilterConfig::profile).orElse(NONE);
+        LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, route.effectiveAuth().require(),
+                filter);
+    }
+
+    private static void warnOnWeakeningOverride(RouteConfig route, EndpointConfig endpoint,
+            Optional<AnchorConfig> anchor) {
+        if (anchor.isEmpty()) {
+            return;
+        }
+        AnchorConfig anchorConfig = anchor.get();
+        if (anchorConfig.securityFilter().isPresent() && route.securityFilter().isPresent()) {
+            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchorConfig.name(),
+                    "security_filter");
+        }
+        if (!anchorConfig.allowedMethods().isEmpty() && !endpoint.allowedMethods().isEmpty()) {
+            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchorConfig.name(),
+                    "allowed_methods");
+        }
     }
 
     private static UpstreamDefaultsConfig resolveDefaults(GatewayConfig gateway, EndpointConfig endpoint) {
@@ -125,9 +193,15 @@ public final class RouteTableBuilder {
         return endpoint.upstreamDefaults().orElse(global);
     }
 
-    private static List<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint) {
+    private static List<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
+            Optional<AnchorConfig> anchor) {
         if (!endpoint.allowedMethods().isEmpty()) {
             return List.copyOf(endpoint.allowedMethods());
+        }
+        Optional<List<HttpMethod>> anchorMethods = anchor.map(AnchorConfig::allowedMethods)
+                .filter(methods -> !methods.isEmpty());
+        if (anchorMethods.isPresent()) {
+            return List.copyOf(anchorMethods.get());
         }
         if (!gateway.allowedMethods().isEmpty()) {
             return List.copyOf(gateway.allowedMethods());
@@ -135,61 +209,12 @@ public final class RouteTableBuilder {
         return STANDARD_ALLOWED_METHODS;
     }
 
-    private static void enforceDisjointness(List<ResolvedRoute> routes) {
-        for (int i = 0; i < routes.size(); i++) {
-            for (int j = i + 1; j < routes.size(); j++) {
-                ResolvedRoute first = routes.get(i);
-                ResolvedRoute second = routes.get(j);
-                if (first.pathPrefix().equals(second.pathPrefix()) && overlaps(first.match(), second.match())) {
-                    throw new RouteTableException(
-                            "routes '%s' and '%s' share prefix '%s' and are not disjoint".formatted(first.id(),
-                                    second.id(), first.pathPrefix()));
-                }
-            }
-        }
-    }
-
-    private static boolean overlaps(MatchConfig first, MatchConfig second) {
-        return hostsOverlap(first, second) && methodsOverlap(first, second) && !headersDistinguish(first, second);
-    }
-
-    private static boolean hostsOverlap(MatchConfig first, MatchConfig second) {
-        return first.host().isEmpty() || second.host().isEmpty() || first.host().equals(second.host());
-    }
-
-    private static boolean methodsOverlap(MatchConfig first, MatchConfig second) {
-        return first.methods().isEmpty() || second.methods().isEmpty()
-                || !Collections.disjoint(first.methods(), second.methods());
-    }
-
-    private static boolean headersDistinguish(MatchConfig first, MatchConfig second) {
-        for (HeaderMatcher headerA : first.headers()) {
-            for (HeaderMatcher headerB : second.headers()) {
-                if (headerA.name().equalsIgnoreCase(headerB.name())
-                        && (valuesDistinguish(headerA, headerB) || presenceDistinguishes(headerA, headerB))) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
-        Optional<String> valueA = headerA.value();
-        Optional<String> valueB = headerB.value();
-        return valueA.isPresent() && valueB.isPresent() && !valueA.get().equals(valueB.get());
-    }
-
-    private static boolean presenceDistinguishes(HeaderMatcher headerA, HeaderMatcher headerB) {
-        Optional<Boolean> presentA = headerA.present();
-        Optional<Boolean> presentB = headerB.present();
-        return presentA.isPresent() && presentB.isPresent() && !presentA.get().equals(presentB.get());
-    }
-
     /**
      * Signals a route-table assembly failure: an enabled endpoint whose alias does
-     * not resolve, or two same-prefix routes that are not disjoint. Both are boot
-     * failures for an otherwise structurally valid configuration.
+     * not resolve, or a route with no resolvable effective auth. Both are boot
+     * failures for an otherwise structurally valid configuration. Same-prefix
+     * disjointness is reported separately, in the all-violations
+     * {@code ConfigValidator} pass (ADR-0009).
      *
      * @author API Sheriff Team
      * @since 1.0

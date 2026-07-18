@@ -86,13 +86,19 @@ subdirectories, are ignored.
   commit. Topology values may be literal (they are locations, not secrets) but are still
   overridable by env.
 * *Environment override mechanism* (link:adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
-  Amendment A1], implementation lands with link:plan/03-endpoint-anchors.adoc[Plan 03]): every
-  override point is a *visible in-file placeholder* -- `${VAR}` (required; unset fails the
-  boot, the secrets semantics) or `${VAR:-default}` (file default, environment wins) --
-  resolved once, before schema validation, across all three artifacts. The
-  `TOPOLOGY_<ALIAS>` / `ENDPOINT_<ID>_ENABLED` names used throughout this document are the
-  *conventional variable names* written inside those placeholders, not invisible
-  code-level lookups.
+  Amendment A1]): every override point is a *visible in-file placeholder*, resolved once, before
+  schema validation, uniformly across `gateway.yaml`, `endpoints/*.yaml`, and
+  `topology.properties`. The grammar is fixed: `${NAME}` (required -- the variable must be set or
+  the boot fails, the secrets semantics) or `${NAME:-default}` (optional -- the literal
+  `default`, everything between the first `:-` and the closing brace, applies when the variable
+  is unset; an environment value wins over it). `NAME` matches `[A-Za-z_][A-Za-z0-9_]*`; several
+  placeholders may appear in one scalar; there is *no nesting and no escape syntax* -- a scalar
+  carrying a `${` that is not a well-formed placeholder *fails the boot* (a loud failure is
+  always preferred over a silently un-substituted literal). The `TOPOLOGY_<ALIAS>` /
+  `ENDPOINT_<ID>_ENABLED` names used throughout this document are the *conventional variable
+  names* written inside those placeholders, not invisible code-level lookups: an environment
+  value reaches a topology or enablement field only through an explicit in-file `${VAR}`
+  reference.
 * On any validation error the process exits non-zero and logs the offending file/alias -- it does
   not start a degraded gateway.
 
@@ -399,8 +405,11 @@ in the same file or across files -- must be *statically disjoint*, meaning one o
   prefix" pattern; give the fallback a different prefix or declare hosts on both);
 * their `methods` sets do not overlap (an omitted `methods` means all methods and overlaps
   everything); or
-* both declare a matcher on the *same header name* with different exact values
-  (e.g. `X-Tenant: a` vs `X-Tenant: b`; `present: true` establishes nothing).
+* both declare a matcher on the *same header name* that cannot both hold -- either different
+  exact values (e.g. `X-Tenant: a` vs `X-Tenant: b`), or *opposite presence assertions*
+  (`present: true` on one and `present: false` on the other, which no single request satisfies
+  at once). A lone `present: true`, with no opposing `present: false` at the same prefix and
+  header, establishes nothing.
 
 Any same-prefix pair that fails all three tests is rejected at boot; precedence never depends
 on file-system or declaration order. This keeps the canonical virtual-hosting case

@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config.model;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -28,7 +29,10 @@ import lombok.Builder;
  * {@code allowedMethods} is the global positive HTTP-verb allowlist (empty means
  * the standard set applies, materialized per route by the route-table builder).
  * {@code upstreamDefaults} carries the global retry/not-modified defaults; an
- * endpoint block replaces it wholesale for that endpoint's routes.
+ * endpoint block replaces it wholesale for that endpoint's routes. {@code anchors}
+ * declares the optional named, namespace-scoped policy anchors (ADR-0007) keyed by
+ * anchor name; an empty map means no anchors are configured and anchor semantics
+ * do not apply.
  *
  * @param version          the config schema version (unknown values are refused
  *                         by the validator)
@@ -38,6 +42,8 @@ import lombok.Builder;
  *                         omitted
  * @param securityDefaults the global security-filter baseline, empty when omitted
  * @param allowedMethods   the global verb allowlist, empty meaning the standard set
+ * @param anchors          the named policy anchors keyed by name, empty when none
+ *                         are configured
  * @param upstreamDefaults the global retry/not-modified defaults, empty when omitted
  * @param forwarded        the forwarded-header trust policy, empty when omitted
  * @param tokenValidation  the offline bearer-validation settings, empty when omitted
@@ -48,12 +54,13 @@ import lombok.Builder;
 @Builder
 public record GatewayConfig(int version, Optional<Metadata> metadata, Optional<TlsConfig> tls,
 Optional<SecurityHeadersConfig> securityHeaders, Optional<SecurityDefaultsConfig> securityDefaults,
-List<HttpMethod> allowedMethods, Optional<UpstreamDefaultsConfig> upstreamDefaults,
+List<HttpMethod> allowedMethods, Map<String, AnchorConfig> anchors, Optional<UpstreamDefaultsConfig> upstreamDefaults,
 Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and
-     * normalizing absent optional blocks to {@link Optional#empty()}.
+     * {@code anchors} and normalizing absent optional blocks to
+     * {@link Optional#empty()}.
      */
     public GatewayConfig {
         metadata = Objects.requireNonNullElse(metadata, Optional.empty());
@@ -61,6 +68,7 @@ Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValida
         securityHeaders = Objects.requireNonNullElse(securityHeaders, Optional.empty());
         securityDefaults = Objects.requireNonNullElse(securityDefaults, Optional.empty());
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
+        anchors = anchors == null ? Map.of() : Map.copyOf(anchors);
         upstreamDefaults = Objects.requireNonNullElse(upstreamDefaults, Optional.empty());
         forwarded = Objects.requireNonNullElse(forwarded, Optional.empty());
         tokenValidation = Objects.requireNonNullElse(tokenValidation, Optional.empty());

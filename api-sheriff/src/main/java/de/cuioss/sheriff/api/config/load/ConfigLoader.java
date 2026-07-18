@@ -27,19 +27,26 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BooleanNode;
+import com.fasterxml.jackson.databind.node.IntNode;
+import com.fasterxml.jackson.databind.node.LongNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 
@@ -51,17 +58,19 @@ import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
 import org.jspecify.annotations.Nullable;
+import org.yaml.snakeyaml.LoaderOptions;
 
 /**
  * Reads, validates, and binds the file-based API Sheriff configuration.
  * <p>
  * {@link #load()} runs the boot pipeline over the configuration directory: it reads
  * {@code gateway.yaml} and every {@code endpoints/*.yaml} file (sorted for
- * deterministic error output), validates each document against the bundled D2 JSON
- * Schemas, resolves {@code ${ENV_VAR}} secret references, and binds the valid trees
- * to the immutable {@link de.cuioss.sheriff.api.config.model} records. Every problem
- * is collected — never fail on the first — and raised together as a
- * {@link ConfigLoadException}.
+ * deterministic error output), verifies that secret-classified fields are bare
+ * {@code ${VAR}} references, substitutes every {@code ${VAR}} / {@code ${VAR:-default}}
+ * placeholder (D4) <em>before</em> validating each substituted document against the
+ * bundled JSON Schemas, and binds the valid trees to the immutable
+ * {@link de.cuioss.sheriff.api.config.model} records. Every problem is collected —
+ * never fail on the first — and raised together as a {@link ConfigLoadException}.
  * <p>
  * The endpoint-enablement resolution, topology-alias resolution, cross-cutting
  * semantic validation, and route-table assembly steps of the full boot sequence are
@@ -82,6 +91,16 @@ public final class ConfigLoader {
     private static final String ENDPOINTS_DIR = "endpoints";
     private static final String ENDPOINT_ROOT = "endpoint";
     private static final String ENABLED_FIELD = "enabled";
+    private static final String ANCHORS_FIELD = "anchors";
+    private static final String NAME_FIELD = "name";
+    private static final String YAML_EXTENSION = ".yaml";
+    private static final String YML_EXTENSION = ".yml";
+    private static final int MAX_YAML_NESTING_DEPTH = 100;
+    private static final int MAX_YAML_ALIASES = 50;
+    private static final int MAX_YAML_STRING_LENGTH = 1024 * 1024;
+    private static final Pattern INTEGER = Pattern.compile("-?\\d+");
+    private static final List<String> SECRET_POINTERS = List.of(
+            "/oidc/client_secret", "/oidc/session/encryption_key", "/oidc/session/previous_key");
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;
@@ -94,7 +113,8 @@ public final class ConfigLoader {
      *
      * @param configDir      the directory holding {@code gateway.yaml} and the
      *                       {@code endpoints/} subdirectory
-     * @param secretResolver the resolver for {@code ${ENV_VAR}} secret references
+     * @param secretResolver the {@code ${VAR}} / {@code ${VAR:-default}} placeholder
+     *                       substitution engine
      */
     public ConfigLoader(Path configDir, EnvSecretResolver secretResolver) {
         this.configDir = Objects.requireNonNull(configDir, "configDir");
@@ -129,12 +149,52 @@ public final class ConfigLoader {
         if (node == null) {
             return null;
         }
-        validate(gatewaySchema, node, GATEWAY_FILE, errors);
-        resolveSecrets(node, GATEWAY_FILE, "", errors);
+        validateSecretReferences(node, errors);
+        substitute(node, GATEWAY_FILE, "", errors);
         if (hasErrorsFor(GATEWAY_FILE, errors)) {
             return null;
         }
+        validate(gatewaySchema, node, GATEWAY_FILE, errors);
+        if (hasErrorsFor(GATEWAY_FILE, errors)) {
+            return null;
+        }
+        injectAnchorNames(node);
         return bind(node, GatewayConfig.class, GATEWAY_FILE, errors);
+    }
+
+    /**
+     * Verifies that each secret-classified field, when present, is written as a bare
+     * {@code ${VAR}} reference on its <em>pre-substitution</em> value — never a
+     * literal or a defaulted placeholder (D4 secrets rule).
+     */
+    private void validateSecretReferences(JsonNode gatewayNode, List<ConfigError> errors) {
+        for (String pointer : SECRET_POINTERS) {
+            JsonNode secret = gatewayNode.at(pointer);
+            if (secret.isTextual() && !secretResolver.isBareReference(secret.asText())) {
+                errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                        "secret field must be a bare ${VAR} reference, not a literal or defaulted value"));
+            }
+        }
+    }
+
+    /**
+     * Injects each anchor's map key as its {@code name} field so the anchor block —
+     * which does not carry a {@code name} property in the file — binds to an
+     * {@link de.cuioss.sheriff.api.config.model.AnchorConfig} whose name is
+     * populated. Runs after schema validation so the injected key is not rejected by
+     * the anchor block's {@code additionalProperties: false}.
+     */
+    private static void injectAnchorNames(JsonNode gatewayNode) {
+        if (!(gatewayNode.get(ANCHORS_FIELD) instanceof ObjectNode anchors)) {
+            return;
+        }
+        List<String> names = new ArrayList<>();
+        anchors.fieldNames().forEachRemaining(names::add);
+        for (String name : names) {
+            if (anchors.get(name) instanceof ObjectNode anchor) {
+                anchor.put(NAME_FIELD, name);
+            }
+        }
     }
 
     private List<EndpointConfig> loadEndpoints(List<ConfigError> errors) {
@@ -154,8 +214,11 @@ public final class ConfigLoader {
         if (root == null) {
             return null;
         }
+        substitute(root, file, "", errors);
+        if (hasErrorsFor(file, errors)) {
+            return null;
+        }
         validate(endpointSchema, root, file, errors);
-        resolveSecrets(root, file, "", errors);
         if (hasErrorsFor(file, errors)) {
             return null;
         }
@@ -170,9 +233,15 @@ public final class ConfigLoader {
             return List.of();
         }
         try (Stream<Path> entries = Files.list(dir)) {
-            return entries
-                    .filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().endsWith(".yaml"))
+            List<Path> regularFiles = entries.filter(Files::isRegularFile).toList();
+            for (Path file : regularFiles) {
+                if (file.getFileName().toString().endsWith(YML_EXTENSION)) {
+                    errors.add(new ConfigError(ENDPOINTS_DIR + "/" + file.getFileName(), "",
+                            "endpoint file has a '.yml' extension; rename it to '.yaml'"));
+                }
+            }
+            return regularFiles.stream()
+                    .filter(p -> p.getFileName().toString().endsWith(YAML_EXTENSION))
                     .sorted(Comparator.comparing(p -> p.getFileName().toString()))
                     .toList();
         } catch (IOException e) {
@@ -201,34 +270,62 @@ public final class ConfigLoader {
         }
     }
 
-    private void resolveSecrets(JsonNode node, String file, String pointer, List<ConfigError> errors) {
+    private void substitute(JsonNode node, String file, String pointer, List<ConfigError> errors) {
         if (node instanceof ObjectNode object) {
             List<String> names = new ArrayList<>();
             object.fieldNames().forEachRemaining(names::add);
             for (String name : names) {
-                resolveChild(object.get(name), file, pointer + "/" + name, errors,
-                        resolved -> object.put(name, resolved));
+                substituteChild(object.get(name), file, pointer + "/" + name, errors,
+                        resolved -> object.set(name, resolved));
             }
         } else if (node instanceof ArrayNode array) {
             for (int index = 0; index < array.size(); index++) {
                 int position = index;
-                resolveChild(array.get(index), file, pointer + "/" + index, errors,
-                        resolved -> array.set(position, TextNode.valueOf(resolved)));
+                substituteChild(array.get(index), file, pointer + "/" + index, errors,
+                        resolved -> array.set(position, resolved));
             }
         }
     }
 
-    private void resolveChild(JsonNode child, String file, String pointer, List<ConfigError> errors,
-            Consumer<String> replacer) {
+    private void substituteChild(JsonNode child, String file, String pointer, List<ConfigError> errors,
+            Consumer<JsonNode> replacer) {
         if (child.isTextual() && secretResolver.hasReference(child.asText())) {
             try {
-                replacer.accept(secretResolver.resolve(child.asText()));
-            } catch (EnvSecretResolver.MissingVariableException e) {
+                replacer.accept(coerce(secretResolver.resolve(child.asText())));
+            } catch (EnvSecretResolver.MissingVariableException | EnvSecretResolver.MalformedPlaceholderException e) {
                 errors.add(new ConfigError(file, pointer, e.getMessage()));
             }
         } else {
-            resolveSecrets(child, file, pointer, errors);
+            substitute(child, file, pointer, errors);
         }
+    }
+
+    /**
+     * Re-types a substituted scalar so schema validation sees the natural JSON type
+     * the value would have carried if written literally: {@code true}/{@code false}
+     * bind to a boolean, an integer literal to an integer, everything else stays a
+     * string. Only substituted scalars pass through here — a literal (unquoted) value
+     * was already typed by the YAML parser.
+     */
+    private static JsonNode coerce(String value) {
+        if ("true".equalsIgnoreCase(value)) {
+            return BooleanNode.TRUE;
+        }
+        if ("false".equalsIgnoreCase(value)) {
+            return BooleanNode.FALSE;
+        }
+        if (INTEGER.matcher(value).matches()) {
+            try {
+                long parsed = Long.parseLong(value);
+                if (parsed >= Integer.MIN_VALUE && parsed <= Integer.MAX_VALUE) {
+                    return IntNode.valueOf((int) parsed);
+                }
+                return LongNode.valueOf(parsed);
+            } catch (NumberFormatException e) {
+                return TextNode.valueOf(value);
+            }
+        }
+        return TextNode.valueOf(value);
     }
 
     private static void applyEnabledDefault(JsonNode endpointBlock) {
@@ -241,9 +338,31 @@ public final class ConfigLoader {
         try {
             return mapper.treeToValue(node, type);
         } catch (IOException | IllegalArgumentException e) {
-            errors.add(new ConfigError(file, "", "binding failed: " + e.getMessage()));
+            errors.add(new ConfigError(file, bindingErrorPointer(e),
+                    "binding failed for %s: a value could not be bound to the expected type"
+                            .formatted(type.getSimpleName())));
             return null;
         }
+    }
+
+    /**
+     * Derives a JSON pointer from a Jackson mapping error's field path — field names
+     * and array indices only, never the offending value — so a binding error is
+     * locatable without ever echoing a resolved scalar (which may hold a secret).
+     */
+    private static String bindingErrorPointer(Exception e) {
+        if (!(e instanceof JsonMappingException mappingException)) {
+            return "";
+        }
+        StringBuilder pointer = new StringBuilder();
+        for (JsonMappingException.Reference reference : mappingException.getPath()) {
+            if (reference.getFieldName() != null) {
+                pointer.append('/').append(reference.getFieldName());
+            } else if (reference.getIndex() >= 0) {
+                pointer.append('/').append(reference.getIndex());
+            }
+        }
+        return pointer.toString();
     }
 
     private static boolean hasErrorsFor(String file, List<ConfigError> errors) {
@@ -256,11 +375,31 @@ public final class ConfigLoader {
         // Register the Jdk8 module explicitly (Optional support) rather than via
         // findAndAddModules()'s ServiceLoader discovery, which does not resolve in a
         // native image and leaves Optional-typed record components unbindable.
-        return YAMLMapper.builder()
+        return YAMLMapper.builder(hardenedYamlFactory())
                 .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                 .addModule(new Jdk8Module())
                 .addModule(module)
+                .build();
+    }
+
+    /**
+     * Builds a YAML factory hardened against expansion / nesting bombs: SnakeYAML's
+     * alias-expansion, nesting-depth, and code-point limits plus Jackson's
+     * {@link StreamReadConstraints} nesting-depth and string-length caps
+     * (defence-in-depth over untrusted-but-local configuration input).
+     */
+    private static YAMLFactory hardenedYamlFactory() {
+        LoaderOptions loaderOptions = new LoaderOptions();
+        loaderOptions.setMaxAliasesForCollections(MAX_YAML_ALIASES);
+        loaderOptions.setNestingDepthLimit(MAX_YAML_NESTING_DEPTH);
+        loaderOptions.setCodePointLimit(MAX_YAML_STRING_LENGTH);
+        return YAMLFactory.builder()
+                .loaderOptions(loaderOptions)
+                .streamReadConstraints(StreamReadConstraints.builder()
+                        .maxNestingDepth(MAX_YAML_NESTING_DEPTH)
+                        .maxStringLength(MAX_YAML_STRING_LENGTH)
+                        .build())
                 .build();
     }
 

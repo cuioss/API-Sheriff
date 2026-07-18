@@ -15,7 +15,10 @@
  */
 package de.cuioss.sheriff.api.config.validation;
 
+import java.math.BigInteger;
+import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
@@ -25,17 +28,22 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+import de.cuioss.sheriff.api.config.ConfigLogMessages;
 import de.cuioss.sheriff.api.config.load.ConfigError;
+import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.MatchConfig;
+import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.api.config.model.OidcConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
+import de.cuioss.tools.logging.CuiLogger;
 
 /**
  * Runs the cross-cutting configuration rules (pipeline step 7) that cannot be
@@ -46,10 +54,17 @@ import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
  * returns the combined, file- and path-annotated {@link ConfigError} list — never
  * stopping at the first problem. Disabled endpoints have already been dropped by the
  * enablement resolver, so the rules that only concern live routes (alias
- * resolvability, effective-method membership) see enabled endpoints only.
- * Structural verb rules (a config naming {@code TRACE}/{@code CONNECT}) are enforced
- * upstream by the schema and the {@link HttpMethod} enum, which cannot represent
- * those verbs, so no post-binding rule is needed for them.
+ * resolvability, effective-method membership, anchor namespace membership) see
+ * enabled endpoints only. Structural verb rules (a config naming {@code TRACE}/
+ * {@code CONNECT}) are enforced upstream by the schema and the {@link HttpMethod}
+ * enum, which cannot represent those verbs, so no post-binding rule is needed for
+ * them.
+ * <p>
+ * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
+ * existence, route/namespace membership agreement, the non-weakenable auth floor,
+ * the conditional endpoint-auth mandatoriness, and the anchor-aware effective-auth
+ * completeness check — all collect into the same shared {@code errors} list with
+ * file/pointer context and never fail fast.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -59,18 +74,34 @@ import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
  */
 public final class ConfigValidator {
 
+    private static final CuiLogger LOGGER = new CuiLogger(ConfigValidator.class);
+
     private static final int SUPPORTED_VERSION = 1;
     private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
-    private static final String TRUST_ALL_IPV4 = "0.0.0.0/0";
-    private static final String TRUST_ALL_IPV6 = "::/0";
+    private static final String ANCHORS_POINTER = "/anchors";
+    private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
+    private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
+    private static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
+    private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
+    private static final int IPV4_BITS = 32;
+    private static final int IPV6_BITS = 128;
+    private static final int BROAD_PREFIX_IPV4 = 8;
+    private static final int BROAD_PREFIX_IPV6 = 32;
     private static final String WILDCARD_ORIGIN = "*";
+    private static final String REQUIRE_NONE = "none";
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteIdUniqueness(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateRouteDisjointness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateBaseUrlResolvable(endpoints, topology, errors),
+            (gateway, endpoints, topology, errors) -> validateAnchorPrefixDisjointness(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateAnchorReferencesExist(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateAnchorNamespaceMembership(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateEndpointAuthMandatory(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
@@ -136,11 +167,81 @@ public final class ConfigValidator {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 if (!seen.add(route.id())) {
-                    errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/routes",
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "duplicate route id: " + route.id()));
                 }
             }
         }
+    }
+
+    /**
+     * Rule: no two enabled routes share a (normalized) {@code match.path_prefix}
+     * without being distinguished by host, method, or a header matcher. The
+     * same-prefix disjointness check runs here in the all-violations pass rather than
+     * being thrown during route-table assembly (ADR-0009 single-reporter principle);
+     * prefix normalization makes {@code /api} and {@code /api/} collide.
+     */
+    private static void validateRouteDisjointness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        List<RouteWithOwner> routes = new ArrayList<>();
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                routes.add(new RouteWithOwner(endpoint, route));
+            }
+        }
+        for (int i = 0; i < routes.size(); i++) {
+            for (int j = i + 1; j < routes.size(); j++) {
+                RouteWithOwner first = routes.get(i);
+                RouteWithOwner second = routes.get(j);
+                String firstPrefix = normalizePrefix(first.route().match().pathPrefix());
+                String secondPrefix = normalizePrefix(second.route().match().pathPrefix());
+                if (firstPrefix.equals(secondPrefix)
+                        && overlaps(first.route().match(), second.route().match())) {
+                    errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
+                            "routes '%s' and '%s' share prefix '%s' and are not disjoint".formatted(
+                                    first.route().id(), second.route().id(), firstPrefix)));
+                }
+            }
+        }
+    }
+
+    private record RouteWithOwner(EndpointConfig endpoint, RouteConfig route) {
+    }
+
+    private static boolean overlaps(MatchConfig first, MatchConfig second) {
+        return hostsOverlap(first, second) && methodsOverlap(first, second) && !headersDistinguish(first, second);
+    }
+
+    private static boolean hostsOverlap(MatchConfig first, MatchConfig second) {
+        return first.host().isEmpty() || second.host().isEmpty() || first.host().equals(second.host());
+    }
+
+    private static boolean methodsOverlap(MatchConfig first, MatchConfig second) {
+        return first.methods().isEmpty() || second.methods().isEmpty()
+                || !Collections.disjoint(first.methods(), second.methods());
+    }
+
+    private static boolean headersDistinguish(MatchConfig first, MatchConfig second) {
+        for (HeaderMatcher headerA : first.headers()) {
+            for (HeaderMatcher headerB : second.headers()) {
+                if (headerA.name().equalsIgnoreCase(headerB.name())
+                        && (valuesDistinguish(headerA, headerB) || presenceDistinguishes(headerA, headerB))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
+        Optional<String> valueA = headerA.value();
+        Optional<String> valueB = headerB.value();
+        return valueA.isPresent() && valueB.isPresent() && !valueA.get().equals(valueB.get());
+    }
+
+    private static boolean presenceDistinguishes(HeaderMatcher headerA, HeaderMatcher headerB) {
+        Optional<Boolean> presentA = headerA.present();
+        Optional<Boolean> presentB = headerB.present();
+        return presentA.isPresent() && presentB.isPresent() && !presentA.get().equals(presentB.get());
     }
 
     private static void validateBaseUrlResolvable(List<EndpointConfig> endpoints, ResolvedTopology topology,
@@ -153,12 +254,125 @@ public final class ConfigValidator {
         }
     }
 
+    /**
+     * Rule: anchor {@code path_prefix} values are pairwise disjoint — no anchor
+     * prefix (normalized) is a path-prefix of another (ADR-0007).
+     */
+    private static void validateAnchorPrefixDisjointness(GatewayConfig gateway, List<ConfigError> errors) {
+        List<AnchorConfig> anchors = new ArrayList<>(gateway.anchors().values());
+        for (int i = 0; i < anchors.size(); i++) {
+            for (int j = i + 1; j < anchors.size(); j++) {
+                AnchorConfig first = anchors.get(i);
+                AnchorConfig second = anchors.get(j);
+                if (prefixContains(first.pathPrefix(), second.pathPrefix())
+                        || prefixContains(second.pathPrefix(), first.pathPrefix())) {
+                    errors.add(new ConfigError(GATEWAY_FILE, ANCHORS_POINTER,
+                            "anchor prefixes must be pairwise disjoint, but '%s' (%s) and '%s' (%s) overlap"
+                                    .formatted(first.name(), first.pathPrefix(), second.name(), second.pathPrefix())));
+                }
+            }
+        }
+    }
+
+    /**
+     * Rule: every anchor referenced by an endpoint or route is declared in
+     * {@code gateway.anchors} (ADR-0007).
+     */
+    private static void validateAnchorReferencesExist(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            endpoint.anchor().filter(name -> !gateway.anchors().containsKey(name))
+                    .ifPresent(name -> errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ANCHOR_POINTER,
+                            "endpoint '%s' references undefined anchor '%s'".formatted(endpoint.id(), name))));
+            for (RouteConfig route : endpoint.routes()) {
+                route.anchor().filter(name -> !gateway.anchors().containsKey(name))
+                        .ifPresent(name -> errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                "route '%s' references undefined anchor '%s'".formatted(route.id(), name))));
+            }
+        }
+    }
+
+    /**
+     * Rules: (3) every enabled route's {@code match.path_prefix} lies inside its
+     * declared anchor's namespace; (4) every enabled route whose path lies inside
+     * any anchor namespace declares exactly that anchor — an undeclared squatter
+     * fails the boot (ADR-0007).
+     */
+    private static void validateAnchorNamespaceMembership(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        if (gateway.anchors().isEmpty()) {
+            return;
+        }
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                Optional<String> declaredName = declaredAnchorName(endpoint, route);
+                String routePrefix = route.match().pathPrefix();
+                declaredName.map(gateway.anchors()::get).filter(Objects::nonNull).ifPresent(anchor -> {
+                    if (!prefixContains(anchor.pathPrefix(), routePrefix)) {
+                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
+                                        .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+                    }
+                });
+                for (AnchorConfig anchor : gateway.anchors().values()) {
+                    if (prefixContains(anchor.pathPrefix(), routePrefix)
+                            && !declaredName.map(anchor.name()::equals).orElse(false)) {
+                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
+                                        .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Rule: an endpoint declaring no {@code auth} block whose anchor also provides
+     * none fails the boot; the pre-existing "every endpoint declares auth" rule
+     * applies unchanged to endpoints without an anchor-provided posture (ADR-0007).
+     */
+    private static void validateEndpointAuthMandatory(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            if (endpoint.auth().isPresent()) {
+                continue;
+            }
+            boolean anchorProvidesAuth = endpoint.anchor().map(gateway.anchors()::get).filter(Objects::nonNull)
+                    .flatMap(AnchorConfig::auth).isPresent();
+            if (!anchorProvidesAuth) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_AUTH_POINTER,
+                        "endpoint '%s' declares no auth block and no anchor provides one".formatted(endpoint.id())));
+            }
+        }
+    }
+
+    /**
+     * Rule: where the route's anchor declares {@code auth.require} of {@code bearer}
+     * or {@code session}, the route's effective auth must not resolve to
+     * {@code require: none} — the anchor floor cannot be weakened (ADR-0007).
+     */
+    private static void validateAnchorAuthFloor(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
+                Optional<String> anchorRequire = anchor.flatMap(AnchorConfig::auth).map(AuthConfig::require)
+                        .filter(require -> !REQUIRE_NONE.equals(require));
+                if (anchorRequire.isPresent() && REQUIRE_NONE.equals(effectiveRequire(gateway, endpoint, route))) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
+                                    .formatted(route.id(), anchor.get().name(), anchorRequire.get())));
+                }
+            }
+        }
+    }
+
     private static void validateEffectiveAuth(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         Set<String> requires = new HashSet<>();
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                requires.add(effectiveRequire(endpoint, route));
+                requires.add(effectiveRequire(gateway, endpoint, route));
             }
         }
         if (requires.contains("bearer")
@@ -174,11 +388,12 @@ public final class ConfigValidator {
     private static void validateMethodMembership(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            Set<HttpMethod> allowed = effectiveAllowedMethods(gateway, endpoint);
             for (RouteConfig route : endpoint.routes()) {
+                Set<HttpMethod> allowed = effectiveAllowedMethods(gateway, endpoint,
+                        resolveAnchor(gateway, endpoint, route));
                 for (HttpMethod method : route.match().methods()) {
                     if (!allowed.contains(method)) {
-                        errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/routes",
+                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                                 "route '%s' matches method %s outside the effective allowed_methods"
                                         .formatted(route.id(), method)));
                     }
@@ -187,15 +402,109 @@ public final class ConfigValidator {
         }
     }
 
+    /**
+     * Rule: every {@code trusted_proxies} entry is a well-formed CIDR; the union of
+     * the parsed ranges per address family must not cover the entire IPv4 or IPv6
+     * space — catching a single full-space CIDR <em>and</em> complementary
+     * combinations such as {@code 0.0.0.0/1} + {@code 128.0.0.0/1}. Individually very
+     * broad — but not total — prefixes (shorter than {@code /8} for IPv4 or
+     * {@code /32} for IPv6) are surfaced as a boot WARN. The parsed range set is
+     * retained for a later per-request trust decision (Plan 04) (D5).
+     */
     private static void validateForwardedTrust(GatewayConfig gateway, List<ConfigError> errors) {
         gateway.forwarded().ifPresent(forwarded -> {
+            List<CidrRange> ipv4 = new ArrayList<>();
+            List<CidrRange> ipv6 = new ArrayList<>();
             for (String cidr : forwarded.trustedProxies()) {
-                if (TRUST_ALL_IPV4.equals(cidr) || TRUST_ALL_IPV6.equals(cidr)) {
-                    errors.add(new ConfigError(GATEWAY_FILE, "/forwarded/trusted_proxies",
-                            "trust-all CIDR is not permitted: " + cidr));
+                Optional<CidrRange> parsed = parseCidr(cidr);
+                if (parsed.isEmpty()) {
+                    errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
+                            "malformed trusted_proxies CIDR: " + cidr));
+                    continue;
                 }
+                CidrRange range = parsed.get();
+                (range.bits() == IPV4_BITS ? ipv4 : ipv6).add(range);
             }
+            checkFamilyTrust(ipv4, IPV4_BITS, BROAD_PREFIX_IPV4, "IPv4", errors);
+            checkFamilyTrust(ipv6, IPV6_BITS, BROAD_PREFIX_IPV6, "IPv6", errors);
         });
+    }
+
+    private static void checkFamilyTrust(List<CidrRange> ranges, int bits, int broadPrefix, String family,
+            List<ConfigError> errors) {
+        if (ranges.isEmpty()) {
+            return;
+        }
+        if (coversEntireSpace(ranges, bits)) {
+            errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
+                    "trusted_proxies cover the entire %s address space; a trust-all range is not permitted"
+                            .formatted(family)));
+            return;
+        }
+        for (CidrRange range : ranges) {
+            if (range.prefixLength() < broadPrefix) {
+                LOGGER.warn(ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY, range.cidr(),
+                        Integer.toString(range.prefixLength()));
+            }
+        }
+    }
+
+    /**
+     * Whether the union of the supplied ranges covers the whole {@code [0, 2^bits-1]}
+     * address space, merging contiguous or overlapping ranges (so complementary
+     * halves are caught).
+     */
+    private static boolean coversEntireSpace(List<CidrRange> ranges, int bits) {
+        List<CidrRange> sorted = new ArrayList<>(ranges);
+        sorted.sort((first, second) -> first.start().compareTo(second.start()));
+        BigInteger max = BigInteger.ONE.shiftLeft(bits).subtract(BigInteger.ONE);
+        BigInteger nextExpected = BigInteger.ZERO;
+        for (CidrRange range : sorted) {
+            if (range.start().compareTo(nextExpected) > 0) {
+                return false;
+            }
+            BigInteger endPlusOne = range.end().add(BigInteger.ONE);
+            if (endPlusOne.compareTo(nextExpected) > 0) {
+                nextExpected = endPlusOne;
+            }
+        }
+        return nextExpected.compareTo(max) > 0;
+    }
+
+    /**
+     * Parses a {@code address/prefix} CIDR into its inclusive address range, or an
+     * empty optional when the entry is malformed (not exactly one {@code /}, a
+     * non-numeric or out-of-range prefix, or an address that is not an IP literal).
+     */
+    private static Optional<CidrRange> parseCidr(String cidr) {
+        int slash = cidr.indexOf('/');
+        if (slash < 0 || cidr.indexOf('/', slash + 1) >= 0) {
+            return Optional.empty();
+        }
+        int prefixLength;
+        try {
+            prefixLength = Integer.parseInt(cidr.substring(slash + 1));
+        } catch (NumberFormatException e) {
+            return Optional.empty();
+        }
+        byte[] bytes;
+        try {
+            bytes = InetAddress.ofLiteral(cidr.substring(0, slash)).getAddress();
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
+        int bits = bytes.length * 8;
+        if (prefixLength < 0 || prefixLength > bits) {
+            return Optional.empty();
+        }
+        BigInteger value = new BigInteger(1, bytes);
+        int hostBits = bits - prefixLength;
+        BigInteger start = value.shiftRight(hostBits).shiftLeft(hostBits);
+        BigInteger end = start.add(BigInteger.ONE.shiftLeft(hostBits)).subtract(BigInteger.ONE);
+        return Optional.of(new CidrRange(cidr, bits, prefixLength, start, end));
+    }
+
+    private record CidrRange(String cidr, int bits, int prefixLength, BigInteger start, BigInteger end) {
     }
 
     private static void validateCors(GatewayConfig gateway, List<ConfigError> errors) {
@@ -270,18 +579,64 @@ public final class ConfigValidator {
         return route.match().host().map(host -> host.toLowerCase(Locale.ROOT)).filter(host -> !host.isEmpty());
     }
 
-    private static String effectiveRequire(EndpointConfig endpoint, RouteConfig route) {
-        return route.auth().map(AuthConfig::require).orElse(endpoint.auth().require());
+    private static Optional<String> declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
+        return route.anchor().or(endpoint::anchor);
     }
 
-    private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint) {
+    private static Optional<AnchorConfig> resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route) {
+        return declaredAnchorName(endpoint, route).map(gateway.anchors()::get).filter(Objects::nonNull);
+    }
+
+    private static String effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
+        return route.auth().or(endpoint::auth).or(() -> resolveAnchor(gateway, endpoint, route)
+                .flatMap(AnchorConfig::auth)).map(AuthConfig::require).orElse(REQUIRE_NONE);
+    }
+
+    private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
+            Optional<AnchorConfig> anchor) {
         if (!endpoint.allowedMethods().isEmpty()) {
             return EnumSet.copyOf(endpoint.allowedMethods());
+        }
+        Optional<List<HttpMethod>> anchorMethods = anchor.map(AnchorConfig::allowedMethods)
+                .filter(methods -> !methods.isEmpty());
+        if (anchorMethods.isPresent()) {
+            return EnumSet.copyOf(anchorMethods.get());
         }
         if (!gateway.allowedMethods().isEmpty()) {
             return EnumSet.copyOf(gateway.allowedMethods());
         }
         return EnumSet.allOf(HttpMethod.class);
+    }
+
+    /**
+     * Normalizes a path prefix — ensuring a leading {@code /} and stripping a
+     * trailing {@code /} (except for the bare root) — so {@code /api} and
+     * {@code /api/} compare identically.
+     *
+     * @param prefix the raw path prefix
+     * @return the normalized prefix
+     */
+    private static String normalizePrefix(String prefix) {
+        String normalized = prefix.startsWith("/") ? prefix : "/" + prefix;
+        while (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    /**
+     * Whether {@code candidate} lies within the {@code container} namespace on a
+     * segment boundary: an exact match, or a child path under {@code container/}.
+     *
+     * @param container the owning prefix
+     * @param candidate the prefix tested for containment
+     * @return {@code true} when {@code candidate} is inside {@code container}
+     */
+    private static boolean prefixContains(String container, String candidate) {
+        String owner = normalizePrefix(container);
+        String child = normalizePrefix(candidate);
+        return child.equals(owner) || child.startsWith(owner + "/");
     }
 
     private static String endpointFile(EndpointConfig endpoint) {

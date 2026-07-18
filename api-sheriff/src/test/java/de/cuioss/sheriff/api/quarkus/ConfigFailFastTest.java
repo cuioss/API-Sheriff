@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.quarkus;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -32,17 +33,23 @@ import de.cuioss.test.juli.junit5.EnableTestLogger;
  * Tests that {@link ConfigProducer} fails fast on an invalid configuration: the
  * bean producer and the startup observer both throw, and every collected violation
  * plus the abort are logged as structured ERROR records — so Quarkus exits non-zero
- * rather than serving on partial configuration.
+ * rather than serving on partial configuration. Also covers the ADR-0007 anchor
+ * boot semantics: a valid anchored config boots cleanly, while an undeclared
+ * squatter route inside an anchor namespace refuses boot.
  */
 @EnableTestLogger
 class ConfigFailFastTest {
 
-    private static ConfigProducer producerForBrokenConfig() throws URISyntaxException {
-        var resource = ConfigFailFastTest.class.getResource("/config/broken");
-        assertNotNull(resource, "broken config fixture must be on the test classpath");
+    private static ConfigProducer producerFor(String resourceDir) throws URISyntaxException {
+        var resource = ConfigFailFastTest.class.getResource(resourceDir);
+        assertNotNull(resource, resourceDir + " fixture must be on the test classpath");
         ConfigProducer producer = new ConfigProducer();
         producer.configDir = Path.of(resource.toURI()).toString();
         return producer;
+    }
+
+    private static ConfigProducer producerForBrokenConfig() throws URISyntaxException {
+        return producerFor("/config/broken");
     }
 
     @Test
@@ -69,5 +76,20 @@ class ConfigFailFastTest {
 
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR, "Invalid configuration");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR, "Refusing to start");
+    }
+
+    @Test
+    void shouldBootCleanlyOnAValidAnchoredConfig() throws Exception {
+        ConfigProducer producer = producerFor("/config/anchored");
+
+        assertDoesNotThrow(producer::gatewayConfig, "a valid api+bff anchored config must boot cleanly");
+    }
+
+    @Test
+    void shouldRefuseBootOnAnAnchorSquatterConfig() throws Exception {
+        ConfigProducer producer = producerFor("/config/anchor-squatter");
+
+        assertThrows(IllegalStateException.class, producer::gatewayConfig,
+                "an undeclared squatter route inside an anchor namespace must refuse boot");
     }
 }

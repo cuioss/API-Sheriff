@@ -31,6 +31,7 @@ diagnostics use the logger directly and are not catalogued.
 |ID |Component |Message |Description
 |ApiSheriff-1 |PROXY |Proxy route registered: path-prefix='%s' upstream='%s' |Logged once at startup when the catch-all proxy route is registered on the data plane
 |ApiSheriff-2 |CONFIG |Configuration loaded successfully (config_version='%s') |Logged once at startup after the file-based configuration is read, validated, and assembled into the route table
+|ApiSheriff-3 |CONFIG |Route '%s' effective posture: anchor='%s', auth.require='%s', filter='%s' |Logged once per route during route-table assembly, reporting the materialized effective posture (resolving anchor, effective auth requirement, effective security-filter profile) — anchors vanish at runtime, so the boot log is the discoverability record (ADR-0007)
 |===
 
 == WARN Level (100-199)
@@ -39,6 +40,7 @@ diagnostics use the logger directly and are not catalogued.
 |===
 |ID |Component |Message |Description
 |ApiSheriff-100 |PROXY |Proxy request to upstream '%s' failed: %s |Logged when forwarding a request to the configured upstream fails; the gateway responds with 502
+|ApiSheriff-101 |CONFIG |Route '%s' overrides anchor '%s' %s policy (wholesale replacement) |Logged during route-table assembly when a route replaces an anchor-provided non-auth policy block (security_filter or allowed_methods) wholesale, so a weakening override is an explicit, audited choice (ADR-0007)
 |===
 
 == ERROR Level (200-299)

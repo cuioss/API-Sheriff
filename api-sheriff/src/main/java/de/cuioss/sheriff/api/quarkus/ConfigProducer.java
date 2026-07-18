@@ -122,9 +122,10 @@ public class ConfigProducer {
         }
         Path directory = Path.of(configDir);
         try {
-            ConfigLoader.LoadedConfig loaded = new ConfigLoader(directory, new EnvSecretResolver()).load();
+            EnvSecretResolver resolver = new EnvSecretResolver();
+            ConfigLoader.LoadedConfig loaded = new ConfigLoader(directory, resolver).load();
             List<EndpointConfig> enabled = loaded.endpoints().stream().filter(EndpointConfig::enabled).toList();
-            ResolvedTopology topology = new TopologyResolver().resolve(directory.resolve(TOPOLOGY_FILE), enabled,
+            ResolvedTopology topology = new TopologyResolver(resolver).resolve(directory.resolve(TOPOLOGY_FILE), enabled,
                     loaded.gateway().tls().map(TlsConfig::passthroughSni).map(Map::values).orElse(List.of()));
             List<ConfigError> violations = new ConfigValidator().validate(loaded.gateway(), enabled, topology);
             if (!violations.isEmpty()) {
