@@ -69,9 +69,16 @@ assert_fails_to_boot() {
         exit 1
     fi
 
-    echo "📄 Container exited with code ${exit_code}. Fail-fast markers (if any):"
-    docker logs "${CONTAINER_NAME}" 2>&1 \
+    local logs
+    logs="$(docker logs "${CONTAINER_NAME}" 2>&1)"
+    echo "📄 Container exited with code ${exit_code}. Fail-fast markers:"
+    printf '%s\n' "${logs}" \
         | grep -E "Refusing to start|ApiSheriff-20[01]|configuration is invalid|${marker}" || true
+
+    if ! grep -Fq -- "${marker}" <<<"${logs}"; then
+        echo "❌ Expected validation marker '${marker}' was absent for ${label}."
+        exit 1
+    fi
 
     if [[ "${exit_code}" == "0" ]]; then
         echo "❌ Expected a non-zero exit for ${label}, but the container exited 0."

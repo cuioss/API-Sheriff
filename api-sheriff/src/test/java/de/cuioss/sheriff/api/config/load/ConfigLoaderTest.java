@@ -403,13 +403,70 @@ class ConfigLoaderTest {
 
     @Test
     void rejectsYamlExceedingAliasExpansionLimit() throws Exception {
+        // A collection anchor dereferenced far more than MAX_YAML_ALIASES (50) times. Jackson's YAMLParser
+        // consumes SnakeYAML's event stream directly and never runs the Composer, so this bomb is caught
+        // ONLY by ConfigLoader's SnakeYAML-native compose pre-pass — assert on the alias-specific diagnostic
+        // (not merely "some ConfigLoadException") so the test fails loudly if that guard ever regresses. Were
+        // the guard absent, this document would fail solely on the schema's additionalProperties rejection of
+        // the unrelated top-level keys, which carries no 'alias' diagnostic.
         StringBuilder yaml = new StringBuilder("version: 1\nanchor_def: &a [1, 2, 3]\naliases:\n");
         for (int i = 0; i < 60; i++) {
             yaml.append("  - *a\n");
         }
         writeConfig("gateway.yaml", yaml.toString());
 
-        assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
                 "a YAML document exceeding the alias-expansion limit must fail the boot");
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.message().contains("bomb protection tripped")
+                                && error.message().contains("alias")),
+                () -> "the alias-expansion guard must raise its alias-specific diagnostic, not merely a schema "
+                        + "violation for the unrelated top-level keys, got: " + exception.errors());
+    }
+
+    @Test
+    void rejectsNestedCollectionAliasBomb() throws Exception {
+        // The classic billion-laughs shape: collection anchors chained through nested levels, then the
+        // deepest level dereferenced past MAX_YAML_ALIASES (50). SnakeYAML's guard counts total non-scalar
+        // alias EVENTS (not the exponential expansion), so both this nested form and a flat repeat trip it
+        // once the count crosses the limit — and both are missed by Jackson's Composer-less readTree path.
+        StringBuilder yaml = new StringBuilder("""
+                version: 1
+                l0: &l0 ["lol", "lol"]
+                l1: &l1 [*l0, *l0]
+                l2: &l2 [*l1, *l1]
+                boom:
+                """);
+        for (int i = 0; i < 60; i++) {
+            yaml.append("  - *l2\n");
+        }
+        writeConfig("gateway.yaml", yaml.toString());
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+                "a nested/exponential alias bomb must fail the boot");
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.message().contains("bomb protection tripped")
+                                && error.message().contains("alias")),
+                () -> "a nested alias bomb must trip the alias-count guard, got: " + exception.errors());
+    }
+
+    @Test
+    void acceptsAModestNumberOfCollectionAliasesWithinTheLimit() throws Exception {
+        // A handful of legitimate collection aliases (well under MAX_YAML_ALIASES) must NOT trip the guard —
+        // the pre-pass rejects bombs, not ordinary anchor reuse. The unrelated top-level keys still fail the
+        // schema, but the point is that the compose pre-pass raises no alias diagnostic for this document.
+        writeConfig("gateway.yaml", """
+                version: 1
+                base: &b ["a", "b"]
+                reuse: [*b, *b, *b]
+                """);
+
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
+                () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
+                        + exception.errors());
     }
 }

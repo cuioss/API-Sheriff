@@ -117,6 +117,7 @@ public final class RouteTableBuilder {
      * @return the normalized prefix
      */
     public static String normalizePrefix(String prefix) {
+        Objects.requireNonNull(prefix, "prefix");
         String normalized = prefix.startsWith("/") ? prefix : "/" + prefix;
         while (normalized.length() > 1 && normalized.endsWith("/")) {
             normalized = normalized.substring(0, normalized.length() - 1);

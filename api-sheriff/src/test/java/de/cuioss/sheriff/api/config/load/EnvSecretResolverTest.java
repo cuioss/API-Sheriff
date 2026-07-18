@@ -128,6 +128,13 @@ class EnvSecretResolverTest {
     }
 
     @Test
+    @DisplayName("A ${ nested inside a ${NAME:-default} default is malformed, never a silently resolved literal")
+    void throwsOnNestedPlaceholderInsideDefault() {
+        EnvSecretResolver resolver = resolverWith(Map.of("B", "inner-value"));
+        assertThrows(MalformedPlaceholderException.class, () -> resolver.resolve("${A:-${B}}"));
+    }
+
+    @Test
     void defaultConstructorResolvesPlainValueWithoutTouchingEnvironment() {
         assertEquals("plain", new EnvSecretResolver().resolve("plain"));
     }

@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 
+import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
@@ -53,6 +54,7 @@ import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 /**
@@ -437,6 +439,9 @@ class ConfigValidatorTest {
 
             assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
                     () -> "well-scoped CIDRs must not fail the boot, got: " + errors);
+            assertTrue(TestLoggerFactory.getTestHandler()
+                            .resolveLogMessagesContaining(TestLogLevel.WARN, "very broad address range").isEmpty(),
+                    "tightly scoped CIDRs (10.0.0.0/8, 2001:db8::/32) must not emit a broad-range WARN");
         }
 
         @Test
@@ -660,15 +665,50 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Rule 6: Should reject an endpoint that declares no auth and whose anchor provides none")
-        void shouldRejectEndpointWithoutAnyAuthSource() {
+        @DisplayName("Rule 6: Should reject a route that resolves no auth from route, endpoint, or anchor")
+        void shouldRejectRouteWithoutAnyAuthSource() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(),
                     anchoredRoute("r", "/api/x", "api", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/endpoint/auth", "declares no auth block and no anchor provides one");
+            assertHasError(errors, "/endpoint/routes", "route 'r' has no resolvable auth");
+        }
+
+        @Test
+        @DisplayName("Rule 6: Should accept an endpoint with no auth block when every route supplies its own auth")
+        void shouldAcceptEndpointWhereEveryRouteSuppliesOwnAuth() {
+            GatewayConfig gateway = validGateway().build();
+            RouteConfig selfAuth = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null, Optional.empty(), selfAuth);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "an endpoint whose every route declares its own auth must not be rejected, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 6: Should catch a route overriding to an auth-less anchor that the endpoint anchor would mask")
+        void shouldCatchRouteAnchorOverrideToAuthLessAnchor() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "secured", anchor("secured", "/api", "bearer"),
+                    "open", anchor("open", "/open", null)));
+            RouteConfig override = RouteConfig.builder().id("r").anchor(Optional.of("open"))
+                    .match(match("/open/x", HttpMethod.GET)).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "secured", Optional.empty(), override);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            // The endpoint-level anchor 'secured' provides auth, so a per-endpoint check would pass; the route
+            // overrides to the auth-less 'open' anchor and declares no own auth, so a per-route check must reject it.
+            assertHasError(errors, "/endpoint/routes", "route 'r' has no resolvable auth");
+            // Absent this rule the same config escapes validate() and explodes as a RouteTableException during
+            // route-table assembly (ADR-0007); confirm that failure mode is now caught by the all-violations pass.
+            assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> new RouteTableBuilder().build(gateway, List.of(endpoint), topologyWith("ORDERS")));
         }
 
         @Test

@@ -59,6 +59,9 @@ import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
 import org.jspecify.annotations.Nullable;
 import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.error.YAMLException;
+import org.yaml.snakeyaml.nodes.Node;
 
 /**
  * Reads, validates, and binds the file-based API Sheriff configuration.
@@ -255,11 +258,56 @@ public final class ConfigLoader {
             errors.add(new ConfigError(file, "", "configuration file not found"));
             return null;
         }
+        if (!withinExpansionLimits(path, file, errors)) {
+            return null;
+        }
         try (Reader reader = Files.newBufferedReader(path)) {
             return mapper.readTree(reader);
         } catch (IOException e) {
             errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
             return null;
+        }
+    }
+
+    /**
+     * Rejects a YAML alias-expansion (billion-laughs) or nesting bomb <em>before</em>
+     * Jackson binds the document, via a SnakeYAML-native compose-only pass under the
+     * same {@link LoaderOptions} as {@link #hardenedYamlFactory()}.
+     * <p>
+     * This pass is load-bearing, not redundant: Jackson's {@code YAMLParser} consumes
+     * SnakeYAML's event stream directly and never runs the {@code Composer} — the one
+     * layer that counts collection aliases against
+     * {@link LoaderOptions#setMaxAliasesForCollections(int)} — so a
+     * {@code mapper.readTree} call silently ignores the alias cap no matter how many
+     * times a collection anchor is dereferenced. Composing the node graph here (without
+     * constructing any Java objects, so no deserialization-gadget surface is opened)
+     * forces the {@code Composer} to run and makes the alias-count and nesting-depth
+     * caps actually fire. A tripped limit is reported as a collected {@link ConfigError}
+     * so the boot fails with the aggregate rather than throwing fail-fast.
+     *
+     * @return {@code true} when the document is within the expansion / nesting limits,
+     *         {@code false} when a limit tripped or the file could not be read (an error
+     *         was recorded in either failing case)
+     */
+    private static boolean withinExpansionLimits(Path path, String file, List<ConfigError> errors) {
+        LoaderOptions loaderOptions = new LoaderOptions();
+        loaderOptions.setMaxAliasesForCollections(MAX_YAML_ALIASES);
+        loaderOptions.setNestingDepthLimit(MAX_YAML_NESTING_DEPTH);
+        loaderOptions.setCodePointLimit(MAX_YAML_STRING_LENGTH);
+        try (Reader reader = Files.newBufferedReader(path)) {
+            for (Node ignored : new Yaml(loaderOptions).composeAll(reader)) {
+                // Iterating forces the Composer to walk the node graph; the alias-count and
+                // nesting-depth caps throw a YAMLException here if the document is a bomb.
+                Objects.requireNonNull(ignored);
+            }
+            return true;
+        } catch (YAMLException e) {
+            errors.add(new ConfigError(file, "",
+                    "YAML expansion/nesting bomb protection tripped: " + e.getMessage()));
+            return false;
+        } catch (IOException e) {
+            errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
+            return false;
         }
     }
 
@@ -385,9 +433,17 @@ public final class ConfigLoader {
 
     /**
      * Builds a YAML factory hardened against expansion / nesting bombs: SnakeYAML's
-     * alias-expansion, nesting-depth, and code-point limits plus Jackson's
-     * {@link StreamReadConstraints} nesting-depth and string-length caps
-     * (defence-in-depth over untrusted-but-local configuration input).
+     * nesting-depth and code-point limits (both enforced at the event-parser level
+     * Jackson drives) plus Jackson's {@link StreamReadConstraints} nesting-depth and
+     * string-length caps (defence-in-depth over untrusted-but-local configuration
+     * input).
+     * <p>
+     * The alias-expansion cap ({@link LoaderOptions#setMaxAliasesForCollections(int)})
+     * is set here for forward-compatibility, but is <em>not</em> enforced on this path:
+     * Jackson's {@code YAMLParser} consumes SnakeYAML's event stream directly and never
+     * invokes the {@code Composer}, the only layer that counts collection aliases. The
+     * effective alias-bomb guard is the separate compose-only pre-pass in
+     * {@link #withinExpansionLimits}, which runs before {@code readTree}.
      */
     private static YAMLFactory hardenedYamlFactory() {
         LoaderOptions loaderOptions = new LoaderOptions();

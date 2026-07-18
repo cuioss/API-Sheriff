@@ -91,5 +91,6 @@ class ConfigFailFastTest {
 
         assertThrows(IllegalStateException.class, producer::gatewayConfig,
                 "an undeclared squatter route inside an anchor namespace must refuse boot");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR, "does not declare it");
     }
 }

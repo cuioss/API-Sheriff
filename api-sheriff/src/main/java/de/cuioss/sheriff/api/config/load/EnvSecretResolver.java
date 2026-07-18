@@ -53,7 +53,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class EnvSecretResolver {
 
-    private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?}");
+    private static final Pattern PLACEHOLDER = Pattern
+            .compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)(?::-((?:(?!\\$\\{).)*?))?}");
     private static final Pattern BARE_REFERENCE = Pattern.compile("\\$\\{[A-Za-z_][A-Za-z0-9_]*}");
     private static final String OPEN = "${";
 

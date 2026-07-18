@@ -42,6 +42,7 @@ import de.cuioss.sheriff.api.config.model.OidcConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
+import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
@@ -63,9 +64,10 @@ import de.cuioss.tools.logging.CuiLogger;
  * <p>
  * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
  * existence, route/namespace membership agreement, the non-weakenable auth floor,
- * the conditional endpoint-auth mandatoriness, and the anchor-aware effective-auth
- * completeness check — all collect into the same shared {@code errors} list with
- * file/pointer context and never fail fast.
+ * the per-route auth resolvability (every route must resolve an auth posture from
+ * its own {@code auth}, its endpoint, or a declared anchor), and the anchor-aware
+ * effective-auth completeness check — all collect into the same shared
+ * {@code errors} list with file/pointer context and never fail fast.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -82,7 +84,6 @@ public final class ConfigValidator {
     private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
     private static final String ANCHORS_POINTER = "/anchors";
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
-    private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
     private static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
     private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
     private static final int IPV4_BITS = 32;
@@ -101,7 +102,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAnchorPrefixDisjointness(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorReferencesExist(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorNamespaceMembership(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateEndpointAuthMandatory(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateRouteAuthResolvable(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
@@ -213,7 +214,10 @@ public final class ConfigValidator {
     }
 
     private static boolean hostsOverlap(MatchConfig first, MatchConfig second) {
-        return first.host().isEmpty() || second.host().isEmpty() || first.host().equals(second.host());
+        if (first.host().isEmpty() || second.host().isEmpty()) {
+            return true;
+        }
+        return first.host().get().equalsIgnoreCase(second.host().get());
     }
 
     private static boolean methodsOverlap(MatchConfig first, MatchConfig second) {
@@ -328,21 +332,27 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: an endpoint declaring no {@code auth} block whose anchor also provides
-     * none fails the boot; the pre-existing "every endpoint declares auth" rule
-     * applies unchanged to endpoints without an anchor-provided posture (ADR-0007).
+     * Rule: every enabled route must resolve an auth posture through the same
+     * {@code route → endpoint → declared-anchor} chain the route table uses
+     * ({@link #effectiveAuth}); a route for which none of the three supplies an
+     * {@code auth} block fails the boot (ADR-0007). Checking per route — rather than
+     * once per endpoint — closes two gaps of a per-endpoint anchor check: it no longer
+     * falsely rejects an endpoint whose every route supplies its own auth, and it
+     * catches a route that overrides to a different, auth-less anchor via
+     * {@code route.anchor} (or omits auth entirely) even when the endpoint-level anchor
+     * would have satisfied a per-endpoint check. This surfaces the failure here, in the
+     * all-violations pass (ADR-0009), instead of letting it escape to a
+     * {@code RouteTableException} thrown during route-table assembly.
      */
-    private static void validateEndpointAuthMandatory(GatewayConfig gateway, List<EndpointConfig> endpoints,
+    private static void validateRouteAuthResolvable(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            if (endpoint.auth().isPresent()) {
-                continue;
-            }
-            boolean anchorProvidesAuth = endpoint.anchor().map(gateway.anchors()::get).filter(Objects::nonNull)
-                    .flatMap(AnchorConfig::auth).isPresent();
-            if (!anchorProvidesAuth) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_AUTH_POINTER,
-                        "endpoint '%s' declares no auth block and no anchor provides one".formatted(endpoint.id())));
+            for (RouteConfig route : endpoint.routes()) {
+                if (effectiveAuth(gateway, endpoint, route).isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' has no resolvable auth: neither the route, its endpoint '%s', nor a declared anchor provides an auth posture"
+                                    .formatted(route.id(), endpoint.id())));
+                }
             }
         }
     }
@@ -513,9 +523,17 @@ public final class ConfigValidator {
     }
 
     private static void validateCors(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.securityHeaders().flatMap(headers -> headers.cors()).ifPresent(cors -> {
+        checkCors(gateway.securityHeaders(), "/security_headers/cors", errors);
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            checkCors(anchor.securityHeaders(), "/anchors/%s/security_headers/cors".formatted(anchor.name()), errors);
+        }
+    }
+
+    private static void checkCors(Optional<SecurityHeadersConfig> securityHeaders, String pointer,
+            List<ConfigError> errors) {
+        securityHeaders.flatMap(SecurityHeadersConfig::cors).ifPresent(cors -> {
             if (cors.allowCredentials().orElse(false) && cors.allowedOrigins().contains(WILDCARD_ORIGIN)) {
-                errors.add(new ConfigError(GATEWAY_FILE, "/security_headers/cors",
+                errors.add(new ConfigError(GATEWAY_FILE, pointer,
                         "wildcard origin '*' is not permitted together with allow_credentials"));
             }
         });
@@ -593,9 +611,20 @@ public final class ConfigValidator {
         return declaredAnchorName(endpoint, route).map(gateway.anchors()::get).filter(Objects::nonNull);
     }
 
+    /**
+     * The route's effective auth, resolved through the wholesale
+     * {@code route → endpoint → declared-anchor} replacement chain (ADR-0007) — the
+     * same order {@code RouteTableBuilder} materializes. Empty when none of the three
+     * declares an {@code auth} block.
+     */
+    private static Optional<AuthConfig> effectiveAuth(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route) {
+        return route.auth().or(endpoint::auth)
+                .or(() -> resolveAnchor(gateway, endpoint, route).flatMap(AnchorConfig::auth));
+    }
+
     private static String effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
-        return route.auth().or(endpoint::auth).or(() -> resolveAnchor(gateway, endpoint, route)
-                .flatMap(AnchorConfig::auth)).map(AuthConfig::require).orElse(REQUIRE_NONE);
+        return effectiveAuth(gateway, endpoint, route).map(AuthConfig::require).orElse(REQUIRE_NONE);
     }
 
     private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
@@ -625,6 +654,9 @@ public final class ConfigValidator {
     private static boolean prefixContains(String container, String candidate) {
         String owner = RouteTableBuilder.normalizePrefix(container);
         String child = RouteTableBuilder.normalizePrefix(candidate);
+        if ("/".equals(owner)) {
+            return true;
+        }
         return child.equals(owner) || child.startsWith(owner + "/");
     }
 
