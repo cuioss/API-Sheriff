@@ -97,7 +97,10 @@ cat > "${SCHEMA_INVALID_DIR}/gateway.yaml" <<'YAML'
 version: "not-an-integer"
 unknown_key: true
 YAML
-assert_fails_to_boot "${SCHEMA_INVALID_DIR}" "a schema-invalid configuration" "not-an-integer"
+# Marker is the unknown property KEY (never a config value): the D5 binding-error
+# redaction guarantees raw scalar values are not echoed into fail-fast logs, so
+# asserting on the rejected value would contradict the redaction contract.
+assert_fails_to_boot "${SCHEMA_INVALID_DIR}" "a schema-invalid configuration" "unknown_key"
 
 # Case 2: an anchor-violation gateway.yaml — two anchors whose prefixes are not
 # pairwise disjoint ('/api' contains '/api/v1'), rejected by the ADR-0007 anchor

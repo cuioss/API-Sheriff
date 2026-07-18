@@ -214,10 +214,12 @@ public final class ConfigValidator {
     }
 
     private static boolean hostsOverlap(MatchConfig first, MatchConfig second) {
-        if (first.host().isEmpty() || second.host().isEmpty()) {
+        Optional<String> firstHost = first.host();
+        Optional<String> secondHost = second.host();
+        if (firstHost.isEmpty() || secondHost.isEmpty()) {
             return true;
         }
-        return first.host().get().equalsIgnoreCase(second.host().get());
+        return firstHost.get().equalsIgnoreCase(secondHost.get());
     }
 
     private static boolean methodsOverlap(MatchConfig first, MatchConfig second) {
