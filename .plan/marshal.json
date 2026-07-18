@@ -168,12 +168,32 @@
     "map": {
       "java": [
         {
+          "glob": "*.sh",
+          "role": "config",
+          "build_class": "verify"
+        },
+        {
           "glob": "*/src/main/*.java",
           "role": "production",
           "build_class": "compile"
         },
         {
+          "glob": "*/src/main/resources/*",
+          "role": "production",
+          "build_class": "compile"
+        },
+        {
           "glob": "*/src/test/*.java",
+          "role": "test",
+          "build_class": "module-tests"
+        },
+        {
+          "glob": "*/src/test/*IT.java",
+          "role": "test",
+          "build_class": "verify"
+        },
+        {
+          "glob": "*/src/test/resources/*",
           "role": "test",
           "build_class": "module-tests"
         },
@@ -257,7 +277,7 @@
       "lessons_superseded_days": 0,
       "temp_on_maintenance": true
     },
-    "provisioned_version": "0.1.1116",
+    "provisioned_version": "0.1.1137",
     "config_seed_fingerprint": "37df1a33"
   }
 }
