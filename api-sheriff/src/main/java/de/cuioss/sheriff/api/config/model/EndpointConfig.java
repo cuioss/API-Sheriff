@@ -47,7 +47,7 @@ import lombok.Builder;
  */
 @Builder
 public record EndpointConfig(String id, boolean enabled, String baseUrl, AuthConfig auth,
-                             List<HttpMethod> allowedMethods, Optional<UpstreamDefaultsConfig> upstreamDefaults, List<RouteConfig> routes) {
+List<HttpMethod> allowedMethods, Optional<UpstreamDefaultsConfig> upstreamDefaults, List<RouteConfig> routes) {
 
     /**
      * Canonical constructor requiring the mandatory fields, defensively copying the

@@ -46,9 +46,9 @@ import lombok.Builder;
  */
 @Builder
 public record SecurityFilterConfig(Optional<String> profile, List<String> allowedPaths, Optional<Integer> maxHeaderCount,
-                                   Optional<Integer> maxHeaderValueLength, Optional<Integer> maxQueryParams, Optional<Integer> maxParamValueLength,
-                                   Optional<Integer> maxBodyBytes, List<String> allowedHeaderNames, List<String> blockedHeaderNames,
-                                   List<String> allowedContentTypes) {
+Optional<Integer> maxHeaderValueLength, Optional<Integer> maxQueryParams, Optional<Integer> maxParamValueLength,
+Optional<Integer> maxBodyBytes, List<String> allowedHeaderNames, List<String> blockedHeaderNames,
+List<String> allowedContentTypes) {
 
     /**
      * Canonical constructor defensively copying collections and normalizing absent

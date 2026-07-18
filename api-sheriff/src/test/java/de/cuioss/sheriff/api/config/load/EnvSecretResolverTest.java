@@ -23,9 +23,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
 
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import de.cuioss.sheriff.api.config.load.EnvSecretResolver.MissingVariableException;
+import de.cuioss.test.generator.Generators;
 
 /**
  * Tests for {@link EnvSecretResolver}: reference detection, single / embedded /
@@ -80,5 +82,42 @@ class EnvSecretResolverTest {
     @Test
     void defaultConstructorResolvesPlainValueWithoutTouchingEnvironment() {
         assertEquals("plain", new EnvSecretResolver().resolve("plain"));
+    }
+
+    @Test
+    @DisplayName("Missing-variable failure names the variable but leaks no resolved secret value")
+    void exceptionMessageLeaksNoResolvedSecretValue() {
+        // Arrange: two present secrets that resolve before an absent reference triggers the failure
+        String userSecret = Generators.letterStrings(12, 20).next();
+        String passSecret = Generators.letterStrings(12, 20).next();
+        EnvSecretResolver resolver = resolverWith(Map.of("USER", userSecret, "PASS", passSecret));
+
+        // Act
+        MissingVariableException exception = assertThrows(MissingVariableException.class,
+                () -> resolver.resolve("${USER}:${PASS}@${ABSENT}"));
+
+        // Assert: the failure names only the missing variable, never the resolved secrets
+        String message = exception.getMessage();
+        assertEquals("ABSENT", exception.variableName());
+        assertTrue(message.contains("ABSENT"), "message should name the missing variable");
+        assertFalse(message.contains(userSecret), () -> "message must not leak the resolved USER secret: " + message);
+        assertFalse(message.contains(passSecret), () -> "message must not leak the resolved PASS secret: " + message);
+    }
+
+    @Test
+    @DisplayName("Failure after a metacharacter-bearing secret still leaks no resolved value")
+    void exceptionMessageLeaksNoSecretContainingReplacementMetacharacters() {
+        // Arrange: a resolved secret carrying regex-replacement metacharacters ($ and \)
+        String trickySecret = "p$ss\\w0rd-" + Generators.letterStrings(6, 12).next();
+        EnvSecretResolver resolver = resolverWith(Map.of("SECRET", trickySecret));
+
+        // Act
+        MissingVariableException exception = assertThrows(MissingVariableException.class,
+                () -> resolver.resolve("${SECRET}/${MISSING}"));
+
+        // Assert
+        assertEquals("MISSING", exception.variableName());
+        assertFalse(exception.getMessage().contains(trickySecret),
+                () -> "message must not leak the resolved secret: " + exception.getMessage());
     }
 }

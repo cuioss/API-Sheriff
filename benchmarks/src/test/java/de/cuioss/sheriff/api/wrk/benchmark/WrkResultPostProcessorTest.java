@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -29,10 +30,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for {@link WrkResultPostProcessor}.
- * Tests that the processor correctly parses WRK output format,
- * not specific values that change with each benchmark run.
+ * <p>
+ * Fixtures are loaded from the test classpath (not CWD-relative paths, which
+ * only resolve when the JVM working directory happens to be the module root),
+ * and the value-asserting tests pin the concrete metric numbers (latency
+ * percentiles and throughput) parsed from the known synthetic fixtures so a
+ * unit-conversion regression in the converter is caught rather than silently
+ * passing an ordering-only check.
  */
 class WrkResultPostProcessorTest {
+
+    private static final String HEALTH_FIXTURE = "wrk-health-results.txt";
+    private static final String API_HEALTH_FIXTURE = "wrk-api-health-results.txt";
 
     @TempDir
     Path tempDir;
@@ -44,124 +53,120 @@ class WrkResultPostProcessorTest {
         processor = new WrkResultPostProcessor();
     }
 
-    @Test
-    void comprehensiveStructureGeneration() throws Exception {
-        // Copy real benchmark outputs to temp directory wrk subdirectory
+    /**
+     * Copies a fixture from the test classpath into the temp {@code wrk} directory
+     * the processor reads. Loading via the classpath makes the test independent of
+     * the JVM working directory.
+     */
+    private void copyFixtureToWrkDir(String fixtureName) throws IOException {
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
-        Path healthSource = Path.of("src/test/resources/wrk-health-results.txt");
-        Path apiHealthSource = Path.of("src/test/resources/wrk-api-health-results.txt");
-        Files.copy(healthSource, wrkDir.resolve("wrk-health-results.txt"));
-        Files.copy(apiHealthSource, wrkDir.resolve("wrk-api-health-results.txt"));
-
-        // Process results
-        Path outputDir = tempDir.resolve("output");
-        processor.process(tempDir, outputDir);
-
-        // Verify comprehensive structure matching JMH benchmarks
-        verifyComprehensiveStructure();
+        try (InputStream in = WrkResultPostProcessorTest.class.getClassLoader()
+                     .getResourceAsStream(fixtureName)) {
+            assertNotNull(in, "Fixture must be on the test classpath: " + fixtureName);
+            Files.copy(in, wrkDir.resolve(fixtureName));
+        }
     }
 
-    @Test
-    void parseHealthLiveOutput() throws Exception {
-        Path wrkDir = tempDir.resolve("wrk");
-        Files.createDirectories(wrkDir);
-        Path sourceFile = Path.of("src/test/resources/wrk-health-results.txt");
-        Path targetFile = wrkDir.resolve("wrk-health-results.txt");
-        Files.copy(sourceFile, targetFile);
-
+    private JsonObject processAndReadJson() throws IOException {
         Path outputDir = tempDir.resolve("output");
         processor.process(tempDir, outputDir);
-
         Path jsonFile = outputDir.resolve("gh-pages-ready/data/benchmark-data.json");
-        assertTrue(Files.exists(jsonFile), "Benchmark data file should be created");
-
-        String jsonContent = Files.readString(jsonFile);
-        JsonObject json = JsonParser.parseString(jsonContent).getAsJsonObject();
-
-        assertTrue(json.has("metadata"));
-        JsonObject metadata = json.getAsJsonObject("metadata");
-        assertTrue(metadata.has("timestamp"));
-        assertTrue(metadata.has("displayTimestamp"));
-        assertEquals("Integration Performance", metadata.get("benchmarkType").getAsString());
-        assertEquals("2.0", metadata.get("reportVersion").getAsString());
-
-        assertTrue(json.has("benchmarks"));
-        JsonObject healthBenchmark = json.getAsJsonArray("benchmarks").get(0).getAsJsonObject();
-        assertEquals("healthLiveCheck", healthBenchmark.get("name").getAsString());
-        assertTrue(healthBenchmark.has("mode"));
-        assertTrue(healthBenchmark.has("score"));
-        assertTrue(healthBenchmark.has("scoreUnit"));
-
-        JsonObject percentiles = healthBenchmark.getAsJsonObject("percentiles");
-        assertTrue(percentiles.has("50.0"));
-        assertTrue(percentiles.has("75.0"));
-        assertTrue(percentiles.has("90.0"));
-        assertTrue(percentiles.has("99.0"));
-
-        double p50 = percentiles.get("50.0").getAsDouble();
-        double p75 = percentiles.get("75.0").getAsDouble();
-        double p90 = percentiles.get("90.0").getAsDouble();
-        double p99 = percentiles.get("99.0").getAsDouble();
-
-        assertTrue(p50 <= p75, "P50 should be <= P75");
-        assertTrue(p75 <= p90, "P75 should be <= P90");
-        assertTrue(p90 <= p99, "P90 should be <= P99");
+        assertTrue(Files.exists(jsonFile), "benchmark-data.json should be created");
+        return JsonParser.parseString(Files.readString(jsonFile)).getAsJsonObject();
     }
 
-    @Test
-    void parseApiHealthOutput() throws Exception {
-        Path wrkDir = tempDir.resolve("wrk");
-        Files.createDirectories(wrkDir);
-        Path sourceFile = Path.of("src/test/resources/wrk-api-health-results.txt");
-        Path targetFile = wrkDir.resolve("wrk-api-health-results.txt");
-        Files.copy(sourceFile, targetFile);
-
-        Path outputDir = tempDir.resolve("output");
-        processor.process(tempDir, outputDir);
-
-        Path jsonFile = outputDir.resolve("gh-pages-ready/data/benchmark-data.json");
-        String jsonContent = Files.readString(jsonFile);
-        JsonObject json = JsonParser.parseString(jsonContent).getAsJsonObject();
-
-        JsonObject apiHealthBenchmark = null;
+    private static JsonObject benchmarkNamed(JsonObject json, String name) {
         var benchmarks = json.getAsJsonArray("benchmarks");
         for (int i = 0; i < benchmarks.size(); i++) {
-            var bench = benchmarks.get(i).getAsJsonObject();
-            String benchName = bench.get("name").getAsString();
-            if ("gatewayHealth".equals(benchName)) {
-                apiHealthBenchmark = bench;
-                break;
+            JsonObject benchmark = benchmarks.get(i).getAsJsonObject();
+            if (name.equals(benchmark.get("name").getAsString())) {
+                return benchmark;
             }
         }
+        return null;
+    }
 
-        assertNotNull(apiHealthBenchmark, "Gateway Health benchmark should be present");
-        assertTrue(apiHealthBenchmark.has("mode"));
-        assertTrue(apiHealthBenchmark.has("score"));
-        assertTrue(apiHealthBenchmark.has("scoreUnit"));
+    @Test
+    void healthLivePercentilesAndThroughputMatchFixtureValues() throws Exception {
+        // Arrange
+        copyFixtureToWrkDir(HEALTH_FIXTURE);
 
-        JsonObject percentiles = apiHealthBenchmark.getAsJsonObject("percentiles");
-        assertTrue(percentiles.has("50.0"));
-        assertTrue(percentiles.has("75.0"));
-        assertTrue(percentiles.has("90.0"));
-        assertTrue(percentiles.has("99.0"));
+        // Act
+        JsonObject json = processAndReadJson();
 
-        double p50 = percentiles.get("50.0").getAsDouble();
-        double p75 = percentiles.get("75.0").getAsDouble();
-        double p90 = percentiles.get("90.0").getAsDouble();
-        double p99 = percentiles.get("99.0").getAsDouble();
+        // Assert — concrete values parsed from wrk-health-results.txt
+        JsonObject benchmark = benchmarkNamed(json, "healthLiveCheck");
+        assertNotNull(benchmark, "healthLiveCheck benchmark must be present (exact name match)");
+        JsonObject percentiles = benchmark.getAsJsonObject("percentiles");
+        assertAll("healthLiveCheck metrics",
+                () -> assertEquals(1.69, percentiles.get("50.0").getAsDouble(), 0.001, "P50 latency (ms)"),
+                () -> assertEquals(3.18, percentiles.get("75.0").getAsDouble(), 0.001, "P75 latency (ms)"),
+                () -> assertEquals(14.60, percentiles.get("90.0").getAsDouble(), 0.001, "P90 latency (ms)"),
+                () -> assertEquals(29.99, percentiles.get("99.0").getAsDouble(), 0.001, "P99 latency (ms)"),
+                () -> assertEquals("8.5K ops/s", benchmark.get("score").getAsString(),
+                        "throughput score (formatted from Requests/sec: 8511.49)"));
+    }
 
-        assertTrue(p50 <= p75, "P50 should be <= P75");
-        assertTrue(p75 <= p90, "P75 should be <= P90");
-        assertTrue(p90 <= p99, "P90 should be <= P99");
+    @Test
+    void gatewayHealthPercentilesAndThroughputMatchFixtureValues() throws Exception {
+        // Arrange
+        copyFixtureToWrkDir(API_HEALTH_FIXTURE);
+
+        // Act
+        JsonObject json = processAndReadJson();
+
+        // Assert — concrete values parsed from wrk-api-health-results.txt
+        JsonObject benchmark = benchmarkNamed(json, "gatewayHealth");
+        assertNotNull(benchmark, "gatewayHealth benchmark must be present (exact name match)");
+        JsonObject percentiles = benchmark.getAsJsonObject("percentiles");
+        assertAll("gatewayHealth metrics",
+                () -> assertEquals(1.73, percentiles.get("50.0").getAsDouble(), 0.001, "P50 latency (ms)"),
+                () -> assertEquals(2.97, percentiles.get("75.0").getAsDouble(), 0.001, "P75 latency (ms)"),
+                () -> assertEquals(14.05, percentiles.get("90.0").getAsDouble(), 0.001, "P90 latency (ms)"),
+                () -> assertEquals(28.27, percentiles.get("99.0").getAsDouble(), 0.001, "P99 latency (ms)"),
+                () -> assertEquals("8.6K ops/s", benchmark.get("score").getAsString(),
+                        "throughput score (formatted from Requests/sec: 8592.89)"));
+    }
+
+    @Test
+    void exactNameLookupResolvesEachBenchmarkIndependently() throws Exception {
+        // Arrange — both fixtures present so the exact-name contract must
+        // disambiguate them (the removed bidirectional-contains() fallback was
+        // nondeterministic on overlapping names).
+        copyFixtureToWrkDir(HEALTH_FIXTURE);
+        copyFixtureToWrkDir(API_HEALTH_FIXTURE);
+
+        // Act
+        JsonObject json = processAndReadJson();
+
+        // Assert
+        assertNotNull(benchmarkNamed(json, "healthLiveCheck"), "healthLiveCheck resolved by exact name");
+        assertNotNull(benchmarkNamed(json, "gatewayHealth"), "gatewayHealth resolved by exact name");
+        assertEquals(2, json.getAsJsonArray("benchmarks").size(), "both benchmarks present, none dropped");
+    }
+
+    @Test
+    void comprehensiveStructureGeneration() throws Exception {
+        // Arrange
+        copyFixtureToWrkDir(HEALTH_FIXTURE);
+        copyFixtureToWrkDir(API_HEALTH_FIXTURE);
+
+        // Act
+        Path outputDir = tempDir.resolve("output");
+        processor.process(tempDir, outputDir);
+
+        // Assert — full GitHub-Pages report structure
+        verifyComprehensiveStructure(outputDir);
     }
 
     @Test
     void missingFileHandling() throws Exception {
-        Path wrkDir = tempDir.resolve("wrk");
-        Files.createDirectories(wrkDir);
+        // Arrange — empty wrk directory, no fixtures
         Path outputDir = tempDir.resolve("output");
-        assertThrows(IllegalStateException.class, () -> processor.process(tempDir, outputDir));
+        Files.createDirectories(tempDir.resolve("wrk"));
+        assertThrows(IllegalStateException.class, () ->
+                processor.process(tempDir, outputDir));
 
         Path jsonFile = outputDir.resolve("gh-pages-ready/data/benchmark-data.json");
         assertFalse(Files.exists(jsonFile), "JSON should not be created with missing inputs");
@@ -169,6 +174,7 @@ class WrkResultPostProcessorTest {
 
     @Test
     void parseRealWrkFormatVariations() throws Exception {
+        // Arrange — inline synthetic output, exercises a differently-named benchmark
         String wrkOutput = """
                 === BENCHMARK METADATA ===
                 benchmark_name: format-test
@@ -198,37 +204,30 @@ class WrkResultPostProcessorTest {
 
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
-        Path testFile = wrkDir.resolve("wrk-format-test-results.txt");
-        Files.writeString(testFile, wrkOutput);
+        Files.writeString(wrkDir.resolve("wrk-format-test-results.txt"), wrkOutput);
 
-        Path outputDir = tempDir.resolve("output");
-        processor.process(tempDir, outputDir);
+        // Act
+        JsonObject json = processAndReadJson();
 
-        Path jsonFile = outputDir.resolve("gh-pages-ready/data/benchmark-data.json");
-        JsonObject json = JsonParser.parseString(Files.readString(jsonFile)).getAsJsonObject();
-        JsonObject benchmark = json.getAsJsonArray("benchmarks").get(0).getAsJsonObject();
-
-        assertTrue(benchmark.has("name"));
+        // Assert
+        JsonObject benchmark = benchmarkNamed(json, "format-test");
+        assertNotNull(benchmark, "format-test benchmark must be present");
         assertTrue(benchmark.has("mode"));
         assertTrue(benchmark.has("score"));
         assertTrue(benchmark.has("scoreUnit"));
-
-        JsonObject percentiles = benchmark.getAsJsonObject("percentiles");
-        double p50 = percentiles.get("50.0").getAsDouble();
-        assertTrue(p50 > 0, "P50 should be positive");
+        assertTrue(benchmark.getAsJsonObject("percentiles").get("50.0").getAsDouble() > 0,
+                "P50 should be positive");
     }
 
     /**
-     * Verify that WRK generates the same comprehensive structure as JMH benchmarks
+     * Verify that WRK generates the same comprehensive structure as JMH benchmarks.
      */
-    private void verifyComprehensiveStructure() throws IOException {
-        Path outputDir = tempDir.resolve("output");
+    private void verifyComprehensiveStructure(Path outputDir) throws IOException {
         Path ghPagesDir = outputDir.resolve("gh-pages-ready");
         assertTrue(Files.exists(ghPagesDir), "GitHub Pages directory should be created");
 
         assertTrue(Files.exists(ghPagesDir.resolve("index.html")), "index.html should be created");
         assertTrue(Files.exists(ghPagesDir.resolve("trends.html")), "trends.html should be created");
-
         assertTrue(Files.exists(ghPagesDir.resolve("report-styles.css")), "CSS file should exist");
         assertTrue(Files.exists(ghPagesDir.resolve("data-loader.js")), "JavaScript file should exist");
 
@@ -238,15 +237,14 @@ class WrkResultPostProcessorTest {
         Path dataFile = ghPagesDir.resolve("data/benchmark-data.json");
         assertTrue(Files.exists(dataFile), "benchmark-data.json should be created");
 
-        String jsonContent = Files.readString(dataFile);
-        JsonObject json = JsonParser.parseString(jsonContent).getAsJsonObject();
+        JsonObject json = JsonParser.parseString(Files.readString(dataFile)).getAsJsonObject();
 
         assertTrue(json.has("metadata"), "Should have metadata section");
         JsonObject metadata = json.getAsJsonObject("metadata");
         assertTrue(metadata.has("timestamp"), "Should have timestamp");
         assertTrue(metadata.has("displayTimestamp"), "Should have displayTimestamp");
-        assertTrue(metadata.has("benchmarkType"), "Should have benchmarkType");
-        assertTrue(metadata.has("reportVersion"), "Should have reportVersion");
+        assertEquals("Integration Performance", metadata.get("benchmarkType").getAsString());
+        assertEquals("2.0", metadata.get("reportVersion").getAsString());
 
         assertTrue(json.has("overview"), "Should have overview section");
         JsonObject overview = json.getAsJsonObject("overview");

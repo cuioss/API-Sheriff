@@ -18,8 +18,8 @@ package de.cuioss.sheriff.api.integration;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end integration tests for the minimal proxy, exercising the native
@@ -34,30 +34,34 @@ class ProxyIntegrationIT extends BaseIntegrationTest {
 
     @Test
     void shouldForwardGetWithPathAndQuery() {
-        given()
+        var response = given()
                 .when()
                 .get("/proxy/orders/42?page=2&size=10")
                 .then()
                 .statusCode(200)
-                .contentType(containsString("application/json"))
-                .body("method", is("GET"))
-                .body("url", containsString("/anything/orders/42"))
-                .body("args.page[0]", is("2"))
-                .body("args.size[0]", is("10"));
+                .extract();
+
+        assertTrue(response.contentType().contains("application/json"));
+        assertEquals("GET", response.path("method"));
+        assertTrue(response.path("url").toString().contains("/anything/orders/42"));
+        assertEquals("2", response.path("args.page[0]"));
+        assertEquals("10", response.path("args.size[0]"));
     }
 
     @Test
     void shouldForwardPostBody() {
-        given()
+        var response = given()
                 .contentType("text/plain")
                 .body("hello-upstream")
                 .when()
                 .post("/proxy/submit")
                 .then()
                 .statusCode(200)
-                .body("method", is("POST"))
-                .body("url", containsString("/anything/submit"))
-                .body("data", is("hello-upstream"));
+                .extract();
+
+        assertEquals("POST", response.path("method"));
+        assertTrue(response.path("url").toString().contains("/anything/submit"));
+        assertEquals("hello-upstream", response.path("data"));
     }
 
     @Test

@@ -89,6 +89,32 @@ public class ProxyRoute {
             "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
             "te", "trailer", "transfer-encoding", "upgrade", "content-length");
 
+    /**
+     * Disposable stopgap mitigation: cap the buffered request body the interim
+     * proxy accepts, so an unbounded upload cannot exhaust heap before Plan 04
+     * replaces this edge with the real streaming pipeline. An over-limit body is
+     * rejected by the Vert.x {@link BodyHandler} with {@code 413 Payload Too Large}.
+     */
+    private static final long MAX_REQUEST_BODY_BYTES = 1024L * 1024L;
+
+    /**
+     * Disposable stopgap mitigation: bound each upstream request so a slow or hung
+     * upstream cannot pin a virtual thread indefinitely. On expiry the JDK
+     * {@link HttpClient} throws {@link java.net.http.HttpTimeoutException} (an
+     * {@link IOException}), which surfaces to the client as {@code 502}. Superseded
+     * by Plan 04's timeouts-from-config.
+     */
+    private static final Duration UPSTREAM_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * Test-only seam: JVM system property that overrides {@link #UPSTREAM_REQUEST_TIMEOUT}
+     * (value in milliseconds) so the timeout-trips behaviour can be exercised without a
+     * multi-second wait. This is a throwaway JVM property, NOT gateway configuration —
+     * config-driven upstream timeouts are Plan 04's edge and are deliberately not added here.
+     */
+    private static final String UPSTREAM_REQUEST_TIMEOUT_MS_PROPERTY =
+            "apisheriff.proxy.upstream-request-timeout-ms";
+
     private final RouteTable routeTable;
     private final ExecutorService virtualThreadExecutor;
     private final HttpClient httpClient;
@@ -122,7 +148,7 @@ public class ProxyRoute {
         for (ResolvedRoute route : routeTable.routes()) {
             String routePath = stripTrailingSlash(route.pathPrefix()) + "/*";
             router.route(routePath)
-                    .handler(BodyHandler.create())
+                    .handler(BodyHandler.create().setBodyLimit(MAX_REQUEST_BODY_BYTES))
                     .handler(ctx -> virtualThreadExecutor.execute(() -> forward(ctx)));
             LOGGER.info(INFO.ROUTE_REGISTERED, route.pathPrefix(), upstreamBaseUrl(route.upstream()));
         }
@@ -178,7 +204,8 @@ public class ProxyRoute {
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofByteArray(body.getBytes());
 
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target));
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target))
+                .timeout(resolveUpstreamRequestTimeout());
         request.headers().forEach(header -> {
             if (!REQUEST_SKIP_HEADERS.contains(header.getKey().toLowerCase())) {
                 builder.header(header.getKey(), header.getValue());
@@ -216,5 +243,24 @@ public class ProxyRoute {
 
     private static String stripTrailingSlash(String value) {
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
+    }
+
+    /**
+     * Resolves the upstream request timeout, honouring the {@value #UPSTREAM_REQUEST_TIMEOUT_MS_PROPERTY}
+     * test-only override when set and falling back to {@link #UPSTREAM_REQUEST_TIMEOUT} otherwise.
+     * {@link Long#getLong(String, long)} returns the default when the property is absent or unparseable.
+     * A non-positive configured value (0 or negative) is rejected in favour of the default, because
+     * {@link HttpRequest.Builder#timeout(Duration)} throws {@link IllegalArgumentException} for a
+     * non-positive duration — which would otherwise surface as a {@code 502} on every proxied request
+     * rather than as a clear misconfiguration fallback.
+     * Read per request so a test can set the override immediately before a call without depending on
+     * class-load or Quarkus-boot ordering.
+     */
+    private static Duration resolveUpstreamRequestTimeout() {
+        long configuredMillis = Long.getLong(UPSTREAM_REQUEST_TIMEOUT_MS_PROPERTY, UPSTREAM_REQUEST_TIMEOUT.toMillis());
+        if (configuredMillis <= 0) {
+            return UPSTREAM_REQUEST_TIMEOUT;
+        }
+        return Duration.ofMillis(configuredMillis);
     }
 }

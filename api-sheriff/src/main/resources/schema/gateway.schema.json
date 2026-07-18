@@ -138,7 +138,7 @@
                 "additionalProperties": false,
                 "required": ["source"],
                 "properties": {
-                  "source": { "type": "string", "enum": ["http", "file", "inline"] },
+                  "source": { "type": "string", "enum": ["http", "file"] },
                   "url": { "type": "string" },
                   "file": { "type": "string" }
                 }

@@ -42,8 +42,8 @@ import lombok.Builder;
  */
 @Builder
 public record RouteConfig(String id, Optional<Protocol> protocol, MatchConfig match, Optional<AuthConfig> auth,
-                          Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward, Optional<UpstreamConfig> upstream,
-                          Optional<RateLimitConfig> rateLimit) {
+Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward, Optional<UpstreamConfig> upstream,
+Optional<RateLimitConfig> rateLimit) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match} and normalizing

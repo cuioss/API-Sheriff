@@ -103,7 +103,7 @@ As a security-focused API Gateway:
 
 ## Dependency Management
 
-- **Parent POM**: `de.cuioss:cui-java-parent:1.4.4`
+- **Parent POM**: `de.cuioss:cui-java-parent:1.5.1`
 - **CRITICAL**: Never add dependencies without explicit user approval
 
 ## Git Workflow

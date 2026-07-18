@@ -24,13 +24,13 @@ The log message levels follow these identifier ranges:
 Note: Only log level INFO and above are documented in this file. `DEBUG` / `TRACE`
 diagnostics use the logger directly and are not catalogued.
 
-== INFO Level (001-099)
+== INFO Level (1-99)
 
 [cols="1,1,2,2", options="header"]
 |===
 |ID |Component |Message |Description
-|ApiSheriff-001 |PROXY |Proxy route registered: path-prefix='%s' upstream='%s' |Logged once at startup when the catch-all proxy route is registered on the data plane
-|ApiSheriff-002 |CONFIG |Configuration loaded successfully (config_version='%s') |Logged once at startup after the file-based configuration is read, validated, and assembled into the route table
+|ApiSheriff-1 |PROXY |Proxy route registered: path-prefix='%s' upstream='%s' |Logged once at startup when the catch-all proxy route is registered on the data plane
+|ApiSheriff-2 |CONFIG |Configuration loaded successfully (config_version='%s') |Logged once at startup after the file-based configuration is read, validated, and assembled into the route table
 |===
 
 == WARN Level (100-199)

@@ -12,9 +12,8 @@ token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
 distributed configuration (the last deferred past the initial release --
 link:adr/0002-initial-scope.adoc[ADR-0002]).
 
-This directory holds the design documentation. No production code is described as
-existing here; these documents define *what will be built* and *how the parts fit
-together*.
+This directory holds the design documentation; these documents define *what will be
+built* and *how the parts fit together*.
 
 == Source Requirements
 
@@ -22,10 +21,12 @@ together*.
 |===
 | Document | Purpose
 
-| `TokenSheriff/doc/client` (`CLIENT-1..22`)
+| https://github.com/cuioss/TokenSheriff[`TokenSheriff/doc/client`] (`CLIENT-1..22`)
 | *Authoritative for all BFF concerns* -- the confidential-client flow, grants, `state`/`nonce`,
   mix-up defence, PAR, step-up, logout, token lifecycle, and the two token-binding shapes.
-  *Where it and the archived manifest differ, `doc/client` governs.*
+  *Where it and the archived manifest differ, `doc/client` governs.* The canonical, resolvable
+  home for the many bare `TokenSheriff/doc/client` references throughout these documents is
+  https://github.com/cuioss/TokenSheriff[cuioss/TokenSheriff].
 
 | link:technical_aspects.adoc[Technical Aspects]
 | The CUI libraries API Sheriff builds on -- `cui-http` (inbound security filtering,
@@ -149,7 +150,7 @@ implementing it.
   throws and aborts boot, while an unresolvable additional (`passthrough_sni`) alias is
   skipped silently -- the configuration validator stays the single authoritative reporter
   of alias-resolvability violations.
-  *(Status: proposed.)*
+  *(Status: accepted.)*
 |===
 
 == Reading Order

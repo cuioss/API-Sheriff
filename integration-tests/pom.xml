@@ -55,11 +55,6 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.awaitility</groupId>
-            <artifactId>awaitility</artifactId>
-            <scope>test</scope>
-        </dependency>
     </dependencies>
 
     <build>
@@ -182,6 +177,18 @@
                                     <environmentVariables>
                                         <DOCKER_BUILDKIT>1</DOCKER_BUILDKIT>
                                     </environmentVariables>
+                                </configuration>
+                            </execution>
+                            <!-- Negative check: an invalid mounted config MUST fail-fast (never serve on partial config) -->
+                            <execution>
+                                <id>verify-invalid-config-fails</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/verify-invalid-config-fails.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
                             </execution>
                             <!-- Start application before integration tests -->

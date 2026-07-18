@@ -48,8 +48,8 @@ import lombok.Builder;
  */
 @Builder
 public record ResolvedRoute(String id, Protocol protocol, MatchConfig match, AuthConfig effectiveAuth,
-                            List<HttpMethod> effectiveAllowedMethods, boolean retryEnabled, boolean notModifiedEnabled,
-                            ResolvedUpstream upstream) {
+List<HttpMethod> effectiveAllowedMethods, boolean retryEnabled, boolean notModifiedEnabled,
+ResolvedUpstream upstream) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying

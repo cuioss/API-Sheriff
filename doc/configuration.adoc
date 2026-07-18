@@ -59,13 +59,19 @@ Configuration is three kinds of artifact:
 
 [source,text]
 ----
-conf/
+config/
   gateway.yaml              # global settings
   endpoints/
     app1.yaml               # base_url: APP1     -> routes for /api/orders ...
     keycloak.yaml           # base_url: KEYCLOAK -> routes for /auth, /token
   topology.properties       # APP1=..., KEYCLOAK=...   (env vars override)
 ----
+
+The configuration directory is selected by the `sheriff.config.dir` property (a Quarkus
+configuration property; default `config`). Under it, `gateway.yaml` and `topology.properties`
+are read by exact name, and every *`.yaml`* file directly under `endpoints/` is loaded as an
+endpoint file in filename-sorted order -- files with any other extension, and nested
+subdirectories, are ignored.
 
 == Loading, Resolution and Validation
 
@@ -127,8 +133,13 @@ schema cannot express are enforced in code and listed under
 link:#_configuration_validation_rules_summary[Configuration Validation Rules]: endpoint- and
 route-`id` uniqueness across files, `upstream_defaults` and `allowed_methods` wholesale-replacement,
 `allowed_methods` verb membership, topology-alias resolvability, and same-prefix disjointness. Every
-violation -- from the schema gate and the code rules alike -- is collected in a single pass and
-reported together, never one at a time, and any violation refuses the boot.
+violation the schema gate and the configuration-validator rules detect is collected in a single
+pass and reported together, rather than one at a time, and any violation refuses the boot. The one
+deliberate exception is an unresolvable `base_url` alias of an *enabled* endpoint: the topology
+resolver runs *before* the aggregating validator and *throws* on it
+(link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), so that single failure aborts
+the boot on its own rather than joining the aggregated report. An unresolvable `passthrough_sni`
+alias, by contrast, is deferred to the validator and aggregated with the rest.
 
 == Gateway Configuration (`gateway.yaml`)
 
@@ -193,7 +204,7 @@ token_validation:                  # offline bearer validation (routes with auth
       issuer: https://idp.example.com/realms/main   # expected iss claim
       audience: api-sheriff                          # expected aud claim
       jwks:
-        source: http               # http | file | inline
+        source: http               # http | file
         url: https://idp.example.com/realms/main/protocol/openid-connect/certs
         # file: /etc/sheriff/jwks.json   (air-gapped deployments)
 
@@ -212,7 +223,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
   session:                         # NOTE: exhibit shows the fields of BOTH modes; store is
                                    #   server-mode-only, the encryption keys cookie-mode-only
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
-    store: memory                  # server mode only; memory is the only initial option
+    store: memory                  # REQUIRED for server mode; memory is the only initial option
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM)
     previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation
@@ -481,6 +492,8 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
 
 === Resolution semantics
 
+* An alias name must match `[A-Z][A-Z0-9_]*` (upper-case, starting with a letter); a
+  `topology.properties` entry whose key does not match this pattern is ignored.
 * The resolved value is a full URL (`scheme://host[:port][/base-path]`), validated and decomposed
   once into `{scheme, host, port, base-path}`.
 * A route's upstream target is `resolved(base_url) + route.upstream.path + remainder`, where
@@ -716,7 +729,7 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
 
 | `issuers[].jwks`
 | Key material for signature verification: `source: http` with a `url` (cached, periodically
-  refreshed), `source: file`, or `source: inline` -- the latter two for air-gapped deployments.
+  refreshed), or `source: file` -- the latter for air-gapped deployments.
 |===
 
 The BFF variants do *not* read this block: they validate the tokens they retrieve against the
@@ -781,9 +794,11 @@ ignored when no route's effective auth is `require: session`.
   Global -- one deployment runs one BFF shape.
 
 | `session.store`
-| `server` mode only. `memory` (single-node or sticky-session deployments) is the only initial
-  option; a shared external store is deliberately unsupported for now (see the trade-off in
-  link:variants/02-bff-session.adoc[Variant 2]).
+| *Required* when `session.mode: server` -- the boot fails if a server-mode session omits it; it is
+  unused in `cookie` mode. `memory` (single-node or sticky-session deployments) is the only initial
+  value; a shared external store is deliberately unsupported for now (see the trade-off in
+  link:variants/02-bff-session.adoc[Variant 2]). There is no implicit default -- server mode must
+  name its store explicitly.
 
 | `session.cookie_name`
 | Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default
@@ -1024,7 +1039,8 @@ the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
 | Field | Meaning
 
 | `trusted_proxies`
-| *Mandatory* CIDR allowlist (IPv4 + IPv6), mapped to `ForwardedResolverConfig.trustedProxies`.
+| *Required whenever a `forwarded` block is present* (the `forwarded` block itself is optional) --
+  a CIDR allowlist (IPv4 + IPv6), mapped to `ForwardedResolverConfig.trustedProxies`.
   It drives the *client-IP trust walk*: the `X-Forwarded-For` (or RFC 7239 `for`) chain is
   walked right-to-left, skipping trusted hops; the first non-trusted, well-formed address is
   the client. An *empty* list means no client IP is ever resolved from headers -- the TCP peer
@@ -1152,8 +1168,9 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   (see the `tls` field reference).
 * Every `tls.passthrough_sni` alias resolves via the topology, and the resolved URL carries no
   base-path; otherwise the boot fails.
-* `forwarded.trusted_proxies` must be present (may be empty = forwarding headers are never
-  trusted); the trust-all CIDRs `0.0.0.0/0` *and* `::/0` are rejected as unsafe.
+* The `forwarded` block is optional; when present, `forwarded.trusted_proxies` must be present
+  within it (may be empty = forwarding headers are never trusted); the trust-all CIDRs `0.0.0.0/0`
+  *and* `::/0` are rejected as unsafe.
 * `upstream.connect_timeout_ms` / `read_timeout_ms` must be positive integers; they are
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second
@@ -1161,5 +1178,6 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
   literals.
 * `session.mode: cookie` requires `session.encryption_key`; `previous_key` is optional and
-  decrypt-only. `session.mode: server` requires neither and accepts only `store: memory`.
+  decrypt-only. `session.mode: server` requires an explicit `session.store` (only `memory` is
+  valid) and uses neither encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.

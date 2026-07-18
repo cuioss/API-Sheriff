@@ -25,7 +25,7 @@ image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sherif
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-performance-badge.json[Integration Performance,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-index.html]
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-trend-badge.json[Integration Trend,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-performance-trends.html]
 
-https://github.com/cuioss/OAuthSheriff/blob/main/benchmarking/doc/benchmark-metrics.adoc[Understand Performance Metrics]
+https://github.com/cuioss/TokenSheriff/blob/main/benchmarking/doc/benchmark-metrics.adoc[Understand Performance Metrics]
 
 [.discrete]
 == What is it?
@@ -58,8 +58,6 @@ Integration test coordinator — Docker infrastructure, native container builds,
 
 Integration benchmarks using WRK HTTP load testing with containerized environments.
 
-https://github.com/cuioss/OAuthSheriff/blob/main/benchmarking/doc/benchmark-metrics.adoc[Understand Performance Metrics]
-
 == Deployment
 
 === Production Docker Image
@@ -79,14 +77,18 @@ Run with TLS certificates mounted at runtime:
 
 [source,bash]
 ----
-docker run -p 8443:8443 \
+docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
   -v /path/to/certs:/certs:ro \
   -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/certs/server.crt \
   -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/certs/server.key \
   api-sheriff:latest
 ----
 
-* Port `8443` — All endpoints (`/api/health`, `/api/info`, `/q/health`, `/q/metrics`)
+* Port `8443` (HTTPS) — application endpoints (`/api/health`, `/api/info`)
+* Port `9000` (plain HTTP) — management endpoints (`/q/health`, `/q/metrics`); bound to
+  `127.0.0.1` (loopback only) so the unauthenticated management interface is not exposed
+  on all host interfaces, matching the security posture documented in
+  `doc/architecture.adoc`
 
 == External Resources
 

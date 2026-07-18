@@ -47,9 +47,9 @@ import lombok.Builder;
  */
 @Builder
 public record GatewayConfig(int version, Optional<Metadata> metadata, Optional<TlsConfig> tls,
-                            Optional<SecurityHeadersConfig> securityHeaders, Optional<SecurityDefaultsConfig> securityDefaults,
-                            List<HttpMethod> allowedMethods, Optional<UpstreamDefaultsConfig> upstreamDefaults,
-                            Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc) {
+Optional<SecurityHeadersConfig> securityHeaders, Optional<SecurityDefaultsConfig> securityDefaults,
+List<HttpMethod> allowedMethods, Optional<UpstreamDefaultsConfig> upstreamDefaults,
+Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and
