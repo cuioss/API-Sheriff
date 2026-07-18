@@ -161,12 +161,12 @@ class WrkResultPostProcessorTest {
     }
 
     @Test
-    void missingFileHandling() {
+    void missingFileHandling() throws Exception {
         // Arrange — empty wrk directory, no fixtures
         Path outputDir = tempDir.resolve("output");
         Files.createDirectories(tempDir.resolve("wrk"));
         assertThrows(IllegalStateException.class, () ->
-            processor.process(tempDir, outputDir));
+                processor.process(tempDir, outputDir));
 
         Path jsonFile = outputDir.resolve("gh-pages-ready/data/benchmark-data.json");
         assertFalse(Files.exists(jsonFile), "JSON should not be created with missing inputs");
