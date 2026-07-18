@@ -181,17 +181,17 @@ public final class TopologyResolver {
         try {
             uri = new URI(url);
         } catch (URISyntaxException e) {
-            throw new TopologyResolutionException("Malformed topology URL for alias '%s': %s".formatted(alias, url), e);
+            throw new TopologyResolutionException("Malformed topology URL for alias '%s'".formatted(alias), e);
         }
         if (uri.getScheme() == null || uri.getHost() == null) {
             throw new TopologyResolutionException(
-                    "Topology URL for alias '%s' must be absolute with scheme and host: %s".formatted(alias, url));
+                    "Topology URL for alias '%s' must be absolute with scheme and host".formatted(alias));
         }
         String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
         if (!"http".equals(scheme) && !"https".equals(scheme)) {
             throw new TopologyResolutionException(
-                    "Topology URL for alias '%s' must use an http or https scheme, but was '%s': %s"
-                            .formatted(alias, scheme, url));
+                    "Topology URL for alias '%s' must use an http or https scheme, but was '%s'"
+                            .formatted(alias, scheme));
         }
         int port = uri.getPort() != -1 ? uri.getPort() : defaultPort(scheme);
         String basePath = uri.getPath() == null ? "" : uri.getPath();
