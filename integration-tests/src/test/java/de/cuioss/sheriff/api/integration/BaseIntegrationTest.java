@@ -41,7 +41,7 @@ public abstract class BaseIntegrationTest {
         RestAssured.port = Integer.parseInt(testPort);
 
         // cui-rewrite:disable CuiLoggerStandardsRecipe
-        System.out.println("Integration tests configured for HTTPS port: " + testPort);
+        IO.println("Integration tests configured for HTTPS port: " + testPort);
     }
 
     /**

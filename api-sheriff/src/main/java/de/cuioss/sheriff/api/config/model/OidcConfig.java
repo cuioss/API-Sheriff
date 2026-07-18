@@ -40,8 +40,8 @@ import lombok.Builder;
  */
 @Builder
 public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Optional<String> clientSecret,
-                         List<String> scopes, Optional<String> redirectUri, Optional<Logout> logout, Optional<Session> session,
-                         Optional<StepUp> stepUp) {
+List<String> scopes, Optional<String> redirectUri, Optional<Logout> logout, Optional<Session> session,
+Optional<StepUp> stepUp) {
 
     /**
      * Canonical constructor defensively copying {@code scopes} and normalizing
@@ -99,7 +99,7 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
      */
     @Builder
     public record Logout(Optional<String> path, Optional<String> postLogoutRedirectUri, Optional<String> finalRedirect,
-                         Optional<String> backchannelPath) {
+    Optional<String> backchannelPath) {
 
         /**
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
@@ -132,8 +132,8 @@ public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Opt
      */
     @Builder
     public record Session(Optional<String> mode, Optional<String> store, Optional<String> cookieName,
-                          Optional<String> encryptionKey, Optional<String> previousKey, Optional<Integer> ttlSeconds,
-                          Optional<Csrf> csrf, Optional<Refresh> refresh) {
+    Optional<String> encryptionKey, Optional<String> previousKey, Optional<Integer> ttlSeconds,
+    Optional<Csrf> csrf, Optional<Refresh> refresh) {
 
         /**
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.

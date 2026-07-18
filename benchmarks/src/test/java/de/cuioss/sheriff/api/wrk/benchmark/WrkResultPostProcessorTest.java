@@ -62,7 +62,7 @@ class WrkResultPostProcessorTest {
         Path wrkDir = tempDir.resolve("wrk");
         Files.createDirectories(wrkDir);
         try (InputStream in = WrkResultPostProcessorTest.class.getClassLoader()
-                .getResourceAsStream(fixtureName)) {
+                     .getResourceAsStream(fixtureName)) {
             assertNotNull(in, "Fixture must be on the test classpath: " + fixtureName);
             Files.copy(in, wrkDir.resolve(fixtureName));
         }
@@ -164,10 +164,9 @@ class WrkResultPostProcessorTest {
     void missingFileHandling() {
         // Arrange — empty wrk directory, no fixtures
         Path outputDir = tempDir.resolve("output");
-        assertThrows(IllegalStateException.class, () -> {
-            Files.createDirectories(tempDir.resolve("wrk"));
-            processor.process(tempDir, outputDir);
-        });
+        Files.createDirectories(tempDir.resolve("wrk"));
+        assertThrows(IllegalStateException.class, () ->
+            processor.process(tempDir, outputDir));
 
         Path jsonFile = outputDir.resolve("gh-pages-ready/data/benchmark-data.json");
         assertFalse(Files.exists(jsonFile), "JSON should not be created with missing inputs");
