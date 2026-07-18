@@ -1,5 +1,7 @@
 {
-  "best_practices": [],
+  "best_practices": [
+    "Placeholder-substitution coercion in ConfigLoader.coerce() is schema-agnostic (accepted limitation, recurring review finding): a whole-value placeholder resolving to an all-digit or true/false string is coerced regardless of the target field's schema type. When touching the substitution path, prefer threading the expected schema type through substitute()/coerce() (destination-type-aware coercion) rather than adding value-shape heuristics."
+  ],
   "insights": [],
   "internal_dependencies": [],
   "key_dependencies": [
