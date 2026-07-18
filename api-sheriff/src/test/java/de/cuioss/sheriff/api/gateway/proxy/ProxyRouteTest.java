@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 
 import org.junit.jupiter.api.BeforeAll;
@@ -45,8 +46,10 @@ import okio.ByteString;
 
 /**
  * Tests for {@link ProxyRoute}: forwarding of method, path remainder, query and
- * body to the upstream, hop-by-hop header stripping, and {@code 404}
- * deny-by-default for unmatched paths.
+ * body to the upstream, hop-by-hop header stripping, {@code 404}
+ * deny-by-default for unmatched paths, and the two disposable stopgap mitigations
+ * (a {@code BodyHandler} request-body size limit and an {@code HttpRequest}
+ * upstream timeout).
  * <p>
  * The proxy edge sources its upstream from the {@code RouteTable} the
  * configuration subsystem assembles at boot: the test config
@@ -66,6 +69,15 @@ class ProxyRouteTest {
 
     /** Must match the {@code UPSTREAM} alias port in {@code config/testboot/topology.properties}. */
     private static final int UPSTREAM_PORT = 19191;
+
+    /**
+     * Mirrors {@code ProxyRoute}'s test-only upstream-timeout override property. Kept as a literal
+     * (not shared code) so the test pins the exact contract the production seam exposes.
+     */
+    private static final String UPSTREAM_TIMEOUT_MS_PROPERTY = "apisheriff.proxy.upstream-request-timeout-ms";
+
+    /** Path remainder the {@link EchoDispatcher} answers slowly, to trip the upstream request timeout. */
+    private static final String SLOW_MARKER = "slow-upstream";
 
     @BeforeAll
     static void setup() {
@@ -140,9 +152,40 @@ class ProxyRouteTest {
                 .statusCode(502);
     }
 
+    @Test
+    void shouldRejectRequestBodyExceedingSizeLimit() {
+        // BodyHandler.setBodyLimit(1 MiB): a body one byte over the limit is rejected
+        // by Vert.x with 413 before the proxy ever forwards it upstream.
+        String overLimitBody = "a".repeat(1024 * 1024 + 1);
+        given()
+                .contentType("text/plain")
+                .body(overLimitBody)
+                .when().post("/proxy/submit")
+                .then()
+                .statusCode(413);
+    }
+
+    @Test
+    void shouldReturn502WhenUpstreamExceedsRequestTimeout() {
+        // Override the upstream request timeout to a short value so the slow upstream
+        // (EchoDispatcher delays the SLOW_MARKER path well beyond it) trips the
+        // HttpRequest timeout, which surfaces as a 502 — without a multi-second wait.
+        System.setProperty(UPSTREAM_TIMEOUT_MS_PROPERTY, "500");
+        try {
+            given()
+                    .when().get("/proxy/" + SLOW_MARKER)
+                    .then()
+                    .statusCode(502);
+        } finally {
+            System.clearProperty(UPSTREAM_TIMEOUT_MS_PROPERTY);
+        }
+    }
+
     /**
      * Echoes each received request back as JSON so the test can assert exactly
      * what the gateway forwarded. Matches every forwarded path ({@code "/"} base URL).
+     * A request whose target contains {@link #SLOW_MARKER} is answered with a long
+     * header delay so the proxy's upstream request timeout trips first.
      */
     private static final class EchoDispatcher implements ModuleDispatcherElement {
 
@@ -189,11 +232,17 @@ class ProxyRouteTest {
                     "customHeader", Optional.ofNullable(request.getHeaders().get("X-Forward-Test")).orElse(""),
                     "connectionHeader", Optional.ofNullable(request.getHeaders().get("Connection")).orElse(""));
             try {
-                return Optional.of(new MockResponse.Builder()
+                MockResponse.Builder builder = new MockResponse.Builder()
                         .code(200)
                         .addHeader("Content-Type", "application/json")
-                        .body(MAPPER.writeValueAsString(payload))
-                        .build());
+                        .body(MAPPER.writeValueAsString(payload));
+                String target = request.getTarget();
+                if (target != null && target.contains(SLOW_MARKER)) {
+                    // Far longer than the overridden request timeout, so the proxy
+                    // times out and returns 502 before this response is delivered.
+                    builder.headersDelay(5, TimeUnit.SECONDS);
+                }
+                return Optional.of(builder.build());
             } catch (JsonProcessingException e) {
                 throw new IllegalStateException("Failed to serialise echo payload", e);
             }
