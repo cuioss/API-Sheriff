@@ -159,5 +159,7 @@
     }
   },
   "skills_by_profile_reasoning": "general-dev: cross-cutting; java: Quarkus application using CDI producers and Lombok \u2014 all optionals apply; java-cui: CUI standards (CuiLogger/LogRecord); cui-http and cui-testing/cui-http-testing used from Plans 02/03 onward",
-  "tips": []
+  "tips": [
+    "When deleting or moving a Java package's contents, package-info.java is a sibling that is easy to miss in consumer/deletion sweeps (caught here by the outline Q-Gate). Always include package-info.java in the deletion deliverable when a package is being emptied or removed."
+  ]
 }

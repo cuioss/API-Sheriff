@@ -148,5 +148,7 @@
     }
   },
   "skills_by_profile_reasoning": "general-dev: cross-cutting; java: Failsafe IT module \u2014 junit-integration optional applies; java-cui: cui-test-juli-logger used; cui-http-testing applies for attack-database ITs (Plan 03)",
-  "tips": []
+  "tips": [
+    "Local 'verify -Ppre-commit' does NOT run the Docker integration-tests profile (-Pintegration-tests). Integration-affecting changes (IT script assertions, mounted-config permissions/paths, Dockerfile/compose edits) pass the local pre-commit gate but are only validated in CI. Run 'verify -Pintegration-tests -pl integration-tests -am' locally before pushing any integration-affecting change."
+  ]
 }

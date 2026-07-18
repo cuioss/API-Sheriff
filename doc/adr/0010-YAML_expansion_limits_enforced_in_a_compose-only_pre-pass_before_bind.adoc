@@ -1,0 +1,162 @@
+= ADR-0010: YAML expansion limits enforced in a compose-only pre-pass before bind
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: YAML alias-expansion and nesting-bomb caps are enforced in a dedicated SnakeYAML compose-only pre-pass before Jackson binds a config document, because Jackson's YAMLParser consumes the event stream directly and never runs the Composer that counts collection aliases.
+// tags: yaml, configuration-loading, security, defence-in-depth, expansion-bomb, denial-of-service, boot-sequence
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+The gateway loads its entire routing and policy posture from untrusted-at-rest YAML
+files (`gateway.yaml`, `endpoints/*.yaml`) at boot. YAML permits a document to define an
+anchor once and dereference it through aliases an unbounded number of times, and to nest
+collections to an unbounded depth. Both constructs are legitimate authoring conveniences
+and both are denial-of-service vectors: a small "billion-laughs" alias graph or a deeply
+nested document expands to a memory- or CPU-exhausting structure during parse, so the
+process can be brought down before a single request is ever served. A configuration
+loader that binds attacker-shaped YAML must therefore cap alias expansion, nesting depth,
+and raw scalar length, and it must do so as a hard boot-time refusal rather than a
+best-effort limit.
+
+The underlying YAML engine (SnakeYAML) exposes exactly these caps —
+`setMaxAliasesForCollections`, `setNestingDepthLimit`, `setCodePointLimit` — on its
+`LoaderOptions`. The obvious integration point is to attach those options to the same
+`LoaderOptions` the binding mapper (Jackson's `YAMLFactory`) is configured with, on the
+assumption that "the parser the binder drives carries the limits, therefore the binder is
+protected". That assumption is false for the alias cap, and the falseness is invisible: a
+loader configured that way parses hostile documents without complaint. The architectural
+question this ADR settles is *where in the load pipeline the expansion guard actually
+has to live* so that it is a real refusal and not a silently-inert setting.
+
+== Decision
+
+**The alias-expansion, nesting-depth, and scalar-length caps are enforced in a dedicated
+SnakeYAML-native compose-only pre-pass that runs before the document is bound, and this
+pre-pass is a permanent, load-bearing stage of the config-load pipeline — not a redundant
+belt-and-braces layer.**
+
+The mechanism has two parts, both configured from the same limit constants
+(`MAX_YAML_ALIASES`, `MAX_YAML_NESTING_DEPTH`, `MAX_YAML_STRING_LENGTH`):
+
+* **Compose-only pre-pass.** Before binding, the loader composes the document's node
+  graph through a bare SnakeYAML `Yaml.composeAll(...)` under `LoaderOptions` carrying the
+  three caps, and advances the iterator to force the graph to be walked. Advancing the
+  `Composer` is what makes SnakeYAML count collection-alias dereferences against
+  `setMaxAliasesForCollections` and depth against `setNestingDepthLimit`; a hostile
+  document trips the cap and the composer throws, which the pre-pass converts into a
+  collected boot error. The pass constructs *no Java objects* from the nodes — it composes
+  and discards — so it opens no deserialization-gadget surface of its own.
+
+* **Hardened bind factory.** The subsequent bind still applies the same caps to the
+  Jackson `YAMLFactory` (via `LoaderOptions` plus Jackson's own
+  `StreamReadConstraints` nesting-depth guard) so nesting and scalar-length limits are
+  enforced on the bind path too.
+
+The load-bearing reason the pre-pass exists as a separate stage is a structural property
+of the Jackson/SnakeYAML integration: **Jackson's `YAMLParser` consumes SnakeYAML's
+event stream directly and never invokes the `Composer`.** The `Composer` is the only
+layer that counts collection aliases. Therefore a `mapper.readTree(...)` call ignores
+`setMaxAliasesForCollections` no matter how the mapper's `LoaderOptions` are configured —
+the alias cap on the bind factory is inert. The compose-only pre-pass is the one place in
+the pipeline where the alias-bomb guard is actually armed. Removing it, or folding its
+caps into the bind mapper on the belief that they are duplicated there, silently disarms
+the billion-laughs defence.
+
+A tripped limit is recorded as a collected `ConfigError` and surfaced through the same
+aggregate all-violations boot refusal the rest of the loader uses, rather than thrown
+fail-fast — the boot fails with the full error set, consistent with the loader's
+error-aggregation convention.
+
+== Consequences
+
+=== Positive
+
+* The billion-laughs / alias-bomb defence is genuinely armed, not merely configured.
+  Nesting-depth and scalar-length caps are enforced on both the pre-pass and the bind
+  path, so the two defences are independent.
+* The guard fires before any binding work, so a hostile document is rejected at the
+  cheapest possible point and never reaches schema validation, substitution, or model
+  construction.
+* The pre-pass constructs no objects, so hardening the loader against expansion bombs does
+  not itself introduce a deserialization attack surface.
+* Expansion-limit trips join the aggregate boot-error set, preserving the "report all
+  configuration violations in one pass" contract instead of aborting on the first bomb.
+
+=== Negative
+
+* Each YAML document is parsed twice at boot — once to compose-and-discard for the guard,
+  once to bind. Boot-time config volume is small and one-shot, so the doubled parse cost
+  is immaterial, but it is a real cost the design accepts.
+* The two limit sites (pre-pass `LoaderOptions` and bind factory) must be kept in sync on
+  the same constants. They are co-located and both sourced from the shared `MAX_YAML_*`
+  constants to make drift obvious, but the duplication is intrinsic to the split.
+
+=== Risks
+
+* A future refactor that "simplifies" the loader by deleting the pre-pass and trusting the
+  bind mapper's `LoaderOptions` would silently reopen the alias-bomb hole with no test or
+  compiler signal — the mapper accepts the options and ignores them. The pre-pass method's
+  Javadoc states this explicitly, and a negative test exercises an over-cap alias document
+  to keep the guard observable; both must survive any such refactor.
+* The guard depends on SnakeYAML continuing to enforce `setMaxAliasesForCollections` only
+  inside the `Composer`. A future engine change that moves alias counting into the event
+  stream would make the bind-path caps sufficient and the pre-pass redundant, but that is a
+  forward-compatible direction (the pre-pass would become belt-and-braces, not wrong).
+
+== Alternatives Considered
+
+**Attach the caps to the bind mapper's `LoaderOptions` only (no pre-pass).** The obvious,
+minimal shape: configure `setMaxAliasesForCollections` / `setNestingDepthLimit` /
+`setCodePointLimit` on the `YAMLFactory` the binder drives and bind directly. Rejected
+because it does not enforce the alias cap at all: Jackson's `YAMLParser` reads SnakeYAML's
+event stream and never runs the `Composer`, the only component that counts collection
+aliases, so the alias limit is silently inert while appearing configured. It provides a
+false sense of protection precisely against the highest-impact expansion vector.
+
+**Post-parse structural inspection (walk the bound tree and count nodes/depth).** Bind the
+document first, then reject it if the resulting object graph is too large or too deep.
+Rejected because the expansion has already happened by the time there is a bound tree to
+inspect — the memory/CPU blow-up occurs during parse, so a post-parse check runs after the
+damage and cannot prevent the exhaustion it is meant to stop.
+
+**A custom hand-rolled YAML scanner enforcing the caps.** Bypass the engine's own limit
+machinery entirely. Rejected as disproportionate and less safe: it reimplements security-
+sensitive parser internals the engine already provides correctly, and diverges from the
+engine's own limit semantics.
+
+The unifying principle: an expansion-bomb guard must sit at the pipeline stage where the
+engine actually counts the expanding construct. For SnakeYAML's collection-alias cap that
+stage is the `Composer`, which the Jackson bind path bypasses; only a compose-driving
+pre-pass reaches it. Enforcing a limit at a stage that never evaluates it is
+indistinguishable, from the outside, from having no limit at all.
+
+== References
+
+* link:0004-topology-indirection.adoc[ADR-0004] — configuration indirection and the
+  `${VAR}` placeholder substitution channel (Amendment A1); substitution runs on scalar
+  values after this expansion guard has cleared the document.
+* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] — topology *alias* resolution
+  ownership; note this concerns endpoint/topology aliases, a distinct concept from the
+  YAML anchor/alias expansion this ADR governs.
+* `link:../configuration.adoc[configuration.adoc]` — Configuration Subsystem: the
+  refuse-to-start boot contract this guard participates in.
+* `api-sheriff` config loader (`de.cuioss.sheriff.api.config.load.ConfigLoader`) — the
+  `withinExpansionLimits` compose-only pre-pass and the hardened bind factory realise this
+  decision.
