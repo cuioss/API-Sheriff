@@ -29,6 +29,13 @@
             <groupId>de.cuioss</groupId>
             <artifactId>cui-java-tools</artifactId>
         </dependency>
+        <!-- cui-http: inbound security filtering (de.cuioss.http.security) and the
+             forwarded-header resolver (de.cuioss.http.forwarded); version 2.1.0 managed
+             by cui-java-bom's ${version.cui.http} -->
+        <dependency>
+            <groupId>de.cuioss</groupId>
+            <artifactId>cui-http</artifactId>
+        </dependency>
 
         <!-- Configuration management: YAML parsing + boot-time JSON Schema validation -->
         <dependency>
@@ -68,6 +75,12 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- SmallRye Fault Tolerance: programmatic Guard/TypedGuard + CircuitBreakerMaintenance
+             for the per-route resilience guard held on RouteRuntime (Quarkus-BOM-managed) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
         </dependency>
 
         <!-- Token Sheriff: client engine + Quarkus extensions (versions managed by token-sheriff-bom) -->
@@ -124,6 +137,23 @@
         <dependency>
             <groupId>de.cuioss.test</groupId>
             <artifactId>cui-test-juli-logger</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- cui-http attack databases (generators classifier) driving the adversarial
+             pipeline tests; classifier variant is not BOM-managed, so the inherited
+             ${version.cui.http} pins it to the same 2.1.0 as the main artifact -->
+        <dependency>
+            <groupId>de.cuioss</groupId>
+            <artifactId>cui-http</artifactId>
+            <version>${version.cui.http}</version>
+            <classifier>generators</classifier>
+            <scope>test</scope>
+        </dependency>
+        <!-- ArchUnit: ADR-0005 framework-agnostic package-boundary gate (FrameworkAgnosticArchTest) -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit</artifactId>
+            <version>1.4.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
