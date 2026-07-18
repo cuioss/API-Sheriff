@@ -249,11 +249,18 @@ public class ProxyRoute {
      * Resolves the upstream request timeout, honouring the {@value #UPSTREAM_REQUEST_TIMEOUT_MS_PROPERTY}
      * test-only override when set and falling back to {@link #UPSTREAM_REQUEST_TIMEOUT} otherwise.
      * {@link Long#getLong(String, long)} returns the default when the property is absent or unparseable.
+     * A non-positive configured value (0 or negative) is rejected in favour of the default, because
+     * {@link HttpRequest.Builder#timeout(Duration)} throws {@link IllegalArgumentException} for a
+     * non-positive duration — which would otherwise surface as a {@code 502} on every proxied request
+     * rather than as a clear misconfiguration fallback.
      * Read per request so a test can set the override immediately before a call without depending on
      * class-load or Quarkus-boot ordering.
      */
     private static Duration resolveUpstreamRequestTimeout() {
-        return Duration.ofMillis(
-                Long.getLong(UPSTREAM_REQUEST_TIMEOUT_MS_PROPERTY, UPSTREAM_REQUEST_TIMEOUT.toMillis()));
+        long configuredMillis = Long.getLong(UPSTREAM_REQUEST_TIMEOUT_MS_PROPERTY, UPSTREAM_REQUEST_TIMEOUT.toMillis());
+        if (configuredMillis <= 0) {
+            return UPSTREAM_REQUEST_TIMEOUT;
+        }
+        return Duration.ofMillis(configuredMillis);
     }
 }

@@ -181,6 +181,24 @@ class ProxyRouteTest {
         }
     }
 
+    @Test
+    void shouldFallBackToDefaultTimeoutWhenOverrideNonPositive() {
+        // A misconfigured non-positive override (0 or negative) must be rejected in favour
+        // of the default timeout rather than producing a non-positive Duration, which
+        // HttpRequest.Builder.timeout() would reject with IllegalArgumentException — turning
+        // every proxied request into a 502. With the guard, a normal fast request still
+        // forwards and returns 200.
+        System.setProperty(UPSTREAM_TIMEOUT_MS_PROPERTY, "0");
+        try {
+            given()
+                    .when().get("/proxy/orders/42")
+                    .then()
+                    .statusCode(200);
+        } finally {
+            System.clearProperty(UPSTREAM_TIMEOUT_MS_PROPERTY);
+        }
+    }
+
     /**
      * Echoes each received request back as JSON so the test can assert exactly
      * what the gateway forwarded. Matches every forwarded path ({@code "/"} base URL).
