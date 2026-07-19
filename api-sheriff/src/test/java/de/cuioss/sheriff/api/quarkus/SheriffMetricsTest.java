@@ -26,6 +26,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import de.cuioss.http.security.core.UrlSecurityFailureType;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.Metadata;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
@@ -102,14 +104,34 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("recordSecurityEvent counts under sheriff_security_events_total{failure_type}")
-        void recordSecurityEventCountsByFailureType() {
-            metrics.recordSecurityEvent("PATH_TRAVERSAL");
+        @DisplayName("bindSecurityEventCounter exposes the shared counter under sheriff_security_events_total{failure_type} and moves with it")
+        void bindSecurityEventCounterExposesAndMovesWithCounter() {
+            SecurityEventCounter securityEventCounter = new SecurityEventCounter();
+            metrics.bindSecurityEventCounter(securityEventCounter);
 
-            var counter = registry.find("sheriff_security_events_total")
-                    .tags("failure_type", "PATH_TRAVERSAL").counter();
-            assertNotNull(counter, "sheriff_security_events_total must be keyed by failure_type");
-            assertEquals(1.0, counter.count());
+            // The meter is registered up front for the fixed enum (bounded cardinality), before any event.
+            var functionCounter = registry.find("sheriff_security_events_total")
+                    .tags("failure_type", "PATH_TRAVERSAL_DETECTED").functionCounter();
+            assertNotNull(functionCounter, "sheriff_security_events_total must be bound per UrlSecurityFailureType");
+            assertEquals(0.0, functionCounter.count(), "the meter starts at zero before any violation");
+
+            // A security-relevant rejection increments the shared counter; the bound meter tracks it live.
+            securityEventCounter.increment(UrlSecurityFailureType.PATH_TRAVERSAL_DETECTED);
+            securityEventCounter.increment(UrlSecurityFailureType.PATH_TRAVERSAL_DETECTED);
+
+            assertEquals(2.0, functionCounter.count(),
+                    "the function counter must reflect the live SecurityEventCounter count");
+        }
+
+        @Test
+        @DisplayName("bindSecurityEventCounter fixes failure_type cardinality at the UrlSecurityFailureType enum")
+        void bindSecurityEventCounterBoundsCardinalityToEnum() {
+            SecurityEventCounter securityEventCounter = new SecurityEventCounter();
+            metrics.bindSecurityEventCounter(securityEventCounter);
+
+            int boundSeries = registry.find("sheriff_security_events_total").functionCounters().size();
+            assertEquals(UrlSecurityFailureType.values().length, boundSeries,
+                    "one bounded series per UrlSecurityFailureType, never operator-controlled input");
         }
 
         @Test

@@ -18,8 +18,11 @@ package de.cuioss.sheriff.api.quarkus;
 import java.time.Duration;
 import java.util.Objects;
 
+import de.cuioss.http.security.core.UrlSecurityFailureType;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.api.events.EventCategory;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -116,12 +119,29 @@ public class SheriffMetrics {
     }
 
     /**
-     * Counts one {@code cui-http} security-filter violation against {@link #SECURITY_EVENTS_TOTAL}.
+     * Binds the boot-shared {@code cui-http} {@link SecurityEventCounter} to the registry, exposing its
+     * per-{@link UrlSecurityFailureType} violation counts as the {@link #SECURITY_EVENTS_TOTAL} meter.
+     * One {@link FunctionCounter} is registered per failure type, so the {@code failure_type} label
+     * cardinality is fixed at the {@link UrlSecurityFailureType} enum (never operator-controlled input),
+     * keeping the meter safe to keep always on. Each function counter reads the live
+     * {@link SecurityEventCounter#getCount(UrlSecurityFailureType) count} the security-filter stages
+     * accumulate on the hot path, so a security-relevant rejection moves the meter on the next scrape
+     * without any per-request recording call.
+     * <p>
+     * Called once at boot with the single {@link SecurityEventCounter} instance shared across the
+     * baseline / thorough security-filter stages and the forwarded-header resolver, so the meter
+     * reflects every {@code cui-http} violation the gateway counts, not only those observed at the edge.
      *
-     * @param failureType the {@code UrlSecurityFailureType} name of the violation
+     * @param securityEventCounter the boot-shared cui-http security event counter (never a local instance)
      */
-    public void recordSecurityEvent(String failureType) {
-        registry.counter(SECURITY_EVENTS_TOTAL, TAG_FAILURE_TYPE, failureType).increment();
+    public void bindSecurityEventCounter(SecurityEventCounter securityEventCounter) {
+        Objects.requireNonNull(securityEventCounter, "securityEventCounter");
+        for (UrlSecurityFailureType failureType : UrlSecurityFailureType.values()) {
+            FunctionCounter.builder(SECURITY_EVENTS_TOTAL, securityEventCounter,
+                    counter -> counter.getCount(failureType))
+                    .tag(TAG_FAILURE_TYPE, failureType.name())
+                    .register(registry);
+        }
     }
 
     /**

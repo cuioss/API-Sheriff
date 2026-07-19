@@ -86,7 +86,9 @@ import jakarta.inject.Inject;
  * shared Vert.x clients and SmallRye guards), builds every stage once with the shared
  * {@link SecurityEventCounter}, the default {@link SecurityConfiguration}, the boot-wired
  * {@link ForwardedHeaderResolver} + {@link TcpPeerGate} (from the global {@code forwarded} block),
- * and the shared {@link GatewayEventCounter}. An unsupported protocol or {@code session} auth fails
+ * and the shared {@link GatewayEventCounter}. That same shared {@link SecurityEventCounter} is bound
+ * to {@link SheriffMetrics} here so its per-{@code UrlSecurityFailureType} counts surface as the
+ * {@code sheriff_security_events_total} meter. An unsupported protocol or {@code session} auth fails
  * boot here (fail fast), so no request is ever served on an invalid route set.
  * <p>
  * <strong>Per-request flow.</strong> The catch-all is registered {@linkplain io.vertx.ext.web.Route#last()
@@ -207,6 +209,11 @@ public class GatewayEdgeRoute {
         this.authenticationStage = new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
+
+        // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
+        // security-filter counts surface as sheriff_security_events_total, completing the fixed
+        // five-meter contract alongside the request/duration/error/upstream meters recorded above.
+        sheriffMetrics.bindSecurityEventCounter(securityEventCounter);
     }
 
     /**

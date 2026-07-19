@@ -84,6 +84,55 @@ class MetricsIT extends BaseIntegrationTest {
                 "the request counter must carry the bounded status_family label, not the raw status");
     }
 
+    @Test
+    @DisplayName("sheriff_security_events_total appears and moves on /q/metrics after a security-filter rejection")
+    void securityEventsMeterAppearsAndMovesAfterRejection() {
+        // Arrange — the boot-shared cui-http SecurityEventCounter is bound to Micrometer, so the meter
+        // is exposed from boot for the fixed UrlSecurityFailureType enum; capture its pre-rejection sum.
+        String before = scrapeMetrics();
+        assertTrue(before.contains("sheriff_security_events_total"),
+                "sheriff_security_events_total must be exposed once the shared counter is bound at boot");
+        double baseline = securityEventsTotal(before);
+
+        // Act — drive a GW-01/GW-02 stage-1 filter rejection: a query-parameter value carrying an
+        // encoded path-traversal attack. urlEncodingEnabled(false) sends the pre-encoded value verbatim
+        // so cui-http decodes and rejects it (400 SECURITY_FILTER_VIOLATION) before route selection,
+        // incrementing the shared SecurityEventCounter the meter is bound to.
+        given()
+                .urlEncodingEnabled(false)
+                .when()
+                .get("/proxy/get?probe=%2E%2E%2F%2E%2E%2F%2E%2E%2Fetc%2Fpasswd")
+                .then()
+                .statusCode(400);
+
+        // Assert — the bound function counter moved: the summed sheriff_security_events_total series is
+        // strictly greater than the baseline, proving the counter → Micrometer bridge works end-to-end.
+        String after = scrapeMetrics();
+        assertTrue(after.contains("sheriff_security_events_total"),
+                "sheriff_security_events_total must remain exposed after the rejection");
+        assertTrue(securityEventsTotal(after) > baseline,
+                "a security-filter rejection must move sheriff_security_events_total on /q/metrics");
+    }
+
+    /**
+     * Sums every {@code sheriff_security_events_total} sample in a Prometheus exposition body across all
+     * {@code failure_type} series. Micrometer may append the {@code _total} counter suffix, so lines are
+     * matched by prefix and filtered to the labelled series (skipping {@code # HELP} / {@code # TYPE}
+     * comment lines, which begin with {@code #}).
+     */
+    private static double securityEventsTotal(String body) {
+        double sum = 0.0;
+        for (String line : body.split("\n")) {
+            if (line.startsWith("sheriff_security_events_total") && line.contains("failure_type=")) {
+                int lastSpace = line.lastIndexOf(' ');
+                if (lastSpace >= 0) {
+                    sum += Double.parseDouble(line.substring(lastSpace + 1).strip());
+                }
+            }
+        }
+        return sum;
+    }
+
     private static String scrapeMetrics() {
         return given()
                 .baseUri(managementBaseUri())
