@@ -190,6 +190,7 @@ class ConfigModelContractTest {
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
                 .upstream(resolvedUpstream())
+                .effectiveForward(new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "api-sheriff")))
                 .build();
     }
 
@@ -444,12 +445,16 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentOptionals() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, resolvedUpstream());
+                    true, resolvedUpstream(), null);
             assertTrue(cfg.anchor().isEmpty());
             assertTrue(cfg.effectiveSecurityFilter().isEmpty());
             assertTrue(cfg.effectiveSecurityHeaders().isEmpty());
             assertTrue(cfg.effectiveAllowedMethods().isEmpty());
             assertEquals(Protocol.HTTP, cfg.protocol());
+            assertTrue(cfg.effectiveForward().headersAllow().isEmpty(),
+                    "an absent forward block normalizes to a deny-by-default empty allowlist");
+            assertTrue(cfg.effectiveForward().queryAllow().isEmpty());
+            assertTrue(cfg.effectiveForward().setHeaders().isEmpty());
         }
 
         @Test
@@ -591,13 +596,14 @@ class ConfigModelContractTest {
         void resolvedRouteRequiresIdMatchAuthAndUpstream() {
             assertThrows(NullPointerException.class, () -> new ResolvedRoute(null, Protocol.HTTP, Optional.empty(),
                     matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
-                    resolvedUpstream()));
+                    resolvedUpstream(), null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(), null,
-                    auth(), List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream()));
+                    auth(), List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream(), null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                    matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream()));
+                    matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream(),
+                    null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                    matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, null));
+                    matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, null, null));
         }
     }
 
@@ -656,6 +662,8 @@ class ConfigModelContractTest {
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.effectiveAllowedMethods());
             assertTrue(cfg.effectiveSecurityFilter().isPresent());
             assertTrue(cfg.effectiveSecurityHeaders().isPresent());
+            assertEquals(List.of("Accept"), cfg.effectiveForward().headersAllow(),
+                    "the materialized forward allowlist is carried on the resolved route");
         }
 
         @Test

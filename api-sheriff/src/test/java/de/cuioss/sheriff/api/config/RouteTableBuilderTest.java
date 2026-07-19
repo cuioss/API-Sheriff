@@ -37,6 +37,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
+import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
@@ -645,6 +646,41 @@ class RouteTableBuilderTest {
             ResolvedRoute resolved = find(table, "r");
             assertFalse(resolved.retryEnabled(), "absent retry toggle should inherit the endpoint value");
             assertTrue(resolved.notModifiedEnabled(), "absent not-modified toggle should inherit the endpoint value");
+        }
+    }
+
+    @Nested
+    @DisplayName("Effective forward-policy resolution")
+    class EffectiveForward {
+
+        @Test
+        @DisplayName("Should carry the route-level forward block onto the resolved route")
+        void shouldCarryRouteForward() {
+            ForwardConfig forward = new ForwardConfig(List.of("Accept"), List.of("page"),
+                    Map.of("X-Gateway", "api-sheriff"));
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .forward(Optional.of(forward)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertEquals(forward, resolved.effectiveForward(), "the route forward block flows through unchanged");
+        }
+
+        @Test
+        @DisplayName("Should default an absent forward block to a deny-by-default empty allowlist")
+        void shouldDefaultAbsentForwardToEmpty() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertTrue(resolved.effectiveForward().headersAllow().isEmpty(),
+                    "an unforwarded route resolves to an empty, deny-by-default allowlist");
+            assertTrue(resolved.effectiveForward().queryAllow().isEmpty());
+            assertTrue(resolved.effectiveForward().setHeaders().isEmpty());
         }
     }
 

@@ -29,6 +29,7 @@ import java.util.function.Supplier;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
+import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.Protocol;
@@ -172,6 +173,35 @@ class RouteRuntimeAssemblerTest {
 
         assertTrue(runtimes.get(0).getRequiredScopes().containsAll(List.of("read", "write")),
                 "Required scopes flow from the effective auth to the runtime");
+    }
+
+    @Test
+    @DisplayName("Should carry the effective forward allowlist from the resolved route")
+    void shouldCarryEffectiveForward() {
+        ForwardConfig forward = new ForwardConfig(List.of("Accept"), List.of("page"),
+                java.util.Map.of("X-Gateway", "api-sheriff"));
+        RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
+                .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
+                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .upstream(upstream("a.example")).effectiveForward(forward).build()));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+
+        assertEquals(forward, runtimes.get(0).getEffectiveForward(),
+                "The materialized forward allowlist flows to the runtime unchanged");
+    }
+
+    @Test
+    @DisplayName("Should default an absent forward block to a deny-by-default empty allowlist")
+    void shouldDefaultAbsentForwardToEmpty() {
+        RouteTable table = new RouteTable(List.of(
+                route("r1", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+
+        assertTrue(runtimes.get(0).getEffectiveForward().headersAllow().isEmpty(),
+                "An unforwarded route carries an empty, deny-by-default allowlist");
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require,

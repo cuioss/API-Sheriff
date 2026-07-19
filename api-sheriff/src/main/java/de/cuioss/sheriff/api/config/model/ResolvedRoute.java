@@ -53,6 +53,9 @@ import lombok.Builder;
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle
  * @param upstream               the resolved upstream target for the route's
  *                               endpoint (mandatory)
+ * @param effectiveForward       the materialized, deny-by-default {@code forward}
+ *                               allowlist consumed by stage 5; an empty
+ *                               {@link ForwardConfig} when the route declares none
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -60,12 +63,13 @@ import lombok.Builder;
 public record ResolvedRoute(String id, Protocol protocol, Optional<String> anchor, MatchConfig match,
 AuthConfig effectiveAuth, List<HttpMethod> effectiveAllowedMethods,
 Optional<SecurityFilterConfig> effectiveSecurityFilter, Optional<SecurityHeadersConfig> effectiveSecurityHeaders,
-boolean retryEnabled, boolean notModifiedEnabled, ResolvedUpstream upstream) {
+boolean retryEnabled, boolean notModifiedEnabled, ResolvedUpstream upstream, ForwardConfig effectiveForward) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying
-     * {@code effectiveAllowedMethods}, normalizing absent optionals, and defaulting
-     * an absent {@code protocol} to {@link Protocol#HTTP}.
+     * {@code effectiveAllowedMethods}, normalizing absent optionals, defaulting an
+     * absent {@code protocol} to {@link Protocol#HTTP}, and defaulting an absent
+     * {@code effectiveForward} to a deny-by-default empty {@link ForwardConfig}.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");
@@ -77,6 +81,7 @@ boolean retryEnabled, boolean notModifiedEnabled, ResolvedUpstream upstream) {
         effectiveSecurityFilter = Objects.requireNonNullElse(effectiveSecurityFilter, Optional.empty());
         effectiveSecurityHeaders = Objects.requireNonNullElse(effectiveSecurityHeaders, Optional.empty());
         Objects.requireNonNull(upstream, "upstream");
+        effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
     }
 
     /**

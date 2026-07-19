@@ -21,6 +21,7 @@ import java.util.Set;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
+import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
@@ -76,6 +77,14 @@ public final class RouteRuntime {
 
     /** The effective response-header posture, empty when none resolves. */
     private final Optional<SecurityHeadersConfig> securityHeaders;
+
+    /**
+     * The effective, deny-by-default {@code forward} allowlist consumed by stage 5 — the
+     * per-route {@code headers_allow} / {@code query_allow} / {@code set_headers} sets resolved
+     * once at boot. An empty {@link ForwardConfig} when the route declares no {@code forward} block.
+     */
+    @Builder.Default
+    private final ForwardConfig effectiveForward = ForwardConfig.builder().build();
 
     /** The materialized upstream-retry toggle. */
     private final boolean retryEnabled;

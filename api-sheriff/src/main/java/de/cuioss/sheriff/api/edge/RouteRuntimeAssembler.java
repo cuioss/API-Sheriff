@@ -119,6 +119,7 @@ public final class RouteRuntimeAssembler {
                     .requiredScopes(route.effectiveAuth().requiredScopes())
                     .securityConfiguration(securityConfiguration)
                     .securityHeaders(route.effectiveSecurityHeaders())
+                    .effectiveForward(route.effectiveForward())
                     .retryEnabled(route.retryEnabled())
                     .notModifiedEnabled(route.notModifiedEnabled())
                     .upstream(route.upstream())
