@@ -339,7 +339,6 @@ public class GatewayEdgeRoute {
 
     private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
-        io.vertx.core.http.HttpMethod method = io.vertx.core.http.HttpMethod.valueOf(request.method().name());
         String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
         String canonical = requireCanonicalPath(request);
         String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
@@ -349,7 +348,8 @@ public class GatewayEdgeRoute {
 
         DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchStage.dispatch(route, method, uri, forward.headers(), ctx.request());
+        HttpClientResponse upstream = dispatchStage.dispatch(route, request.method(), uri, forward.headers(),
+                ctx.request());
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())

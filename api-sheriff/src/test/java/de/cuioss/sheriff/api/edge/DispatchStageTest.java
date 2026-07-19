@@ -19,20 +19,29 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 
+import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
+import de.cuioss.sheriff.api.events.GatewayEventCounter;
 import de.cuioss.sheriff.api.events.GatewayException;
 
+import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
@@ -141,6 +150,90 @@ class DispatchStageTest {
 
             // Assert
             assertTrue(forwarded.isEmpty(), "no chunk crosses once the very first breaches the cap");
+        }
+    }
+
+    @Nested
+    @DisplayName("stream-aware retry gating on the guarded dispatch path")
+    class RetryGating {
+
+        private DispatchStage newStage() {
+            return new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
+        }
+
+        /** A retry-enabled guard (1 + 2 retries), aborting on {@link GatewayException} like production. */
+        private Guard retryGuard() {
+            return Guard.create()
+                    .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
+                    .abortOn(GatewayException.class).done()
+                    .build();
+        }
+
+        @Test
+        @DisplayName("retries an idempotent GET while no request body byte has been sent")
+        void retriesIdempotentWithoutBody() {
+            // Arrange — a failing upstream that never streams a body byte (fails before send)
+            DispatchStage stage = newStage();
+            StreamAwareRetryGate gate = new StreamAwareRetryGate(true);
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicLong bytesSent = new AtomicLong();
+            Callable<HttpClientResponse> failing = () -> {
+                attempts.incrementAndGet();
+                throw new IllegalStateException("upstream down");
+            };
+
+            // Act
+            GatewayException raised = assertThrows(GatewayException.class,
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.GET, bytesSent::get, failing));
+
+            // Assert — the safe idempotent+bodyless request was retried the full budget
+            assertEquals(3, attempts.get(),
+                    "an idempotent GET with zero body bytes must be retried (1 attempt + 2 retries)");
+            assertEquals(EventType.UPSTREAM_ERROR, raised.getEventType());
+        }
+
+        @Test
+        @DisplayName("never retries a non-idempotent POST — the retry re-entry is aborted")
+        void neverRetriesPost() {
+            // Arrange
+            DispatchStage stage = newStage();
+            StreamAwareRetryGate gate = new StreamAwareRetryGate(true);
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicLong bytesSent = new AtomicLong();
+            Callable<HttpClientResponse> failing = () -> {
+                attempts.incrementAndGet();
+                throw new IllegalStateException("upstream down");
+            };
+
+            // Act
+            assertThrows(GatewayException.class,
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.POST, bytesSent::get, failing));
+
+            // Assert — a POST must never be re-sent, so the upstream is called exactly once
+            assertEquals(1, attempts.get(), "a POST must never be re-sent to the upstream");
+        }
+
+        @Test
+        @DisplayName("never retries an idempotent request once a body byte has crossed to the upstream")
+        void neverRetriesAfterBodyByte() {
+            // Arrange — the first attempt streams body bytes before it fails mid-body
+            DispatchStage stage = newStage();
+            StreamAwareRetryGate gate = new StreamAwareRetryGate(true);
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicLong bytesSent = new AtomicLong();
+            Callable<HttpClientResponse> failing = () -> {
+                attempts.incrementAndGet();
+                bytesSent.addAndGet(5L);
+                throw new IllegalStateException("upstream down mid-body");
+            };
+
+            // Act
+            assertThrows(GatewayException.class,
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.PUT, bytesSent::get, failing));
+
+            // Assert — a streamed request cannot be replayed once a body byte has been sent
+            assertEquals(1, attempts.get(),
+                    "an idempotent request whose body has streamed a byte must never be retried");
         }
     }
 

@@ -17,18 +17,25 @@ package de.cuioss.sheriff.api.edge;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 
 
+import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
 import de.cuioss.sheriff.api.routing.RouteRuntime;
 
+import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
-import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
@@ -50,6 +57,15 @@ import org.jspecify.annotations.Nullable;
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
  * contract by {@link UpstreamFailureMapper}; a body-cap breach propagates its own
  * {@link GatewayException} unchanged.
+ * <p>
+ * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, the guarded
+ * lambda may be re-invoked after a failure. A streamed request cannot be safely replayed once any
+ * body byte has crossed to the upstream, and a non-idempotent verb must never be re-sent — so every
+ * retry <em>re-entry</em> (never the first attempt) is vetted by a {@link StreamAwareRetryGate}
+ * against the request method and the running body-bytes-sent count. A disallowed re-entry is aborted
+ * by re-raising the first attempt's failure as a mapped {@link GatewayException}, which the guard's
+ * {@code abortOn(GatewayException.class)} contract turns into an immediate abort — no duplicate
+ * upstream request is ever issued.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -89,10 +105,13 @@ public final class DispatchStage {
 
     /**
      * Dispatches the request to the route's upstream, streaming the (byte-capped) request body and
-     * returning the response whose body is not yet consumed.
+     * returning the response whose body is not yet consumed. Every retry re-entry is vetted by a
+     * {@link StreamAwareRetryGate} so a non-idempotent method or a request that has already streamed
+     * a body byte is never re-sent (see the class javadoc).
      *
+     * @param method         the request method — used both to build the upstream request and to
+     *                       gate retry re-entries for idempotency
      * @param route          the resolved route runtime holding the shared client and guard
-     * @param method         the upstream HTTP method
      * @param requestUri     the upstream request URI (see {@link #upstreamRequestUri})
      * @param forwardHeaders the deny-by-default header set computed by stage 5
      * @param requestBody    the inbound request body as a live read stream
@@ -106,10 +125,37 @@ public final class DispatchStage {
         Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(requestBody, "requestBody");
+        AtomicLong bytesSent = new AtomicLong();
+        StreamAwareRetryGate retryGate = new StreamAwareRetryGate(route.isRetryEnabled());
+        io.vertx.core.http.HttpMethod upstreamMethod = io.vertx.core.http.HttpMethod.valueOf(method.name());
+        return guardedDispatch(route.getResilienceGuard(), retryGate, method, bytesSent::get,
+                () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, requestBody, bytesSent));
+    }
+
+    /**
+     * Runs {@code attempt} through the route's resilience {@code guard}, vetting every retry
+     * re-entry against {@code retryGate}: the first attempt always proceeds, but each subsequent
+     * re-entry is aborted — by re-raising the prior failure as a mapped {@link GatewayException}
+     * (which the guard's {@code abortOn(GatewayException.class)} contract honours) — whenever the
+     * gate refuses a retry for {@code method} at the current {@code bytesSent} count. Package-private
+     * so the retry-gating decision can be exercised without a live upstream.
+     */
+    HttpClientResponse guardedDispatch(Guard guard, StreamAwareRetryGate retryGate, HttpMethod method,
+            LongSupplier bytesSent, Callable<HttpClientResponse> attempt) {
+        AtomicInteger attemptIndex = new AtomicInteger();
+        AtomicReference<Throwable> priorFailure = new AtomicReference<>();
         try {
-            return route.getResilienceGuard().call(
-                    () -> awaitDispatch(route, method, requestUri, forwardHeaders, requestBody),
-                    HttpClientResponse.class);
+            return guard.call(() -> {
+                if (attemptIndex.getAndIncrement() > 0 && !retryGate.allowsRetry(method, bytesSent.getAsLong())) {
+                    throw failureMapper.toGatewayException(priorFailure.get());
+                }
+                try {
+                    return attempt.call();
+                } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception failure) {
+                    priorFailure.set(failure);
+                    throw failure;
+                }
+            }, HttpClientResponse.class);
         } catch (GatewayException direct) {
             throw direct;
         } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception guarded) {
@@ -121,8 +167,9 @@ public final class DispatchStage {
         }
     }
 
-    private HttpClientResponse awaitDispatch(RouteRuntime route, HttpMethod method, String requestUri,
-            Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody) throws Exception {
+    private HttpClientResponse awaitDispatch(RouteRuntime route, io.vertx.core.http.HttpMethod method,
+            String requestUri, Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody,
+            AtomicLong bytesSent) throws Exception {
         ResolvedUpstream upstream = route.getUpstream();
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
@@ -133,7 +180,8 @@ public final class DispatchStage {
         Future<HttpClientResponse> response = route.getHttpClient().request(options)
                 .compose(request -> {
                     forwardHeaders.forEach(request::putHeader);
-                    return request.send(new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset));
+                    return request.send(new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset,
+                            bytesSent::addAndGet));
                 });
         return response.toCompletionStage().toCompletableFuture().get();
     }
@@ -168,15 +216,23 @@ public final class DispatchStage {
         private final ReadStream<Buffer> delegate;
         private final long maxBytes;
         private final Runnable abortAction;
+        private final LongConsumer bytesForwarded;
         private long bytesSeen;
         private @Nullable Handler<Buffer> dataHandler;
         private @Nullable Handler<Throwable> failureHandler;
         private boolean aborted;
 
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, Runnable abortAction) {
+            this(delegate, maxBytes, abortAction, length -> {
+            });
+        }
+
+        ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, Runnable abortAction,
+                LongConsumer bytesForwarded) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.maxBytes = maxBytes;
             this.abortAction = Objects.requireNonNull(abortAction, "abortAction");
+            this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
             delegate.exceptionHandler(this::propagateFailure);
             delegate.handler(this::onChunk);
         }
@@ -194,6 +250,9 @@ public final class DispatchStage {
                         "Request body exceeded max_body_bytes=" + maxBytes));
                 return;
             }
+            // The chunk cleared the cap and is about to cross to the upstream — record it so the
+            // stream-aware retry gate can see that a body byte has been sent on this attempt.
+            bytesForwarded.accept(chunk.length());
             if (dataHandler != null) {
                 dataHandler.handle(chunk);
             }
