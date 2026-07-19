@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.integration;
 
 import io.restassured.RestAssured;
+
 import org.junit.jupiter.api.BeforeAll;
 
 /**

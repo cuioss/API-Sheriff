@@ -92,6 +92,34 @@ public final class ResponseStage {
             }
         }
         stageZeroSecurityHeaders.forEach((name, value) -> client.headers().set(name, value));
+        applyResponseFraming(upstream, client);
         return upstream.pipeTo(client);
+    }
+
+    /**
+     * Re-establishes the client response body framing after {@link #isForwardableResponseHeader
+     * hop-by-hop stripping} removed the upstream framing headers. Only {@code Transfer-Encoding} is
+     * hop-by-hop and must be recomputed by the client protocol; {@code Content-Length} is end-to-end
+     * and — because the body is relayed byte-for-byte — remains accurate. Preserve a declared
+     * upstream {@code Content-Length} so an HTTP/1.1 client receives a well-framed fixed-length body;
+     * when the upstream framed the body as chunked (no {@code Content-Length}), stream the client
+     * response chunked. Without this an HTTP/1.1 response defaults to {@code Content-Length: 0} and
+     * the streamed body is silently dropped (HTTP/2 ignores both signals and is unaffected).
+     */
+    private static void applyResponseFraming(HttpClientResponse upstream, HttpServerResponse client) {
+        String contentLength = upstream.getHeader("Content-Length");
+        if (contentLength != null) {
+            client.putHeader("Content-Length", contentLength);
+        } else if (mayCarryBody(upstream.statusCode())) {
+            client.setChunked(true);
+        }
+    }
+
+    /**
+     * @param status the relayed response status
+     * @return {@code true} unless the status forbids a message body (1xx, 204, 304)
+     */
+    static boolean mayCarryBody(int status) {
+        return status != 204 && status != 304 && (status < 100 || status >= 200);
     }
 }

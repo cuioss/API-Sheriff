@@ -86,7 +86,16 @@ public class TokenValidatorProducer {
     private static de.cuioss.sheriff.token.validation.IssuerConfig toValidationIssuer(IssuerConfig issuer) {
         de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder =
                 de.cuioss.sheriff.token.validation.IssuerConfig.builder().issuerIdentifier(issuer.issuer());
-        issuer.audience().ifPresent(builder::expectedAudience);
+        // Audience is optional in the gateway config model (IssuerConfig#audience). token-sheriff
+        // requires an explicit choice at build time — either a non-empty expected audience OR an
+        // explicit opt-out — so an issuer that configures no audience must disable audience
+        // validation; otherwise IssuerConfig.build() throws and the (lazily created) validator bean
+        // fails on the first bearer request instead of validating the token.
+        if (issuer.audience().isPresent()) {
+            builder.expectedAudience(issuer.audience().get());
+        } else {
+            builder.audienceValidationDisabled(true);
+        }
         IssuerConfig.Jwks jwks = issuer.jwks().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
                 "Issuer '" + issuer.name() + "' declares no jwks source"));
         applyJwks(builder, issuer, jwks);

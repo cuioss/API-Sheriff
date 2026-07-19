@@ -84,4 +84,25 @@ class ResponseStageTest {
             assertTrue(ResponseStage.isForwardableResponseHeader(header, false));
         }
     }
+
+    @Nested
+    @DisplayName("body-framing eligibility (Content-Length preservation vs chunked streaming)")
+    class BodyFraming {
+
+        @ParameterizedTest
+        @ValueSource(ints = {200, 201, 301, 400, 404, 500, 502})
+        @DisplayName("a body-bearing status streams a relayed body (chunked when length is unknown)")
+        void statusMayCarryBody(int status) {
+            assertTrue(ResponseStage.mayCarryBody(status),
+                    status + " permits a message body and must frame the streamed relay");
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {100, 101, 199, 204, 304})
+        @DisplayName("a bodyless status never frames a streamed body")
+        void statusForbidsBody(int status) {
+            assertFalse(ResponseStage.mayCarryBody(status),
+                    status + " forbids a message body (1xx / 204 / 304) and must not be chunked");
+        }
+    }
 }

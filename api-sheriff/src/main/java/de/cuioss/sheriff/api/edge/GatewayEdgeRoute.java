@@ -359,8 +359,14 @@ public class GatewayEdgeRoute {
                 ctx.request());
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
-        responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
-                .onFailure(failure -> failRelay(ctx, failure));
+        // The relay mutates the Vert.x HttpServerResponse (status, headers) and subscribes the
+        // upstream pipeTo — all of which are event-loop-bound and NOT safe to touch from this
+        // virtual thread. Hop back onto the event loop exactly like every other terminal path
+        // (renderProblem / writeShortCircuit / failRelay); doing the relay off-loop races the
+        // response object and corrupts / truncates the streamed body.
+        ctx.vertx().runOnContext(v ->
+                responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
+                        .onFailure(failure -> failRelay(ctx, failure)));
     }
 
     private void failRelay(RoutingContext ctx, Throwable failure) {

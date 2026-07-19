@@ -182,6 +182,16 @@ public final class DispatchStage {
                     forwardHeaders.forEach(request::putHeader);
                     return request.send(new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset,
                             bytesSent::addAndGet));
+                })
+                .map(received -> {
+                    // Pause the upstream body the instant its head arrives, on the client's own
+                    // event-loop context and before any body chunk is dispatched. ResponseStage#relay
+                    // is deferred onto the server request's event loop (GatewayEdgeRoute), so without
+                    // this pause a small upstream response can fully arrive and end before the deferred
+                    // pipeTo subscribes — Vert.x then fails the pipe with "Response already ended". The
+                    // pipe re-enables the stream when it subscribes.
+                    received.pause();
+                    return received;
                 });
         return response.toCompletionStage().toCompletableFuture().get();
     }

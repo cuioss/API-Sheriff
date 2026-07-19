@@ -50,6 +50,23 @@ class PipelineVerbIT extends BaseIntegrationTest {
     }
 
     @Test
+    @DisplayName("GET forwards the multi-segment path remainder and multi-value query verbatim")
+    void getForwardsPathRemainderAndMultiValueQuery() {
+        var response = given()
+                .when()
+                .get("/proxy/orders/42?page=2&size=10")
+                .then()
+                .statusCode(200)
+                .extract();
+
+        assertTrue(response.contentType().contains("application/json"));
+        assertEquals("GET", response.path("method"));
+        assertTrue(response.path("url").toString().contains("/anything/orders/42"));
+        assertEquals("2", response.path("args.page[0]"));
+        assertEquals("10", response.path("args.size[0]"));
+    }
+
+    @Test
     @DisplayName("POST forwards the request body to the upstream")
     void postForwardsBody() {
         var response = given()

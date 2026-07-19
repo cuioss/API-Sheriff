@@ -16,3 +16,12 @@ endpoint:
     - id: httpbin-proxy
       match:
         path_prefix: /proxy
+      # The new pipeline edge (stage 5) forwards deny-by-default: only allow-listed
+      # request headers and query parameters cross to the upstream. Allow the header
+      # and query names the proxy suite exercises so go-httpbin echoes them back —
+      # Content-Type so a text body is echoed as-is (not a base64 octet-stream
+      # data-URI), and the probe/page/size/req query params the GET/metrics/shutdown
+      # suites assert on.
+      forward:
+        headers_allow: ["Content-Type"]
+        query_allow: ["probe", "page", "size", "req"]
