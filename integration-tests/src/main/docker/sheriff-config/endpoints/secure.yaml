@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# Bearer-protected endpoint anchored to the 'secure' namespace (/secure). It routes
+# to the same go-httpbin echo backend the 'api' proxy uses (the UPSTREAM topology
+# alias), but under the anchor's require: bearer posture. BearerValidationIT drives
+# only rejection scenarios against it (missing / malformed token -> 401), so the
+# upstream is never reached — the echo backend is present purely so a successful
+# forward would be observable, making a rejection's absence-of-echo the upstream=0 proof.
+endpoint:
+  id: secure
+  enabled: true
+  base_url: UPSTREAM
+  anchor: secure
+  routes:
+    - id: secure-proxy
+      match:
+        path_prefix: /secure
