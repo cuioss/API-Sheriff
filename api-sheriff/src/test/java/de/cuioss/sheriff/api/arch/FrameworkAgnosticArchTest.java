@@ -22,7 +22,6 @@ import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -51,36 +50,36 @@ class FrameworkAgnosticArchTest {
      * absent — see the class Javadoc.
      */
     private static final String[] AGNOSTIC_PACKAGES = {
-        "de.cuioss.sheriff.api.config.model..",
-        "de.cuioss.sheriff.api.config.validation..",
-        "de.cuioss.sheriff.api.events..",
-        "de.cuioss.sheriff.api.forward..",
-        "de.cuioss.sheriff.api.pipeline.."
+            "de.cuioss.sheriff.api.config.model..",
+            "de.cuioss.sheriff.api.config.validation..",
+            "de.cuioss.sheriff.api.events..",
+            "de.cuioss.sheriff.api.forward..",
+            "de.cuioss.sheriff.api.pipeline.."
     };
 
     /** Framework packages that an agnostic-core class must never depend on. */
     private static final String[] FRAMEWORK_PACKAGES = {
-        "io.quarkus..",
-        "io.vertx..",
-        "jakarta.enterprise..",
-        "jakarta.inject..",
-        "org.eclipse.microprofile..",
-        "io.micrometer.."
+            "io.quarkus..",
+            "io.vertx..",
+            "jakarta.enterprise..",
+            "jakarta.inject..",
+            "org.eclipse.microprofile..",
+            "io.micrometer.."
     };
 
     private static final JavaClasses PRODUCTION_CLASSES = new ClassFileImporter()
-        .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-        .importPackages(BASE_PACKAGE);
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
+            .importPackages(BASE_PACKAGE);
 
     @Test
     @DisplayName("ADR-0005: agnostic core packages must not depend on framework packages")
     void agnosticPackagesMustNotDependOnFrameworks() {
         ArchRule rule = noClasses()
-            .that().resideInAnyPackage(AGNOSTIC_PACKAGES)
-            .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
-            .because("ADR-0005 requires config.model, config.validation, events, forward, and "
-                + "pipeline to remain framework-agnostic (routing is excluded by design)")
-            .allowEmptyShould(true);
+                .that().resideInAnyPackage(AGNOSTIC_PACKAGES)
+                .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
+                .because("ADR-0005 requires config.model, config.validation, events, forward, and "
+                        + "pipeline to remain framework-agnostic (routing is excluded by design)")
+                .allowEmptyShould(true);
 
         rule.check(PRODUCTION_CLASSES);
     }
@@ -89,13 +88,13 @@ class FrameworkAgnosticArchTest {
     @DisplayName("ADR-0005 gate detects a deliberate framework dependency (negative control)")
     void gateFailsOnFrameworkDependency() {
         ArchRule ruleAgainstFrameworkCoupledPackage = noClasses()
-            .that().resideInAPackage("de.cuioss.sheriff.api.quarkus..")
-            .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
-            .allowEmptyShould(true);
+                .that().resideInAPackage("de.cuioss.sheriff.api.quarkus..")
+                .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
+                .allowEmptyShould(true);
 
         assertThrows(AssertionError.class,
-            () -> ruleAgainstFrameworkCoupledPackage.check(PRODUCTION_CLASSES),
-            "The gate must fail when a covered package depends on a framework package — "
-                + "the framework-coupled quarkus package is the standing negative control");
+                () -> ruleAgainstFrameworkCoupledPackage.check(PRODUCTION_CLASSES),
+                "The gate must fail when a covered package depends on a framework package — "
+                        + "the framework-coupled quarkus package is the standing negative control");
     }
 }

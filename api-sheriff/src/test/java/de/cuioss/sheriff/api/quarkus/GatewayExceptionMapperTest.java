@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+
 import de.cuioss.sheriff.api.events.EventCategory;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
@@ -26,7 +27,6 @@ import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 
 import jakarta.ws.rs.core.Response;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -39,18 +39,18 @@ class GatewayExceptionMapperTest {
 
     @ParameterizedTest(name = "{0} -> {1}")
     @CsvSource({
-        "SECURITY_FILTER_VIOLATION, 400",
-        "PATH_NOT_ALLOWED,          400",
-        "PARAMETER_LIMIT_EXCEEDED,  400",
-        "NO_ROUTE_MATCHED,          404",
-        "METHOD_NOT_ALLOWED,        405",
-        "TOKEN_MISSING,             401",
-        "TOKEN_INVALID,             401",
-        "SCOPE_MISSING,             403",
-        "CSRF_REJECTED,             403",
-        "UPSTREAM_ERROR,            502",
-        "UPSTREAM_CIRCUIT_OPEN,     503",
-        "UPSTREAM_TIMEOUT,          504"
+            "SECURITY_FILTER_VIOLATION, 400",
+            "PATH_NOT_ALLOWED,          400",
+            "PARAMETER_LIMIT_EXCEEDED,  400",
+            "NO_ROUTE_MATCHED,          404",
+            "METHOD_NOT_ALLOWED,        405",
+            "TOKEN_MISSING,             401",
+            "TOKEN_INVALID,             401",
+            "SCOPE_MISSING,             403",
+            "CSRF_REJECTED,             403",
+            "UPSTREAM_ERROR,            502",
+            "UPSTREAM_CIRCUIT_OPEN,     503",
+            "UPSTREAM_TIMEOUT,          504"
     })
     @DisplayName("Should render every error-contract row as its status + problem+json shape")
     void shouldRenderEveryErrorContractRow(EventType eventType, int expectedStatus) {
@@ -95,10 +95,10 @@ class GatewayExceptionMapperTest {
 
     @ParameterizedTest(name = "token {0} -> {1}")
     @CsvSource({
-        "TOKEN_EMPTY,                 TOKEN_MISSING",
-        "SIGNATURE_VALIDATION_FAILED, TOKEN_INVALID",
-        "TOKEN_EXPIRED,               TOKEN_INVALID",
-        "ISSUER_MISMATCH,             TOKEN_INVALID"
+            "TOKEN_EMPTY,                 TOKEN_MISSING",
+            "SIGNATURE_VALIDATION_FAILED, TOKEN_INVALID",
+            "TOKEN_EXPIRED,               TOKEN_INVALID",
+            "ISSUER_MISMATCH,             TOKEN_INVALID"
     })
     @DisplayName("Should translate a TokenValidationException to the gateway auth event")
     void shouldTranslateTokenValidationException(String tokenEvent, EventType expected) {

@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.io.IOException;
+import java.io.Serial;
+
 
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayEventCounter;
@@ -26,6 +28,7 @@ import de.cuioss.sheriff.api.events.GatewayException;
 
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenException;
+import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -51,7 +54,7 @@ class UpstreamFailureMapperTest {
         @DisplayName("maps a MicroProfile timeout to 504 UPSTREAM_TIMEOUT")
         void microProfileTimeout() {
             assertEquals(EventType.UPSTREAM_TIMEOUT,
-                    mapper.classify(new org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException("t")));
+                    mapper.classify(new TimeoutException("t")));
         }
 
         @Test
@@ -123,13 +126,13 @@ class UpstreamFailureMapperTest {
 
     /** A failure whose simple class name contains {@code Timeout}, matching the name-based fallback. */
     private static final class ConnectionTimeoutError extends RuntimeException {
-        @java.io.Serial
+        @Serial
         private static final long serialVersionUID = 1L;
     }
 
     /** A failure that returns itself as its own cause, exercising the cause-cycle guard. */
     private static final class SelfCausingException extends RuntimeException {
-        @java.io.Serial
+        @Serial
         private static final long serialVersionUID = 1L;
 
         @Override

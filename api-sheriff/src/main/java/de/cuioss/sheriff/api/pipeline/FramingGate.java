@@ -15,10 +15,12 @@
  */
 package de.cuioss.sheriff.api.pipeline;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+
 
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.events.EventType;
@@ -48,7 +50,7 @@ import de.cuioss.sheriff.api.events.GatewayException;
  */
 public final class FramingGate {
 
-    private static final Set<HttpMethod> BODYLESS_METHODS = Set.of(HttpMethod.GET, HttpMethod.HEAD);
+    private static final Set<HttpMethod> BODYLESS_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
 
     private static final Set<String> PROTECTED_HEADERS = Set.of(
             "content-length", "transfer-encoding", "host",
@@ -77,7 +79,7 @@ public final class FramingGate {
     private static void rejectBodyOnBodylessMethod(PipelineRequest request) {
         if (BODYLESS_METHODS.contains(request.method())
                 && (request.bodyPresent() || request.declaredContentLength() > 0
-                        || request.hasHeader("Transfer-Encoding"))) {
+                || request.hasHeader("Transfer-Encoding"))) {
             throw violation("Body present on bodyless method " + request.method());
         }
     }

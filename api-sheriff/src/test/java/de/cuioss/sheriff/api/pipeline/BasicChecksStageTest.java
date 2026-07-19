@@ -19,10 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.database.AttackTestCase;
@@ -80,7 +82,7 @@ class BasicChecksStageTest {
     void rejectsExcessiveParameterCount() {
         // Arrange
         int cap = SecurityConfiguration.defaults().maxParameterCount();
-        Map<String, List<String>> parameters = new java.util.LinkedHashMap<>();
+        Map<String, List<String>> parameters = new LinkedHashMap<>();
         for (int i = 0; i <= cap; i++) {
             parameters.put("p" + i, List.of("1"));
         }
@@ -102,7 +104,7 @@ class BasicChecksStageTest {
     void rejectsExcessiveHeaderCount() {
         // Arrange
         int cap = SecurityConfiguration.defaults().maxHeaderCount();
-        Map<String, List<String>> headers = new java.util.LinkedHashMap<>();
+        Map<String, List<String>> headers = new LinkedHashMap<>();
         for (int i = 0; i <= cap; i++) {
             headers.put("x-h" + i, List.of("v"));
         }

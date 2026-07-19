@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.edge;
 import java.util.Map;
 import java.util.Objects;
 
+
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
@@ -30,7 +31,6 @@ import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
-
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -112,7 +112,7 @@ public final class DispatchStage {
                     HttpClientResponse.class);
         } catch (GatewayException direct) {
             throw direct;
-        } catch (Exception guarded) {
+        } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception guarded) {
             GatewayException breach = extractGatewayException(guarded);
             if (breach != null) {
                 throw breach;

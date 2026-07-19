@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
+
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
@@ -29,7 +30,6 @@ import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
-
 import lombok.Builder;
 import lombok.Getter;
 
@@ -85,6 +85,16 @@ public final class RouteRuntime {
      */
     @Builder.Default
     private final ForwardConfig effectiveForward = ForwardConfig.builder().build();
+
+    /**
+     * The effective {@code allowed_paths} whitelist enforced by stage 3 — the per-route path
+     * allowlist resolved once at boot from the route's {@code security_filter} block. Empty when
+     * the route declares no whitelist (unrestricted). Carried separately from
+     * {@link #securityConfiguration} because {@code allowed_paths} is a gateway concept the cui-http
+     * {@link SecurityConfiguration} does not model.
+     */
+    @Builder.Default
+    private final List<String> effectiveAllowedPaths = List.of();
 
     /** The materialized upstream-retry toggle. */
     private final boolean retryEnabled;

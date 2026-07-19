@@ -31,6 +31,11 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+
+import de.cuioss.sheriff.api.config.model.EndpointConfig;
+import de.cuioss.sheriff.api.config.model.GatewayConfig;
+import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
+
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -50,14 +55,10 @@ import com.fasterxml.jackson.databind.node.TextNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
-
 import com.networknt.schema.JsonSchema;
 import com.networknt.schema.JsonSchemaFactory;
 import com.networknt.schema.SpecVersion;
 import com.networknt.schema.ValidationMessage;
-import de.cuioss.sheriff.api.config.model.EndpointConfig;
-import de.cuioss.sheriff.api.config.model.GatewayConfig;
-import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
 import org.jspecify.annotations.Nullable;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;

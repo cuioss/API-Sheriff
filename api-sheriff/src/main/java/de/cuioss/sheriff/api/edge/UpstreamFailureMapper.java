@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.edge;
 
 import java.util.Objects;
 
+
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayEventCounter;
 import de.cuioss.sheriff.api.events.GatewayException;

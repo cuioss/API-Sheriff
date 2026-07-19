@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.pipeline;
 import java.util.Locale;
 import java.util.Objects;
 
+
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
 

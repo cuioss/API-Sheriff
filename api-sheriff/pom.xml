@@ -56,6 +56,12 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
+        <!-- quarkus-resteasy: RETAINED after the Plan-04 data-plane cutover (the JAX-RS
+             GatewayResource placeholder was removed; the public edge is now the Vert.x
+             GatewayEdgeRoute). It stays because GatewayExceptionMapper is a JAX-RS @Provider
+             (jakarta.ws.rs.ext.ExceptionMapper) rendering the RFC 9457 problem+json contract, and
+             token-sheriff-client-quarkus registers its own JAX-RS RFC 9457 mapper — both require a
+             JAX-RS runtime. Dropping it would also need explicit approval per the dependency rule. -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-resteasy</artifactId>

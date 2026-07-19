@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.auth;
 import java.util.ArrayList;
 import java.util.List;
 
+
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.IssuerConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;

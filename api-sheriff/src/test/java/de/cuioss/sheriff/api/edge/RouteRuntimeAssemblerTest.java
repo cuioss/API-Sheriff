@@ -22,10 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
@@ -44,14 +46,12 @@ import de.cuioss.sheriff.api.routing.RouteRuntime;
 
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Vertx;
-import io.vertx.core.http.HttpClient;
-
-import jakarta.enterprise.util.TypeLiteral;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import jakarta.enterprise.util.TypeLiteral;
 
 @DisplayName("RouteRuntimeAssembler — boot-time assembly and heavy-object dedup")
 class RouteRuntimeAssemblerTest {
@@ -92,7 +92,7 @@ class RouteRuntimeAssemblerTest {
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
 
         assertEquals(1, invocations.get(), "The factory runs once for the shared filter shape");
-        assertSame(runtimes.get(0).getSecurityConfiguration().orElseThrow(),
+        assertSame(runtimes.getFirst().getSecurityConfiguration().orElseThrow(),
                 runtimes.get(1).getSecurityConfiguration().orElseThrow(),
                 "Both routes hold the same SecurityConfiguration reference");
     }
@@ -108,7 +108,7 @@ class RouteRuntimeAssemblerTest {
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
 
-        assertNotSame(runtimes.get(0).getSecurityConfiguration().orElseThrow(),
+        assertNotSame(runtimes.getFirst().getSecurityConfiguration().orElseThrow(),
                 runtimes.get(1).getSecurityConfiguration().orElseThrow(),
                 "Distinct filter shapes must not share a SecurityConfiguration");
     }
@@ -123,9 +123,9 @@ class RouteRuntimeAssemblerTest {
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
 
-        assertSame(runtimes.get(0).getHttpClient(), runtimes.get(1).getHttpClient(),
+        assertSame(runtimes.getFirst().getHttpClient(), runtimes.get(1).getHttpClient(),
                 "Routes sharing an upstream tuple reuse one client");
-        assertNotSame(runtimes.get(0).getHttpClient(), runtimes.get(2).getHttpClient(),
+        assertNotSame(runtimes.getFirst().getHttpClient(), runtimes.get(2).getHttpClient(),
                 "A different upstream tuple gets a distinct client");
     }
 
@@ -171,7 +171,7 @@ class RouteRuntimeAssemblerTest {
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
 
-        assertTrue(runtimes.get(0).getRequiredScopes().containsAll(List.of("read", "write")),
+        assertTrue(runtimes.getFirst().getRequiredScopes().containsAll(List.of("read", "write")),
                 "Required scopes flow from the effective auth to the runtime");
     }
 
@@ -179,7 +179,7 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should carry the effective forward allowlist from the resolved route")
     void shouldCarryEffectiveForward() {
         ForwardConfig forward = new ForwardConfig(List.of("Accept"), List.of("page"),
-                java.util.Map.of("X-Gateway", "api-sheriff"));
+                Map.of("X-Gateway", "api-sheriff"));
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
@@ -188,7 +188,7 @@ class RouteRuntimeAssemblerTest {
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
 
-        assertEquals(forward, runtimes.get(0).getEffectiveForward(),
+        assertEquals(forward, runtimes.getFirst().getEffectiveForward(),
                 "The materialized forward allowlist flows to the runtime unchanged");
     }
 
@@ -200,7 +200,7 @@ class RouteRuntimeAssemblerTest {
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
 
-        assertTrue(runtimes.get(0).getEffectiveForward().headersAllow().isEmpty(),
+        assertTrue(runtimes.getFirst().getEffectiveForward().headersAllow().isEmpty(),
                 "An unforwarded route carries an empty, deny-by-default allowlist");
     }
 

@@ -15,8 +15,10 @@
  */
 package de.cuioss.sheriff.api.edge;
 
+import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
+
 
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 
@@ -41,8 +43,7 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
 public final class StreamAwareRetryGate {
 
     /** RFC 7231 §4.2.2 idempotent methods — the only verbs a partially-attempted request may retry. */
-    private static final Set<HttpMethod> IDEMPOTENT_METHODS = Set.of(
-            HttpMethod.GET, HttpMethod.HEAD, HttpMethod.PUT, HttpMethod.DELETE, HttpMethod.OPTIONS);
+    private static final Set<HttpMethod> IDEMPOTENT_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.PUT, HttpMethod.DELETE, HttpMethod.OPTIONS);
 
     private final boolean routeRetryEnabled;
 

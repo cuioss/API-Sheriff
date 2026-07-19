@@ -15,12 +15,14 @@
  */
 package de.cuioss.sheriff.api.pipeline;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+
 
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.routing.RouteRuntime;
@@ -78,7 +80,7 @@ public final class PipelineRequest {
         raw.forEach((name, values) -> normalized.merge(
                 name.toLowerCase(Locale.ROOT), List.copyOf(values),
                 (existing, added) -> {
-                    List<String> merged = new java.util.ArrayList<>(existing);
+                    List<String> merged = new ArrayList<>(existing);
                     merged.addAll(added);
                     return List.copyOf(merged);
                 }));

@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.pipeline;
 import java.util.Objects;
 import java.util.Optional;
 
+
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig.Cors;

@@ -20,6 +20,7 @@ import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
 
+
 import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;

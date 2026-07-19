@@ -70,18 +70,18 @@ class EventTypeTest {
 
         @ParameterizedTest(name = "{0} -> {1} ({2})")
         @CsvSource({
-            "SECURITY_FILTER_VIOLATION, 400, INPUT_VALIDATION",
-            "PATH_NOT_ALLOWED,          400, INPUT_VALIDATION",
-            "PARAMETER_LIMIT_EXCEEDED,  400, INPUT_VALIDATION",
-            "NO_ROUTE_MATCHED,          404, INPUT_VALIDATION",
-            "METHOD_NOT_ALLOWED,        405, INPUT_VALIDATION",
-            "TOKEN_MISSING,             401, AUTHENTICATION",
-            "TOKEN_INVALID,             401, AUTHENTICATION",
-            "SCOPE_MISSING,             403, AUTHORIZATION",
-            "CSRF_REJECTED,             403, AUTHORIZATION",
-            "UPSTREAM_ERROR,            502, UPSTREAM",
-            "UPSTREAM_CIRCUIT_OPEN,     503, UPSTREAM",
-            "UPSTREAM_TIMEOUT,          504, UPSTREAM"
+                "SECURITY_FILTER_VIOLATION, 400, INPUT_VALIDATION",
+                "PATH_NOT_ALLOWED,          400, INPUT_VALIDATION",
+                "PARAMETER_LIMIT_EXCEEDED,  400, INPUT_VALIDATION",
+                "NO_ROUTE_MATCHED,          404, INPUT_VALIDATION",
+                "METHOD_NOT_ALLOWED,        405, INPUT_VALIDATION",
+                "TOKEN_MISSING,             401, AUTHENTICATION",
+                "TOKEN_INVALID,             401, AUTHENTICATION",
+                "SCOPE_MISSING,             403, AUTHORIZATION",
+                "CSRF_REJECTED,             403, AUTHORIZATION",
+                "UPSTREAM_ERROR,            502, UPSTREAM",
+                "UPSTREAM_CIRCUIT_OPEN,     503, UPSTREAM",
+                "UPSTREAM_TIMEOUT,          504, UPSTREAM"
         })
         @DisplayName("Should map each error-contract row to its status and category")
         void shouldMapEachErrorContractRow(EventType eventType, int expectedStatus, EventCategory expectedCategory) {

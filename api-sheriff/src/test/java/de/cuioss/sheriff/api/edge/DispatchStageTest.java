@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
@@ -33,7 +34,6 @@ import de.cuioss.sheriff.api.events.GatewayException;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.streams.ReadStream;
-
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -129,9 +129,11 @@ class DispatchStageTest {
             TestReadStream source = new TestReadStream();
             List<Buffer> forwarded = new ArrayList<>();
             DispatchStage.ByteCappedBodyStream capped =
-                    new DispatchStage.ByteCappedBodyStream(source, 4L, () -> { });
+                    new DispatchStage.ByteCappedBodyStream(source, 4L, () -> {
+                    });
             capped.handler(forwarded::add);
-            capped.exceptionHandler(t -> { });
+            capped.exceptionHandler(t -> {
+            });
 
             // Act
             source.emit(Buffer.buffer("12345"));  // 5 bytes → immediate breach

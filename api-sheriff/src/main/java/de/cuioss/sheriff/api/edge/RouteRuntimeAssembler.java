@@ -24,6 +24,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
@@ -120,6 +121,8 @@ public final class RouteRuntimeAssembler {
                     .securityConfiguration(securityConfiguration)
                     .securityHeaders(route.effectiveSecurityHeaders())
                     .effectiveForward(route.effectiveForward())
+                    .effectiveAllowedPaths(route.effectiveSecurityFilter()
+                            .map(SecurityFilterConfig::allowedPaths).orElse(List.of()))
                     .retryEnabled(route.retryEnabled())
                     .notModifiedEnabled(route.notModifiedEnabled())
                     .upstream(route.upstream())
