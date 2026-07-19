@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -44,7 +45,6 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
 import io.vertx.ext.web.Router;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
