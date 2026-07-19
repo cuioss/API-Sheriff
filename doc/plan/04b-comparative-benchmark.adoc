@@ -1,0 +1,384 @@
+= Plan 04b -- Comparative Benchmark (k6 migration + APISIX baseline)
+:toc:
+:toclevels: 3
+:sectnums:
+
+== Goal
+
+Replace the wrk/lua benchmark toolchain with https://k6.io[k6] as the project's *sole*
+benchmark framework, and stand up an *on-demand* comparative baseline against
+https://apisix.apache.org[Apache APISIX] running on the same upstreams, the same Keycloak
+benchmark realm and the same TLS certificates.
+
+Two lanes come out of this plan and they never mix:
+
+* the *CI baseline lane* (`-Pbenchmark`, already wired) keeps producing badges, the 10-run
+  history, trends and the GitHub Pages deployment -- unchanged except for the raw input
+  format, which a new `K6BenchmarkConverter` adapts behind the existing
+  `de.cuioss.benchmarking.common.converter.BenchmarkConverter` seam;
+* the *comparison lane* (`benchmarks/scripts/run-comparison.sh`) is invoked by hand, writes
+  into a segregated results directory, and is referenced by no workflow under
+  `.github/workflows/`.
+
+The wrk removal is a clean break -- no deprecation shim, no transitional wrapper (pre-1.0
+rules, `compatibility: breaking`).
+
+== Required Reading (before implementation)
+
+. link:../../benchmarks/README.adoc[benchmarks/README.adoc] -- the current harness: the
+  `-Pbenchmark` execution chain, the metadata-block contract, and the gh-pages flow this plan
+  must keep intact.
+. `benchmarks/pom.xml` -- the `exec-maven-plugin` execution inventory. Note that *three*
+  benchmark executions are wired today (`run-wrk-health-live-benchmark`,
+  `run-wrk-api-health-benchmark`, `run-wrk-proxied-static-benchmark`); a fourth runner script
+  (`bearer_proxied_benchmark.sh`) exists on disk but is registered in *no* execution.
+. `de.cuioss.benchmarking.common` (TokenSheriff `benchmarking-common`, already on the
+  `benchmarks` classpath) -- the `BenchmarkConverter` interface, `BenchmarkData`,
+  `ReportGenerator`, `GitHubPagesGenerator`, `PrometheusMetricsManager`,
+  `OutputDirectoryStructure`. This plan implements the converter seam; it does *not* modify
+  the upstream artifact.
+. `integration-tests/docker-compose.yml` + `docker-compose.benchmark.yml` -- the compose
+  topology. Two facts govern deliverable 5: `nginx-static` lives *only* in the benchmark
+  overlay, and the `api-sheriff` network is a plain project-scoped `driver: bridge` with no
+  `external: true`.
+. `integration-tests/src/main/docker/sheriff-config/gateway.yaml` +
+  `endpoints/httpbin.yaml` -- the benchmark stack's route surface, and the single
+  `token_validation` issuer (`it-static`) declared today.
+. `integration-tests/src/main/docker/keycloak/benchmark-realm.json` -- the realm import pins
+  `"frontendUrl": "https://keycloak:8443"`, which fixes the `iss` claim of every minted
+  benchmark token.
+. link:../configuration.adoc[Configuration Model] -- sections `token_validation`,
+  `security_filter` (`max_body_bytes`), `tls` (`alpn`), and the anchor model.
+. link:03-endpoint-anchors.adoc[Plan 03] + link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]
+  -- the anchor semantics the new benchmark anchors follow.
+. link:05-protocol-processors.adoc[Plan 05] -- the WebSocket/gRPC obligation that decides the
+  framework choice (design decision D1 below) and that owns the `ws`/`grpc` behaviour this
+  plan only pre-provisions as declarations.
+
+== Prerequisites
+
+* Plan 04 delivered: the data plane serves the standard HTTP verbs, so there is a hot path
+  worth measuring across all six aspects.
+* The benchmark stack (Keycloak `benchmark` realm, `go-httpbin`, `nginx-static`, Prometheus)
+  starts locally via the existing compose overlays.
+
+== Design Decisions
+
+=== D1 -- k6 replaces wrk (Gatling and Fortio rejected)
+
+*wrk is chosen against for a forward-looking reason, not a present-day deficiency.* wrk is a
+fine HTTP/1.1 request-rate generator and the existing lua gate works; what it cannot do is
+serve link:05-protocol-processors.adoc[roadmap plan 05], which delivers WebSocket upgrade
+proxying and gRPC-over-h2. wrk has no WebSocket driver and no h2/gRPC support, so plan 05
+would have to introduce a *second* load generator alongside it -- two toolchains, two result
+formats, two gates. k6 covers HTTP/1.1, HTTP/2, WebSocket and gRPC in one engine, so plan 05
+adds scripts rather than a toolchain.
+
+Rejected alternatives:
+
+* *Gatling* -- capable across the same protocols, but its Scala/Java DSL and JVM load
+  generator put the load generator inside the same runtime family as the system under test,
+  and it drags a build-level dependency into a module that currently drives everything through
+  containers. Rejected on footprint, not capability.
+* *Fortio* -- lightweight and h2-capable, but no WebSocket driver and a much thinner scripting
+  surface than the per-aspect bodies (token replay, multi-megabyte uploads, GraphQL payloads)
+  this matrix needs. Rejected on capability.
+
+[IMPORTANT]
+====
+*Cross-gateway numbers produced by this plan are relative, not absolute.* They compare API
+Sheriff and APISIX under one identical harness on one host, and are meaningful only as a
+same-run ratio. They are not vendor-comparable throughput figures, must not be published as
+such, and must not be compared across runs on different hardware.
+====
+
+=== D2 -- Aspect matrix
+
+Six aspects are measured now:
+
+[cols="1,3,2"]
+|===
+| Aspect | What it measures | Route
+
+| `unauth`
+| Plain proxy overhead, no authentication.
+| the `api` anchor (`/proxy/...`)
+
+| `bearer`
+| Offline bearer validation + proxy overhead.
+| the `secure` anchor (`/secure/...`, `require: bearer`)
+
+| `http2`
+| The ALPN-negotiated h2 inbound path.
+| the `api` anchor over h2
+
+| `graphql`
+| POST-over-HTTP with a JSON body (the GraphQL processor rides the HTTP processor).
+| the new `graphql` anchor
+
+| `upload-1MB`
+| The streaming request-body path at normal concurrency.
+| the new `upload` anchor
+
+| `upload-50MB`
+| The large-body transfer path at reduced concurrency.
+| the new `upload` anchor
+|===
+
+*WebSocket and gRPC are deliberately deferred to link:05-protocol-processors.adoc[plan 05].*
+Both are boot-rejected in the current pipeline, so there is nothing to measure. This plan
+*pre-provisions* `ws` and `grpc` anchors on the API Sheriff side and matching route
+declarations on the APISIX side -- declarations only, no implemented behaviour -- so plan 05
+adds behaviour and scripts without touching the benchmark topology again.
+
+=== D3 -- Upload sizes: 1MB and 50MB measure different things
+
+The two upload aspects are not a small/large pair of the same measurement:
+
+* *1MB at normal concurrency* is a *request-rate* measurement of the streaming path. The body
+  is large enough that the request is genuinely streamed rather than served from a single
+  buffer, and small enough that the run still reports a meaningful requests-per-second figure.
+* *50MB at reduced concurrency* is a *transfer-capacity* measurement. At full VU count a 50MB
+  body saturates the host NIC and the loopback path long before it saturates either gateway,
+  so the run would measure the harness. It therefore runs with fewer VUs and is reported as
+  *throughput (MBps) and latency*, not as a request rate.
+
+The 50MB aspect also exercises the edge body-size guard from the other side: deliverable 4
+raises `security_filter.max_body_bytes` above 50MB on the `upload` anchor, and deliverable 5
+mirrors the same limit on APISIX, so neither gateway rejects at the edge and reports the
+rejection as a fast result.
+
+=== D4 -- Fairness rules for the comparison lane
+
+A cross-gateway number is worthless unless the two sides are configured identically. The
+comparison lane pins all of the following, and deliverable 5's verification asserts them:
+
+* *Single node, both sides* -- one API Sheriff container and one APISIX container, no
+  clustering, no replicas on either side.
+* *Same host, same run* -- both gateways are measured in the same comparison invocation on the
+  same machine; numbers from different hosts or different runs are never placed side by side.
+* *Same TLS material* -- APISIX mounts the same `src/main/docker/certificates` bundle API
+  Sheriff terminates with.
+* *Same upstreams* -- `nginx-static:8080` for the proxied aspects, `go-httpbin:8080` for the
+  echo-body aspects, resolved by service name on the shared `api-sheriff` network. APISIX
+  hard-codes these because `TOPOLOGY_UPSTREAM` is Sheriff-specific.
+* *Same Keycloak realm* -- both sides validate tokens minted from the `benchmark` realm
+  against the same JWKS endpoint.
+* *Route-for-route parity* -- every API Sheriff benchmark route has an APISIX counterpart and
+  vice versa, with matching body-size limits.
+* *Identical container resource limits* -- APISIX declares the same memory/cpus limits the
+  `api-sheriff` service declares, so neither side is advantaged.
+* *Warmup before measurement* -- each aspect runs a warmup phase whose results are discarded,
+  so JIT warmup and connection-pool fill do not land in the measured window.
+* *Dedicated k6 CPU allocation* -- the load generator gets its own CPU allocation so it is not
+  competing with the gateway under test, and the same allocation is used for both targets.
+
+=== D5 -- `K6BenchmarkConverter` upstreaming is a follow-up, explicitly not in this plan
+
+`K6BenchmarkConverter` is a general-purpose adapter from a k6 `handleSummary()` export to
+`BenchmarkData`; nothing in it is API-Sheriff-specific. Its natural home is
+`benchmarking-common` alongside the existing `WrkBenchmarkConverter`, where every cuioss
+project that adopts k6 would get it for free.
+
+*That upstreaming is a cross-repo follow-up and is deliberately NOT implemented here.* This
+plan touches no upstream artifact. Two consequences follow and are accepted:
+
+. The converter lives in `de.cuioss.sheriff.api.k6.benchmark` for now.
+. `K6ResultPostProcessor` keeps calling the wrk-branded upstream API
+  `PrometheusMetricsManager.collectMetricsForWrkBenchmark(...)`, because that is the only
+  entry point `benchmarking-common` exposes for the Prometheus collection the old processor
+  performed. This is the *single sanctioned surviving `wrk` token* in `benchmarks/`
+  production code; renaming it belongs to the upstreaming follow-up, not to this plan.
+
+=== D6 -- One-time GitHub Pages baseline restart
+
+The gh-pages 10-run history is keyed by *benchmark name*, and this plan preserves all four
+existing names verbatim (`healthLiveCheck`, `gatewayHealth`, `proxiedStatic`, `bearerProxied`)
+so no trend series is orphaned by a rename.
+
+The *metric source* nevertheless changes: wrk's text output and lua error gate are replaced by
+k6's summary export and native thresholds, which measure and aggregate latency differently.
+Splicing post-migration points onto pre-migration points would produce a step change in the
+trend line that reads as a regression but is a units artefact.
+
+*Decision: a one-time baseline restart.* The pre-k6 history is retired at the migration commit
+and the trend series restarts from the first k6 run. The discontinuity is documented at the
+point a reader meets it -- in `benchmarks/README.adoc` and on the published pages -- so it is
+never mistaken for a performance event.
+
+=== D7 -- CI baseline coverage: all six matrix aspects run in CI
+
+*Decision: the `-Pbenchmark` CI lane runs the full six-aspect matrix*, so every aspect produces
+badge, history and trend data rather than only being measurable by hand.
+
+The CI lane and the comparison matrix are two different sets. The table below is the normative
+inventory; every count claim in this plan resolves against it.
+
+[cols="1,2,2,1,1,1"]
+|===
+| # | Script (`k6-scripts/`) | Benchmark name | Matrix aspect | In CI lane | In comparison lane
+
+| 1 | `health_live.js` | `healthLiveCheck` | no -- management liveness | yes (retained) | no
+| 2 | `gateway_health.js` | `gatewayHealth` | no -- gateway health | yes (retained) | no
+| 3 | `proxied_static.js` | `proxiedStatic` | unauth | yes | yes
+| 4 | `bearer_proxied.js` | `bearerProxied` | bearer | yes | yes
+| 5 | `http2.js` | `http2Proxied` | http2 | yes | yes
+| 6 | `graphql.js` | `graphqlProxied` | graphql | yes | yes
+| 7 | `upload_small.js` | `uploadSmall` | upload-1MB | yes | yes
+| 8 | `upload_large.js` | `uploadLarge` | upload-50MB | yes | yes
+|===
+
+Eight k6 scripts; six matrix aspects (rows 3-8); two retained non-matrix liveness/health
+benchmarks (rows 1-2), kept so their existing badge/history/trend series are not orphaned.
+*The CI lane therefore runs eight benchmark executions.* The comparison lane runs the six
+matrix aspects only -- the two health benchmarks measure API Sheriff's own management surface
+and have no meaningful APISIX counterpart.
+
+*Execution-count delta: `-Pbenchmark` goes from three wired executions today to eight.* The
+bearer aspect is *new CI coverage* introduced by this plan, not a retarget: the wrk-era
+`bearer_proxied_benchmark.sh` was registered in no Maven execution, so bearer does not run in
+CI today.
+
+[IMPORTANT]
+====
+*Accepted cost: the CI benchmark job gets longer.* Five additional runs land inside the
+existing job, with the 50MB `upload_large` aspect as the dominant contributor -- a large-body
+transfer run is not comparable to a 60-second request-rate run even at reduced concurrency.
+Mitigations: `upload_large` runs at reduced concurrency (deliverable 6), and deliverable 8
+raises `.github/workflows/benchmark.yml` `timeout-minutes` from `45` to `75` with the
+rationale recorded in the same commit, so a future execution-count change has an explicit
+budget to revisit rather than an unexamined default.
+====
+
+=== D8 -- xk6-dashboard HTML report: supplementary, comparison runs only
+
+A comparison run additionally emits a *self-contained single-file HTML report per aspect* via
+the `xk6-dashboard` k6 output extension -- all assets inlined, openable offline, archivable
+as-is. It is a reading aid for an operator staring at a two-gateway run, nothing more.
+
+The decision is deliberately narrow:
+
+* *Comparison runs only.* The stock `grafana/k6` image the CI baseline lane uses does not
+  bundle the extension, and it stays that way. A *separate* `Dockerfile.k6-dashboard` builds a
+  k6 binary with the extension compiled in via an `xk6` builder stage; `Dockerfile.k6` is
+  untouched. The dashboard-enabled service sits behind its own compose profile, so neither
+  `docker compose up`, nor `verify -Pintegration-tests`, nor `-Pbenchmark` ever builds, pulls
+  or runs it.
+* *Supplementary, never the source of truth.* `run-comparison.sh` keeps emitting the generic
+  cuioss-format `handleSummary()` JSON unconditionally. `K6BenchmarkConverter` and
+  `ComparisonSummaryWriter` consume only that JSON, so the dashboard's presence or absence
+  cannot change a side-by-side summary or a published number. It takes no part in the badges /
+  history / trends / gh-pages flow.
+* *Version-pinned both ways.* The k6 version and the `xk6-dashboard` extension version are
+  both pinned explicitly (no floating `latest`), and the pinned k6 version must match the
+  version behind the digest-pinned `grafana/k6` baseline image -- otherwise a dashboard run
+  and a baseline run would be measured by different engines.
+* *Disable flag.* `run-comparison.sh` accepts a flag that turns dashboard emission off, so a
+  comparison can still be taken when the extension image is unavailable.
+
+== Work Breakdown
+
+. *Plan document and plan-index reframing* -- this document, plus the `04b` row in
+  link:README.adoc[the plan index] and the reworded forward-looking benchmark convention
+  (k6 scripts + native thresholds instead of wrk lua/sh). Plan 01's historical
+  "a proxied-route WRK benchmark" phrase stays as-is.
+. *`K6BenchmarkConverter` + `K6ResultPostProcessor`* -- implement the `BenchmarkConverter`
+  seam against k6 `handleSummary()` JSON (name, `mode`, `score`/`scoreUnit` from the request
+  rate, the 50/75/90/99 percentile map from `http_req_duration`, `gateway_target` into the
+  metadata) and the `main`-entry post-processor preserving the outgoing processor's downstream
+  sequence exactly -- including the *exact-match* Prometheus benchmark-name lookup (the
+  removed bidirectional `contains()` fallback is not reintroduced). Value-asserting tests
+  against known-numbers classpath fixtures, carrying over the outgoing test suite's pinned
+  percentile/score assertions and its full gh-pages report-structure verification.
+. *k6 migration and wrk removal* (depends on 2 and 4) -- four k6 scripts preserving the four
+  benchmark names, a shared `lib/summary.js`, native k6 thresholds replacing the custom
+  `WRK_MAX_ERROR_RATE` lua gate, a digest-pinned `Dockerfile.k6`, the `k6` compose service, the
+  `k6.*` property block, and the fourth (bearer) Maven execution that never existed before.
+  `bearer_proxied.js` acquires its token once in `setup()` and replays it, so the run measures
+  gateway validation rather than Keycloak issuance, and its thresholds include an explicit
+  `checks` assertion on HTTP `200` so a 401-only run fails the build. Delete the whole wrk
+  toolchain: four runner scripts, four lua gates, `Dockerfile.wrk`, `WrkResultPostProcessor`,
+  its three test classes, and the two wrk parser fixtures.
+. *Benchmark aspect routes on the API Sheriff side* -- add the Keycloak benchmark-realm
+  `token_validation` issuer (`issuer: https://keycloak:8443/realms/benchmark`, `jwks.source:
+  http` against the realm's `certs` endpoint) *alongside* the retained `it-static` issuer that
+  `BearerValidationIT` depends on; add the `graphql` and `upload` anchors (the latter with
+  `security_filter.max_body_bytes` above 50MB), `tls.alpn` covering `h2` and `http/1.1`, and
+  the `ws`/`grpc` declaration-only anchors; add the matching go-httpbin routes.
+. *APISIX comparison stack* (depends on 4) -- `docker-compose.apisix.yml` as a *third overlay*
+  (not a separate project), every service behind a `comparison` compose profile, no network
+  definition of its own; APISIX in etcd-free `data_plane` + `config_provider: yaml` mode with
+  a declarative route table mirroring the deliverable-4 routes one-for-one, the same TLS
+  material, the same container resource limits, hard-coded `nginx-static:8080` /
+  `go-httpbin:8080` upstreams, and an `openid-connect` `bearer_only` route against the same
+  benchmark realm.
+. *Target-neutral harness and the comparison entry point* (depends on 3 and 5) --
+  `lib/target.js` resolving `GATEWAY_TARGET` (defaulting to API Sheriff), `gateway_target` in
+  all result metadata, the four new aspect scripts (`http2.js`, `graphql.js`,
+  `upload_small.js`, `upload_large.js`), `run-comparison.sh` writing into a segregated results
+  directory, `ComparisonSummaryWriter` emitting the per-aspect side-by-side
+  RPS-or-MBps / P50 / P99 rows, and the four new `-Pbenchmark` executions that take the CI lane
+  to eight.
+. *xk6-dashboard supplementary report* (depends on 6) -- the comparison-only
+  `Dockerfile.k6-dashboard` with both versions pinned, the dashboard-profiled compose service,
+  and the `run-comparison.sh` extension plus its disable flag, per D8.
+. *Documentation and CI wording* (depends on 3, 6, 7) -- reframe `benchmarks/README.adoc` to
+  k6 (full aspect matrix, methodology and fairness rules, the exact three-file compose merge
+  for comparison runs, the dashboard section, and the wrk-to-k6 swap including the baseline
+  restart); reword the benchmark workflow's WRK naming and raise its `timeout-minutes` from
+  `45` to `75` with the rationale recorded.
+
+== Execution Workflow
+
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/plan-04b-comparative-benchmark`. A multi-PR split is acceptable; the workflow
+applies to each PR and the build must be green after every one.
+
+== Acceptance Criteria
+
+* The four existing benchmarks run as k6 scripts under their unchanged names, and a threshold
+  breach exits non-zero and fails the build.
+* `K6BenchmarkConverter` produces a `BenchmarkData` the existing pipeline consumes unchanged;
+  its tests pin concrete percentile and score values against known-numbers fixtures, and the
+  generated gh-pages report structure is identical to the wrk-produced structure.
+* Zero wrk *toolchain* remnants remain under `benchmarks/` or in
+  `integration-tests/docker-compose.yml`: no `wrk-scripts/` directory, no `.lua` file, no
+  `Dockerfile.wrk`, no `WrkResultPostProcessor` or its tests, no `wrk-*.txt` fixture, no
+  `wrk.*` Maven property or `*-wrk-*` execution id, no `wrk` compose service. The single
+  recorded exception is the upstream `collectMetricsForWrkBenchmark(...)` call site (D5).
+  Historical plan documents are out of scope.
+* A request to the `secure` anchor carrying a token minted from the Keycloak `benchmark` realm
+  returns HTTP `200`, not `401` -- verified end-to-end against the running benchmark stack
+  before the bearer aspect is considered green.
+* `gateway.yaml` declares two `token_validation` issuers, and the existing integration suite
+  -- `BearerValidationIT` in particular -- stays green.
+* The `-Pbenchmark` CI lane executes eight benchmark executions matching the D7 table exactly,
+  and each produces badge, history and trend data.
+* The comparison lane is brought up by exactly one documented invocation --
+  `docker compose -f docker-compose.yml -f docker-compose.benchmark.yml -f
+  docker-compose.apisix.yml --profile comparison up` -- and within it APISIX resolves
+  `nginx-static`, `go-httpbin` and `keycloak` by service name on the shared network.
+* Every API Sheriff benchmark route has a route-for-route APISIX counterpart with matching
+  upstream targets, body-size limits and container resource limits.
+* No CI workflow references the APISIX stack, the `comparison` profile, `run-comparison.sh`,
+  or the dashboard image; a comparison run writes only into its segregated results directory
+  and can never contaminate the published baselines.
+* A comparison run emits a self-contained offline-openable HTML report per aspect, and the
+  generic cuioss format remains the sole input to the converter and the summary writer.
+* Quality gate + full verify (canonical build commands, `CLAUDE.md`) pass locally and on CI.
+
+== Out of Scope (explicit)
+
+* *WebSocket and gRPC benchmarking* -- deferred to link:05-protocol-processors.adoc[plan 05],
+  which owns the behaviour. This plan only pre-provisions the `ws`/`grpc` declarations.
+* *Upstreaming `K6BenchmarkConverter` to `benchmarking-common`* -- recorded as a cross-repo
+  follow-up (D5); no upstream artifact is touched here.
+* *Renaming the upstream `collectMetricsForWrkBenchmark(...)` API* -- belongs to that same
+  follow-up.
+* *Wiring the comparison lane into CI* -- comparison runs are on-demand only, by standing rule.
+* *Publishing cross-gateway numbers as absolute figures* -- they are relative, same-run only
+  (D1).
+* *`benchmarks/doc/performance-scoring.adoc`* -- an upstream pointer stub, left untouched; all
+  k6 methodology is documented in `benchmarks/README.adoc` and this plan.
+* *Per-variant baselines and regression thresholds* -- link:09-release-readiness.adoc[plan 09]
+  consolidates those; this plan supplies the harness, not the thresholds.

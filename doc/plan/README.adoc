@@ -53,6 +53,16 @@ The plans build strictly on one another:
   metrics, logging, and RFC 9457 error edge.
 | Plans 01 + 02 + 03
 
+| link:04b-comparative-benchmark.adoc[04b -- Comparative Benchmark]
+| k6 replaces wrk as the sole benchmark framework (the CI badges/history/trends pipeline
+  preserved behind a new `K6BenchmarkConverter`, one-time baseline restart), the six-aspect
+  matrix (unauth, bearer, http2, graphql, upload 1MB, upload 50MB) wired into the
+  `-Pbenchmark` CI lane alongside the two retained health benchmarks, the benchmark-realm
+  issuer and aspect routes that give those aspects a working API Sheriff side, and an
+  on-demand -- never CI-bound -- comparative baseline against Apache APISIX on identical
+  upstreams, Keycloak realm, TLS certificates and resource limits.
+| Plan 04
+
 | link:05-protocol-processors.adoc[05 -- Protocol Processors]
 | WebSocket upgrade proxying (full pipeline on the handshake, then bidirectional relay) and
   gRPC over upstream h2 with *trailer* relay + a gRPC-status rejection mapping -- both native
@@ -134,11 +144,13 @@ deviation (e.g. an expected multi-PR split); it does not restate this sequence.
   the plan's final merge. A follow-up plan may *extend* coverage; it never *supplies* missing
   coverage for a predecessor.
 * *Benchmarks follow the same rule for the hot path*: every plan that adds a runtime
-  data-plane behaviour ships a WRK benchmark for it in the same plan (following the existing
-  lua/sh + metadata conventions so the pages pipeline picks it up unchanged), so regressions
-  stay attributable to the plan that caused them. Plans with no new hot-path behaviour
-  (02, 02b, 03) are exempt -- nothing to measure (02b instead repairs the harness itself). Plan 09 consolidates baselines and regression
-  thresholds; it does not create missing coverage.
+  data-plane behaviour ships a k6 benchmark for it in the same plan (a `k6-scripts/*.js`
+  aspect script declaring native k6 thresholds and exporting the shared `handleSummary()`
+  helper, so the pages pipeline picks it up unchanged), so regressions stay attributable to
+  the plan that caused them. Plans with no new hot-path behaviour (02, 02b, 03, 04b) are
+  exempt -- nothing to measure (02b instead repairs the harness itself; 04b replaces it).
+  Plan 09 consolidates baselines and regression thresholds; it does not create missing
+  coverage.
 * *Dependency approvals*: every new Maven dependency a plan needs is flagged inside the plan
   with an IMPORTANT block and requires explicit user approval before it is added
   (CLAUDE.md rule). TokenSheriff artifacts use the released line (currently `0.9.2`, managed
