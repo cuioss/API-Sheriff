@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.edge;
 import java.util.Objects;
 
 
+import de.cuioss.sheriff.api.ApiSheriffLogMessages;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayEventCounter;
 import de.cuioss.sheriff.api.events.GatewayException;
@@ -112,10 +113,14 @@ public final class UpstreamFailureMapper {
     public void recordBreakerTransition(String routeId, CircuitBreakerState state) {
         Objects.requireNonNull(routeId, "routeId");
         Objects.requireNonNull(state, "state");
-        if (state == CircuitBreakerState.OPEN) {
-            eventCounter.increment(EventType.UPSTREAM_CIRCUIT_OPEN);
+        switch (state) {
+            case OPEN -> {
+                eventCounter.increment(EventType.UPSTREAM_CIRCUIT_OPEN);
+                LOGGER.warn(ApiSheriffLogMessages.WARN.CIRCUIT_BREAKER_OPEN, routeId);
+            }
+            case CLOSED -> LOGGER.warn(ApiSheriffLogMessages.WARN.CIRCUIT_BREAKER_CLOSED, routeId);
+            default -> LOGGER.debug("Circuit breaker for route '%s' transitioned to %s", routeId, state);
         }
-        LOGGER.debug("Circuit breaker for route '%s' transitioned to %s", routeId, state);
     }
 
     private static boolean isTimeout(Throwable candidate) {

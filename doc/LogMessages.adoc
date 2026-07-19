@@ -29,6 +29,7 @@ diagnostics use the logger directly and are not catalogued.
 [cols="1,1,2,2", options="header"]
 |===
 |ID |Component |Message |Description
+|ApiSheriff-1 |EDGE |Route table compiled: %s route runtime(s) assembled |Logged once at startup, after the frozen route table is compiled into the immutable per-route `RouteRuntime` set the request pipeline serves from
 |ApiSheriff-2 |CONFIG |Configuration loaded successfully (config_version='%s') |Logged once at startup after the file-based configuration is read, validated, and assembled into the route table
 |ApiSheriff-3 |CONFIG |Route '%s' effective posture: anchor='%s', auth.require='%s', filter='%s' |Logged once per route during route-table assembly, reporting the materialized effective posture (resolving anchor, effective auth requirement, effective security-filter profile) — anchors vanish at runtime, so the boot log is the discoverability record (ADR-0007)
 |===
@@ -38,8 +39,11 @@ diagnostics use the logger directly and are not catalogued.
 [cols="1,1,2,2", options="header"]
 |===
 |ID |Component |Message |Description
+|ApiSheriff-100 |EDGE |Security filter rejected a request on route '%s': failure type %s |Logged for every request-time `GatewayException` carrying `SECURITY_FILTER_VIOLATION` (cui-http basic-checks, the canonical-path guard, the framing/anti-smuggling gate, or a per-route thorough-checks divergence); records the route id and the sanitized failure-type detail only — never the raw offending payload
 |ApiSheriff-101 |CONFIG |Route '%s' overrides anchor '%s' %s policy (wholesale replacement) |Logged during route-table assembly when a route replaces an anchor-provided non-auth policy block (security_filter or allowed_methods) wholesale, so a weakening override is an explicit, audited choice (ADR-0007)
 |ApiSheriff-102 |CONFIG |trusted_proxies entry '%s' covers a very broad address range (prefix /%s) — review whether such broad proxy trust is intended |Logged during startup validation when a trusted_proxies CIDR entry is broad-but-not-total (shorter than /8 for IPv4, /32 for IPv6); total address-space coverage is rejected outright as a validation error
+|ApiSheriff-103 |EDGE |Circuit breaker opened for upstream '%s' |Logged when a route's SmallRye Fault-Tolerance circuit breaker transitions to OPEN after its configured consecutive-failure threshold, so the breaker's protective posture is always an audited event
+|ApiSheriff-104 |EDGE |Circuit breaker closed for upstream '%s' |Logged when a route's circuit breaker transitions back to CLOSED after recovery
 |===
 
 == ERROR Level (200-299)

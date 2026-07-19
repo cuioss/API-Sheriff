@@ -34,6 +34,7 @@ import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.config.SecurityConfigurationBuilder;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.api.ApiSheriffLogMessages;
 import de.cuioss.sheriff.api.auth.AuthenticationStage;
 import de.cuioss.sheriff.api.auth.GatewayValidator;
 import de.cuioss.sheriff.api.config.model.ForwardedConfig;
@@ -198,6 +199,7 @@ public class GatewayEdgeRoute {
                 GatewayEdgeRoute::securityConfigurationFor,
                 target -> vertx.createHttpClient(),
                 this::guardFor);
+        LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter);
@@ -328,6 +330,11 @@ public class GatewayEdgeRoute {
             // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
             if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
                 gatewayEventCounter.increment(rejected.getEventType());
+            }
+            if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+                // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
+                // rejected.getMessage() already carries a sanitized description (see GatewayException).
+                LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
             }
             recordError(ctx, rejected.getEventType());
             renderProblem(ctx, request, rejected.getEventType());

@@ -21,13 +21,18 @@ import de.cuioss.tools.logging.LogRecordModel;
 import lombok.experimental.UtilityClass;
 
 /**
- * DSL-style {@link LogRecord} catalogue for the API Sheriff gateway data plane.
+ * DSL-style {@link LogRecord} catalogue for the API Sheriff gateway request-pipeline edge.
  * <p>
- * Structured {@code INFO} (1-99), {@code WARN} (100-199), and {@code ERROR} (200-299)
- * messages carry the {@code ApiSheriff} prefix and a stable numeric identifier, so they are
- * greppable and assertable. Security-relevant {@code WARN}s record only the failure
- * <em>type</em> and route id — never the raw offending payload. {@code DEBUG} / {@code TRACE}
- * diagnostics use the logger directly and are not catalogued here.
+ * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the
+ * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and
+ * assertable. This catalogue's identifier ranges are disjoint from
+ * {@link de.cuioss.sheriff.api.config.ConfigLogMessages}'s (the boot-time configuration
+ * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1-2} /
+ * {@code 100} / {@code 103-104} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
+ * there — never renumber one catalogue without checking the other for a collision.
+ * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
+ * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
+ * directly and are not catalogued here.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -43,17 +48,10 @@ public final class ApiSheriffLogMessages {
     @UtilityClass
     public static final class INFO {
 
-        /** Gateway configuration was loaded and validated at boot. */
-        public static final LogRecord CONFIG_LOADED = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(1)
-                .template("Gateway configuration loaded and validated: %s route(s) active")
-                .build();
-
         /** The route table was compiled into the immutable per-route runtime at boot. */
         public static final LogRecord ROUTE_TABLE_COMPILED = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(2)
+                .identifier(1)
                 .template("Route table compiled: %s route runtime(s) assembled")
                 .build();
     }
@@ -74,46 +72,18 @@ public final class ApiSheriffLogMessages {
                 .template("Security filter rejected a request on route '%s': failure type %s")
                 .build();
 
-        /** A route weakens an authentication default via an explicit override at boot. */
-        public static final LogRecord AUTH_WEAKENED = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(101)
-                .template("Route '%s' weakens the authentication default via override '%s'")
-                .build();
-
         /** The circuit breaker opened for an upstream after consecutive failures. */
         public static final LogRecord CIRCUIT_BREAKER_OPEN = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(102)
-                .template("Circuit breaker opened for upstream '%s' after %s consecutive failure(s)")
+                .identifier(103)
+                .template("Circuit breaker opened for upstream '%s'")
                 .build();
 
         /** The circuit breaker closed again for an upstream after recovery. */
         public static final LogRecord CIRCUIT_BREAKER_CLOSED = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(103)
+                .identifier(104)
                 .template("Circuit breaker closed for upstream '%s'")
-                .build();
-    }
-
-    /**
-     * Error-level messages (ERROR range 200-299).
-     */
-    @UtilityClass
-    public static final class ERROR {
-
-        /** Configuration failed validation; the gateway refuses to start. */
-        public static final LogRecord CONFIG_INVALID = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(200)
-                .template("Gateway configuration invalid, refusing to start: %s")
-                .build();
-
-        /** An unsupported protocol or scope was requested at boot; route load failed. */
-        public static final LogRecord UNSUPPORTED_ROUTE = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(201)
-                .template("Route '%s' requests unsupported feature '%s'; refusing to start")
                 .build();
     }
 }
