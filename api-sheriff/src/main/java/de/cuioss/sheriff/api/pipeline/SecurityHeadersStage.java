@@ -41,6 +41,7 @@ import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig.Cors;
 public final class SecurityHeadersStage {
 
     private static final int NO_CONTENT = 204;
+    private static final String WILDCARD_ORIGIN = "*";
 
     private final Optional<SecurityHeadersConfig> config;
 
@@ -82,7 +83,7 @@ public final class SecurityHeadersStage {
 
     private static void applyCors(PipelineRequest request, Cors cors) {
         Optional<String> origin = request.firstHeader("Origin");
-        if (origin.isEmpty() || !cors.allowedOrigins().contains(origin.get())) {
+        if (origin.isEmpty() || !isOriginAllowed(cors, origin.get())) {
             return;
         }
         request.responseHeaders().put("Access-Control-Allow-Origin", origin.get());
@@ -98,6 +99,18 @@ public final class SecurityHeadersStage {
             }
             request.shortCircuit(NO_CONTENT);
         }
+    }
+
+    /**
+     * Decides whether {@code origin} is CORS-allowed. A configured {@code "*"} is a real wildcard
+     * (ConfigValidator permits it only when {@code allowCredentials} is false): a request {@code Origin}
+     * header is never literally {@code "*"}, so without this wildcard branch a configured wildcard would
+     * silently never match and CORS headers would never be emitted for any origin. When the wildcard is
+     * present the presented origin is accepted and reflected by the caller; otherwise the origin must be
+     * listed explicitly.
+     */
+    private static boolean isOriginAllowed(Cors cors, String origin) {
+        return cors.allowedOrigins().contains(WILDCARD_ORIGIN) || cors.allowedOrigins().contains(origin);
     }
 
     private static boolean isPreflight(PipelineRequest request) {

@@ -51,6 +51,34 @@ class FramingGateTest {
     }
 
     @Test
+    @DisplayName("rejects a request carrying multiple Content-Length headers (RFC 7230 §3.3.2)")
+    void rejectsMultipleContentLength() {
+        // Arrange — two Content-Length values is an ambiguous framing / request-smuggling vector
+        PipelineRequest request = request(HttpMethod.POST, Map.of(
+                "content-length", List.of("10", "20")), 10L, true);
+
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+        // Assert
+        assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+    }
+
+    @Test
+    @DisplayName("rejects a single Content-Length header carrying a comma-separated value list")
+    void rejectsCommaSeparatedContentLength() {
+        // Arrange — "5, 6" in one Content-Length field is equally a smuggling vector per RFC 7230
+        PipelineRequest request = request(HttpMethod.POST, Map.of(
+                "content-length", List.of("5, 6")), 5L, true);
+
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+        // Assert
+        assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+    }
+
+    @Test
     @DisplayName("rejects a body on a bodyless GET")
     void rejectsBodyOnGet() {
         // Arrange

@@ -18,9 +18,12 @@ package de.cuioss.sheriff.api.edge;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
@@ -126,34 +129,53 @@ public final class DispatchStage {
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(requestBody, "requestBody");
         AtomicLong bytesSent = new AtomicLong();
+        AtomicBoolean bodyStreamSubscribed = new AtomicBoolean();
         StreamAwareRetryGate retryGate = new StreamAwareRetryGate(route.isRetryEnabled());
         io.vertx.core.http.HttpMethod upstreamMethod = io.vertx.core.http.HttpMethod.valueOf(method.name());
         return guardedDispatch(route.getResilienceGuard(), retryGate, method, bytesSent::get,
-                () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, requestBody, bytesSent));
+                bodyStreamSubscribed::get,
+                () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, requestBody, bytesSent,
+                        bodyStreamSubscribed));
     }
 
     /**
      * Runs {@code attempt} through the route's resilience {@code guard}, vetting every retry
-     * re-entry against {@code retryGate}: the first attempt always proceeds, but each subsequent
-     * re-entry is aborted — by re-raising the prior failure as a mapped {@link GatewayException}
-     * (which the guard's {@code abortOn(GatewayException.class)} contract honours) — whenever the
-     * gate refuses a retry for {@code method} at the current {@code bytesSent} count. Package-private
-     * so the retry-gating decision can be exercised without a live upstream.
+     * re-entry: the first attempt always proceeds, but each subsequent re-entry is aborted — by
+     * re-raising the prior failure as a mapped {@link GatewayException} (which the guard's
+     * {@code abortOn(GatewayException.class)} contract honours) — whenever <em>either</em> the
+     * {@code retryGate} refuses a retry for {@code method} at the current {@code bytesSent} count,
+     * <em>or</em> {@code bodyStreamConsumed} reports that the one-shot request-body stream was
+     * already subscribed on a prior attempt. The inbound body {@link ReadStream} is single-use:
+     * re-attaching an already-subscribed stream to a fresh upstream request would silently stall
+     * waiting for events that already fired on the first attempt, so such a re-entry must fail
+     * explicitly rather than hang — even in the {@code bytesSent == 0} case, since the stream is
+     * subscribed the instant the first attempt reaches {@code request.send(...)}, before any byte
+     * crosses. Package-private so the retry-gating decision can be exercised without a live upstream.
      */
     HttpClientResponse guardedDispatch(Guard guard, StreamAwareRetryGate retryGate, HttpMethod method,
-            LongSupplier bytesSent, Callable<HttpClientResponse> attempt) {
+            LongSupplier bytesSent, BooleanSupplier bodyStreamConsumed, Callable<HttpClientResponse> attempt) {
         AtomicInteger attemptIndex = new AtomicInteger();
         AtomicReference<Throwable> priorFailure = new AtomicReference<>();
         try {
             return guard.call(() -> {
-                if (attemptIndex.getAndIncrement() > 0 && !retryGate.allowsRetry(method, bytesSent.getAsLong())) {
+                if (attemptIndex.getAndIncrement() > 0
+                        && (bodyStreamConsumed.getAsBoolean()
+                                || !retryGate.allowsRetry(method, bytesSent.getAsLong()))) {
                     throw failureMapper.toGatewayException(priorFailure.get());
                 }
                 try {
                     return attempt.call();
-                } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception failure) {
-                    priorFailure.set(failure);
-                    throw failure;
+                } catch (ExecutionException executionFailure) {
+                    // awaitDispatch blocks on CompletableFuture#get, which wraps the real cause (e.g. a
+                    // client-side body-cap GatewayException from ByteCappedBodyStream) in an
+                    // ExecutionException. Unwrap it so the guard's skipOn(GatewayException.class) and
+                    // abortOn(GatewayException.class) rules see the actual GatewayException rather than
+                    // the wrapper — otherwise a client-caused rejection is miscounted as an upstream
+                    // failure and can trip the circuit breaker for reasons unrelated to upstream health.
+                    Throwable cause = executionFailure.getCause();
+                    Exception unwrapped = cause instanceof Exception exception ? exception : executionFailure;
+                    priorFailure.set(unwrapped);
+                    throw unwrapped;
                 }
             }, HttpClientResponse.class);
         } catch (GatewayException direct) {
@@ -169,7 +191,7 @@ public final class DispatchStage {
 
     private HttpClientResponse awaitDispatch(RouteRuntime route, io.vertx.core.http.HttpMethod method,
             String requestUri, Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody,
-            AtomicLong bytesSent) throws Exception {
+            AtomicLong bytesSent, AtomicBoolean bodyStreamSubscribed) throws Exception {
         ResolvedUpstream upstream = route.getUpstream();
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
@@ -180,6 +202,10 @@ public final class DispatchStage {
         Future<HttpClientResponse> response = route.getHttpClient().request(options)
                 .compose(request -> {
                     forwardHeaders.forEach(request::putHeader);
+                    // The one-shot inbound body stream is subscribed the instant it is handed to
+                    // request.send(...); mark it so a retry re-entry never re-attaches the consumed
+                    // stream (which would stall) — see guardedDispatch's bodyStreamConsumed gate.
+                    bodyStreamSubscribed.set(true);
                     return request.send(new ByteCappedBodyStream(requestBody, maxBodyBytes, request::reset,
                             bytesSent::addAndGet));
                 })

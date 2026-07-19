@@ -26,6 +26,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -179,12 +180,15 @@ class DispatchStageTest {
             AtomicLong bytesSent = new AtomicLong();
             Callable<HttpClientResponse> failing = () -> {
                 attempts.incrementAndGet();
-                throw new IllegalStateException("upstream down");
+                // awaitDispatch surfaces upstream failures as ExecutionException (from Future#get);
+                // guardedDispatch must unwrap it before mapping/retrying.
+                throw new ExecutionException("upstream down", new IllegalStateException("upstream down"));
             };
 
-            // Act
+            // Act — the stream is never subscribed (failure before send), so retry is allowed
             GatewayException raised = assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.GET, bytesSent::get, failing));
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.GET, bytesSent::get, () -> false,
+                            failing));
 
             // Assert — the safe idempotent+bodyless request was retried the full budget
             assertEquals(3, attempts.get(),
@@ -202,12 +206,13 @@ class DispatchStageTest {
             AtomicLong bytesSent = new AtomicLong();
             Callable<HttpClientResponse> failing = () -> {
                 attempts.incrementAndGet();
-                throw new IllegalStateException("upstream down");
+                throw new ExecutionException("upstream down", new IllegalStateException("upstream down"));
             };
 
             // Act
             assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.POST, bytesSent::get, failing));
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.POST, bytesSent::get, () -> false,
+                            failing));
 
             // Assert — a POST must never be re-sent, so the upstream is called exactly once
             assertEquals(1, attempts.get(), "a POST must never be re-sent to the upstream");
@@ -224,16 +229,44 @@ class DispatchStageTest {
             Callable<HttpClientResponse> failing = () -> {
                 attempts.incrementAndGet();
                 bytesSent.addAndGet(5L);
-                throw new IllegalStateException("upstream down mid-body");
+                throw new ExecutionException("upstream down mid-body",
+                        new IllegalStateException("upstream down mid-body"));
             };
 
             // Act
             assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.PUT, bytesSent::get, failing));
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.PUT, bytesSent::get, () -> false,
+                            failing));
 
             // Assert — a streamed request cannot be replayed once a body byte has been sent
             assertEquals(1, attempts.get(),
                     "an idempotent request whose body has streamed a byte must never be retried");
+        }
+
+        @Test
+        @DisplayName("never retries when the one-shot body stream was already subscribed, even with zero bytes sent")
+        void neverRetriesWhenBodyStreamAlreadySubscribed() {
+            // Arrange — the first attempt reached request.send(...) and subscribed the single-use
+            // request-body stream before failing, even though no body byte was counted yet. A retry
+            // would re-attach the already-consumed stream and stall, so it must fail explicitly.
+            DispatchStage stage = newStage();
+            StreamAwareRetryGate gate = new StreamAwareRetryGate(true);
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicLong bytesSent = new AtomicLong();
+            Callable<HttpClientResponse> failing = () -> {
+                attempts.incrementAndGet();
+                throw new ExecutionException("upstream reset after subscribe",
+                        new IllegalStateException("upstream down"));
+            };
+
+            // Act — idempotent GET, zero bytes sent, but the body stream is already subscribed
+            assertThrows(GatewayException.class,
+                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.GET, bytesSent::get, () -> true,
+                            failing));
+
+            // Assert — reusing an already-subscribed one-shot body stream is refused, no re-send
+            assertEquals(1, attempts.get(),
+                    "a retry that would reuse an already-subscribed one-shot body stream must be refused");
         }
     }
 

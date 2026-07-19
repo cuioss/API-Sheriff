@@ -98,8 +98,13 @@ public final class BasicChecksStage {
 
     private void validateParameters(Map<String, List<String>> parameters) {
         try {
-            for (List<String> values : parameters.values()) {
-                for (String value : values) {
+            for (Map.Entry<String, List<String>> parameter : parameters.entrySet()) {
+                // Validate the parameter NAME as well as each value. cui-http exposes no dedicated
+                // URL-parameter-name pipeline to this project, so the url-parameter pipeline is reused
+                // against the key — closing the name-validation gap with the same rigor applied to
+                // values, mirroring validateHeaders which validates both header name and value.
+                pipelines.urlParameterPipeline().validate(parameter.getKey());
+                for (String value : parameter.getValue()) {
                     pipelines.urlParameterPipeline().validate(value);
                 }
             }

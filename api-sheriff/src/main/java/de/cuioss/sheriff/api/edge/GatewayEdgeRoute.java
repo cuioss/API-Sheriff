@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
@@ -75,6 +76,7 @@ import io.vertx.ext.web.RoutingContext;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 
 /**
@@ -161,7 +163,12 @@ public class GatewayEdgeRoute {
      * @param routeTable            the frozen, longest-prefix-ordered route table
      * @param gatewayConfig         the bound global gateway document (source of the {@code forwarded}
      *                              block and {@code security_headers})
-     * @param tokenValidator        the gateway's shared offline bearer-token validator
+     * @param tokenValidator        a lazy CDI handle to the gateway's shared offline bearer-token
+     *                              validator; resolved via {@link Instance#get()} only when a
+     *                              {@code require: bearer} route actually validates a token, so a
+     *                              config with only {@code require: none} routes never touches the
+     *                              validator producer (and never fails boot on a missing
+     *                              {@code token_validation} block)
      * @param vertx                 the Vert.x instance the per-tuple upstream clients are created on
      * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor
      * @param hardening             the edge transport / admission bounds
@@ -170,7 +177,7 @@ public class GatewayEdgeRoute {
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
-            @GatewayValidator TokenValidator tokenValidator, Vertx vertx,
+            @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics) {
         this.virtualThreadExecutor = virtualThreadExecutor;
@@ -255,13 +262,38 @@ public class GatewayEdgeRoute {
         }
         long startNanos = System.nanoTime();
         inFlight.incrementAndGet();
+        // Guard the admission accounting so it is rolled back exactly once. The end handler releases
+        // it on the normal path; the executor-rejection path below also rolls it back, and both must
+        // never double-release (reject() ends the response, which itself fires this end handler).
+        AtomicBoolean admissionReleased = new AtomicBoolean();
         ctx.addEndHandler(result -> {
-            admission.release();
-            inFlight.decrementAndGet();
+            releaseAdmission(admissionReleased);
             recordRequestMetrics(ctx, startNanos);
         });
         ctx.request().pause();
-        virtualThreadExecutor.execute(() -> process(ctx));
+        try {
+            virtualThreadExecutor.execute(() -> process(ctx));
+        } catch (RuntimeException rejected) {
+            // The virtual-thread executor refused the dispatch (e.g. RejectedExecutionException during
+            // a shutdown race), so process(ctx) will never run and the response would otherwise never
+            // end — leaking the admission permit and the in-flight count. Roll the admission back now
+            // (idempotently) and fail the request 503 directly.
+            LOGGER.debug(rejected, "Virtual-thread dispatch rejected: %s", rejected.getMessage());
+            releaseAdmission(admissionReleased);
+            reject(ctx, SERVICE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * Releases one admission permit and decrements the in-flight counter exactly once, guarded by
+     * {@code released} so the normal end-handler path and the executor-rejection rollback path can
+     * both call it without double-counting.
+     */
+    private void releaseAdmission(AtomicBoolean released) {
+        if (released.compareAndSet(false, true)) {
+            admission.release();
+            inFlight.decrementAndGet();
+        }
     }
 
     /**
@@ -373,9 +405,17 @@ public class GatewayEdgeRoute {
         LOGGER.debug(failure, "Response relay failed: %s", failure.getMessage());
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
-            if (!response.ended()) {
-                response.setStatusCode(BAD_GATEWAY).end();
+            if (response.ended()) {
+                return;
             }
+            // If the relay failed mid-stream after the response head was already written, the status
+            // line is gone — Vert.x throws IllegalStateException on setStatusCode once headWritten()
+            // is true. Only set the 502 when the head has not yet been written; either way end() the
+            // (possibly truncated) response so the client connection is closed cleanly.
+            if (!response.headWritten()) {
+                response.setStatusCode(BAD_GATEWAY);
+            }
+            response.end();
         });
     }
 
@@ -547,7 +587,12 @@ public class GatewayEdgeRoute {
      * or trigger a retry.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
-        String name = shape.target().host() + ":" + shape.target().port();
+        // Include retryEnabled in the breaker name: RouteRuntimeAssembler's guardCache is keyed by the
+        // full ResilienceShape (target + retryEnabled), so two routes to the same host:port that differ
+        // only in retryEnabled resolve to two distinct guards. Deriving the name from host:port alone
+        // would hand both the SAME programmatic circuit-breaker name, which SmallRye rejects as a
+        // duplicate. The retry-qualified name is used for both .name(...) and the transition callback.
+        String name = shape.target().host() + ":" + shape.target().port() + ":retry=" + shape.retryEnabled();
         Guard.Builder builder = Guard.create().withDescription("upstream-" + name);
         builder.withCircuitBreaker()
                 .name(name)

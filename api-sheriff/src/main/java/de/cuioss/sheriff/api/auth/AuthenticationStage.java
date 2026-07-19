@@ -30,6 +30,8 @@ import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 
+import jakarta.inject.Provider;
+
 /**
  * Stage 4 — offline bearer-token validation, run after the per-route thorough checks.
  * <p>
@@ -57,12 +59,17 @@ public final class AuthenticationStage {
     private static final String REQUIRE_BEARER = "bearer";
     private static final String BEARER_PREFIX = "Bearer ";
 
-    private final TokenValidator tokenValidator;
+    private final Provider<TokenValidator> tokenValidator;
 
     /**
-     * @param tokenValidator the single shared validator built from {@code token_validation} config
+     * @param tokenValidator a lazy provider of the single shared validator built from the
+     *                       {@code token_validation} config. The validator is resolved via
+     *                       {@link Provider#get()} only at the first actual bearer validation, so a
+     *                       gateway serving only {@code require: none} routes (with no
+     *                       {@code token_validation} block) never triggers the validator producer and
+     *                       therefore never fails boot for a missing validation config.
      */
-    public AuthenticationStage(TokenValidator tokenValidator) {
+    public AuthenticationStage(Provider<TokenValidator> tokenValidator) {
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
     }
 
@@ -94,7 +101,7 @@ public final class AuthenticationStage {
 
         AccessTokenContent content;
         try {
-            content = tokenValidator.createAccessToken(new AccessTokenRequest(
+            content = tokenValidator.get().createAccessToken(new AccessTokenRequest(
                     token, request.headers(), requireCanonicalPath(request), request.method().name()));
         } catch (TokenValidationException validationFailure) {
             throw unauthorizedFromValidation(request, validationFailure);

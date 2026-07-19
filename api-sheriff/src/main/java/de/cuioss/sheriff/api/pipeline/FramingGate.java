@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.pipeline;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -70,6 +71,17 @@ public final class FramingGate {
     }
 
     private static void rejectConflictingFraming(PipelineRequest request) {
+        // RFC 7230 §3.3.2: a message carrying more than one Content-Length field — whether sent as
+        // multiple Content-Length headers or as a single field with a comma-separated value list —
+        // is ambiguous and MUST be rejected, since it is a classic HTTP request-smuggling vector.
+        // This is checked before the CL+TE coexistence rule below.
+        List<String> contentLengths = request.headerValues("Content-Length");
+        if (contentLengths.size() > 1) {
+            throw violation("Multiple Content-Length headers present");
+        }
+        if (!contentLengths.isEmpty() && contentLengths.getFirst().indexOf(',') >= 0) {
+            throw violation("Content-Length header carries a comma-separated value list");
+        }
         if (request.hasHeader("Content-Length") && request.hasHeader("Transfer-Encoding")) {
             throw violation("Content-Length and Transfer-Encoding both present");
         }

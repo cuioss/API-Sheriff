@@ -33,7 +33,7 @@ public class GatewayException extends RuntimeException {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    private final transient EventType eventType;
+    private final EventType eventType;
 
     /**
      * @param eventType the failure event; its {@code name()} becomes the log message

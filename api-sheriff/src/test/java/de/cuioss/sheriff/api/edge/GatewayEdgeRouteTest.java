@@ -20,7 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import java.lang.annotation.Annotation;
 import java.time.Duration;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -45,6 +47,8 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
 import io.vertx.ext.web.Router;
+import jakarta.enterprise.inject.Instance;
+import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -170,8 +174,72 @@ class GatewayEdgeRouteTest {
     }
 
     private GatewayEdgeRoute newEdge(RouteTable table) {
-        return new GatewayEdgeRoute(table, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening,
-                new SheriffMetrics(new SimpleMeterRegistry()));
+        return new GatewayEdgeRoute(table, gatewayConfig, new SingletonInstance<>(tokenValidator), vertx,
+                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()));
+    }
+
+    /**
+     * Minimal {@link Instance} test double resolving to a single supplied bean. These boot / drain
+     * tests exercise only {@link #get()} (and none of them reaches a {@code require: bearer} route, so
+     * even that is not resolved); the remaining CDI accessors are unused and throw.
+     */
+    private static final class SingletonInstance<T> implements Instance<T> {
+
+        private final T value;
+
+        SingletonInstance(T value) {
+            this.value = value;
+        }
+
+        @Override
+        public T get() {
+            return value;
+        }
+
+        @Override
+        public Instance<T> select(Annotation... qualifiers) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean isUnsatisfied() {
+            return false;
+        }
+
+        @Override
+        public boolean isAmbiguous() {
+            return false;
+        }
+
+        @Override
+        public void destroy(T instance) {
+            // no-op: the test double owns no lifecycle
+        }
+
+        @Override
+        public Handle<T> getHandle() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Iterable<? extends Handle<T>> handles() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Iterator<T> iterator() {
+            return List.of(value).iterator();
+        }
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require) {

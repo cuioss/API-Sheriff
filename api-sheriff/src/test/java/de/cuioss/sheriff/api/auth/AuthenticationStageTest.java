@@ -55,6 +55,20 @@ class AuthenticationStageTest {
     }
 
     @Test
+    @DisplayName("passes a require:none route without ever resolving the lazy validator")
+    void passesRequireNoneWithoutResolvingValidator() {
+        // Arrange — a provider that fails when resolved proves that a require:none route never
+        // triggers the (potentially config-absent) validator producer via Provider#get().
+        AuthenticationStage stage = new AuthenticationStage(() -> {
+            throw new AssertionError("require:none must not resolve the token validator");
+        });
+        PipelineRequest request = request(authConfig("none", List.of()), Map.of());
+
+        // Act + Assert
+        assertDoesNotThrow(() -> stage.process(request));
+    }
+
+    @Test
     @DisplayName("accepts a valid bearer token on a require:bearer route")
     void acceptsValidBearerToken() {
         // Arrange
@@ -113,7 +127,7 @@ class AuthenticationStageTest {
 
     private static AuthenticationStage stageFor(TestTokenHolder holder) {
         TokenValidator validator = TokenValidator.builder().issuerConfig(holder.getIssuerConfig()).build();
-        return new AuthenticationStage(validator);
+        return new AuthenticationStage(() -> validator);
     }
 
     private static AuthConfig authConfig(String require, List<String> requiredScopes) {
