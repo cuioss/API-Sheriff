@@ -11,6 +11,10 @@ This document provides a reference for all structured log messages emitted by th
 API Sheriff gateway. Structured messages carry the `ApiSheriff` prefix and a stable
 numeric identifier, so they are greppable and assertable.
 
+The build-time benchmark harness in the `benchmarks` module emits its own `K6Benchmark`-prefixed
+records; they are catalogued in a separate section at the end of this document, since they are
+not gateway runtime messages.
+
 === Log Message Format
 
 All messages follow the format: `ApiSheriff-[identifier]: [message]`
@@ -53,4 +57,36 @@ diagnostics use the logger directly and are not catalogued.
 |ID |Component |Message |Description
 |ApiSheriff-200 |CONFIG |Invalid configuration in '%s' at '%s': %s |Logged once per collected configuration violation (offending file, JSON pointer, and detail) during fail-fast startup validation
 |ApiSheriff-201 |CONFIG |Refusing to start — configuration is invalid: %s |Logged after the violations when startup is aborted; Quarkus then exits non-zero and never serves on partial configuration
+|===
+
+== Benchmark Harness Messages (`K6Benchmark`)
+
+These records are emitted by the k6 benchmark post-processor in the `benchmarks` module
+(`de.cuioss.sheriff.api.k6.benchmark.K6BenchmarkLogMessages`), not by the gateway runtime.
+They follow the format `K6Benchmark-[identifier]: [message]` and the same identifier ranges.
+
+Toolchain-neutral messages (Prometheus collection, report availability) reuse the upstream
+`Benchmarking`-prefixed catalogue from `benchmarking-common` and are not repeated here; this
+section lists only the k6-specific records, whose upstream counterparts are wrk-branded.
+
+=== INFO Level (1-99)
+
+[cols="1,1,2,2", options="header"]
+|===
+|ID |Component |Message |Description
+|K6Benchmark-1 |BENCHMARK |Start processing k6 summary results from %s |Logged once when the post-processor begins reading the `k6` summary subdirectory
+|K6Benchmark-2 |BENCHMARK |Parsed k6 summary for benchmark '%s' (target '%s') |Logged once per parsed summary document, recording the benchmark name and the gateway the run targeted
+|===
+
+=== ERROR Level (200-299)
+
+[cols="1,1,2,2", options="header"]
+|===
+|ID |Component |Message |Description
+|K6Benchmark-200 |BENCHMARK |Usage: K6ResultPostProcessor <input-dir> [output-dir] |Logged when the processor is invoked without the mandatory input directory; the process then exits non-zero
+|K6Benchmark-201 |BENCHMARK |Failed to execute k6 result processor |Logged when the processor aborts on an I/O failure; the process then exits non-zero
+|K6Benchmark-202 |BENCHMARK |k6 summary directory does not exist: %s |Logged when the expected `k6` results subdirectory is absent — a fail-loud condition, so an empty report is never published
+|K6Benchmark-203 |BENCHMARK |No k6 summary files found in: %s |Logged when the `k6` directory holds no `*-summary.json` document — fail-loud for the same reason
+|K6Benchmark-204 |BENCHMARK |Failed to parse k6 summary file %s: %s |Logged when a summary document is not valid JSON or has an unexpected shape; that file is skipped
+|K6Benchmark-205 |BENCHMARK |Incomplete k6 summary in file %s (missing field '%s') |Logged when a summary omits a mandatory field; that file yields no benchmark rather than a partial one
 |===

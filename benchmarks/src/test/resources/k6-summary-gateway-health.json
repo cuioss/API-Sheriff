@@ -1,0 +1,16 @@
+{
+  "benchmark_name": "gatewayHealth",
+  "gateway_target": "api-sheriff",
+  "start_time": "2026-07-19T10:02:00Z",
+  "end_time": "2026-07-19T10:03:00Z",
+  "requests_per_second": 8592.89,
+  "error_rate": 0.0,
+  "latency_ms": {
+    "avg": 5.61,
+    "stdev": 7.08,
+    "p50": 1.73,
+    "p75": 2.97,
+    "p90": 14.05,
+    "p99": 28.27
+  }
+}
