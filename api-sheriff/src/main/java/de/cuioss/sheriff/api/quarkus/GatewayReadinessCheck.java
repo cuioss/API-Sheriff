@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.quarkus;
 
 import java.util.Optional;
 
+
 import de.cuioss.sheriff.api.auth.GatewayValidator;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.Metadata;

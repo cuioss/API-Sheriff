@@ -274,7 +274,7 @@ public class GatewayEdgeRoute {
         ctx.request().pause();
         try {
             virtualThreadExecutor.execute(() -> process(ctx));
-        } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/catch (RuntimeException rejected) {
+        } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException rejected) {
             // The virtual-thread executor refused the dispatch (e.g. RejectedExecutionException during
             // a shutdown race), so process(ctx) will never run and the response would otherwise never
             // end — leaking the admission permit and the in-flight count. Roll the admission back now
