@@ -35,6 +35,7 @@ import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.IssuerConfig;
 import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
@@ -178,6 +179,77 @@ class ConfigLoaderTest {
 
         assertEquals(1, loaded.gateway().version());
         assertTrue(loaded.endpoints().isEmpty());
+    }
+
+    @Test
+    void bindsJwksAllowedEgressHosts() throws Exception {
+        // Arrange — the shape the benchmark stack's benchmark-keycloak issuer uses
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: benchmark-keycloak
+                      issuer: https://keycloak:8443/realms/benchmark
+                      jwks:
+                        source: http
+                        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+                        allowed_egress_hosts: ["keycloak"]
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert — the key is accepted by the schema (additionalProperties: false) and
+        // binds through the SNAKE_CASE strategy to the record component
+        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
+        assertEquals(List.of("keycloak"), issuer.jwks().orElseThrow().allowedEgressHosts());
+    }
+
+    @Test
+    void omittedAllowedEgressHostsBindsToEmptyList() throws Exception {
+        // Arrange — an http issuer that says nothing about egress
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: primary
+                      issuer: https://issuer.example.com
+                      jwks:
+                        source: http
+                        url: https://issuer.example.com/jwks
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert — no entries means the secure egress default is preserved downstream
+        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
+        assertEquals(List.of(), issuer.jwks().orElseThrow().allowedEgressHosts());
+    }
+
+    @Test
+    void rejectsNonArrayAllowedEgressHosts() throws Exception {
+        // Arrange — a bare string is a plausible operator typo for a single host
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: primary
+                      issuer: https://issuer.example.com
+                      jwks:
+                        source: http
+                        url: https://issuer.example.com/jwks
+                        allowed_egress_hosts: keycloak
+                """);
+
+        // Act
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        // Assert — the schema refuses it at boot rather than silently ignoring the widening
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("allowed_egress_hosts")),
+                () -> "expected a schema violation for a non-array allowed_egress_hosts, got: "
+                        + exception.errors());
     }
 
     @Test

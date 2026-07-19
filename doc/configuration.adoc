@@ -216,6 +216,10 @@ token_validation:                  # offline bearer validation (routes with auth
         source: http               # http | file
         url: https://idp.example.com/realms/main/protocol/openid-connect/certs
         # file: /etc/sheriff/jwks.json   (air-gapped deployments)
+        # allowed_egress_hosts: [idp.internal]   # SSRF egress allowlist; OMIT unless needed.
+                                   #   Absent/empty keeps the secure default (private-address
+                                   #   JWKS targets refused). Host-exact, no wildcard; widen
+                                   #   only for a trusted IdP on a private network (GW-05).
 
 oidc:                              # only used by the BFF variants (2 and 3)
   issuer: https://idp.example.com/realms/main
@@ -783,6 +787,16 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
 | `issuers[].jwks`
 | Key material for signature verification: `source: http` with a `url` (cached, periodically
   refreshed), or `source: file` -- the latter for air-gapped deployments.
+
+| `issuers[].jwks.allowed_egress_hosts`
+| SSRF egress allowlist for `source: http`, applied on the initial JWKS fetch *and* every
+  background refresh. *Omit it unless you must.* Absent or empty keeps
+  `EgressPolicy.secureDefault()`, which refuses a JWKS URL resolving to a loopback,
+  link-local, site-local, any-local, multicast, or unique-local address. Each entry exempts
+  exactly one host from that check -- the match is host-exact, with no wildcard or suffix
+  form -- so widen it only for a trusted IdP that genuinely lives on a private network, and
+  name that one host. See link:security-threat-model.adoc#gw-05[GW-05] and
+  link:security-threat-model.adoc#bff-07[BFF-07].
 |===
 
 The BFF variants do *not* read this block: they validate the tokens they retrieve against the

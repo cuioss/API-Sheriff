@@ -189,7 +189,12 @@
                 "properties": {
                   "source": { "type": "string", "enum": ["http", "file"] },
                   "url": { "type": "string" },
-                  "file": { "type": "string" }
+                  "file": { "type": "string" },
+                  "allowed_egress_hosts": {
+                    "type": "array",
+                    "description": "SSRF egress allowlist for 'source: http'. Omitted or empty keeps the secure default, which refuses a JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or unique-local address. Each entry names one trusted IdP host that is exempted from that check — widen only for a trusted IdP (threat model GW-05 / BFF-07), never with a wildcard.",
+                    "items": { "type": "string" }
+                  }
                 }
               }
             }

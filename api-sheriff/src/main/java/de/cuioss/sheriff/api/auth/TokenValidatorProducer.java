@@ -103,12 +103,7 @@ public class TokenValidatorProducer {
     private static void applyJwks(de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder,
             IssuerConfig issuer, IssuerConfig.Jwks jwks) {
         if (SOURCE_HTTP.equals(jwks.source())) {
-            String url = jwks.url().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' jwks source 'http' declares no url"));
-            builder.httpJwksLoaderConfig(HttpJwksLoaderConfig.builder()
-                    .issuerIdentifier(issuer.issuer())
-                    .jwksUrl(url)
-                    .build());
+            builder.httpJwksLoaderConfig(toHttpJwksLoaderConfig(issuer, jwks));
         } else if (SOURCE_FILE.equals(jwks.source())) {
             String file = jwks.file().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
                     "Issuer '" + issuer.name() + "' jwks source 'file' declares no file path"));
@@ -117,5 +112,37 @@ public class TokenValidatorProducer {
             throw new GatewayException(EventType.CONFIG_INVALID,
                     "Issuer '" + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
         }
+    }
+
+    /**
+     * Builds the loader config for an {@code http} JWKS source, applying the issuer's
+     * {@code allowed_egress_hosts} allowlist on top of token-sheriff's SSRF egress guard.
+     * <p>
+     * <strong>Secure by default.</strong> When {@code allowed_egress_hosts} is absent or
+     * empty this method calls no egress builder method at all, so the built config keeps
+     * {@link de.cuioss.sheriff.token.commons.transport.EgressPolicy#secureDefault()} — a
+     * JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or
+     * unique-local address is refused. Each configured host is passed to
+     * {@link HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder#allowedEgressHost(String)},
+     * which exempts that single host and nothing else; the allowlist is host-exact, never
+     * a wildcard or a suffix match. This is the narrow widening the threat model's GW-05
+     * and BFF-07 prescribe for a trusted IdP that lives on a private network.
+     *
+     * @param issuer the gateway issuer entry, for the identifier and error context
+     * @param jwks   the issuer's {@code http} JWKS block
+     * @return the loader config carrying the resolved egress policy
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the block
+     *                          declares no url
+     */
+    static HttpJwksLoaderConfig toHttpJwksLoaderConfig(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
+        String url = jwks.url().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
+                "Issuer '" + issuer.name() + "' jwks source 'http' declares no url"));
+        HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder builder = HttpJwksLoaderConfig.builder()
+                .issuerIdentifier(issuer.issuer())
+                .jwksUrl(url);
+        for (String host : jwks.allowedEgressHosts()) {
+            builder.allowedEgressHost(host);
+        }
+        return builder.build();
     }
 }

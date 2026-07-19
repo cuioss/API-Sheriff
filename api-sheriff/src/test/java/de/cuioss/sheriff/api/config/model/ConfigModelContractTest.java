@@ -122,7 +122,7 @@ class ConfigModelContractTest {
                 .issuer("https://issuer.example.com")
                 .audience(Optional.of("api-sheriff"))
                 .jwks(Optional.of(new IssuerConfig.Jwks("http", Optional.of("https://issuer.example.com/jwks"),
-                        Optional.empty())))
+                        Optional.empty(), List.of())))
                 .build();
     }
 
@@ -279,9 +279,18 @@ class ConfigModelContractTest {
                     voCase("IssuerConfig", issuerConfig(), issuerConfig(),
                             new IssuerConfig("other", "https://other", Optional.empty(), Optional.empty())),
                     voCase("IssuerConfig.Jwks",
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty()),
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty()),
-                            new IssuerConfig.Jwks("file", Optional.empty(), Optional.of("/jwks.json"))),
+                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(), List.of()),
+                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(), List.of()),
+                            new IssuerConfig.Jwks("file", Optional.empty(), Optional.of("/jwks.json"), List.of())),
+                    // The egress allowlist participates in identity: two otherwise-identical
+                    // jwks blocks that differ only in allowed_egress_hosts are NOT equal, so a
+                    // widened block can never be mistaken for a secure-default one.
+                    voCase("IssuerConfig.Jwks.allowedEgressHosts",
+                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(),
+                                    List.of("idp.internal")),
+                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(),
+                                    List.of("idp.internal")),
+                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(), List.of())),
                     voCase("OidcConfig", oidcConfig(), oidcConfig(), OidcConfig.builder().build()),
                     voCase("OidcConfig.Logout",
                             new OidcConfig.Logout(Optional.of("/l"), Optional.empty(), Optional.empty(),
@@ -568,7 +577,7 @@ class ConfigModelContractTest {
         @Test
         void jwksRequiresSource() {
             assertThrows(NullPointerException.class,
-                    () -> new IssuerConfig.Jwks(null, Optional.empty(), Optional.empty()));
+                    () -> new IssuerConfig.Jwks(null, Optional.empty(), Optional.empty(), List.of()));
         }
 
         @Test

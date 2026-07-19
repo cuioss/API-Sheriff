@@ -15,10 +15,12 @@
  */
 package de.cuioss.sheriff.api.auth;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.net.URI;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,9 +30,12 @@ import de.cuioss.sheriff.api.config.model.IssuerConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
+import de.cuioss.sheriff.token.commons.error.TransportException;
+import de.cuioss.sheriff.token.commons.transport.EgressPolicy;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 @DisplayName("TokenValidatorProducer — builds the shared gateway validator from token_validation")
@@ -152,6 +157,151 @@ class TokenValidatorProducerTest {
 
         // Assert
         assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+    }
+
+    @Nested
+    @DisplayName("jwks.allowed_egress_hosts — SSRF egress allowlist")
+    class AllowedEgressHosts {
+
+        /**
+         * Resolves to 127.0.0.1 from the hosts file, so the loopback branch of
+         * {@link EgressPolicy}'s address check fires deterministically without a DNS
+         * lookup. An unresolvable name would be waved through (the policy fails open on
+         * {@code UnknownHostException}) and would therefore prove nothing.
+         */
+        private static final String BLOCKED_HOST = "localhost";
+        private static final URI BLOCKED_JWKS_URI = URI.create("https://localhost:8443/jwks");
+
+        @Test
+        @DisplayName("omitting the field keeps the secure default — a private-address JWKS URL stays blocked")
+        void omittedFieldKeepsSecureDefault() {
+            // Arrange — an http issuer that says nothing about egress
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .build();
+
+            // Act
+            EgressPolicy policy = egressPolicyFor(jwks);
+
+            // Assert — structurally the secure default, and behaviourally still blocking
+            assertEquals(EgressPolicy.secureDefault(), policy,
+                    "an absent allowed_egress_hosts must not widen egress");
+            assertThrows(TransportException.class, () -> policy.check(BLOCKED_JWKS_URI),
+                    "the secure default must refuse a JWKS URL resolving to a loopback address");
+        }
+
+        @Test
+        @DisplayName("an empty list keeps the secure default — an empty allowlist is not a wildcard")
+        void emptyListKeepsSecureDefault() {
+            // Arrange — the field is present but carries no entries
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .allowedEgressHosts(List.of())
+                    .build();
+
+            // Act
+            EgressPolicy policy = egressPolicyFor(jwks);
+
+            // Assert
+            assertEquals(EgressPolicy.secureDefault(), policy,
+                    "an empty allowed_egress_hosts must not widen egress");
+            assertThrows(TransportException.class, () -> policy.check(BLOCKED_JWKS_URI),
+                    "an empty allowlist must still refuse a loopback-resolving JWKS URL");
+        }
+
+        @Test
+        @DisplayName("a listed host is exempted from the egress check")
+        void listedHostIsExempted() {
+            // Arrange — the trusted IdP host is named explicitly
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .allowedEgressHosts(List.of(BLOCKED_HOST))
+                    .build();
+
+            // Act
+            EgressPolicy policy = egressPolicyFor(jwks);
+
+            // Assert
+            assertDoesNotThrow(() -> policy.check(BLOCKED_JWKS_URI),
+                    "the host named in allowed_egress_hosts must be reachable");
+        }
+
+        @Test
+        @DisplayName("the exemption is host-exact — an unrelated entry does not widen egress for another host")
+        void exemptionIsScopedToTheListedHost() {
+            // Arrange — a different host is allowlisted than the one being checked
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .allowedEgressHosts(List.of("some-other-idp.internal"))
+                    .build();
+
+            // Act
+            EgressPolicy policy = egressPolicyFor(jwks);
+
+            // Assert
+            assertThrows(TransportException.class, () -> policy.check(BLOCKED_JWKS_URI),
+                    "allowlisting one host must not exempt any other host");
+        }
+
+        @Test
+        @DisplayName("several trusted hosts can be allowlisted independently")
+        void severalHostsAreAllowlisted() {
+            // Arrange
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .allowedEgressHosts(List.of("some-other-idp.internal", BLOCKED_HOST))
+                    .build();
+
+            // Act
+            EgressPolicy policy = egressPolicyFor(jwks);
+
+            // Assert
+            assertDoesNotThrow(() -> policy.check(BLOCKED_JWKS_URI),
+                    "every entry in allowed_egress_hosts must be applied, not just the first");
+        }
+
+        @Test
+        @DisplayName("the allowlist is carried through the full producer path, not only the seam")
+        void allowlistSurvivesTheProducerPath() {
+            // Arrange — drive the public producer entry point rather than the helper
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("benchmark-keycloak")
+                    .issuer(ISSUER)
+                    .jwks(Optional.of(IssuerConfig.Jwks.builder()
+                            .source("http")
+                            .url(Optional.of(JWKS_URL))
+                            .allowedEgressHosts(List.of(BLOCKED_HOST))
+                            .build()))
+                    .build());
+
+            // Act
+            TokenValidator validator = producer.gatewayTokenValidator();
+
+            // Assert
+            assertNotNull(validator, "an issuer carrying an egress allowlist still builds a validator");
+        }
+
+        private static EgressPolicy egressPolicyFor(IssuerConfig.Jwks jwks) {
+            IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER)
+                    .jwks(Optional.of(jwks)).build();
+            return TokenValidatorProducer.toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
+        }
+    }
+
+    @Test
+    @DisplayName("an absent allowed_egress_hosts binds to an empty list on the model")
+    void jwksNormalizesAbsentEgressAllowlist() {
+        // Arrange & Act
+        IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder().source("http").build();
+
+        // Assert
+        assertEquals(List.of(), jwks.allowedEgressHosts(),
+                "an omitted allowed_egress_hosts normalizes to an empty list, never null");
     }
 
     private static TokenValidatorProducer producerFor(IssuerConfig issuer) {

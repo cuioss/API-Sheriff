@@ -85,3 +85,13 @@ token_validation:
       jwks:
         source: http
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        # token-sheriff's SSRF egress guard refuses a JWKS URL that resolves to a
+        # private address. 'keycloak' is a compose service name resolving to the
+        # bridge network's site-local 172.x address, so without this entry the key
+        # set never loads and every bearer request fails — the aspect would then
+        # measure a rejection path while reporting it as bearer throughput. The
+        # allowlist is host-exact (no wildcard) and names only this one trusted,
+        # benchmark-local IdP: exactly the narrow widening GW-05 / BFF-07 permit.
+        # The 'it-static' issuer above is deliberately NOT widened — it loads from
+        # a mounted file and needs no egress at all.
+        allowed_egress_hosts: ["keycloak"]
