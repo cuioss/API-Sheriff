@@ -154,7 +154,7 @@
       },
       "effort": {
         "default": "level-3",
-        "verification-feedback": "level-3",
+        "verification-feedback": "level-5",
         "post-run-review": "level-4"
       }
     }
