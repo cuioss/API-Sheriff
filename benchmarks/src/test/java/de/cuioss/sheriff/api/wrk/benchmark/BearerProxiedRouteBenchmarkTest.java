@@ -15,21 +15,18 @@
  */
 package de.cuioss.sheriff.api.wrk.benchmark;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Verifies the bearer-validated proxied-route benchmark's two contract halves without running
