@@ -78,11 +78,15 @@ public final class TcpPeerGate {
     /**
      * A boot-parsed CIDR range: the network prefix bytes and the significant-bit count. Matching is
      * address-family aware — an IPv4 candidate never matches an IPv6 range and vice versa.
+     * <p>
+     * The network address is held as an immutable {@link List} of bytes rather than a raw
+     * {@code byte[]} so the record's generated {@code equals} / {@code hashCode} / {@code toString}
+     * are content-aware (an array component would compare by identity, which is misleading).
      *
      * @param network      the network address bytes (4 for IPv4, 16 for IPv6)
      * @param prefixLength the number of significant leading bits
      */
-    private record Cidr(byte[] network, int prefixLength) {
+    private record Cidr(List<Byte> network, int prefixLength) {
 
         static Cidr parse(String cidr) {
             Objects.requireNonNull(cidr, "cidr");
@@ -90,22 +94,22 @@ public final class TcpPeerGate {
             if (slash < 0) {
                 throw new IllegalArgumentException("Not a CIDR range: " + cidr);
             }
-            byte[] network = InetAddress.ofLiteral(cidr.substring(0, slash).strip()).getAddress();
+            byte[] networkBytes = InetAddress.ofLiteral(cidr.substring(0, slash).strip()).getAddress();
             int prefixLength = Integer.parseInt(cidr.substring(slash + 1).strip());
-            if (prefixLength < 0 || prefixLength > network.length * 8) {
+            if (prefixLength < 0 || prefixLength > networkBytes.length * 8) {
                 throw new IllegalArgumentException("CIDR prefix out of range: " + cidr);
             }
-            return new Cidr(network, prefixLength);
+            return new Cidr(toImmutableByteList(networkBytes), prefixLength);
         }
 
         boolean contains(InetAddress candidate) {
             byte[] address = candidate.getAddress();
-            if (address.length != network.length) {
+            if (address.length != network.size()) {
                 return false;
             }
             int fullBytes = prefixLength / 8;
             for (int i = 0; i < fullBytes; i++) {
-                if (address[i] != network[i]) {
+                if (address[i] != network.get(i)) {
                     return false;
                 }
             }
@@ -114,7 +118,15 @@ public final class TcpPeerGate {
                 return true;
             }
             int mask = (0xFF << (8 - remainingBits)) & 0xFF;
-            return (address[fullBytes] & mask) == (network[fullBytes] & mask);
+            return (address[fullBytes] & mask) == (network.get(fullBytes) & mask);
+        }
+
+        private static List<Byte> toImmutableByteList(byte[] bytes) {
+            List<Byte> list = new ArrayList<>(bytes.length);
+            for (byte value : bytes) {
+                list.add(value);
+            }
+            return List.copyOf(list);
         }
     }
 }

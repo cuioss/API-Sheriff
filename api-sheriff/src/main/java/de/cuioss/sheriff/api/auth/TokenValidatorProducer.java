@@ -91,11 +91,9 @@ public class TokenValidatorProducer {
         // explicit opt-out — so an issuer that configures no audience must disable audience
         // validation; otherwise IssuerConfig.build() throws and the (lazily created) validator bean
         // fails on the first bearer request instead of validating the token.
-        if (issuer.audience().isPresent()) {
-            builder.expectedAudience(issuer.audience().get());
-        } else {
-            builder.audienceValidationDisabled(true);
-        }
+        issuer.audience().ifPresentOrElse(
+                builder::expectedAudience,
+                () -> builder.audienceValidationDisabled(true));
         IssuerConfig.Jwks jwks = issuer.jwks().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
                 "Issuer '" + issuer.name() + "' declares no jwks source"));
         applyJwks(builder, issuer, jwks);

@@ -120,8 +120,9 @@ public final class RouteMatcher {
     private boolean headersMatch(Map<String, String> requestHeaders) {
         for (HeaderMatcher header : headers) {
             String actual = requestHeaders.get(header.name());
-            if (header.value().isPresent()) {
-                if (!header.value().get().equals(actual)) {
+            Optional<String> expectedValue = header.value();
+            if (expectedValue.isPresent()) {
+                if (!expectedValue.get().equals(actual)) {
                     return false;
                 }
             } else if (header.present().orElse(Boolean.FALSE) && actual == null) {

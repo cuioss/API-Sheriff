@@ -22,6 +22,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
@@ -77,6 +78,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The public data-plane edge: a single catch-all Vert.x route that runs every inbound request
@@ -333,11 +335,12 @@ public class GatewayEdgeRoute {
         PipelineRequest request = null;
         try {
             HttpServerRequest raw = ctx.request();
-            HttpMethod method = parseMethod(raw.method().name());
-            if (method == null) {
+            Optional<HttpMethod> parsedMethod = parseMethod(raw.method().name());
+            if (parsedMethod.isEmpty()) {
                 renderProblem(ctx, null, EventType.METHOD_NOT_ALLOWED);
                 return;
             }
+            HttpMethod method = parsedMethod.get();
             request = buildPipelineRequest(raw, method);
 
             securityHeadersStage.process(request);
@@ -432,7 +435,7 @@ public class GatewayEdgeRoute {
         });
     }
 
-    private void renderProblem(RoutingContext ctx, PipelineRequest request, EventType eventType) {
+    private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
         int status;
         String type;
         String title;
@@ -527,11 +530,11 @@ public class GatewayEdgeRoute {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private static HttpMethod parseMethod(String name) {
+    private static Optional<HttpMethod> parseMethod(String name) {
         try {
-            return HttpMethod.valueOf(name);
+            return Optional.of(HttpMethod.valueOf(name));
         } catch (IllegalArgumentException unsupported) {
-            return null;
+            return Optional.empty();
         }
     }
 

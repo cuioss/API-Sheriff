@@ -15,9 +15,12 @@
  */
 package de.cuioss.sheriff.api.quarkus;
 
+import java.util.Optional;
+
 import de.cuioss.sheriff.api.auth.GatewayValidator;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.Metadata;
+import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 
@@ -91,11 +94,12 @@ public class GatewayReadinessCheck implements HealthCheck {
         gatewayConfig.metadata().flatMap(Metadata::configVersion)
                 .ifPresent(version -> builder.withData(DATA_CONFIG_VERSION, version));
 
-        if (gatewayConfig.tokenValidation().isEmpty()) {
+        Optional<TokenValidationConfig> tokenValidation = gatewayConfig.tokenValidation();
+        if (tokenValidation.isEmpty()) {
             return builder.withData(DATA_JWKS, "not-applicable").up().build();
         }
 
-        int issuerCount = gatewayConfig.tokenValidation().get().issuers().size();
+        int issuerCount = tokenValidation.get().issuers().size();
         builder.withData(DATA_ISSUERS, issuerCount);
         try {
             gatewayValidator.get();
