@@ -38,13 +38,12 @@ import de.cuioss.sheriff.api.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.enterprise.inject.Instance;
+import jakarta.enterprise.util.TypeLiteral;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter

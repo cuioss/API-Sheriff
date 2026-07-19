@@ -46,12 +46,11 @@ import de.cuioss.sheriff.api.routing.RouteRuntime;
 
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Vertx;
+import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import jakarta.enterprise.util.TypeLiteral;
 
 @DisplayName("RouteRuntimeAssembler — boot-time assembly and heavy-object dedup")
 class RouteRuntimeAssemblerTest {

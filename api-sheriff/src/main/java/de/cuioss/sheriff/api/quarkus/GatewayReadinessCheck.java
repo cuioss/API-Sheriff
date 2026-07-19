@@ -21,15 +21,14 @@ import de.cuioss.sheriff.api.config.model.Metadata;
 import de.cuioss.sheriff.api.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 
-import org.eclipse.microprofile.health.HealthCheck;
-import org.eclipse.microprofile.health.HealthCheckResponse;
-import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
-import org.eclipse.microprofile.health.Readiness;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.CreationException;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.health.HealthCheck;
+import org.eclipse.microprofile.health.HealthCheckResponse;
+import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
+import org.eclipse.microprofile.health.Readiness;
 
 /**
  * SmallRye {@code @Readiness} probe served on the management port ({@code /q/health/ready}),

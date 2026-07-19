@@ -160,7 +160,7 @@ public final class DispatchStage {
             return guard.call(() -> {
                 if (attemptIndex.getAndIncrement() > 0
                         && (bodyStreamConsumed.getAsBoolean()
-                                || !retryGate.allowsRetry(method, bytesSent.getAsLong()))) {
+                        || !retryGate.allowsRetry(method, bytesSent.getAsLong()))) {
                     throw failureMapper.toGatewayException(priorFailure.get());
                 }
                 try {

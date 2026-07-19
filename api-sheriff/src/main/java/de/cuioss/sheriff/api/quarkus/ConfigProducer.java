@@ -37,12 +37,11 @@ import de.cuioss.sheriff.api.config.validation.ConfigValidator;
 import de.cuioss.tools.logging.CuiLogger;
 
 import io.quarkus.runtime.StartupEvent;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * The framework-bound edge (ADR-0005 seam) that assembles the file-based

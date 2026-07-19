@@ -19,7 +19,6 @@ import java.util.concurrent.TimeUnit;
 
 import io.quarkus.vertx.http.HttpServerOptionsCustomizer;
 import io.vertx.core.http.HttpServerOptions;
-
 import jakarta.enterprise.context.ApplicationScoped;
 
 /**
