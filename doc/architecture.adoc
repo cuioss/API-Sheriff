@@ -453,3 +453,34 @@ variants only; a pure base-gateway deployment uses just the validation path. All
 are present in the build regardless -- the split is a runtime-usage distinction, not a
 dependency-graph one. See the Authentication Layer note above for the engine/BFF responsibility
 split.
+
+[[_implementation_deviations]]
+== Implementation Deviations
+
+Points where the current implementation differs from, or has not yet fully realized, the model
+described above. Each is a deliberate, recorded gap rather than a silent divergence.
+
+* *Metrics emission is not yet wired into the hot path.* The Micrometer adapter `SheriffMetrics`
+  exists and registers exactly the meter names named in link:#_metrics[Metrics] (`sheriff_requests_total`,
+  `sheriff_request_duration_seconds`, `sheriff_errors_total`, `sheriff_security_events_total`,
+  `sheriff_upstream_duration_seconds`), and its names are asserted by a unit test. The per-request
+  edge stages, however, still record only into the in-process `GatewayEventCounter` /
+  `SecurityEventCounter`; the bridge that reads those counts (and the per-route request/upstream
+  timers) into `SheriffMetrics` is not yet called from `GatewayEdgeRoute`, so the `sheriff_*` meters
+  are not yet emitted end-to-end. The management `/q/metrics` endpoint is live and exposes the
+  Micrometer JVM/HTTP baseline. Readiness (`GatewayReadinessCheck`) *is* wired: `/q/health/ready`
+  reflects the loaded configuration and the gateway validator's JWKS status.
+
+* *Data-plane structured logging is not yet emitted.* The data-plane `LogRecord` catalogue
+  (`ApiSheriffLogMessages`: security-filter, auth-weakened, circuit-breaker, and route-load records)
+  is defined but no edge stage emits it yet. The only catalogue currently emitted is the
+  configuration subsystem's `ConfigLogMessages` (boot-time load / route-posture / validation
+  records) — those, and only those, are catalogued in `LogMessages.adoc`, which is kept matched to
+  the *emitted* records.
+
+* *Integration bearer validation covers rejection, not live issuance.* The default integration suite
+  exercises routing, health, the RFC 9457 error contract, and bearer *rejection* (missing / malformed
+  token → `401`, upstream never reached) against a static file-JWKS issuer, so it needs no live
+  Keycloak. Positive end-to-end token validation against the Keycloak realm is exercised only under
+  the `-Pintegration-tests` / `-Pbenchmark` profiles (native container + compose stack), not the
+  default build.
