@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.api.pipeline;
 
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -96,12 +95,5 @@ public final class FramingGate {
 
     private static GatewayException violation(String detail) {
         return new GatewayException(EventType.SECURITY_FILTER_VIOLATION, "Framing rejected: " + detail);
-    }
-
-    /**
-     * @return the immutable set of framing / trust header names a {@code Connection} token may not name
-     */
-    static List<String> protectedHeaders() {
-        return List.copyOf(PROTECTED_HEADERS);
     }
 }

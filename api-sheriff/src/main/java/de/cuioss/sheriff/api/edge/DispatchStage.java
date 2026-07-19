@@ -205,11 +205,6 @@ public final class DispatchStage {
             }
         }
 
-        /** @return the number of request-body bytes observed so far */
-        long bytesSeen() {
-            return bytesSeen;
-        }
-
         @Override
         public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
             this.dataHandler = handler;
