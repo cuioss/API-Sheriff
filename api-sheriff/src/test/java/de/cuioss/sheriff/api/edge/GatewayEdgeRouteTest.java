@@ -35,10 +35,12 @@ import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
 import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
+import de.cuioss.sheriff.api.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
 import io.vertx.ext.web.Router;
@@ -168,7 +170,8 @@ class GatewayEdgeRouteTest {
     }
 
     private GatewayEdgeRoute newEdge(RouteTable table) {
-        return new GatewayEdgeRoute(table, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening);
+        return new GatewayEdgeRoute(table, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening,
+                new SheriffMetrics(new SimpleMeterRegistry()));
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require) {

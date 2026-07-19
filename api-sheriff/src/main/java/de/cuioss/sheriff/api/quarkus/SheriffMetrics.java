@@ -133,4 +133,17 @@ public class SheriffMetrics {
     public void recordUpstreamDuration(String route, Duration duration) {
         registry.timer(UPSTREAM_DURATION_SECONDS, TAG_ROUTE, route).record(duration);
     }
+
+    /**
+     * Classifies an HTTP status code into its bounded {@code status_family} label
+     * ({@code 1xx} / {@code 2xx} / {@code 3xx} / {@code 4xx} / {@code 5xx}) for the
+     * {@link #REQUESTS_TOTAL} counter, keeping the {@code status_family} label cardinality fixed
+     * regardless of the concrete status.
+     *
+     * @param statusCode the response HTTP status code (e.g. {@code 200}, {@code 404})
+     * @return the leading-digit status family (e.g. {@code "2xx"}, {@code "4xx"})
+     */
+    public static String statusFamily(int statusCode) {
+        return (statusCode / 100) + "xx";
+    }
 }

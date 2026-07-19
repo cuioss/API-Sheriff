@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.edge;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,6 +55,7 @@ import de.cuioss.sheriff.api.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.api.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.api.pipeline.ThoroughChecksStage;
 import de.cuioss.sheriff.api.pipeline.VerbGateStage;
+import de.cuioss.sheriff.api.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.api.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.api.routing.RouteRuntime;
 import de.cuioss.sheriff.token.validation.TokenValidator;
@@ -123,6 +125,9 @@ public class GatewayEdgeRoute {
     private static final int BAD_GATEWAY = 502;
     private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
 
+    /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
+    private static final String ROUTE_KEY = "sheriff.route";
+
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
     private final EdgeHardeningOptions hardening;
@@ -130,6 +135,7 @@ public class GatewayEdgeRoute {
     private final long defaultMaxBodySize;
     private final GatewayEventCounter gatewayEventCounter;
     private final UpstreamFailureMapper upstreamFailureMapper;
+    private final SheriffMetrics sheriffMetrics;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -156,13 +162,17 @@ public class GatewayEdgeRoute {
      * @param vertx                 the Vert.x instance the per-tuple upstream clients are created on
      * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor
      * @param hardening             the edge transport / admission bounds
+     * @param sheriffMetrics        the Micrometer adapter the request/error/upstream signals are
+     *                              recorded through
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator TokenValidator tokenValidator, Vertx vertx,
-            @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening) {
+            @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
+            SheriffMetrics sheriffMetrics) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
+        this.sheriffMetrics = sheriffMetrics;
         this.admission = new Semaphore(hardening.admissionCap());
 
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
@@ -234,13 +244,49 @@ public class GatewayEdgeRoute {
             reject(ctx, SERVICE_UNAVAILABLE);
             return;
         }
+        long startNanos = System.nanoTime();
         inFlight.incrementAndGet();
         ctx.addEndHandler(result -> {
             admission.release();
             inFlight.decrementAndGet();
+            recordRequestMetrics(ctx, startNanos);
         });
         ctx.request().pause();
         virtualThreadExecutor.execute(() -> process(ctx));
+    }
+
+    /**
+     * Records the terminal {@link SheriffMetrics#REQUESTS_TOTAL request count} and
+     * {@link SheriffMetrics#REQUEST_DURATION_SECONDS request-duration timer} for one served request
+     * from the single end-of-response hook, so every terminal path (streamed success, short-circuit,
+     * and rendered failure) is metered exactly once. The bounded {@code route} label is the id
+     * stashed at route selection, or {@link SheriffMetrics#NO_ROUTE} for an unmatched or
+     * short-circuited request.
+     */
+    private void recordRequestMetrics(RoutingContext ctx, long startNanos) {
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+        String route = routeLabel(ctx);
+        String method = ctx.request().method().name();
+        sheriffMetrics.recordRequest(route, method, SheriffMetrics.statusFamily(ctx.response().getStatusCode()));
+        sheriffMetrics.recordRequestDuration(route, elapsed);
+    }
+
+    /**
+     * Counts one categorized failure against {@link SheriffMetrics#ERRORS_TOTAL}, keyed by the
+     * request's stashed route (or {@link SheriffMetrics#NO_ROUTE}) and the failure
+     * {@link EventCategory}. An uncategorized failure (e.g. an unexpected internal error) carries no
+     * category and surfaces only through the {@code 5xx} bucket of {@link SheriffMetrics#REQUESTS_TOTAL}.
+     */
+    private void recordError(RoutingContext ctx, EventType eventType) {
+        EventCategory category = eventType.category();
+        if (category != null) {
+            sheriffMetrics.recordError(routeLabel(ctx), category);
+        }
+    }
+
+    private static String routeLabel(RoutingContext ctx) {
+        String route = ctx.get(ROUTE_KEY);
+        return route != null ? route : SheriffMetrics.NO_ROUTE;
     }
 
     private void process(RoutingContext ctx) {
@@ -265,6 +311,7 @@ public class GatewayEdgeRoute {
             routeSelectionStage.process(request);
             verbGateStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
+            ctx.put(ROUTE_KEY, route.getId());
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
             authenticationStage.process(request);
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
@@ -275,6 +322,7 @@ public class GatewayEdgeRoute {
             if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
                 gatewayEventCounter.increment(rejected.getEventType());
             }
+            recordError(ctx, rejected.getEventType());
             renderProblem(ctx, request, rejected.getEventType());
         } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
@@ -293,7 +341,9 @@ public class GatewayEdgeRoute {
         long cap = route.getSecurityConfiguration().map(SecurityConfiguration::maxBodySize).orElse(defaultMaxBodySize);
 
         DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
+        long upstreamStartNanos = System.nanoTime();
         HttpClientResponse upstream = dispatchStage.dispatch(route, method, uri, forward.headers(), ctx.request());
+        sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
                 .onFailure(failure -> failRelay(ctx, failure));

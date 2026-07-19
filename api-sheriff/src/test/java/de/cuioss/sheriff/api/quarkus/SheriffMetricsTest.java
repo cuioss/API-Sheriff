@@ -121,6 +121,20 @@ class SheriffMetricsTest {
             assertNotNull(timer, "sheriff_upstream_duration_seconds must be registered per route");
             assertEquals(1L, timer.count());
         }
+
+        @Test
+        @DisplayName("statusFamily buckets each status into its bounded leading-digit family")
+        void statusFamilyBucketsByLeadingDigit() {
+            // The edge feeds status_family through this classifier so the label cardinality stays
+            // fixed at the five families regardless of the concrete status code.
+            assertEquals("1xx", SheriffMetrics.statusFamily(100));
+            assertEquals("2xx", SheriffMetrics.statusFamily(200));
+            assertEquals("2xx", SheriffMetrics.statusFamily(204));
+            assertEquals("3xx", SheriffMetrics.statusFamily(304));
+            assertEquals("4xx", SheriffMetrics.statusFamily(404));
+            assertEquals("5xx", SheriffMetrics.statusFamily(500));
+            assertEquals("5xx", SheriffMetrics.statusFamily(503));
+        }
     }
 
     @Nested

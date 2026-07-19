@@ -460,16 +460,17 @@ split.
 Points where the current implementation differs from, or has not yet fully realized, the model
 described above. Each is a deliberate, recorded gap rather than a silent divergence.
 
-* *Metrics emission is not yet wired into the hot path.* The Micrometer adapter `SheriffMetrics`
-  exists and registers exactly the meter names named in link:#_metrics[Metrics] (`sheriff_requests_total`,
-  `sheriff_request_duration_seconds`, `sheriff_errors_total`, `sheriff_security_events_total`,
-  `sheriff_upstream_duration_seconds`), and its names are asserted by a unit test. The per-request
-  edge stages, however, still record only into the in-process `GatewayEventCounter` /
-  `SecurityEventCounter`; the bridge that reads those counts (and the per-route request/upstream
-  timers) into `SheriffMetrics` is not yet called from `GatewayEdgeRoute`, so the `sheriff_*` meters
-  are not yet emitted end-to-end. The management `/q/metrics` endpoint is live and exposes the
-  Micrometer JVM/HTTP baseline. Readiness (`GatewayReadinessCheck`) *is* wired: `/q/health/ready`
-  reflects the loaded configuration and the gateway validator's JWKS status.
+* *The security-events meter is not yet bridged from the `SecurityEventCounter`.* `GatewayEdgeRoute`
+  now records the request, per-route duration, error, and upstream-duration meters end-to-end on the
+  hot path -- `sheriff_requests_total{route,method,status_family}`, `sheriff_request_duration_seconds{route}`,
+  `sheriff_errors_total{route,category}`, and `sheriff_upstream_duration_seconds{route}` -- with the
+  bounded `route` label (config-fixed id, or `"<no-route>"` when unmatched) and the `status_family`
+  bucket keeping label cardinality fixed. `MetricsIT` scrapes `/q/metrics` and asserts those meters
+  appear with their bounded labels after proxied traffic. The remaining
+  `sheriff_security_events_total{failure_type}` meter is still unbridged: the in-process cui-http
+  `SecurityEventCounter` accumulates the per-`UrlSecurityFailureType` counts, but no Micrometer binder
+  yet exposes them, so that single meter is not emitted end-to-end. Readiness (`GatewayReadinessCheck`)
+  *is* wired: `/q/health/ready` reflects the loaded configuration and the gateway validator's JWKS status.
 
 * *Data-plane structured logging is not yet emitted.* The data-plane `LogRecord` catalogue
   (`ApiSheriffLogMessages`: security-filter, auth-weakened, circuit-breaker, and route-load records)
