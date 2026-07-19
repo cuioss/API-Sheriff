@@ -1,0 +1,88 @@
+# APISIX data-plane configuration for the on-demand comparative benchmark lane.
+#
+# Mounted at /usr/local/apisix/conf/config.yaml. APISIX runs here in standalone
+# mode (deployment.role: data_plane + role_data_plane.config_provider: yaml), so
+# the route table comes from the sibling apisix.yaml and no etcd is required.
+#
+# TLS -- WHY THE CERTIFICATE IS NOT CONFIGURED HERE
+# -------------------------------------------------
+# There is deliberately no ssl_cert / ssl_cert_key key below. APISIX 3.14.0's CLI
+# (apisix/cli/ops.lua) UNCONDITIONALLY overwrites apisix.ssl.ssl_cert and
+# apisix.ssl.ssl_cert_key with its built-in placeholder paths before rendering
+# nginx.conf:
+#
+#     yaml_conf.apisix.ssl.ssl_cert     = "cert/ssl_PLACE_HOLDER.crt"
+#     yaml_conf.apisix.ssl.ssl_cert_key = "cert/ssl_PLACE_HOLDER.key"
+#
+# Those two values are what apisix/cli/ngx_tpl.lua emits as the listener's
+# ssl_certificate / ssl_certificate_key directives. Setting them here would be
+# silently ignored -- the stack would still boot, serving APISIX's throwaway
+# placeholder certificate instead of the project's material, which is exactly the
+# kind of silent misconfiguration a benchmark must not run on.
+#
+# The shared src/main/docker/certificates material is therefore mounted OVER those
+# two placeholder paths by docker-compose.apisix.yml. That keeps the certificates
+# directory the single source of truth (no PEM duplicated into a config file, no
+# private key committed inside a route table) and needs no `ssls` SNI resource,
+# whose cert/key fields accept only inline PEM strings.
+apisix:
+  # Plain-HTTP listener. Unused by the benchmark matrix (every aspect drives the
+  # TLS listener below), kept at the APISIX default so the port map is unsurprising.
+  node_listen:
+    - 9080
+
+  # Data plane only: the Admin API would add a control surface the measured
+  # gateway does not have, and API Sheriff exposes no equivalent.
+  enable_admin: false
+
+  ssl:
+    enable: true
+    listen:
+      # Mirrors the api-sheriff service's in-container TLS port exactly, so the
+      # comparison lane differs from the API Sheriff lane by hostname alone
+      # (https://api-sheriff:8443/... vs https://apisix:8443/...).
+      - port: 8443
+
+  data_encryption:
+    # APISIX defaults this to true, which makes it try to DECRYPT the ssls key
+    # field on load, assuming the value was written through the Admin API in
+    # already-encrypted form. In standalone yaml mode the key is plain PEM, so the
+    # default makes every worker reject the TLS entry with "failed to decrypt
+    # previous encrypted key" and the listener then aborts every handshake with
+    # "failed to match any SSL certificate by SNI".
+    enable_encrypt_fields: false
+
+  # ALPN advertises h2 so the http2 aspect negotiates HTTP/2 at the edge rather
+  # than silently falling back to HTTP/1.1 -- the same reason gateway.yaml pins
+  # alpn: ["h2", "http/1.1"] on the API Sheriff side. A fallback would report an
+  # h2 number that was never measured over h2.
+  enable_http2: true
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    # Declarative route table from conf/apisix.yaml; no etcd in the stack.
+    config_provider: yaml
+
+nginx_config:
+  http:
+    # Mirrors the 64 MiB max_body_bytes the API Sheriff 'upload' anchor raises in
+    # sheriff-config/gateway.yaml. APISIX's default is 0 (unlimited); leaving it
+    # unlimited would let the large-upload aspect measure APISIX on a path API
+    # Sheriff caps, and an edge rejection is faster than a transfer, so a
+    # mismatched cap biases the comparison in either direction.
+    client_max_body_size: 67108864
+
+# Narrow the loaded plugin set to exactly what the mirrored routes use. APISIX
+# loads its full default plugin list otherwise; every loaded plugin costs router
+# and runtime setup the API Sheriff side has no counterpart for.
+plugins:
+  - openid-connect
+  - proxy-rewrite
+
+# No stream proxy is configured (proxy_mode defaults to http), so load no stream
+# plugins. Leaving the APISIX default list in place makes every worker try to load
+# the stream `syslog` plugin, which pulls in the Prometheus exporter and fails with
+# `lua_shared_dict "prometheus-cache" not configured` -- a start-up error log on
+# every worker for a code path this benchmark never exercises.
+stream_plugins: []
