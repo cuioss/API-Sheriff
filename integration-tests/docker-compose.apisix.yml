@@ -65,9 +65,10 @@ services:
 
     depends_on:
       # nginx-static comes from docker-compose.benchmark.yml -- the reason this
-      # overlay cannot be launched as its own Compose project.
+      # overlay cannot be launched as its own Compose project. It is the ONLY
+      # upstream every APISIX route targets (see apisix.yaml's fairness invariant),
+      # so go-httpbin is deliberately absent here: APISIX routes nothing to it.
       - nginx-static
-      - go-httpbin
       - keycloak
 
     # OWASP hardening: no privilege escalation, matching the api-sheriff service.

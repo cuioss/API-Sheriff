@@ -16,21 +16,25 @@
 # add no trailing blank lines after it.
 
 upstreams:
-  # The proxied aspects' backend. Matches what TOPOLOGY_UPSTREAM gives API Sheriff
-  # under docker-compose.benchmark.yml, which repoints the UPSTREAM alias from
-  # go-httpbin to this fast static nginx so the run measures gateway overhead
-  # rather than a JSON-serializing backend.
+  # The SINGLE backend every benchmarked route on BOTH gateways targets. Matches
+  # what TOPOLOGY_UPSTREAM gives API Sheriff under docker-compose.benchmark.yml,
+  # which repoints the UPSTREAM alias from go-httpbin to this fast static nginx so
+  # the run measures gateway overhead rather than a JSON-serializing backend.
+  #
+  # FAIRNESS INVARIANT: every route below -- including the graphql and upload
+  # aspects -- rides this one upstream, because the API Sheriff side rides it for
+  # those aspects too (the benchmark overlay repoints the UPSTREAM alias for the
+  # WHOLE endpoint, not just the /proxy route). Pointing APISIX's graphql/upload
+  # routes at go-httpbin while API Sheriff's hit nginx-static would have measured
+  # go-httpbin's JSON serialization as APISIX latency and biased those two aspects
+  # in API Sheriff's favour. The consequence -- documented in the 04b fairness
+  # section -- is that the graphql and upload aspects measure GATEWAY PROCESSING
+  # (body cap enforcement, method matching, path rewriting) rather than real
+  # JSON/echo upstream work, which is the benchmark's stated intent.
   - id: static-upstream
     type: roundrobin
     nodes:
       "nginx-static:8080": 1
-
-  # The echo-body aspects' backend: go-httpbin's /anything/* echoes the received
-  # request, so the graphql and upload aspects need no additional service.
-  - id: echo-upstream
-    type: roundrobin
-    nodes:
-      "go-httpbin:8080": 1
 
 routes:
   # --- unauth aspect -------------------------------------------------------
@@ -74,12 +78,13 @@ routes:
   # --- graphql aspect ------------------------------------------------------
   # Mirrors httpbin.yaml's httpbin-graphql route under gateway.yaml's 'graphql'
   # anchor (path_prefix /graphql, allowed_methods POST, upstream path
-  # /anything/graphql).
+  # /anything/graphql). The rewrite is kept because API Sheriff rewrites the same
+  # way; nginx-static answers 200 on any path, so both edges do identical work.
   - id: graphql-post
     uri: /graphql
     methods:
       - POST
-    upstream_id: echo-upstream
+    upstream_id: static-upstream
     plugins:
       proxy-rewrite:
         uri: /anything/graphql
@@ -94,7 +99,7 @@ routes:
     uri: /upload/small
     methods:
       - POST
-    upstream_id: echo-upstream
+    upstream_id: static-upstream
     plugins:
       proxy-rewrite:
         uri: /anything/upload-small
@@ -103,7 +108,7 @@ routes:
     uri: /upload/large
     methods:
       - POST
-    upstream_id: echo-upstream
+    upstream_id: static-upstream
     plugins:
       proxy-rewrite:
         uri: /anything/upload-large
