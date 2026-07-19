@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+
 import de.cuioss.sheriff.api.config.ConfigLogMessages;
 import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
@@ -34,6 +35,7 @@ import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.topology.TopologyResolver;
 import de.cuioss.sheriff.api.config.validation.ConfigValidator;
 import de.cuioss.tools.logging.CuiLogger;
+
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;

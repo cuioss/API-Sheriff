@@ -471,6 +471,47 @@ Deny-by-default extends to omitted configuration:
 | No rate limiting (the feature is out of scope regardless; the field is reserved).
 |===
 
+[[_edge_hardening_defaults]]
+=== Edge hardening (transport) defaults
+
+The public data-plane HTTP listener is bounded by a set of fixed secure defaults applied in code
+(`EdgeHardeningOptions`), not by `gateway.yaml`. They fail fast on abusive framing before a request
+is admitted to the pipeline and bound the in-flight and shutdown-drain windows. These values are
+recorded here doc-first — they are the contract the edge-hardening code implements, and any change
+to a constant must be reflected in this table.
+
+[cols="2,1,3"]
+|===
+| Bound | Default | Effect
+
+| Maximum request header block
+| 16 KiB
+| An over-large header block is rejected by the Vert.x codec before the request reaches the pipeline.
+
+| Maximum HTTP/1.x request-line length
+| 8 KiB
+| An over-long `METHOD SP request-target SP HTTP/x` line is rejected at the transport.
+
+| Maximum chunked-transfer chunk size
+| 16 KiB
+| An over-large single chunk is rejected at the transport.
+
+| Idle-connection reap
+| 60 s
+| An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
+  connection slots.
+
+| Admission cap (in-flight requests)
+| 2048
+| Requests beyond the cap are rejected `503` *before* a virtual thread is dispatched, so a flood
+  cannot spawn unbounded virtual threads.
+
+| Graceful-drain timeout
+| 25 s
+| The bounded wait for in-flight requests to complete on `SIGTERM`; kept below the Quarkus default
+  shutdown timeout so the drain completes within the shutdown window rather than being cut short.
+|===
+
 [[_topology]]
 == Topology (`topology.properties`)
 

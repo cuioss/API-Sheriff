@@ -31,10 +31,12 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.regex.Pattern;
 
+
 import de.cuioss.sheriff.api.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
+
 import org.jspecify.annotations.Nullable;
 
 /**

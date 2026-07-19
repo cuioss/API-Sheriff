@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.config.validation.rule;
 
 import java.util.List;
 
+
 import de.cuioss.sheriff.api.config.load.ConfigError;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;

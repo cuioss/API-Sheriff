@@ -15,55 +15,21 @@
  */
 package de.cuioss.sheriff.api.integration;
 
+import static io.restassured.RestAssured.given;
+
 import org.junit.jupiter.api.Test;
 
-import static io.restassured.RestAssured.given;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 /**
- * Integration tests for API Sheriff Quarkus extension.
- * These tests verify that the API Sheriff components are properly
- * integrated and functional in a Quarkus application context.
+ * Integration tests for the API Sheriff management interface in a native Quarkus application context.
+ * <p>
+ * The pre-1.0 clean-break removed the placeholder {@code /api/health} + {@code /api/info} data-plane
+ * endpoints; the gateway now exposes only the deny-by-default data-plane edge (covered by
+ * {@link PipelineVerbIT} / {@link BearerValidationIT}) plus the Quarkus management port. These tests
+ * assert the surviving management-port surface.
  *
  * @author API Sheriff Team
  */
 class ApiSheriffIntegrationIT extends BaseIntegrationTest {
-
-    /**
-     * Test that the health endpoint returns a successful response,
-     * indicating that API Sheriff is properly configured.
-     */
-    @Test
-    void apiSheriffHealthEndpoint() {
-        var response = given()
-                .when()
-                .get("/api/health")
-                .then()
-                .statusCode(200)
-                .contentType("application/json")
-                .extract();
-
-        assertEquals("UP", response.path("status"));
-        assertTrue(response.path("apiSheriff").toString().contains("API Sheriff is operational"));
-    }
-
-    /**
-     * Test that the info endpoint returns expected information.
-     */
-    @Test
-    void infoEndpoint() {
-        var response = given()
-                .when()
-                .get("/api/info")
-                .then()
-                .statusCode(200)
-                .contentType("application/json")
-                .extract();
-
-        assertTrue(response.path("message").toString().contains("API Sheriff Gateway"));
-        assertTrue(response.path("version").toString().contains("1.0.0-SNAPSHOT"));
-    }
 
     /**
      * Test that the Quarkus health check endpoint is available on the management interface.

@@ -23,9 +23,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
+import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.Protocol;
@@ -48,8 +50,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * endpoints contribute no rows — orders them by descending normalized
  * {@code path_prefix} length (most specific first), and
  * materializes each route's effective auth, effective {@code allowed_methods},
- * effective {@code security_filter} / {@code security_headers}, and effective retry
- * / not-modified toggles into a {@link ResolvedRoute}. The inheritance chains
+ * effective {@code security_filter} / {@code security_headers}, effective retry
+ * / not-modified toggles, and the effective deny-by-default {@code forward}
+ * allowlist into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
  * step — ADR-0007) are resolved here, once, so the request pipeline never
  * re-implements them and never consults an anchor. The effective posture of each
@@ -150,6 +153,7 @@ public final class RouteTableBuilder {
                 .flatMap(UpstreamConfig::notModified)
                 .flatMap(UpstreamConfig.NotModified::enabled)
                 .orElse(defaults.notModifiedEnabled());
+        ForwardConfig effectiveForward = route.forward().orElseGet(() -> ForwardConfig.builder().build());
         ResolvedRoute resolved = ResolvedRoute.builder()
                 .id(route.id())
                 .protocol(route.protocol().orElse(Protocol.HTTP))
@@ -162,6 +166,7 @@ public final class RouteTableBuilder {
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
                 .upstream(upstream)
+                .effectiveForward(effectiveForward)
                 .build();
         logPosture(resolved);
         return resolved;

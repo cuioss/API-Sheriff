@@ -15,12 +15,11 @@
  */
 package de.cuioss.sheriff.api.integration;
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
 /**
  * End-to-end proof that the gateway booted from the file-based configuration
@@ -44,22 +43,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * route — a declared anchor with no populated endpoint serves nothing.
  */
 class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
-
-    @Test
-    @DisplayName("mounted-config /proxy route forwards to the resolved upstream")
-    void mountedConfigRouteForwardsToUpstream() {
-        var response = given()
-                .when()
-                .get("/proxy/get?probe=config")
-                .then()
-                .statusCode(200)
-                .extract();
-
-        assertTrue(response.contentType().contains("application/json"));
-        assertEquals("GET", response.path("method"));
-        assertTrue(response.path("url").toString().contains("/anything/get"));
-        assertEquals("config", response.path("args.probe[0]"));
-    }
 
     @Test
     @DisplayName("only the mounted route set is served — unmatched paths deny by default")

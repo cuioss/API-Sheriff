@@ -19,3 +19,19 @@ anchors:
     path_prefix: /bff
     auth:
       require: none
+  # Bearer-protected namespace exercised by BearerValidationIT. The gateway's own
+  # token_validation issuer loads its key set from the mounted static JWKS file
+  # (no Keycloak dependency), so the validator is ready offline at boot. The IT
+  # only drives rejection scenarios (missing / malformed token -> 401), which never
+  # reach the upstream — proving upstream count = 0 on every bearer rejection.
+  secure:
+    path_prefix: /secure
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json

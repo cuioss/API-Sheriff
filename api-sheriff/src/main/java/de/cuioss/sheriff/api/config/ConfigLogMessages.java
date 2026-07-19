@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.config;
 
 import de.cuioss.tools.logging.LogRecord;
 import de.cuioss.tools.logging.LogRecordModel;
+
 import lombok.experimental.UtilityClass;
 
 /**

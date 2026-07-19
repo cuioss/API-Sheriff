@@ -23,13 +23,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
 
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-
 import de.cuioss.sheriff.api.config.load.EnvSecretResolver.MalformedPlaceholderException;
 import de.cuioss.sheriff.api.config.load.EnvSecretResolver.MissingVariableException;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link EnvSecretResolver}, the single D4 substitution engine: reference

@@ -29,6 +29,13 @@
             <groupId>de.cuioss</groupId>
             <artifactId>cui-java-tools</artifactId>
         </dependency>
+        <!-- cui-http: inbound security filtering (de.cuioss.http.security) and the
+             forwarded-header resolver (de.cuioss.http.forwarded); version 2.1.0 managed
+             by cui-java-bom's ${version.cui.http} -->
+        <dependency>
+            <groupId>de.cuioss</groupId>
+            <artifactId>cui-http</artifactId>
+        </dependency>
 
         <!-- Configuration management: YAML parsing + boot-time JSON Schema validation -->
         <dependency>
@@ -49,6 +56,12 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
+        <!-- quarkus-resteasy: RETAINED after the Plan-04 data-plane cutover (the JAX-RS
+             GatewayResource placeholder was removed; the public edge is now the Vert.x
+             GatewayEdgeRoute). It stays because GatewayExceptionMapper is a JAX-RS @Provider
+             (jakarta.ws.rs.ext.ExceptionMapper) rendering the RFC 9457 problem+json contract, and
+             token-sheriff-client-quarkus registers its own JAX-RS RFC 9457 mapper — both require a
+             JAX-RS runtime. Dropping it would also need explicit approval per the dependency rule. -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-resteasy</artifactId>
@@ -68,6 +81,12 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- SmallRye Fault Tolerance: programmatic Guard/TypedGuard + CircuitBreakerMaintenance
+             for the per-route resilience guard held on RouteRuntime (Quarkus-BOM-managed) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-fault-tolerance</artifactId>
         </dependency>
 
         <!-- Token Sheriff: client engine + Quarkus extensions (versions managed by token-sheriff-bom) -->
@@ -124,6 +143,71 @@
         <dependency>
             <groupId>de.cuioss.test</groupId>
             <artifactId>cui-test-juli-logger</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- cui-http attack databases (generators classifier) driving the adversarial
+             pipeline tests; classifier variant is not BOM-managed, so the inherited
+             ${version.cui.http} pins it to the same 2.1.0 as the main artifact -->
+        <dependency>
+            <groupId>de.cuioss</groupId>
+            <artifactId>cui-http</artifactId>
+            <version>${version.cui.http}</version>
+            <classifier>generators</classifier>
+            <scope>test</scope>
+        </dependency>
+        <!-- token-sheriff-validation generators (JWKS / key material for the offline bearer-token
+             unit tests); the classifier variant is not BOM-managed, so pin it to the stack version
+             explicitly, mirroring the cui-http generators dependency above -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.token</groupId>
+            <artifactId>token-sheriff-validation</artifactId>
+            <version>${version.token-sheriff}</version>
+            <classifier>generators</classifier>
+            <scope>test</scope>
+        </dependency>
+        <!-- JJWT runtime for the token-sheriff-validation generators test-jar. TestTokenHolder
+             (de.cuioss.sheriff.token.validation.test) uses Jwts.SIG (jjwt-api 0.12+) and needs
+             jjwt-impl + jjwt-jackson on the TEST runtime classpath to sign/parse. token-sheriff-validation
+             declares all three jjwt artifacts at test scope, so they do NOT transitively reach this
+             consumer — a cold Maven resolution (CI, fresh env) therefore omits them and TestTokenHolder's
+             static initializer fails with NoClassDefFoundError io/jsonwebtoken/Jwts$SIG. Declared here
+             at test scope with the version inherited from token-sheriff-bom (${version.jjwt} = 0.13.0),
+             so the jjwt line always matches the token-sheriff stack. -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- SmallRye Fault Tolerance STANDALONE SPI for the DispatchStageTest retry-gating unit tests.
+             Those tests build a Guard programmatically via io.smallrye.faulttolerance.api.Guard.create()
+             outside any CDI/Quarkus runtime; SpiAccess then ServiceLoader-resolves an
+             io.smallrye.faulttolerance.api.Spi implementation. The compile-scope quarkus-smallrye-fault-tolerance
+             pulls the CDI implementation (io.smallrye:smallrye-fault-tolerance), which registers its Spi via CDI
+             beans, NOT via META-INF/services — so a plain JUnit run finds no Spi and Guard.create() fails with
+             "Could not find implementation of io.smallrye.faulttolerance.api.Spi" (ExceptionInInitializerError /
+             NoClassDefFoundError). smallrye-fault-tolerance-standalone supplies the non-CDI Spi these tests need.
+             Test-scope only (production uses the CDI-wired Guard); version inherited from the Quarkus BOM,
+             matching the 6.11.1 smallrye-fault-tolerance line already on the classpath. -->
+        <dependency>
+            <groupId>io.smallrye</groupId>
+            <artifactId>smallrye-fault-tolerance-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- ArchUnit: ADR-0005 framework-agnostic package-boundary gate (FrameworkAgnosticArchTest) -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit</artifactId>
+            <version>1.4.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
