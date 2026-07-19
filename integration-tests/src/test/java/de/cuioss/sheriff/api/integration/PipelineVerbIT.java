@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.integration;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
@@ -105,6 +106,6 @@ class PipelineVerbIT extends BaseIntegrationTest {
 
         // A forwarded request would carry the go-httpbin echo (a non-null "method"); its absence
         // is the observable proof the upstream count stayed 0 for this rejection.
-        assertEquals(null, response.path("method"));
+        assertNull(response.path("method"));
     }
 }
