@@ -183,8 +183,7 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
 
         double latencyAvg = optionalDouble(latency, "avg");
         double latencyStdev = optionalDouble(latency, "stdev");
-        String gatewayTarget = summary.has(FIELD_GATEWAY_TARGET)
-                && summary.get(FIELD_GATEWAY_TARGET).isJsonPrimitive()
+        String gatewayTarget = isPrimitiveField(summary, FIELD_GATEWAY_TARGET)
                 ? summary.get(FIELD_GATEWAY_TARGET).getAsString()
                 : "unknown";
 
@@ -236,13 +235,19 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
     }
 
     private String requiredString(JsonObject summary, String field, Path file) {
-        // A present-but-non-primitive field (JsonNull, array, object) is treated the same as a
-        // missing field: getAsString() would otherwise throw and crash the converter.
-        if (!summary.has(field) || !summary.get(field).isJsonPrimitive()) {
+        if (!isPrimitiveField(summary, field)) {
             LOGGER.error(K6BenchmarkLogMessages.ERROR.INCOMPLETE_SUMMARY, file, field);
             return null;
         }
         return summary.get(field).getAsString();
+    }
+
+    /**
+     * A present-but-non-primitive field (JsonNull, array, object) is treated the same as a
+     * missing field: {@code getAsString()} would otherwise throw and crash the converter.
+     */
+    private boolean isPrimitiveField(JsonObject summary, String field) {
+        return summary.has(field) && summary.get(field).isJsonPrimitive();
     }
 
     private double optionalDouble(JsonObject object, String field) {

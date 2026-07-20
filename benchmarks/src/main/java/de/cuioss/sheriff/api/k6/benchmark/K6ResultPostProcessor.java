@@ -292,8 +292,8 @@ public class K6ResultPostProcessor {
     }
 
     private static Instant instantOrNull(JsonObject summary, String field) {
-        return summary.has(field) && summary.get(field).isJsonPrimitive()
-                ? Instant.parse(summary.get(field).getAsString()) : null;
+        String value = stringOrNull(summary, field);
+        return value == null ? null : Instant.parse(value);
     }
 
     /**
