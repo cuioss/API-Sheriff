@@ -20,15 +20,12 @@ import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for {@link ComparisonSummaryWriter}.
@@ -139,7 +136,7 @@ class ComparisonSummaryWriterTest {
     }
 
     @Test
-    void shouldReadEveryTargetSummaryFromDisk() throws IOException {
+    void shouldReadEveryTargetSummaryFromDisk() throws Exception {
         // Arrange
         Path targetDir = tempDir.resolve(SHERIFF);
         Files.createDirectories(targetDir);
@@ -158,7 +155,7 @@ class ComparisonSummaryWriterTest {
     }
 
     @Test
-    void shouldReturnNoSummariesWhenTargetDirectoryIsAbsent() throws IOException {
+    void shouldReturnNoSummariesWhenTargetDirectoryIsAbsent() throws Exception {
         // Arrange -- nothing on disk for this target
 
         // Act
@@ -169,7 +166,7 @@ class ComparisonSummaryWriterTest {
     }
 
     @Test
-    void shouldWriteComparisonArtifactBesideTheInputs() throws IOException {
+    void shouldWriteComparisonArtifactBesideTheInputs() throws Exception {
         // Arrange
         for (String target : new String[]{SHERIFF, APISIX}) {
             Path targetDir = tempDir.resolve(target);

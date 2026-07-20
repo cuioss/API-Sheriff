@@ -23,8 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
-    # Add timeout to prevent long-running jobs (increased for integration benchmarks)
-    timeout-minutes: 45
+    # Add timeout to prevent long-running jobs (increased for integration benchmarks).
+    # Raised 45 -> 75 for the k6 aspect matrix: the lane went from three wired 60-second runs to
+    # eight (the six matrix aspects plus the two retained health benchmarks). The dominant
+    # contributor beyond the old budget is the upload-50MB aspect, which is transfer-bound and
+    # runs at reduced concurrency, so it does not finish in the same wall time as a request-rate
+    # run. The five additional runs land inside this cap.
+    timeout-minutes: 75
     permissions:
       # Needed to upload artifacts
       contents: write
@@ -78,10 +83,13 @@ jobs:
             --previous-pages-dir previous-pages/api-sheriff/benchmarks \
             --output-dir "${GITHUB_WORKSPACE}/benchmark-history"
 
-      - name: Run Integration Benchmarks with WRK
+      - name: Run Integration Benchmarks with k6
         run: |
-          # Run WRK-based integration benchmarks with native image
-          echo "Running WRK integration benchmarks with native Quarkus..."
+          # Run k6-based integration benchmarks with native image. The -Pbenchmark profile wires
+          # eight executions: the six matrix aspects (unauth, bearer, http2, graphql, upload-1MB,
+          # upload-50MB) plus the two retained non-matrix health benchmarks (healthLiveCheck,
+          # gatewayHealth). The on-demand APISIX comparison lane is deliberately NOT run here.
+          echo "Running k6 integration benchmarks with native Quarkus..."
           ./mvnw --no-transfer-progress clean verify -pl benchmarks -Pbenchmark \
             -Dbenchmark.history.dir="${GITHUB_WORKSPACE}/benchmark-history/integration"
 

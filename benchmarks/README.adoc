@@ -1,9 +1,85 @@
 = API Sheriff Integration Benchmarks
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
 
-WRK-based HTTP benchmarks for API Sheriff, run against the native container over
-the integration-test infrastructure.
+k6-based HTTP benchmarks for API Sheriff, run against the native container over the
+integration-test infrastructure.
 
-== Benchmarks
+Two lanes share one set of k6 scripts:
+
+* the *CI baseline lane* (`-Pbenchmark`) measures API Sheriff alone and publishes to the
+  benchmark pages;
+* the *on-demand comparison lane* (`scripts/run-comparison.sh`) re-runs the same aspect scripts
+  against a second gateway (Apache APISIX) and is deliberately wired into no workflow.
+
+== Lane composition
+
+The two lanes run deliberately different sets, so a number is always attributable to a lane.
+
+[cols="1,1,3", options="header"]
+|===
+|Lane |Executions |Contents
+
+|CI baseline (`-Pbenchmark`)
+|8
+|The six matrix aspects *plus* the two retained non-matrix benchmarks `healthLiveCheck` and
+ `gatewayHealth`.
+
+|On-demand comparison (`run-comparison.sh`)
+|6
+|The six matrix aspects only.
+|===
+
+The two health benchmarks are excluded from the comparison lane on purpose: they measure the
+Quarkus management port and API Sheriff's own `/api/health` surface, neither of which APISIX
+exposes. Driving them against APISIX would still label their summaries `gateway_target: apisix`
+while actually measuring API Sheriff — mislabelled data that reads as correct. `run-comparison.sh`
+closes its aspect list to the six comparable aspects so that is unreachable.
+
+== The aspect matrix
+
+These six aspects exist route-for-route on both gateways and are the comparable set.
+
+[cols="1,1,3", options="header"]
+|===
+|Aspect |Script |What it measures
+
+|`unauth`
+|`proxied_static.js`
+|Plain proxy overhead: `k6 -> gateway -> nginx`, no authentication. The baseline every other
+ aspect is read against.
+
+|`bearer`
+|`bearer_proxied.js`
+|The added cost of offline bearer-token validation on the hot path. The token is minted once from
+ the Keycloak `benchmark` realm and replayed, so the run measures per-request validation rather
+ than token issuance.
+
+|`http2`
+|`http2.js`
+|The same proxied static route over an ALPN-negotiated HTTP/2 connection. The delta against
+ `unauth` isolates the protocol's effect.
+
+|`graphql`
+|`graphql.js`
+|A JSON-bodied POST on a method-restricted anchor: method matching, body admission and the
+ upstream path rewrite.
+
+|`upload-1MB`
+|`upload_small.js`
+|The streaming request-body path at full concurrency — per-byte admission cost, separated from
+ the per-request cost `unauth` already covers.
+
+|`upload-50MB`
+|`upload_large.js`
+|The transfer-bound body path at *reduced* concurrency. Reports throughput (MBps) alongside
+ latency.
+|===
+
+=== Retained non-matrix benchmarks
 
 [cols="1,2,3", options="header"]
 |===
@@ -11,25 +87,18 @@ the integration-test infrastructure.
 
 |`healthLiveCheck`
 |`http://api-sheriff:9000/q/health/live`
-|Management-interface liveness throughput — the plain-HTTP baseline with no TLS or routing.
+|Management-interface liveness throughput — the plain-HTTP floor with no TLS or routing. A run
+ whose numbers collapse here indicates a host or container problem, not a gateway regression.
 
 |`gatewayHealth`
 |`https://api-sheriff:8443/api/health`
-|The RESTEasy health endpoint over HTTPS — baseline HTTPS request-handling overhead.
-
-|`proxiedStatic`
-|`https://api-sheriff:8443/proxy/static`
-|Proxy overhead: `wrk -> gateway -> nginx`. The gateway forwards `/proxy/*` to a fast
- static nginx backend (`access_log off`, fixed payload) so the backend never saturates
- before the gateway does. The delta versus `gatewayHealth` is the cost of the proxy hop.
+|The health endpoint over HTTPS — baseline HTTPS request-handling overhead with no upstream hop.
 |===
 
-For the proxied-static run the container topology is overlaid with
-`docker-compose.benchmark.yml`, which adds the `nginx-static` backend and repoints
-the gateway's proxy upstream at it (the integration tests instead point it at the
-`go-httpbin` echo backend).
+Both are retained so their existing badge / history / trend series are not orphaned by the
+toolchain swap.
 
-== Running Benchmarks
+== Running the CI baseline lane
 
 [source,bash]
 ----
@@ -43,6 +112,260 @@ For quick runs (shorter duration, assumes containers already running):
 ./mvnw clean verify -pl benchmarks -Pbenchmark -Pquick
 ----
 
-Results are written to `target/benchmark-results/` and post-processed by
-`WrkResultPostProcessor` into the report artifacts consumed by the benchmark
-pages pipeline.
+Results are written to `target/benchmark-results/` and post-processed by `K6ResultPostProcessor`
+into the report artifacts consumed by the benchmark pages pipeline.
+
+For the proxied and matrix runs the container topology is overlaid with
+`docker-compose.benchmark.yml`, which adds the `nginx-static` backend and repoints the gateway's
+proxy upstream at it (the integration tests instead point it at the `go-httpbin` echo backend).
+
+=== Tuning
+
+[cols="1,1,3", options="header"]
+|===
+|Property |Default |Effect
+
+|`k6.vus`
+|50
+|Virtual users for every aspect except `upload-50MB`.
+
+|`k6.vus.upload.large`
+|5
+|Virtual users for `upload-50MB` only. Every execution passes `BENCHMARK_VUS` explicitly, so this
+ dedicated property is what keeps the shared `k6.vus` from overriding the aspect's reduced
+ concurrency.
+
+|`k6.duration`
+|60s
+|Measured window per aspect.
+|===
+
+== Methodology
+
+The comparison is designed so that the only intended difference between the two sides is the
+gateway itself.
+
+Single node, same host::
+Both gateways run as containers on the same machine, on the same `api-sheriff` bridge network,
+under identical CPU and memory limits (512M / 4.0 CPU). A run in which the two gateways get
+different budgets measures the budget, not the gateways.
+
+Same TLS material::
+API Sheriff, APISIX and Keycloak all mount the same certificate bundle, so every edge presents one
+certificate and the load generator needs no per-target trust handling. TLS termination cost is
+therefore common to both sides.
+
+Identical routes, one upstream::
+Every benchmarked route on *both* gateways targets the same fast static nginx backend
+(`nginx-static`). This is the *fairness invariant*: pointing one gateway's `graphql` / `upload`
+routes at the JSON-serializing `go-httpbin` while the other hit `nginx-static` would fold the
+backend's serialization cost into one side's number only. The accepted consequence is that the
+`graphql` and `upload` aspects measure *gateway processing* — method matching, body-cap
+enforcement, path rewriting — rather than real JSON or echo upstream work. That is the benchmark's
+stated intent, not a limitation to work around.
+
+Readiness, not warm-up discard::
+`pre-benchmark-health-check.sh` gates every run on the stack actually serving, so no run starts
+against a cold or half-started gateway. There is no separate warm-up phase whose samples are
+discarded: the first seconds of each 60-second window are included. Because the gateway is a
+native (AOT-compiled) image rather than a JIT-warming JVM, and because both sides are treated
+identically, this is a symmetric effect rather than a bias.
+
+Dedicated load-generator capacity::
+k6 runs as its own container rather than in-process, so the load generator's CPU time is not taken
+from the gateway's budget. The `upload-50MB` aspect additionally runs at reduced concurrency
+because each virtual user holds its own 50MB payload — at full concurrency the generator would be
+measuring its own memory pressure and link saturation rather than the gateway.
+
+Relative, not absolute::
+*Cross-gateway numbers are meaningful only as ratios within a single run.* These are
+single-node, containerized, local-network measurements, not a tuned production deployment or a
+certified throughput claim. Compare "aspect X costs N% more on gateway A than on gateway B in this
+run"; do not quote an absolute requests-per-second figure as either gateway's capability, and do
+not compare figures across runs taken on different hosts.
+
+=== Known fidelity limit: `latency_ms.stdev`
+
+The k6 summaries deliberately omit `latency_ms.stdev`, and this is an *accepted, permanent*
+consequence of the toolchain swap rather than a defect to fix.
+
+k6 exposes only `avg` / `min` / `med` / `max` and the configured percentiles for a trend metric; it
+reports no standard deviation, and the individual samples are not reachable from
+`handleSummary()`. Emitting a derived-looking number would be a fabricated statistic, so the field
+is omitted and the converter treats it as absent.
+
+Consequence: the report's *error*, *variability-coefficient* and *confidence-band* columns are
+permanently zero-width for k6 runs, where the wrk pipeline populated them from wrk's own stdev.
+The percentiles (P50/P75/P90/P99) remain the measured spread signal and are what the comparison
+reports on.
+
+=== Reproducibility dependencies
+
+Two production capabilities the benchmark configuration relies on (see ADR-0011) affect whether a
+run reproduces:
+
+* `jwks.tls_profile` — the bearer aspect's JWKS fetch verifies Keycloak's self-signed certificate
+  against the stack's own trust anchors. Without it the key set never loads, every bearer request
+  is rejected 401, and the aspect would measure the *rejection* path while reporting it as bearer
+  throughput.
+* `jwks.allowed_egress_hosts` — the SSRF egress guard otherwise refuses a JWKS URL resolving to a
+  private address, which is exactly what a compose service name resolves to. The allowlist is
+  host-exact and names only the benchmark-local IdP.
+
+Both are why `bearer_proxied.js` carries an explicit HTTP-200 check: a misconfiguration that
+breaks token validation fails the run instead of reporting the fast rejection path as an excellent
+result.
+
+== Comparative runs
+
+Comparison runs are *on-demand only* and are wired into no workflow and no Maven profile that CI
+invokes. Running them in CI would multiply benchmark wall time by the number of targets and would
+publish comparison numbers into the baseline trend series.
+
+Start the comparison stack — this is one three-file merge, in this exact order:
+
+[source,bash]
+----
+docker compose -f docker-compose.yml \
+               -f docker-compose.benchmark.yml \
+               -f docker-compose.apisix.yml \
+               --profile comparison up -d --build
+----
+
+The order matters and the overlay is not self-contained: `nginx-static` is defined only in
+`docker-compose.benchmark.yml`, and the `api-sheriff` network is Compose-project-scoped, so the
+APISIX overlay cannot be launched as its own project. "Standalone" refers only to APISIX's own
+declarative (etcd-free) runtime mode.
+
+NOTE: Always pass `--build` when Java or configuration has changed. `up -d` without it silently
+runs a stale image.
+
+Then run the comparison from `benchmarks/`:
+
+[source,bash]
+----
+# Full matrix against both gateways
+scripts/run-comparison.sh --target both
+
+# A named aspect subset
+scripts/run-comparison.sh --target both --aspects bearer,http2
+
+# One side only
+scripts/run-comparison.sh --target apisix
+----
+
+[cols="1,3", options="header"]
+|===
+|Flag |Meaning
+
+|`--target`
+|`api-sheriff` (default), `apisix`, or `both`.
+
+|`--aspects`
+|Comma-separated subset of the six matrix aspects. Default: all six. An unknown aspect fails
+ before any run starts.
+
+|`--output`
+|Results root. Default `target/comparison-results`.
+
+|`--duration` / `--vus`
+|Per-aspect window and concurrency. `upload-50MB` keeps its reduced concurrency regardless.
+
+|`--no-dashboard`
+|Skip the supplementary HTML report (see below).
+|===
+
+=== Where results land
+
+[source,text]
+----
+target/comparison-results/
+  api-sheriff/<benchmark>-summary.json
+  api-sheriff/<aspect>-dashboard.html
+  apisix/<benchmark>-summary.json
+  apisix/<aspect>-dashboard.html
+  comparison-summary.md
+----
+
+This directory is segregated from both the CI baseline results and the gh-pages deployment tree, so
+a comparison run can never overwrite a baseline artifact or leak into the published history/trend
+series.
+
+Render the side-by-side table:
+
+[source,bash]
+----
+./mvnw -pl benchmarks exec:java \
+  -Dexec.mainClass=de.cuioss.sheriff.api.k6.benchmark.ComparisonSummaryWriter \
+  -Dexec.args="target/comparison-results api-sheriff apisix"
+----
+
+Each aspect is reported on the figure that characterises it: `uploadLarge` on throughput (MBps),
+every other aspect on requests/second, with P50 and P99 per gateway. A metric a run did not measure
+renders `n/a`, never `0` — a zero would read as a measured collapse rather than an absent
+measurement.
+
+== Dashboard reports
+
+The comparison lane additionally emits a supplementary HTML report per aspect, produced by the
+`xk6-dashboard` output extension.
+
+* *Where*: `target/comparison-results/<target>/<aspect>-dashboard.html`, beside the summary JSON.
+* *Offline*: each file is self-contained — every asset is inlined, with no external CDN and no
+  served endpoint — so it opens directly in a browser after the stack is torn down.
+* *Disabling*: pass `--no-dashboard`, which also routes the run through the stock baseline k6
+  image.
+
+The report is *purely additive*. Every aspect emits its `handleSummary()` JSON in the generic
+cuioss benchmark format either way, and that JSON is what `K6BenchmarkConverter` and
+`ComparisonSummaryWriter` consume. Disabling the dashboard changes what a person can browse, never
+what the comparison artifact is computed from.
+
+=== Versions
+
+`xk6-dashboard` is a k6 *output extension*, and k6 loads output extensions only when they are
+compiled into the binary — there is no runtime plugin path. `Dockerfile.k6-dashboard` therefore
+rebuilds k6 with the extension linked in, as a second image beside the untouched `Dockerfile.k6`.
+
+The k6 version built there *must track* the version behind the digest-pinned `grafana/k6` image in
+`Dockerfile.k6` (currently *2.1.0*): a dashboard run and a baseline run measured by different
+engines are not comparable. The runtime stage reuses that exact digest-pinned image and replaces
+only the binary, so everything but the linked-in extension is byte-identical to the baseline
+environment. All three build versions (k6, `xk6`, `xk6-dashboard`) are explicit pins; no floating
+`latest`. When bumping k6, bump the `FROM` digest in `Dockerfile.k6` and `K6_VERSION` in
+`Dockerfile.k6-dashboard` together.
+
+== The wrk-to-k6 swap
+
+The benchmark toolchain was migrated from wrk to k6. What changed, and what a maintainer needs to
+know:
+
+. *Scripts*: the `wrk-scripts/` Lua and shell runners were removed in favour of `k6-scripts/`
+  JavaScript. Aspect scripts import `lib/target.js` (target -> base URL) and `lib/summary.js`
+  (the shared `handleSummary()` helper), so one script body measures whichever gateway a run
+  targets.
+. *Gates*: the `WRK_MAX_ERROR_RATE` Lua gate is replaced by native k6 thresholds
+  (`http_req_failed`, `checks`). A breach exits non-zero, so a gateway that starts rejecting every
+  request can never benchmark as an improvement.
+. *Post-processing*: `WrkBenchmarkConverter` / `WrkResultPostProcessor` are replaced by
+  `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
+  10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
+. *Coverage*: the lane grew from three wired executions to eight. `bearer` is genuinely new CI
+  coverage — the wrk-era bearer runner existed on disk but was registered in no Maven execution.
+
+=== One-time gh-pages baseline restart
+
+The published history and trend series are keyed by benchmark name and carry wrk-era numbers
+measured by a different engine. Because engine change is exactly the thing that makes two numbers
+incomparable, the k6 series starts fresh rather than continuing the wrk series:
+
+* `healthLiveCheck` and `gatewayHealth` keep their names — and therefore their series — because
+  they measure the same endpoints; expect a *visible one-time discontinuity* at the swap commit
+  that is a toolchain artifact, not a regression.
+* The `error` / variability / confidence-band columns go permanently zero-width from that point
+  (see the `latency_ms.stdev` limit above).
+* The four new matrix aspects begin with no history and need ten runs before their trend series is
+  meaningful.
+
+Do not investigate the discontinuity at the swap commit as a performance regression; compare only
+within the k6 era.
