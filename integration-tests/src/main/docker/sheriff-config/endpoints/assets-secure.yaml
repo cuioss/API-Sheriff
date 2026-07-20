@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# Bearer-gated asset endpoint (ADR-0014). Its single directory-source route rides
+# the 'assets-secure' anchor (/secure-assets, type: asset, access: authenticated,
+# require: bearer), so the endpoint declares no auth block of its own and inherits
+# the anchor's bearer floor. DirectoryAssetServingIT drives the auth-before-source
+# ordering against it: an unauthenticated request is rejected 401 at stage 4 and
+# never reaches the filesystem, proving no byte is read before authorization.
+#
+# base_url is mandatory but unused by an asset route; it points at the resolvable
+# UPSTREAM alias the proxy endpoints use.
+endpoint:
+  id: assets-secure
+  enabled: true
+  base_url: UPSTREAM
+  anchor: assets-secure
+  routes:
+    - id: assets-secure-directory
+      match:
+        path_prefix: /secure-assets
+      asset:
+        source: directory
+        directory: /app/assets

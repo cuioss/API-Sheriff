@@ -5,13 +5,19 @@
 # removed static ProxyConfiguration). The UPSTREAM topology alias resolves to the
 # go-httpbin echo backend (topology.properties), overridable per environment by an
 # in-file ${VAR} placeholder (the benchmark overlay repoints it at nginx-static).
-# The endpoint is anchored to the 'api' namespace (/proxy); it declares no auth
-# block of its own and inherits the anchor's require: none posture (ADR-0007).
+# The endpoint is anchored to the 'api' namespace (/proxy). Its anchors (api,
+# graphql, upload) are now access: public and therefore carry no auth block
+# (ADR-0013 forbids an auth block on a public anchor), so the endpoint declares the
+# require: none posture itself — inherited wholesale by every route, including the
+# routes that override the default anchor to graphql/upload (endpoint auth wins over
+# anchor auth in the resolution chain).
 endpoint:
   id: httpbin
   enabled: true
   base_url: UPSTREAM
   anchor: api
+  auth:
+    require: none
   routes:
     - id: httpbin-proxy
       match:
