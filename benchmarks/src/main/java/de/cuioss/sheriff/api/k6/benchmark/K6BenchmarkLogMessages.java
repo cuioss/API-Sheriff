@@ -66,6 +66,20 @@ public final class K6BenchmarkLogMessages {
                 .identifier(2)
                 .template("Parsed k6 summary for benchmark '%s' (target '%s')")
                 .build();
+
+        /** Logged once when the comparative side-by-side summary starts rendering. */
+        public static final LogRecord COMPARISON_START = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(3)
+                .template("Rendering comparison summary from %s for targets '%s' and '%s'")
+                .build();
+
+        /** Logged once when the comparative side-by-side summary has been written. */
+        public static final LogRecord COMPARISON_WRITTEN = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(4)
+                .template("Wrote comparison summary covering %s aspect(s) to %s")
+                .build();
     }
 
     /**
@@ -117,6 +131,20 @@ public final class K6BenchmarkLogMessages {
                 .prefix(PREFIX)
                 .identifier(205)
                 .template("Incomplete k6 summary in file %s (missing field '%s')")
+                .build();
+
+        /** Logged when the comparison writer is invoked with the wrong argument count. */
+        public static final LogRecord COMPARISON_USAGE_ERROR = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(206)
+                .template("Usage: ComparisonSummaryWriter <results-root> <target-a> <target-b>")
+                .build();
+
+        /** Logged when a target's per-run results directory is absent under the results root. */
+        public static final LogRecord COMPARISON_TARGET_DIR_MISSING = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(207)
+                .template("No results directory for target '%s' under %s")
                 .build();
     }
 }

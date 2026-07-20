@@ -18,9 +18,10 @@
 import http from 'k6/http';
 import { check, fail } from 'k6';
 import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { targetUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'bearerProxied';
-const TARGET_URL = __ENV.TARGET_URL || 'https://api-sheriff:8443/secure/get';
+const TARGET_URL = __ENV.TARGET_URL || targetUrl('/secure/get');
 
 // Keycloak is reached by service name on the shared api-sheriff network. The benchmark realm
 // import pins frontendUrl to https://keycloak:8443, so a token minted here carries exactly the

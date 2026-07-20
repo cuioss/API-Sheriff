@@ -16,6 +16,9 @@
  * }
  * ```
  *
+ * The body-transfer aspects (`uploadSmall` / `uploadLarge`) additionally carry a
+ * `throughput_mbps` field; every other field is common to all scripts.
+ *
  * Latency values are passed through in milliseconds -- k6 reports `http_req_duration` in ms
  * and the converter performs no unit conversion -- so no rounding-or-scaling step can
  * introduce a conversion regression between the engine and the report.
@@ -28,6 +31,15 @@
  * report's `error` / variability-coefficient / confidence-band columns are zero-width for k6
  * runs, where the wrk pipeline populated them from wrk's own stdev.
  */
+
+import { gatewayTarget } from './target.js';
+
+/**
+ * Bytes per megabyte for the `throughput_mbps` derivation. Decimal MB (10^6), matching how the
+ * upload aspects name their payloads (1MB / 50MB) so the reported rate and the stated body size
+ * are on the same scale.
+ */
+const BYTES_PER_MB = 1e6;
 
 /** Summary field name to the k6 `http_req_duration` percentile key backing it. */
 const PERCENTILES = [
@@ -45,16 +57,6 @@ const PERCENTILES = [
  * @type {string[]}
  */
 export const SUMMARY_TREND_STATS = ['avg', 'min', 'med', 'max', 'p(50)', 'p(75)', 'p(90)', 'p(99)'];
-
-/**
- * Resolves the gateway a run is taken against. Defaults to API Sheriff, so the CI baseline
- * lane needs no environment plumbing; the comparison lane overrides it per target.
- *
- * @returns {string} the gateway target label recorded in the summary
- */
-export function gatewayTarget() {
-    return __ENV.GATEWAY_TARGET || 'api-sheriff';
-}
 
 /**
  * Rounds to a fixed precision, mapping a missing or non-finite metric to 0.
@@ -79,11 +81,18 @@ function round(value, digits = 2) {
  * clock captured in `setup()`: `handleSummary()` receives no setup data, and
  * `data.state.testRunDurationMs` is the engine's authoritative measured duration.
  *
+ * A body-transfer aspect additionally opts into `throughput_mbps` via `options.throughput`. It is
+ * derived from k6's own `data_sent` rate rather than from the body size times the request rate,
+ * so a partially-transferred or rejected body cannot be counted as fully delivered bytes. The
+ * field is omitted entirely for the latency/RPS aspects rather than emitted as 0, so a reader
+ * never mistakes "not a transfer benchmark" for "transferred nothing".
+ *
  * @param {string} benchmarkName the stable benchmark name -- also the gh-pages history/trend key
  * @param {object} data the k6 end-of-test summary object
+ * @param {{throughput?: boolean}} [options={}] opt-ins for aspect-specific summary fields
  * @returns {object} a k6 `handleSummary()` return mapping output paths to their content
  */
-export function buildSummary(benchmarkName, data) {
+export function buildSummary(benchmarkName, data, options = {}) {
     const endMs = Date.now();
     const state = data.state || {};
     const durationMs = typeof state.testRunDurationMs === 'number' ? state.testRunDurationMs : 0;
@@ -109,6 +118,11 @@ export function buildSummary(benchmarkName, data) {
         error_rate: round(failures.rate, 6),
         latency_ms: latency,
     };
+
+    if (options.throughput) {
+        const sent = (metrics.data_sent || {}).values || {};
+        summary.throughput_mbps = round(sent.rate / BYTES_PER_MB);
+    }
 
     const document = JSON.stringify(summary, null, 2);
     const result = {};

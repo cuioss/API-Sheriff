@@ -9,9 +9,10 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { targetUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'proxiedStatic';
-const TARGET_URL = __ENV.TARGET_URL || 'https://api-sheriff:8443/proxy/static';
+const TARGET_URL = __ENV.TARGET_URL || targetUrl('/proxy/static');
 
 export const options = {
     vus: vus(50),

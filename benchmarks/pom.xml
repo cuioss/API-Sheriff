@@ -36,6 +36,12 @@
         <!-- k6 Configuration Properties -->
         <k6.duration>60s</k6.duration>
         <k6.vus>50</k6.vus>
+        <!-- Reduced concurrency for the transfer-bound 50MB upload aspect. Every execution passes
+             BENCHMARK_VUS explicitly, so without a dedicated property the shared k6.vus (50) would
+             override upload_large.js's own reduced default and the aspect would run at full
+             concurrency — measuring link saturation and the load generator's own payload memory
+             (50MB per VU) instead of gateway transfer cost. See upload_large.js. -->
+        <k6.vus.upload.large>5</k6.vus.upload.large>
         <k6.script.dir>${project.basedir}/src/main/resources/k6-scripts</k6.script.dir>
         <k6.results.dir>${project.build.directory}/benchmark-results</k6.results.dir>
         <k6.output.dir>${k6.results.dir}/k6</k6.output.dir>
@@ -326,6 +332,118 @@
                                     <timeout>240000</timeout>
                                     <environmentVariables>
                                         <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 http2 benchmark (ALPN-negotiated h2 on the same proxied
+                                 static route as the unauth aspect, so the pair isolates the
+                                 protocol's effect on gateway overhead). -->
+                            <execution>
+                                <id>run-k6-http2-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/http2.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 graphql benchmark (method-restricted JSON POST anchor) -->
+                            <execution>
+                                <id>run-k6-graphql-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/graphql.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 1MB upload benchmark (streaming request-body path at full
+                                 benchmark concurrency) -->
+                            <execution>
+                                <id>run-k6-upload-small-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/upload_small.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 50MB upload benchmark at REDUCED concurrency
+                                 (k6.vus.upload.large, not k6.vus) — see the property comment. -->
+                            <execution>
+                                <id>run-k6-upload-large-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/upload_large.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus.upload.large}</BENCHMARK_VUS>
                                         <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
                                         <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
                                     </environmentVariables>

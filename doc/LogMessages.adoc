@@ -76,6 +76,8 @@ section lists only the k6-specific records, whose upstream counterparts are wrk-
 |ID |Component |Message |Description
 |K6Benchmark-1 |BENCHMARK |Start processing k6 summary results from %s |Logged once when the post-processor begins reading the `k6` summary subdirectory
 |K6Benchmark-2 |BENCHMARK |Parsed k6 summary for benchmark '%s' (target '%s') |Logged once per parsed summary document, recording the benchmark name and the gateway the run targeted
+|K6Benchmark-3 |BENCHMARK |Rendering comparison summary from %s for targets '%s' and '%s' |Logged once when the on-demand comparative side-by-side summary starts rendering
+|K6Benchmark-4 |BENCHMARK |Wrote comparison summary covering %s aspect(s) to %s |Logged once when the comparative summary artifact has been written, outside the gh-pages tree
 |===
 
 === ERROR Level (200-299)
@@ -89,4 +91,6 @@ section lists only the k6-specific records, whose upstream counterparts are wrk-
 |K6Benchmark-203 |BENCHMARK |No k6 summary files found in: %s |Logged when the `k6` directory holds no `*-summary.json` document — fail-loud for the same reason
 |K6Benchmark-204 |BENCHMARK |Failed to parse k6 summary file %s: %s |Logged when a summary document is not valid JSON or has an unexpected shape; that file is skipped
 |K6Benchmark-205 |BENCHMARK |Incomplete k6 summary in file %s (missing field '%s') |Logged when a summary omits a mandatory field; that file yields no benchmark rather than a partial one
+|K6Benchmark-206 |BENCHMARK |Usage: ComparisonSummaryWriter <results-root> <target-a> <target-b> |Logged when the comparison writer is invoked with the wrong argument count; the process then exits non-zero
+|K6Benchmark-207 |BENCHMARK |No results directory for target '%s' under %s |Logged when a target produced no results directory; that target's column renders `n/a` rather than being dropped
 |===
