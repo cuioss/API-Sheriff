@@ -72,14 +72,25 @@ public class TokenValidatorProducer {
     /**
      * Forces the validator to be assembled at boot rather than on the first bearer request, so a
      * misconfigured issuer — an unresolvable {@code jwks.tls_profile}, a missing JWKS source —
-     * fails startup instead of surfacing as a runtime rejection once traffic arrives. The observed
-     * parameter is the injection point that triggers the producer below.
+     * fails startup instead of surfacing as a runtime rejection once traffic arrives.
+     * <p>
+     * Merely observing {@link StartupEvent} with the validator as a parameter is NOT enough: an
+     * {@code @ApplicationScoped} bean is injected as a lazy client proxy, and ArC does not invoke
+     * {@link #gatewayTokenValidator()} until the first business method is called on that proxy.
+     * This method therefore invokes a method on the injected proxy ({@link Object#toString()}) to
+     * force contextual-instance creation at boot, which runs the full assembly path
+     * ({@code gatewayTokenValidator} → {@code toValidationIssuer} → {@code applyJwks} →
+     * {@code toHttpJwksLoaderConfig} → {@code trustProfileResolver.resolve}) and aborts startup on a
+     * misconfiguration.
      *
      * @param event     the Quarkus startup event
-     * @param validator the produced gateway validator, injected to force eager assembly
+     * @param validator the produced gateway validator proxy, whose first method call forces eager
+     *                  assembly
      */
     void onStartup(@Observes StartupEvent event, @GatewayValidator TokenValidator validator) {
-        // Assembly happens as a side effect of injecting the validator parameter.
+        // Invoke a method on the injected proxy to force contextual-instance creation at boot;
+        // without this the @ApplicationScoped validator stays unassembled until the first request.
+        validator.toString();
     }
 
     /**

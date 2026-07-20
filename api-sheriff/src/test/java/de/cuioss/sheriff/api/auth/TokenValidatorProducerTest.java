@@ -408,6 +408,50 @@ class TokenValidatorProducerTest {
         }
     }
 
+    @Nested
+    @DisplayName("onStartup — forces eager validator assembly at boot")
+    class OnStartup {
+
+        /**
+         * The {@code @GatewayValidator TokenValidator} is injected as a lazy {@code @ApplicationScoped}
+         * client proxy, so ArC does not run {@link TokenValidatorProducer#gatewayTokenValidator()}
+         * until a business method is called on that proxy. {@code onStartup} therefore MUST invoke a
+         * method on the injected validator — the pre-fix no-op body ignored the parameter entirely and
+         * would not dereference it. Passing a {@code null} validator proves a method is dereferenced:
+         * the fixed body throws {@link NullPointerException}, the old body would complete silently.
+         */
+        @Test
+        @DisplayName("dereferences the injected validator so contextual-instance creation is forced")
+        void forcesEagerAssemblyByInvokingTheValidator() {
+            // Arrange — config is irrelevant; onStartup only touches the validator parameter
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("primary")
+                    .issuer(ISSUER)
+                    .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").url(Optional.of(JWKS_URL)).build()))
+                    .build());
+
+            // Act & Assert — a no-op onStartup would not dereference the validator and would not throw
+            assertThrows(NullPointerException.class, () -> producer.onStartup(null, null),
+                    "onStartup must invoke a method on the injected validator to force eager assembly");
+        }
+
+        @Test
+        @DisplayName("completes cleanly when the injected validator assembles without error")
+        void completesForAValidlyConfiguredValidator() {
+            // Arrange — a good http issuer whose validator assembles without a config error
+            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+                    .name("primary")
+                    .issuer(ISSUER)
+                    .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").url(Optional.of(JWKS_URL)).build()))
+                    .build());
+            TokenValidator validator = producer.gatewayTokenValidator();
+
+            // Act & Assert — forcing assembly of a validly-configured validator must not fail startup
+            assertDoesNotThrow(() -> producer.onStartup(null, validator),
+                    "forcing eager assembly of a valid validator must not abort startup");
+        }
+    }
+
     @Test
     @DisplayName("an absent allowed_egress_hosts binds to an empty list on the model")
     void jwksNormalizesAbsentEgressAllowlist() {
