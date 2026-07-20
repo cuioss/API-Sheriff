@@ -157,6 +157,20 @@ implementing it.
   skipped silently -- the configuration validator stays the single authoritative reporter
   of alias-resolvability violations.
   *(Status: accepted.)*
+
+| link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]
+| Anchor type/access axes: two required, orthogonal classification axes on every anchor --
+  `type` (`proxy`/`bff`/`asset`) and `access` (`public`/`authenticated`) -- validated
+  fail-closed at boot, extending link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]. The
+  `passthrough -> proxy` value rename does not touch `tls.passthrough_sni`.
+  *(Status: accepted.)*
+
+| link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]
+| Asset serving as a second terminal action alongside `upstream`, with `directory` and
+  `upstream` sources (the latter reusing the link:adr/0008-data-plane-transport.adoc[ADR-0008]
+  SSRF-controlled data plane, no parallel fetch stack), a gateway-owned response envelope, and
+  canonicalize-and-confine path safety with auth-before-source-resolution ordering.
+  *(Status: accepted.)*
 |===
 
 == Reading Order

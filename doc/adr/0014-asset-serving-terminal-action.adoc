@@ -1,0 +1,84 @@
+= ADR-0014 -- Asset Serving as a Second Terminal Action
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+A route in API Sheriff has one terminal action: proxy the request to an `upstream`. Some
+deployments also need the gateway to *serve assets* directly -- a static bundle from a mounted
+directory, or a file fetched from a backend and re-served under gateway governance -- without
+standing up and securing a separate static-file server behind the proxy. Two forces shape how
+this should be added:
+
+* *Do not fork the data plane.* The gateway already has a hardened upstream client
+  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]): fixed-topology upstream resolution, a
+  scheme allowlist, an `EgressPolicy`, `followRedirects(NEVER)`, a circuit breaker, and bounded
+  size/timeout. A "fetch a file from upstream" feature that grew its own HTTP client would
+  duplicate -- and inevitably drift from -- those SSRF controls. GW-05 in the
+  link:../security-threat-model.adoc[threat model] (SSRF via proxy/upstream control) is only
+  closed if every outbound fetch rides the same controlled path.
+* *File paths are a traversal surface.* Serving files introduces a path-traversal class the
+  threat model currently rates covered only for config-path handling. Encoded traversal,
+  encoded slashes, mixed/double encoding, `%00`, overlong sequences, backslashes, and `..;/`
+  are all spellings of the same escape; a control that blocks one spelling but not the class is
+  the Gravitee double-patch cautionary tale.
+
+== Decision
+
+Add *asset serving* as a second terminal action alongside `upstream`, with a two-source model:
+
+* `source: directory` -- serve from a local directory / volume mount (no classpath-embedded
+  resources; out of scope). Resolve the confined path under the configured directory root and
+  stream the file with bounded size.
+* `source: upstream` -- serve from an upstream target *reusing the existing upstream model*
+  (resolved `base_url` + `upstream.path` + remainder), the shared data-plane client, the circuit
+  breaker, `upstream_defaults`, and the SSRF controls -- *no parallel fetch stack*.
+
+Two cross-cutting rules govern both sources:
+
+* *Canonicalize-and-confine, before the source is touched.* The request path is canonicalized
+  through `cui-http`'s `URLPathValidationPipeline` (percent-decoding, `..`/dot-segment and
+  duplicate-slash collapse, unconditional traversal/`%00`/overlong/backslash rejection), then
+  the normalized path is confined to the configured root/prefix and any escape is rejected. The
+  confinement is proven against a generator-driven adversarial corpus that closes the *class*,
+  not a single spelling.
+* *Auth before source resolution.* Access is enforced before the source is resolved, so an
+  unauthorized request never causes a directory read or an upstream fetch.
+
+Both sources serve through a single *gateway-owned response envelope*: a fixed content-type map
+(the gateway sets the type, never the source), `X-Content-Type-Options: nosniff`, governed
+caching that forces `no-store` for `access: authenticated` regardless of source, stripped
+`Set-Cookie`, and GET/HEAD-only enforcement. For the `upstream` source the envelope is what lets
+the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-Cookie`, and force
+`no-store` on an authenticated asset even when the upstream sent `Cache-Control: public`.
+
+== Consequences
+
+* The upstream asset source inherits every ADR-0008 / GW-05 control for free; there is one
+  outbound path to audit, not two. A hostile or compromised upstream cannot dictate the
+  gateway's response metadata.
+* Path traversal is closed for the whole asset surface by canonicalize-then-contain plus the
+  adversarial corpus; the threat-model path-traversal entry is reopened and re-closed to reflect
+  the new surface (link:../plan/10-anchor-types-assets.adoc[Plan 10]).
+* Asset serving gets a declared home through the `asset` anchor `type`
+  (link:0013-anchor-type-access-axes.adoc[ADR-0013]); an asset surface's audience is boot-enforced
+  like any other anchor.
+* A route still carries at most one terminal action -- `upstream` or `asset`, never both.
+* Classpath-embedded resources and any parallel outbound HTTP stack are explicitly out of scope.
+
+== References
+
+* link:../adr/0008-data-plane-transport.adoc[ADR-0008] -- the upstream client and SSRF controls
+  the `upstream` source reuses.
+* link:0013-anchor-type-access-axes.adoc[ADR-0013] -- the `asset` anchor `type` this action
+  classifies, and the access axis the envelope's caching keys on.
+* link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] -- the anchor policy floor asset routes
+  inherit.
+* link:../security-threat-model.adoc[Threat Model] -- the path-traversal class and GW-05 this
+  decision reopens and closes.
+* link:../plan/10-anchor-types-assets.adoc[Plan 10] -- the implementation plan for the asset
+  action, its sources, envelope, and path safety.
