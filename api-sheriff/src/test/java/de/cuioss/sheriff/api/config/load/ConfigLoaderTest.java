@@ -253,6 +253,78 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void bindsJwksTlsProfile() throws Exception {
+        // Arrange — an IdP presenting a certificate from an internal CA
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: corporate
+                      issuer: https://idp.corp.internal/realms/main
+                      jwks:
+                        source: http
+                        url: https://idp.corp.internal/realms/main/protocol/openid-connect/certs
+                        tls_profile: corporate-idp
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert — the key is accepted by the schema (additionalProperties: false) and binds
+        // through the SNAKE_CASE strategy to the record component
+        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
+        assertEquals(Optional.of("corporate-idp"), issuer.jwks().orElseThrow().tlsProfile());
+    }
+
+    @Test
+    void omittedTlsProfileBindsToEmptyOptional() throws Exception {
+        // Arrange — an http issuer that says nothing about trust
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: primary
+                      issuer: https://issuer.example.com
+                      jwks:
+                        source: http
+                        url: https://issuer.example.com/jwks
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert — an absent profile means default trust, never null
+        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
+        assertEquals(Optional.empty(), issuer.jwks().orElseThrow().tlsProfile());
+    }
+
+    @Test
+    void rejectsNonStringTlsProfile() throws Exception {
+        // Arrange — a list is a plausible operator confusion with allowed_egress_hosts
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: primary
+                      issuer: https://issuer.example.com
+                      jwks:
+                        source: http
+                        url: https://issuer.example.com/jwks
+                        tls_profile: ["corporate-idp"]
+                """);
+
+        // Act
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+
+        // Assert — refused at boot rather than silently ignored, which would leave the issuer on
+        // default trust while the operator believes a profile is in force
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("tls_profile")),
+                () -> "expected a schema violation for a non-string tls_profile, got: "
+                        + exception.errors());
+    }
+
+    @Test
     void rejectsForwardedBlockOmittingTrustedProxies() throws Exception {
         writeConfig("gateway.yaml", """
                 version: 1

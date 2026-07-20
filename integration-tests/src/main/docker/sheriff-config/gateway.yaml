@@ -95,3 +95,10 @@ token_validation:
         # The 'it-static' issuer above is deliberately NOT widened — it loads from
         # a mounted file and needs no egress at all.
         allowed_egress_hosts: ["keycloak"]
+        # Keycloak serves a self-signed certificate here, so the JWKS client must verify it
+        # against the stack's own trust anchors rather than the JVM default store — otherwise
+        # the fetch fails PKIX path building and every bearer request is rejected 401, which
+        # would again measure a rejection path while reporting it as bearer throughput. This
+        # names a trust profile; it deliberately carries no store path and no password, so this
+        # document stays portable and secret-free. The deployment binds the name.
+        tls_profile: benchmark-idp

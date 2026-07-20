@@ -194,6 +194,10 @@
                     "type": "array",
                     "description": "SSRF egress allowlist for 'source: http'. Omitted or empty keeps the secure default, which refuses a JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or unique-local address. Each entry names one trusted IdP host that is exempted from that check — widen only for a trusted IdP (threat model GW-05 / BFF-07), never with a wildcard.",
                     "items": { "type": "string" }
+                  },
+                  "tls_profile": {
+                    "type": "string",
+                    "description": "Name of the logical trust profile used to verify the IdP's server certificate when fetching the JWKS over 'source: http'. This names a trust profile in API Sheriff's own vocabulary; it carries no trust material and no passwords, and the deployment binds the name to concrete trust anchors. Omitted means the JVM default trust store, which is correct for an IdP presenting a publicly-trusted certificate. Name a profile when the IdP presents a certificate from an internal or corporate CA. A named profile that the deployment does not define is refused at startup — it never silently falls back to default trust."
                   }
                 }
               }

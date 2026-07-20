@@ -18,6 +18,8 @@ package de.cuioss.sheriff.api.auth;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.net.URI;
@@ -32,6 +34,7 @@ import de.cuioss.sheriff.api.events.EventType;
 import de.cuioss.sheriff.api.events.GatewayException;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.commons.transport.EgressPolicy;
+import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 
 import org.junit.jupiter.api.DisplayName;
@@ -48,7 +51,8 @@ class TokenValidatorProducerTest {
     @DisplayName("fails config-invalid when no token_validation block is present")
     void failsWhenTokenValidationAbsent() {
         // Arrange
-        TokenValidatorProducer producer = new TokenValidatorProducer(GatewayConfig.builder().version(1).build());
+        TokenValidatorProducer producer = new TokenValidatorProducer(GatewayConfig.builder().version(1).build(),
+                new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()));
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
@@ -289,7 +293,118 @@ class TokenValidatorProducerTest {
         private static EgressPolicy egressPolicyFor(IssuerConfig.Jwks jwks) {
             IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER)
                     .jwks(Optional.of(jwks)).build();
-            return TokenValidatorProducer.toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
+            return producerFor(issuer).toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
+        }
+    }
+
+    @Nested
+    @DisplayName("jwks.tls_profile — logical trust profile for the JWKS client")
+    class TlsProfile {
+
+        private static final String PROFILE = "corporate-idp";
+
+        @Test
+        @DisplayName("omitting the field keeps default trust — the profile's anchors are not applied")
+        void omittedProfileKeepsDefaultTrust() {
+            // Arrange — the profile IS defined, but this issuer does not name it
+            TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .build();
+            IssuerConfig issuer = issuerWith(jwks);
+
+            // Act
+            HttpJwksLoaderConfig config = producerFor(issuer, registry).toHttpJwksLoaderConfig(issuer, jwks);
+
+            // Assert — an absent tls_profile must leave the client on whatever trust it had before
+            // the feature existed. Asserting identity (not nullness) is deliberate: the JWKS client
+            // fabricates its own default context, so a null check would prove nothing.
+            assertNotSame(registry.profileContext(), config.getHttpHandler().getSslContext(),
+                    "an absent tls_profile must not apply any profile's trust anchors");
+        }
+
+        @Test
+        @DisplayName("an absent tls_profile never consults the resolver at all")
+        void omittedProfileNeverConsultsTheResolver() {
+            // Arrange — a resolver whose registry would fail any lookup
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .build();
+            IssuerConfig issuer = issuerWith(jwks);
+
+            // Act & Assert — reaching the resolver would throw, so completing proves it was skipped
+            assertDoesNotThrow(() -> producerFor(issuer, TestTlsConfigurationRegistry.empty())
+                            .toHttpJwksLoaderConfig(issuer, jwks),
+                    "an absent tls_profile must short-circuit before the mapping seam");
+        }
+
+        @Test
+        @DisplayName("a named profile is resolved and applied to the JWKS client")
+        void namedProfileIsApplied() {
+            // Arrange
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .tlsProfile(Optional.of(PROFILE))
+                    .build();
+            IssuerConfig issuer = issuerWith(jwks);
+
+            // Act
+            TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
+            HttpJwksLoaderConfig config = producerFor(issuer, registry).toHttpJwksLoaderConfig(issuer, jwks);
+
+            // Assert — the exact context the profile resolved to reaches the JWKS client
+            assertSame(registry.profileContext(), config.getHttpHandler().getSslContext(),
+                    "a named tls_profile must put its own trust anchors on the JWKS client");
+        }
+
+        @Test
+        @DisplayName("an unresolvable profile fails the whole producer path rather than degrading")
+        void unresolvableProfileFailsTheProducer() {
+            // Arrange — the profile is named but the deployment bound nothing
+            IssuerConfig issuer = issuerWith(IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of(JWKS_URL))
+                    .tlsProfile(Optional.of(PROFILE))
+                    .build());
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> producerFor(issuer, TestTlsConfigurationRegistry.empty()).gatewayTokenValidator());
+
+            // Assert — the failure surfaces at validator assembly, which boot forces, so the
+            // gateway refuses to start instead of silently validating against default trust
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("tls_profile and allowed_egress_hosts apply together on one issuer")
+        void profileAndEgressAllowlistCombine() {
+            // Arrange — the real deployment shape: a private-network IdP behind an internal CA,
+            // which needs BOTH the egress widening and the trust profile to work at all
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(Optional.of("https://localhost:8443/jwks"))
+                    .allowedEgressHosts(List.of("localhost"))
+                    .tlsProfile(Optional.of(PROFILE))
+                    .build();
+            IssuerConfig issuer = issuerWith(jwks);
+
+            // Act
+            TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
+            HttpJwksLoaderConfig config = producerFor(issuer, registry).toHttpJwksLoaderConfig(issuer, jwks);
+
+            // Assert — the two knobs are independent; applying one must not drop the other
+            assertSame(registry.profileContext(), config.getHttpHandler().getSslContext(),
+                    "the trust profile must survive alongside the egress allowlist");
+            assertDoesNotThrow(() -> config.getEgressPolicy().check(URI.create("https://localhost:8443/jwks")),
+                    "the egress allowlist must survive alongside the trust profile");
+        }
+
+        private static IssuerConfig issuerWith(IssuerConfig.Jwks jwks) {
+            return IssuerConfig.builder().name("corporate").issuer(ISSUER).jwks(Optional.of(jwks)).build();
         }
     }
 
@@ -305,10 +420,14 @@ class TokenValidatorProducerTest {
     }
 
     private static TokenValidatorProducer producerFor(IssuerConfig issuer) {
+        return producerFor(issuer, TestTlsConfigurationRegistry.empty());
+    }
+
+    private static TokenValidatorProducer producerFor(IssuerConfig issuer, TestTlsConfigurationRegistry registry) {
         GatewayConfig config = GatewayConfig.builder()
                 .version(1)
                 .tokenValidation(Optional.of(new TokenValidationConfig(List.of(issuer))))
                 .build();
-        return new TokenValidatorProducer(config);
+        return new TokenValidatorProducer(config, new JwksTrustProfileResolver(registry));
     }
 }

@@ -59,12 +59,21 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
      *                           any-local, multicast, or unique-local address. Each entry
      *                           exempts exactly one trusted IdP host from that check
      *                           (threat model GW-05 / BFF-07); there is no wildcard form.
+     * @param tlsProfile         the name of the logical trust profile the JWKS client uses
+     *                           to verify the IdP's server certificate, empty when omitted.
+     *                           This is a name in API Sheriff's own vocabulary, deliberately
+     *                           carrying no trust material and no runtime detail: the
+     *                           deployment binds the name to concrete trust anchors, and one
+     *                           mapping component resolves it. Omitted means the JWKS client
+     *                           uses the JVM's default trust store, which is correct for a
+     *                           public-CA IdP. Name a profile when the IdP presents a
+     *                           certificate from an internal or corporate CA.
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
     public record Jwks(String source, Optional<String> url, Optional<String> file,
-    List<String> allowedEgressHosts) {
+    List<String> allowedEgressHosts, Optional<String> tlsProfile) {
 
         /**
          * Canonical constructor requiring {@code source}, normalizing absent optionals to
@@ -77,6 +86,7 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
             url = Objects.requireNonNullElse(url, Optional.empty());
             file = Objects.requireNonNullElse(file, Optional.empty());
             allowedEgressHosts = allowedEgressHosts == null ? List.of() : List.copyOf(allowedEgressHosts);
+            tlsProfile = Objects.requireNonNullElse(tlsProfile, Optional.empty());
         }
     }
 }
