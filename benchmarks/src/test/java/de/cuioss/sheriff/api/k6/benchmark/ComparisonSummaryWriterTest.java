@@ -20,7 +20,6 @@ import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -141,9 +140,9 @@ class ComparisonSummaryWriterTest {
         Path targetDir = tempDir.resolve(SHERIFF);
         Files.createDirectories(targetDir);
         Files.writeString(targetDir.resolve("proxiedStatic-summary.json"),
-                unauthSummary(8511.49, 1.69, 29.99).toString(), StandardCharsets.UTF_8);
+                unauthSummary(8511.49, 1.69, 29.99).toString());
         Files.writeString(targetDir.resolve("uploadLarge-summary.json"),
-                uploadLargeSummary(412.75, 8.25, 605.10, 980.40).toString(), StandardCharsets.UTF_8);
+                uploadLargeSummary(412.75, 8.25, 605.10, 980.40).toString());
 
         // Act
         Map<String, JsonObject> summaries = ComparisonSummaryWriter.readTargetSummaries(tempDir, SHERIFF);
@@ -172,7 +171,7 @@ class ComparisonSummaryWriterTest {
             Path targetDir = tempDir.resolve(target);
             Files.createDirectories(targetDir);
             Files.writeString(targetDir.resolve("proxiedStatic-summary.json"),
-                    unauthSummary(8511.49, 1.69, 29.99).toString(), StandardCharsets.UTF_8);
+                    unauthSummary(8511.49, 1.69, 29.99).toString());
         }
 
         // Act
@@ -181,7 +180,7 @@ class ComparisonSummaryWriterTest {
         // Assert -- written under the results root, never into a gh-pages tree
         Path artifact = tempDir.resolve(ComparisonSummaryWriter.OUTPUT_FILE_NAME);
         assertTrue(Files.exists(artifact), "comparison summary must be written beside the inputs");
-        String rendered = Files.readString(artifact, StandardCharsets.UTF_8);
+        String rendered = Files.readString(artifact);
         assertTrue(rendered.contains("proxiedStatic"), "artifact must carry the compared aspect");
         assertFalse(Files.exists(tempDir.resolve("gh-pages-ready")),
                 "the comparison artifact must not create a gh-pages deployment tree");

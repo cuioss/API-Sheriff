@@ -20,7 +20,6 @@ import com.google.gson.JsonParser;
 import de.cuioss.tools.logging.CuiLogger;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -110,7 +109,7 @@ public final class ComparisonSummaryWriter {
 
         String rendered = render(targetA, summariesA, targetB, summariesB);
         Path output = resultsRoot.resolve(OUTPUT_FILE_NAME);
-        Files.writeString(output, rendered, StandardCharsets.UTF_8);
+        Files.writeString(output, rendered);
 
         Set<String> coveredAspects = new TreeSet<>(summariesA.keySet());
         coveredAspects.addAll(summariesB.keySet());
@@ -138,7 +137,7 @@ public final class ComparisonSummaryWriter {
                     .sorted()
                     .toList();
             for (Path file : summaryFiles) {
-                JsonObject summary = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8))
+                JsonObject summary = JsonParser.parseString(Files.readString(file))
                         .getAsJsonObject();
                 summaries.put(benchmarkName(summary, file), summary);
             }
