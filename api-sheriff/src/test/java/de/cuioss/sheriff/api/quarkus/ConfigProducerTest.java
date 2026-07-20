@@ -63,6 +63,25 @@ class ConfigProducerTest {
                 "%s": "%s"
             """.formatted(PASSTHROUGH_HOST, PASSTHROUGH_ALIAS);
 
+    /**
+     * A gateway whose single anchor violates the ADR-0013 access→auth matrix: a
+     * {@code type: bff} anchor declared {@code access: public} (a bff surface must be
+     * {@code access: authenticated}). The document is schema-valid — both required
+     * classification axes are present — so the violation is caught by
+     * {@link de.cuioss.sheriff.api.config.validation.ConfigValidator}, not the schema,
+     * which is what makes it exercise the startup-event validation path.
+     */
+    private static final String GATEWAY_WITH_MATRIX_VIOLATION = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            anchors:
+              portal:
+                path_prefix: /portal
+                type: bff
+                access: public
+            """;
+
     @TempDir
     Path configDir;
 
@@ -177,5 +196,27 @@ class ConfigProducerTest {
 
         assertTrue(exception.getMessage().contains("Refusing to start"),
                 "the abort should carry the refusing-to-start summary");
+    }
+
+    /**
+     * The fail-closed access→auth matrix (ADR-0013) must be enforced on the eager
+     * startup-event path, not only through a direct {@code ConfigValidator} call: a
+     * matrix-violating anchor aborts boot through {@code onStartup} → {@code buildOnce}
+     * → {@code ConfigValidator.validate}. The bff+public anchor is schema-valid, so
+     * reaching the abort proves the validator ran at startup, and the annotated ERROR
+     * record confirms it was the matrix rule that tripped.
+     */
+    @Test
+    void shouldFailBootThroughStartupEventWhenAccessAuthMatrixIsViolated() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "a matrix-violating anchor must abort boot on the startup-event path");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
+                "is type 'bff' and must declare access: authenticated");
     }
 }

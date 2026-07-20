@@ -32,7 +32,9 @@ import java.util.Set;
 import de.cuioss.sheriff.api.config.ConfigLogMessages;
 import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AnchorType;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
@@ -70,6 +72,12 @@ import de.cuioss.tools.logging.CuiLogger;
  * effective-auth completeness check — all collect into the same shared
  * {@code errors} list with file/pointer context and never fail fast.
  * <p>
+ * The fail-closed access→auth matrix (ADR-0013) adds per-anchor checks: a
+ * {@code type: bff} anchor requires {@code access: authenticated}; an
+ * {@code access: authenticated} anchor requires a non-{@code none} auth floor whose
+ * backing block is present; and an {@code access: public} anchor must not declare an
+ * auth block. These collect into the same shared list and never fail fast.
+ * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
  *
@@ -93,6 +101,8 @@ public final class ConfigValidator {
     private static final int BROAD_PREFIX_IPV6 = 32;
     private static final String WILDCARD_ORIGIN = "*";
     private static final String REQUIRE_NONE = "none";
+    private static final String REQUIRE_BEARER = "bearer";
+    private static final String REQUIRE_SESSION = "session";
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -106,6 +116,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateRouteAuthResolvable(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
@@ -400,6 +411,61 @@ public final class ConfigValidator {
         }
         if (requires.contains("session") && gateway.oidc().isEmpty()) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc", "effective auth 'session' requires an oidc block"));
+        }
+    }
+
+    /**
+     * Rule: the fail-closed access→auth matrix on every anchor (ADR-0013). A
+     * {@code type: bff} anchor must declare {@code access: authenticated}; an
+     * {@code access: authenticated} anchor must declare a non-{@code none} auth floor
+     * whose backing block is present (a {@code bearer} floor needs
+     * {@code token_validation} issuers, a {@code session} floor needs an {@code oidc}
+     * block); and an {@code access: public} anchor must not declare an auth block.
+     * Every violation collects into the shared list; the rule never fails fast.
+     */
+    private static void validateAccessAuthMatrix(GatewayConfig gateway, List<ConfigError> errors) {
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            String pointer = ANCHORS_POINTER + "/" + anchor.name();
+            if (anchor.type() == AnchorType.BFF && anchor.access() != AccessLevel.AUTHENTICATED) {
+                errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                        "anchor '%s' is type 'bff' and must declare access: authenticated".formatted(anchor.name())));
+            }
+            if (anchor.access() == AccessLevel.PUBLIC) {
+                if (anchor.auth().isPresent()) {
+                    errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                            "anchor '%s' is access: public and must not declare an auth block"
+                                    .formatted(anchor.name())));
+                }
+            } else {
+                validateAuthenticatedAnchorBacking(gateway, anchor, pointer, errors);
+            }
+        }
+    }
+
+    /**
+     * The {@code access: authenticated} half of the matrix (ADR-0013): the anchor must
+     * declare a non-{@code none} auth floor, and that floor's backing block must be
+     * present — a {@code bearer} floor needs {@code token_validation} issuers, a
+     * {@code session} floor needs an {@code oidc} block.
+     */
+    private static void validateAuthenticatedAnchorBacking(GatewayConfig gateway, AnchorConfig anchor, String pointer,
+            List<ConfigError> errors) {
+        String require = anchor.auth().map(AuthConfig::require).orElse(REQUIRE_NONE);
+        if (REQUIRE_NONE.equals(require)) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "anchor '%s' is access: authenticated but declares no non-'none' auth floor"
+                            .formatted(anchor.name())));
+            return;
+        }
+        if (REQUIRE_BEARER.equals(require)
+                && gateway.tokenValidation().map(tv -> tv.issuers().isEmpty()).orElse(true)) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "anchor '%s' access: authenticated bearer floor requires token_validation with at least one issuer"
+                            .formatted(anchor.name())));
+        }
+        if (REQUIRE_SESSION.equals(require) && gateway.oidc().isEmpty()) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
         }
     }
 
