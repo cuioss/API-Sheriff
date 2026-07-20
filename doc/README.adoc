@@ -102,6 +102,9 @@ link:plan/README.adoc[`plan/`]: base implementation and configuration management
 a doc/code reconciliation & quality-debt sweep, then endpoint anchors, the request pipeline,
 protocol processors, the TLS edge, the two BFF
 variants (server-session first), and release readiness -- the full sequence to the 1.0 cut.
+A later feature plan (link:plan/10-anchor-types-assets.adoc[plan 10]) adds two required anchor
+classification axes (`type`/`access`) with a fail-closed boot matrix and asset serving as a
+second terminal action (`directory` and `upstream` sources).
 Rate limiting is out of scope. Each plan names the design documents that must be read before
 implementing it.
 

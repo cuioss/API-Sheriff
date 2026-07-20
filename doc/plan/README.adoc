@@ -99,6 +99,15 @@ The plans build strictly on one another:
   full-surface security audit, benchmark completion with per-variant baselines, native +
   container hardening, the 1.0.0 release (and the flip of the pre-1.0 rules).
 | All of 05-08
+
+| link:10-anchor-types-assets.adoc[10 -- Anchor Type/Access Axes + Asset Serving]
+| Two required anchor axes -- `type` (`proxy`/`bff`/`asset`) and `access`
+  (`public`/`authenticated`) -- with a fail-closed access->auth matrix validated at boot (and
+  the `passthrough -> proxy` value rename), plus asset serving as a second terminal action with
+  `directory` and `upstream` sources through a gateway-owned response envelope and
+  canonicalize-and-confine path safety (the upstream source reuses the existing SSRF-controlled
+  data plane, no parallel fetch stack).
+| Plans 03 + 04
 |===
 
 Sequencing rationale: 02b is a pure correction sweep with no feature content -- it runs
