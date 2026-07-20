@@ -1,0 +1,91 @@
+= ADR-0012: Comparative cross-gateway benchmarking runs on-demand and stays segregated from the CI baseline
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: Cross-gateway comparison benchmarking is a target-neutral, on-demand-only lane whose results stay strictly segregated from the authoritative CI baseline and its published pages; one target parameter switches the whole matrix between gateways, and fairness parity (identical upstreams, auth realm, TLS material and resource limits) is a precondition of any comparison.
+// tags: benchmarking, comparative-benchmark, ci-isolation, fairness, performance
+// affects: benchmarks, integration-tests
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+Comparing the gateway's throughput against a third-party gateway is valuable for
+positioning, but a comparison run and the project's own authoritative
+performance baseline have fundamentally different trust levels. The CI baseline
+is the published, regression-tracked record of the gateway's own performance; a
+comparison run is an on-demand, environment-sensitive snapshot whose numbers are
+meaningful only relative to the other gateway measured in the same run. If the
+two share a results surface or a trigger, a comparison run can contaminate the
+published baseline, or a heavyweight comparison can burden every CI run. The
+architecture must decide where the comparison lane lives relative to the
+baseline lane, how a single harness drives either gateway, and what fairness
+preconditions make a comparison meaningful.
+
+== Decision
+
+Comparison benchmarking is a distinct lane, architecturally segregated from the
+CI baseline:
+
+* The harness is target-neutral — one target parameter (defaulting to the
+  project's own gateway) selects which gateway the entire aspect matrix runs
+  against, and the chosen target is recorded in every result's metadata. One
+  script body drives either gateway.
+* The comparison entry point is on-demand only and is wired into no CI workflow.
+  It runs the matrix against whichever stack is started and writes to a results
+  directory kept outside the published baseline and pages tree, so a comparison
+  run can never mutate the authoritative baseline.
+* A comparison is only run when fairness parity holds — both gateways face
+  identical upstreams, the same auth realm and tokens, the same TLS material, and
+  matched container resource limits, so neither side is advantaged. Cross-gateway
+  numbers are relative, not absolute.
+
+== Consequences
+
+=== Positive
+
+* The published baseline is protected by construction — no CI trigger, no shared
+  results surface — so an ad-hoc comparison cannot corrupt the regression record.
+* One target-neutral harness means comparison and baseline exercise identical
+  scripts, so the only intended variable between runs is the gateway under test.
+* CI cost is unaffected by comparison work, which runs only when an operator
+  invokes it.
+
+=== Negative
+
+* The comparison lane is not continuously exercised, so its wiring can rot
+  undetected between on-demand runs.
+
+=== Risks
+
+* Fairness parity is an operational precondition enforced by review and
+  documentation, not by an automated gate; an unfair environment silently
+  produces misleading numbers.
+
+== Alternatives Considered
+
+* *Wire the comparison into CI alongside the baseline* — yields continuous
+  comparison data, but couples a heavyweight, environment-sensitive comparison to
+  every CI run and risks the comparison's results bleeding into the published
+  baseline surface. Rejected: the baseline's integrity and CI cost outweigh
+  continuous comparison coverage.
+* *A self-contained comparison stack launched as its own project* — superficially
+  cleaner isolation, but it cannot reach the shared upstreams, auth realm and TLS
+  the baseline uses without duplicating them, breaking fairness parity; sharing
+  them requires composing into the same project anyway. Rejected: isolation at the
+  project boundary defeats the fairness precondition.
+* *Emit comparison results into the baseline store and filter later* — one
+  results surface is simpler, but any filtering gap lets a comparison run corrupt
+  the published history. Rejected: segregation at write time is the only
+  contamination-proof boundary.
+
+== References
+
+* The benchmarks-module methodology documentation in `benchmarks/README.adoc`
+  (comparative-run procedure and the relative-not-absolute framing).
