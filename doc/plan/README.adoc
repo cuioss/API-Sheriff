@@ -159,3 +159,11 @@ deviation (e.g. an expected multi-PR split); it does not restate this sequence.
   than adding them. The remaining approval-gated additions are `cui-http:2.1.0` and
   `quarkus-smallrye-fault-tolerance` (Plan 04).
 * Pre-1.0 rules apply throughout: delete instead of deprecate, break freely, keep APIs clean.
+* *Three-layer documentation*: project documentation is organized in three audience layers --
+  the *design and reference* layer under `doc/` (these design docs, the ADRs, and
+  link:../configuration.adoc[`configuration.adoc`] in its dual reference/design role), the
+  *operator* layer under link:../user/README.adoc[`doc/user/`] (deployment, configuration
+  operation, running the gateway), and the *contributor* layer under
+  link:../development/README.adoc[`doc/development/`] (build, test, module layout, conventions).
+  A new document lands in the layer that matches its audience; design rationale stays under
+  `doc/` and is never duplicated into the operator or contributor layers.

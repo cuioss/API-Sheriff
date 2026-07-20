@@ -1,0 +1,43 @@
+= API Sheriff -- Operator Guide
+:toc:
+:toclevels: 2
+:sectnums:
+
+The *operator layer* of the API Sheriff documentation. These documents are written for the
+people who *run* the gateway -- deploying the binary or container, authoring and operating
+`gateway.yaml`, and keeping a running deployment healthy. They describe the gateway as a
+finished artifact to be configured and operated, distinct from the
+link:../README.adoc[design documentation] under `doc/` (which defines *what* is built) and the
+link:../development/README.adoc[contributor guide] (which describes how to *build* it).
+
+This tree is seeded here and grows as operator-facing material lands; the 1.0 operator
+configuration guide (link:../plan/09-release-readiness.adoc[plan 09]) is authored into this
+layer.
+
+== Contents
+
+[cols="1,3"]
+|===
+| Document | Purpose
+
+| link:../configuration.adoc[Configuration Reference]
+| The authoritative reference for every `gateway.yaml` key -- routing, anchors and their
+  required `type`/`access` axes, security filtering, TLS, and per-route limits. It carries a
+  *dual role*: the operator-facing YAML reference and a design document (see the
+  link:../README.adoc[design documentation index]). Operators read it as the configuration
+  contract; it stays under `doc/` and is not relocated here.
+|===
+
+== Scope of This Layer
+
+Documents in `doc/user/` cover:
+
+* *Deployment* -- running the native binary and the production container image, and the
+  configuration mounted into them.
+* *Configuration operation* -- authoring `gateway.yaml`, the anchor `type`/`access` axes, the
+  asset terminal action, and the access-to-auth rules enforced at boot.
+* *Running the gateway* -- health, metrics, and the operational signals a deployment exposes.
+
+Design rationale for these features lives in the link:../README.adoc[design documentation] and
+the link:../adr/0007-anchor-scoped-policy.adoc[Architecture Decision Records]; this layer
+describes how to *use* them, never why they were chosen.

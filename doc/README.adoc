@@ -61,7 +61,10 @@ built* and *how the parts fit together*.
 
 | link:configuration.adoc[Configuration Model]
 | The static, immutable YAML mapping schema: routing, URL/parameter whitelisting,
-  security filtering, TLS (termination and passthrough), and per-route limits.
+  security filtering, TLS (termination and passthrough), and per-route limits. This document
+  has a *dual role* -- it is both the authoritative operator-facing configuration reference
+  (indexed from the link:user/README.adoc[operator guide]) and a design document; it stays
+  under `doc/` and is not relocated into `doc/user/`.
 
 | link:security-threat-model.adoc[Threat Model & CVE-Derived Validation Baseline]
 | Trust boundaries and STRIDE, plus a failure catalogue where every class that produced a
