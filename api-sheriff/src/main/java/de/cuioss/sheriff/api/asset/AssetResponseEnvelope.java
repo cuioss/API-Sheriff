@@ -20,6 +20,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
+
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 
@@ -162,9 +163,9 @@ public class AssetResponseEnvelope {
     }
 
     private static boolean isGatewayOwned(String headerName, boolean authenticated) {
-        return headerName.equalsIgnoreCase(CONTENT_TYPE)
-                || headerName.equalsIgnoreCase(CONTENT_TYPE_OPTIONS)
-                || headerName.equalsIgnoreCase(SET_COOKIE)
-                || (authenticated && headerName.equalsIgnoreCase(CACHE_CONTROL));
+        return CONTENT_TYPE.equalsIgnoreCase(headerName)
+                || CONTENT_TYPE_OPTIONS.equalsIgnoreCase(headerName)
+                || SET_COOKIE.equalsIgnoreCase(headerName)
+                || (authenticated && CACHE_CONTROL.equalsIgnoreCase(headerName));
     }
 }

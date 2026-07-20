@@ -21,9 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.net.URI;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+
 
 import de.cuioss.sheriff.api.asset.UpstreamAssetSource.UpstreamFetcher;
 import de.cuioss.sheriff.api.config.model.AccessLevel;
@@ -107,7 +109,7 @@ class UpstreamAssetSourceTest {
         UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertAll(
-                () -> assertFalse(served.headers().keySet().stream().anyMatch(k -> k.equalsIgnoreCase("Set-Cookie")),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
                         "an upstream Set-Cookie must never reach the client"),
                 () -> assertEquals("yes", served.headers().get("X-Keep")));
     }
@@ -192,7 +194,7 @@ class UpstreamAssetSourceTest {
     @DisplayName("Should map an upstream timeout to 504")
     void shouldMapTimeoutToGatewayTimeout() {
         UpstreamFetcher fetcher = target -> {
-            throw new UpstreamFetcher.UpstreamTimeoutException(new java.net.http.HttpTimeoutException("slow"));
+            throw new UpstreamFetcher.UpstreamTimeoutException(new HttpTimeoutException("slow"));
         };
 
         UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");

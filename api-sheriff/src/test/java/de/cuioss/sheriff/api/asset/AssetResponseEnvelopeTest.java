@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 
@@ -148,7 +149,7 @@ class AssetResponseEnvelopeTest {
                     "app.js", AccessLevel.PUBLIC, sourceHeaders);
 
             assertAll(
-                    () -> assertFalse(governed.keySet().stream().anyMatch(k -> k.equalsIgnoreCase("Set-Cookie")),
+                    () -> assertFalse(governed.keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
                             "an asset action must never establish a session"),
                     () -> assertEquals("kept", governed.get("X-Custom"),
                             "unrelated source headers pass through"));

@@ -15,7 +15,7 @@
  */
 package de.cuioss.sheriff.api.asset;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -101,7 +101,7 @@ class PathConfinementTest {
     @ParameterizedTest
     @MethodSource("traversalAttackCorpus")
     @DisplayName("No adversarial traversal/encoding vector escapes the confined root")
-    void shouldNeverEscapeConfinedRoot(String attack) throws IOException {
+    void shouldNeverEscapeConfinedRoot(String attack) throws Exception {
         Path confinedRoot = root().toAbsolutePath().normalize();
 
         Optional<Path> confined = confinement.confine(root(), attack);
@@ -109,14 +109,13 @@ class PathConfinementTest {
         confined.ifPresent(resolved -> {
             assertTrue(resolved.startsWith(confinedRoot),
                     () -> "attack '" + attack + "' escaped confinement to: " + resolved);
-            assertFalse(resolved.equals(outsideSentinel.toAbsolutePath().normalize()),
-                    () -> "attack '" + attack + "' reached the out-of-root sentinel");
+            assertNotEquals(resolved, outsideSentinel.toAbsolutePath().normalize(), () -> "attack '" + attack + "' reached the out-of-root sentinel");
         });
     }
 
     @Test
     @DisplayName("A leading traversal that targets a sibling of the root is rejected outright")
-    void shouldRejectLeadingTraversalOutright() throws IOException {
+    void shouldRejectLeadingTraversalOutright() throws Exception {
         Optional<Path> confined = confinement.confine(root(), "../secret.txt");
 
         assertTrue(confined.isEmpty(),
@@ -125,13 +124,13 @@ class PathConfinementTest {
 
     @Test
     @DisplayName("A null sub-path is rejected")
-    void shouldRejectNullSubPath() throws IOException {
+    void shouldRejectNullSubPath() throws Exception {
         assertTrue(confinement.confine(root(), null).isEmpty(), "a null sub-path must be rejected");
     }
 
     @Test
     @DisplayName("An in-root file confines to a path under the root")
-    void shouldConfineInRootFile() throws IOException {
+    void shouldConfineInRootFile() throws Exception {
         Optional<Path> confined = confinement.confine(root(), "index.html");
 
         assertTrue(confined.isPresent(), "a plain in-root file must confine");
@@ -142,7 +141,7 @@ class PathConfinementTest {
 
     @Test
     @DisplayName("An in-root nested sub-path confines under the root")
-    void shouldConfineInRootNestedSubPath() throws IOException {
+    void shouldConfineInRootNestedSubPath() throws Exception {
         Optional<Path> confined = confinement.confine(root(), "assets/css/app.css");
 
         assertTrue(confined.isPresent(), "a nested in-root sub-path must confine");
@@ -152,7 +151,7 @@ class PathConfinementTest {
 
     @Test
     @DisplayName("A leading-slash sub-path is treated as root-relative, not absolute")
-    void shouldTreatLeadingSlashAsRootRelative() throws IOException {
+    void shouldTreatLeadingSlashAsRootRelative() throws Exception {
         Optional<Path> confined = confinement.confine(root(), "/index.html");
 
         assertTrue(confined.isPresent(), "a leading-slash sub-path must confine root-relatively");

@@ -21,13 +21,15 @@ import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+
 
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -210,7 +212,7 @@ public final class UpstreamAssetSource implements AssetSource {
             HttpResponse<byte[]> response;
             try {
                 response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            } catch (java.net.http.HttpTimeoutException timeout) {
+            } catch (HttpTimeoutException timeout) {
                 throw new UpstreamFetcher.UpstreamTimeoutException(timeout);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -218,12 +220,12 @@ public final class UpstreamAssetSource implements AssetSource {
             }
             byte[] body = response.body();
             if (body.length > maxBytes) {
-                body = java.util.Arrays.copyOf(body, (int) Math.min(maxBytes + 1, body.length));
+                body = Arrays.copyOf(body, (int) Math.min(maxBytes + 1, body.length));
             }
             Map<String, String> headers = new LinkedHashMap<>();
             response.headers().map().forEach((name, values) -> {
                 if (!values.isEmpty()) {
-                    headers.put(name, values.get(0));
+                    headers.put(name, values.getFirst());
                 }
             });
             return new UpstreamFetcher.Fetched(response.statusCode(), headers, body);

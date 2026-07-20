@@ -19,12 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+
 
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -152,6 +152,6 @@ class DirectoryAssetSourceTest {
     void shouldRejectWriteVerb() {
         DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.POST, "index.html");
 
-        assertTrue(served.status() == METHOD_NOT_ALLOWED, "POST must be rejected 405");
+        assertEquals(METHOD_NOT_ALLOWED, served.status(), "POST must be rejected 405");
     }
 }
