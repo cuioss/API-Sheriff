@@ -189,10 +189,10 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
 
         LOGGER.info(K6BenchmarkLogMessages.INFO.SUMMARY_PARSED, name, gatewayTarget);
 
-        Map<String, Object> additionalData = new LinkedHashMap<>();
-        additionalData.put(LATENCY_AVG_MS, latencyAvg);
-        additionalData.put(GATEWAY_TARGET, gatewayTarget);
-        additionalData.put(ERROR_RATE, optionalDouble(summary, FIELD_ERROR_RATE));
+        Map<String, Object> additionalData = Map.of(
+                LATENCY_AVG_MS, latencyAvg,
+                GATEWAY_TARGET, gatewayTarget,
+                ERROR_RATE, optionalDouble(summary, FIELD_ERROR_RATE));
 
         return BenchmarkData.Benchmark.builder()
                 .name(name)
