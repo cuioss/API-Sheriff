@@ -76,7 +76,9 @@ forward-policy allowlists. See link:configuration.adoc#_security_filtering[Secur
 
 === Routing / Matching
 
-A static, immutable route table maps inbound requests to exactly one upstream. Matchers are
+A static, immutable route table maps inbound requests to exactly one route, and each route to
+exactly one *terminal action* -- a proxied `upstream` or a served `asset` (see "Asset Terminal
+Action"), never both. Matchers are
 bounded and composable with AND semantics (path prefix, HTTP method, host, header
 presence/value). The most specific matching route wins; a request that matches no route is rejected
 with `404` (deny-by-default). Routes from all endpoint files form one table ordered
@@ -214,6 +216,41 @@ the body. The `502`/`503`/`504` failure mapping is driven by the gateway's own e
 from the Vert.x client / fault-tolerance guard outcomes
 (link:adr/0008-data-plane-transport.adoc[ADR-0008]) -- `HttpResult` does not appear on the
 data plane.
+
+=== Asset Terminal Action
+
+Serving static content is the *second terminal action* a route can resolve to
+(link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]), alongside the proxy action above.
+An asset route runs the same fixed pipeline as a proxy route -- the stage-0 response-header and
+CORS-preflight preparation, the baseline security filter, route selection, the verb gate, the
+thorough checks, and *authentication* -- and only diverges at the terminal step: instead of the
+streamed upstream dispatch, the request is served by the route's boot-built *asset source* (a
+local-directory reader or a secondary-origin fetcher) and the buffered, governed response is
+written back.
+
+Three properties define the action:
+
+* *Auth before source resolution.* Because authentication is a pipeline stage that runs *before*
+  the terminal dispatch, an unauthorized request to an `access: authenticated` asset is rejected
+  `401` and no byte is ever read -- the source is never touched until authorization succeeds. The
+  ordering is structural, not a per-source check.
+* *A shared, gateway-owned response envelope.* Both sources serve through one envelope so the
+  gateway -- never the backing directory or the (possibly hostile) upstream -- governs the
+  response metadata: the `Content-Type` is set from the gateway's own extension map, `nosniff`
+  is always added, any source `Set-Cookie` is stripped, and an `access: authenticated` asset is
+  forced to `Cache-Control: no-store`. Only `GET`/`HEAD` are served. The untrusted request
+  sub-path is canonicalized and confined under the configured root before the source is touched,
+  closing the path-traversal class for the whole asset surface.
+* *The upstream source reuses the existing data plane.* A `source: upstream` asset resolves its
+  target through the same fixed-topology upstream model the proxy action uses (resolved
+  `base_url` + remainder) and rides the same SSRF controls -- a scheme allowlist,
+  `followRedirects(NEVER)`, and a bounded response size/timeout -- so there is *one* outbound
+  path to audit, not two. There is no parallel fetch stack: GW-05 in the threat model stays
+  closed because every outbound fetch rides the one controlled egress.
+
+Unlike a proxied body, an asset response is small and bounded, so it is buffered and re-served
+under the envelope rather than streamed; the streaming, never-materialize contract (ADR-0006)
+governs the *proxy* data plane specifically.
 
 [[_event_system]]
 == Event System

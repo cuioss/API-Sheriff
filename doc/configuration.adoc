@@ -192,12 +192,24 @@ allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTT
 anchors:                           # OPTIONAL namespace-scoped policy (see "Anchors"); each
   api:                             #   anchor OWNS a disjoint path namespace and carries the
     path_prefix: /api              #   policy floor for every route inside it
+    type: proxy                    # MANDATORY classification axis (proxy | bff | asset); `proxy`
+                                   #   is the former `passthrough` value, renamed (see "Type and
+                                   #   access axes"). Unrelated to tls.passthrough_sni.
+    access: authenticated          # MANDATORY audience axis (public | authenticated); a bearer
+                                   #   floor is what `authenticated` requires
     auth: { require: bearer }      # every /api route presents a bearer token; a member route
                                    #   may replace this block but never weaken it to `none`
     security_filter: { profile: strict }
   bff:
     path_prefix: /bff
+    type: bff                      # a bff surface MUST declare access: authenticated
+    access: authenticated
     auth: { require: session }     # the BFF surface: mediated OIDC session per the oidc block
+  static:                          # an asset surface (see "Asset terminal action")
+    path_prefix: /static
+    type: asset
+    access: public                 # a public anchor declares NO auth block (public is the
+                                   #   absence of auth); an auth block here fails the boot
 
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
@@ -305,6 +317,35 @@ under `/api` with bearer *and* under `/bff` with a session -- is *two routes* (i
 endpoint file, sharing the `base_url` alias), one per anchor. Multi-anchor membership does not
 exist; it would reintroduce merge-order ambiguity.
 
+=== Type and access axes
+
+Every anchor carries two *mandatory* classification axes (decision:
+link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]), orthogonal to one another and to the
+policy blocks above:
+
+* *`type`* -- what terminal behaviour the anchor's routes expose: `proxy` (a reverse-proxy
+  surface), `bff` (a Backend-For-Frontend surface), or `asset` (a static-asset surface, see
+  "Asset terminal action"). `proxy` is the *former `passthrough` value, renamed*; this is an
+  anchor-`type` value rename only and does *not* touch the unrelated TLS-L4 `tls.passthrough_sni`
+  surface, which keeps its name.
+* *`access`* -- the audience the anchor admits: `public` (an anonymous surface, no
+  authentication) or `authenticated` (requires a fully-backed auth posture).
+
+The two axes are enforced fail-closed at boot by the *access -> auth matrix*, which aggregates
+every violation in the single validation pass (never fails fast):
+
+* A `type: bff` anchor *must* declare `access: authenticated` -- a BFF surface is authenticated
+  by construction.
+* An `access: authenticated` anchor *must* declare a non-`none` auth floor whose backing block is
+  present: a `bearer` floor needs `token_validation` with at least one issuer; a `session` floor
+  needs an `oidc` block.
+* An `access: public` anchor *must not* declare an `auth` block at all -- public is the *absence*
+  of auth, so the `require: none` posture lives on the endpoint (or route) rather than the anchor.
+
+Like the policy blocks, the axes vanish at runtime: `type` selects the route's terminal action
+during route-table assembly and `access` is materialized onto each asset route's response
+envelope; the request pipeline never consults an anchor.
+
 == Endpoint Configuration Files (`endpoints/*.yaml`)
 
 One file per endpoint (service / host / app) or logical group. The file binds to a single
@@ -395,6 +436,55 @@ endpoint:
         headers_allow: [content-type]
       upstream: { path: /realms/main/protocol/openid-connect/token }
 ----
+
+=== Asset terminal action
+
+A route carries *exactly one terminal action*: it either proxies to an `upstream` (every example
+above) *or* serves static content through an `asset` block -- `upstream` and `asset` are mutually
+exclusive (decision: link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]). An asset route
+rides an `type: asset` anchor; declaring an `asset` block on a non-asset route, or omitting it on
+an asset-anchor route, fails the boot.
+
+The `asset` block selects one of two sources:
+
+[source,yaml]
+----
+# endpoints/assets.yaml -- routes under an `type: asset` anchor
+routes:
+  - id: bundle                       # a local directory / volume mount
+    match: { path_prefix: /static/app }
+    asset:
+      source: directory              # directory | upstream
+      directory: /srv/app-bundle     # the configured root; the request sub-path is confined
+                                     #   UNDER this root and any escape is a 404. No
+                                     #   classpath-embedded resources.
+  - id: cdn                          # a secondary origin
+    match: { path_prefix: /static/cdn }
+    asset:
+      source: upstream               # reuses the existing upstream model -- the resolved
+      upstream: ASSET_ORIGIN         #   base_url + remainder -- the shared data-plane client and
+                                     #   the SSRF controls (scheme allowlist, followRedirects
+                                     #   NEVER, bounded size/timeout). No parallel fetch stack.
+----
+
+Two cross-cutting rules govern *both* sources:
+
+* *Canonicalize-and-confine, before the source is touched.* The request sub-path is canonicalized
+  through cui-http's `URLPathValidationPipeline` (percent-decoding, `..`/dot-segment and
+  duplicate-slash collapse, unconditional traversal / `%00` / overlong / backslash rejection),
+  then confined to the configured root / synthetic base; any escape is a `404`. No file is opened
+  and no upstream is fetched for a rejected path.
+* *Auth before source resolution.* The route's effective auth (materialized from its `access`
+  axis and auth floor) is enforced at stage 4 *before* the source is resolved, so an unauthorized
+  request to an `access: authenticated` asset is rejected `401` and never triggers a directory
+  read or an upstream fetch.
+
+Every served response passes through the *gateway-owned response envelope*, so the gateway -- never
+the backing directory or upstream -- governs the response metadata: the `Content-Type` is set from
+the gateway's own extension map (overriding whatever the source claimed), `X-Content-Type-Options:
+nosniff` is always added, any source `Set-Cookie` is stripped, and an `access: authenticated`
+asset is forced to `Cache-Control: no-store` even when the source sent `Cache-Control: public`.
+Only `GET` and `HEAD` are served; any other verb is rejected `405`.
 
 === Route ordering
 
