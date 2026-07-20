@@ -28,7 +28,9 @@ import java.util.Optional;
 
 import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AnchorType;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardedConfig;
@@ -132,6 +134,8 @@ class ConfigValidatorTest {
         return AnchorConfig.builder()
                 .name(name)
                 .pathPrefix(prefix)
+                .type(AnchorType.PROXY)
+                .access(AccessLevel.AUTHENTICATED)
                 .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
                 .build();
     }

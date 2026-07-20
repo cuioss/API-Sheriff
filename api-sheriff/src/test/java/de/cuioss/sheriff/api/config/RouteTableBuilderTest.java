@@ -29,7 +29,9 @@ import java.util.Map;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AnchorType;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
@@ -145,6 +147,8 @@ class RouteTableBuilderTest {
         return AnchorConfig.builder()
                 .name(name)
                 .pathPrefix(prefix)
+                .type(AnchorType.PROXY)
+                .access(AccessLevel.AUTHENTICATED)
                 .auth(Optional.ofNullable(auth))
                 .securityFilter(Optional.ofNullable(filter))
                 .securityHeaders(Optional.ofNullable(headers))

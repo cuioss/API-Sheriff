@@ -15,7 +15,9 @@
  */
 package de.cuioss.sheriff.api.quarkus;
 
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AnchorType;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
@@ -87,7 +89,9 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         UpstreamConfig.CircuitBreaker.class,
         RateLimitConfig.class,
         HttpMethod.class,
-        Protocol.class
+        Protocol.class,
+        AnchorType.class,
+        AccessLevel.class
 })
 public final class ConfigModelReflection {
 

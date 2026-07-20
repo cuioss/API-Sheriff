@@ -1,21 +1,27 @@
-# Valid api+bff anchored gateway configuration (ADR-0007), consumed by the
-# ConfigValidatorTest positive path and the ConfigFailFastTest clean-boot case.
-# The two anchors own disjoint namespaces (/api, /bff); the api floor is bearer
-# (satisfied by token_validation), the bff floor is the public 'none' posture.
+# Valid api+bff anchored gateway configuration (ADR-0007) carrying the required
+# type/access axes (ADR-0013), consumed by the ConfigValidatorTest positive path
+# and the ConfigFailFastTest clean-boot case. The two anchors own disjoint
+# namespaces (/api, /bff); both declare access: authenticated backed by a bearer
+# floor (satisfied by token_validation), keeping the access->auth matrix consistent
+# (a public bff would trip the 'bff requires authenticated' matrix rule).
 version: 1
 metadata:
   config_version: "anchored-test"
 anchors:
   api:
     path_prefix: /api
+    type: proxy
+    access: authenticated
     auth:
       require: bearer
     security_filter:
       profile: strict
   bff:
     path_prefix: /bff
+    type: bff
+    access: authenticated
     auth:
-      require: none
+      require: bearer
     allowed_methods: [GET, POST]
 token_validation:
   issuers:
