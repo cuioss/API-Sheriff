@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -274,11 +275,14 @@ public class GatewayEdgeRoute {
         ctx.request().pause();
         try {
             virtualThreadExecutor.execute(() -> process(ctx));
-        } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException rejected) {
-            // The virtual-thread executor refused the dispatch (e.g. RejectedExecutionException during
-            // a shutdown race), so process(ctx) will never run and the response would otherwise never
-            // end — leaking the admission permit and the in-flight count. Roll the admission back now
-            // (idempotently) and fail the request 503 directly.
+        } catch (RejectedExecutionException rejected) {
+            // The virtual-thread executor refused the dispatch (a shutdown race), so process(ctx) will
+            // never run and the response would otherwise never end — leaking the admission permit and
+            // the in-flight count. Roll the admission back now (idempotently) and fail the request 503
+            // directly. Narrowed to RejectedExecutionException deliberately: Executor#execute contracts
+            // this as its only failure (the submitted command is a non-null lambda literal, so the
+            // NullPointerException arm is unreachable), and process(ctx) runs on the virtual thread
+            // rather than inline, so no pipeline exception can surface here.
             LOGGER.debug(rejected, "Virtual-thread dispatch rejected: %s", rejected.getMessage());
             releaseAdmission(admissionReleased);
             reject(ctx, SERVICE_UNAVAILABLE);
@@ -333,6 +337,14 @@ public class GatewayEdgeRoute {
 
     private void process(RoutingContext ctx) {
         PipelineRequest request = null;
+        // The trailing RuntimeException catch below is a deliberate last-resort safety net for one
+        // request, NOT an oversight: the pipeline runs a dozen independent stages, so the
+        // unexpected-failure type is genuinely unknowable and no narrower catch is correct. Letting a
+        // RuntimeException escape would abandon the response without ending it (the client hangs until
+        // timeout) and strand the admission permit, since the end handler never fires. Every escape is
+        // therefore translated into an opaque 500 here — the stack trace goes to the debug log and
+        // never to the client.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             HttpServerRequest raw = ctx.request();
             Optional<HttpMethod> parsedMethod = parseMethod(raw.method().name());
@@ -372,7 +384,7 @@ public class GatewayEdgeRoute {
             }
             recordError(ctx, rejected.getEventType());
             renderProblem(ctx, request, rejected.getEventType());
-        } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException unexpected) {
+        } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             renderProblem(ctx, request, null);
         }

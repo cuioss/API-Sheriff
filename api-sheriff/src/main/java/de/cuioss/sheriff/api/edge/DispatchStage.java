@@ -156,6 +156,14 @@ public final class DispatchStage {
             LongSupplier bytesSent, BooleanSupplier bodyStreamConsumed, Callable<HttpClientResponse> attempt) {
         AtomicInteger attemptIndex = new AtomicInteger();
         AtomicReference<Throwable> priorFailure = new AtomicReference<>();
+        // The trailing catch below is a deliberate catch-all, and the only shape that compiles:
+        // Guard#call propagates the checked Exception declared by the Callable it wraps, while
+        // guardedDispatch itself declares no throws clause — so a narrower catch would leave that
+        // checked exception unhandled. It is also the correct boundary semantically: this is the
+        // single translation point where any upstream/guard failure becomes a mapped GatewayException,
+        // so one unexpected exception can neither escape onto the request path nor leak a stack trace
+        // to the client.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             return guard.call(() -> {
                 if (attemptIndex.getAndIncrement() > 0
@@ -180,7 +188,7 @@ public final class DispatchStage {
             }, HttpClientResponse.class);
         } catch (GatewayException direct) {
             throw direct;
-        } /*~~(TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (Exception guarded) {
+        } catch (Exception guarded) {
             GatewayException breach = extractGatewayException(guarded);
             if (breach != null) {
                 throw breach;
