@@ -20,6 +20,15 @@
 #   --duration  k6 run duration per aspect (default: 60s)
 #   --vus       VU override for the throughput aspects; upload-50MB keeps its reduced
 #               concurrency regardless (see UPLOAD_LARGE_VUS below)
+#   --no-dashboard
+#               skip the supplementary HTML report and run through the stock baseline k6
+#               image instead of the dashboard-enabled one
+#
+# The xk6-dashboard HTML report is PURELY ADDITIVE. Every aspect emits its handleSummary() JSON in
+# the generic cuioss benchmark format regardless of this flag -- that JSON is what
+# K6BenchmarkConverter and ComparisonSummaryWriter consume, and the HTML is a human-facing extra
+# beside it. Disabling the dashboard therefore changes what a person can browse, never what the
+# comparison artifact is computed from.
 #
 # Prerequisite: the three-file comparison stack must be up --
 #   docker compose -f docker-compose.yml \
@@ -59,6 +68,7 @@ ASPECTS="${ALL_ASPECTS}"
 OUTPUT_DIR="${BENCHMARKS_DIR}/target/comparison-results"
 DURATION="60s"
 VUS="50"
+DASHBOARD="true"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -67,10 +77,19 @@ while [[ $# -gt 0 ]]; do
         --output)   OUTPUT_DIR="$2"; shift 2 ;;
         --duration) DURATION="$2";   shift 2 ;;
         --vus)      VUS="$2";        shift 2 ;;
-        -h|--help)  sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --no-dashboard) DASHBOARD="false"; shift ;;
+        -h|--help)  sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+# The dashboard-enabled image carries xk6-dashboard linked into the k6 binary; the baseline image
+# does not, so the dashboard output flag is only ever passed to the former.
+if [[ "${DASHBOARD}" == "true" ]]; then
+    K6_SERVICE="k6-dashboard"
+else
+    K6_SERVICE="k6"
+fi
 
 case "${TARGET}" in
     api-sheriff|apisix) TARGETS=("${TARGET}") ;;
@@ -104,7 +123,18 @@ for target in "${TARGETS[@]}"; do
             aspect_vus="${UPLOAD_LARGE_VUS}"
         fi
 
-        echo "==> ${target} / ${aspect} (${script}, ${aspect_vus} VUs, ${DURATION})"
+        # The dashboard report is written per run AND per aspect, into the same segregated
+        # results directory as the summary JSON. `report=` makes xk6-dashboard emit a
+        # self-contained single-file HTML document with every asset inlined -- no external CDN
+        # and no served endpoint -- so the artifact stays readable offline and after the stack
+        # is torn down.
+        k6_args=(run)
+        if [[ "${DASHBOARD}" == "true" ]]; then
+            k6_args+=(--out "web-dashboard=report=/results/${aspect}-dashboard.html")
+        fi
+        k6_args+=("/scripts/${script}")
+
+        echo "==> ${target} / ${aspect} (${script}, ${aspect_vus} VUs, ${DURATION}, dashboard=${DASHBOARD})"
         docker compose \
             -f "${COMPOSE_DIR}/docker-compose.yml" \
             -f "${COMPOSE_DIR}/docker-compose.benchmark.yml" \
@@ -115,12 +145,15 @@ for target in "${TARGETS[@]}"; do
             -e "BENCHMARK_VUS=${aspect_vus}" \
             -e "BENCHMARK_DURATION=${DURATION}" \
             -v "${target_dir}:/results" \
-            k6 run "/scripts/${script}"
+            "${K6_SERVICE}" "${k6_args[@]}"
     done
 done
 
 echo
 echo "Per-aspect summaries written under ${OUTPUT_DIR}/<target>/."
+if [[ "${DASHBOARD}" == "true" ]]; then
+    echo "Self-contained HTML reports: ${OUTPUT_DIR}/<target>/<aspect>-dashboard.html"
+fi
 echo "Render the side-by-side table with ComparisonSummaryWriter:"
 echo "  ./mvnw -pl benchmarks exec:java \\"
 echo "    -Dexec.mainClass=de.cuioss.sheriff.api.k6.benchmark.ComparisonSummaryWriter \\"

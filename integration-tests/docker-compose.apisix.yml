@@ -94,3 +94,42 @@ services:
       - api-sheriff
 
     restart: unless-stopped
+
+  # Dashboard-enabled k6, used ONLY by the on-demand comparison lane (run-comparison.sh). It
+  # carries xk6-dashboard linked into the k6 binary so each aspect can additionally emit a
+  # self-contained HTML report; the baseline `k6` service in docker-compose.yml is untouched and
+  # stays the engine the CI lane measures with.
+  #
+  # Sits behind its OWN profile, deliberately distinct from the `comparison` profile the apisix
+  # service uses. `docker compose run` implicitly enables the target service's profile, so
+  # run-comparison.sh can drive it directly, while `up --profile comparison`, the default stack,
+  # `verify -Pintegration-tests` and the `-Pbenchmark` CI lane all start no dashboard container.
+  k6-dashboard:
+    build:
+      # Repository root, matching the baseline k6 service: the Dockerfile copies the whole
+      # k6-scripts tree so the lib/ imports resolve.
+      context: ..
+      dockerfile: benchmarks/Dockerfile.k6-dashboard
+
+    profiles:
+      - comparison-dashboard
+
+    networks:
+      - api-sheriff
+
+    restart: "no"
+
+    # Same default results mount as the baseline k6 service; run-comparison.sh overrides it with
+    # a per-target directory under the segregated comparison results root.
+    volumes:
+      - ${K6_OUTPUT_DIR:-../benchmarks/target/benchmark-results/k6}:/results
+
+    # Same rationale as the baseline k6 service: the image's unprivileged uid does not exist on
+    # the host and so cannot write into the host-owned bind mount above.
+    user: "0:0"
+
+    environment:
+      - BENCHMARK_VUS
+      - BENCHMARK_DURATION
+      - BENCHMARK_MAX_ERROR_RATE
+      - GATEWAY_TARGET

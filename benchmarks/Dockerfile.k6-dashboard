@@ -1,0 +1,64 @@
+# Dashboard-enabled k6 load generator for the ON-DEMAND comparison lane only.
+#
+# This is a SECOND image beside Dockerfile.k6, never a replacement. It is referenced by no
+# Maven execution and by no workflow under .github/workflows/ -- only by the comparison compose
+# profile that run-comparison.sh drives. Dockerfile.k6 is left untouched, so the CI baseline lane
+# keeps measuring with the stock, digest-pinned engine.
+#
+# WHY A CUSTOM BUILD: xk6-dashboard is a k6 *output extension*, and k6 loads output extensions
+# only when they are compiled into the binary -- there is no runtime plugin path. Producing the
+# HTML report therefore requires rebuilding k6 with the extension linked in.
+#
+# ENGINE-PARITY INVARIANT: the k6 version built here MUST match the version behind the
+# digest-pinned grafana/k6 image in Dockerfile.k6 (currently 2.1.0). A dashboard run and a
+# baseline run measured by different engines are not comparable, which would silently defeat the
+# purpose of the comparison. The runtime stage below reuses that exact digest-pinned image and
+# replaces only the binary, so everything except the linked-in extension is byte-identical to the
+# baseline environment.
+
+# --- builder: compile k6 2.1.0 with the dashboard output extension linked in -----------------
+FROM golang:1.25-alpine AS builder
+
+# All three pins are explicit; no floating `latest`. K6_VERSION is the parity-critical one and
+# must be bumped together with the FROM digest in Dockerfile.k6.
+ARG K6_VERSION=v2.1.0
+ARG XK6_VERSION=v0.20.1
+ARG XK6_DASHBOARD_VERSION=v0.7.5
+
+# git is required by the Go module fetcher for the extension's source.
+RUN apk add --no-cache git=~2
+
+RUN go install go.k6.io/xk6/cmd/xk6@${XK6_VERSION}
+
+RUN xk6 build ${K6_VERSION} \
+    --with github.com/grafana/xk6-dashboard@${XK6_DASHBOARD_VERSION} \
+    --output /out/k6
+
+# --- runtime: the SAME digest-pinned baseline image, carrying the extended binary -------------
+# Reusing the baseline image (rather than a bare alpine) is what makes the engine-parity claim
+# above concrete: identical OS, identical CA bundle, identical entrypoint semantics.
+FROM grafana/k6:2.1.0@sha256:65c920dc067d5e2e00befbf982af6ad6ad0117034e8b1c65817c7975c52d4669
+
+LABEL org.opencontainers.image.title="API Sheriff k6 benchmarks (dashboard)" \
+      org.opencontainers.image.description="k6 load generator with xk6-dashboard linked in, for the on-demand comparison lane" \
+      org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# Replace the stock binary with the extension-enabled one. Root is required to write into
+# /usr/bin; the image's own unprivileged user is restored immediately afterwards.
+USER root
+COPY --from=builder /out/k6 /usr/bin/k6
+
+# The build context is the repository root (see integration-tests/docker-compose.apisix.yml), so
+# the whole script tree is copied with its lib/ subdirectory intact -- the scripts import
+# ./lib/summary.js and ./lib/target.js relative to themselves.
+COPY benchmarks/src/main/resources/k6-scripts/ /scripts/
+
+# Drop back to the image's unprivileged user. The comparison compose service overrides this with
+# user "0:0" for the same reason the baseline k6 service does -- the host-owned results bind mount
+# is not writable by an uid that does not exist on the host -- but the image itself does not ship
+# root as its default.
+USER k6
+
+ENTRYPOINT ["k6"]
+CMD ["--help"]
