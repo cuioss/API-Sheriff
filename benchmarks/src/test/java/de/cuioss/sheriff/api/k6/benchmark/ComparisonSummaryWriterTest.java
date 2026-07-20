@@ -154,6 +154,28 @@ class ComparisonSummaryWriterTest {
     }
 
     @Test
+    void shouldSkipMalformedSummaryFileAndReadTheRest() throws Exception {
+        // Arrange -- one good summary and one truncated/malformed file (e.g. a k6 run killed
+        // mid-write) side by side under the same target directory.
+        Path targetDir = tempDir.resolve(SHERIFF);
+        Files.createDirectories(targetDir);
+        Files.writeString(targetDir.resolve("proxiedStatic-summary.json"),
+                unauthSummary(8511.49, 1.69, 29.99).toString());
+        Files.writeString(targetDir.resolve("uploadLarge-summary.json"),
+                "{\"benchmark_name\": \"uploadLarge\", \"requests_per_second\":");
+
+        // Act -- a malformed file must not abort the whole comparison
+        Map<String, JsonObject> summaries =
+                assertDoesNotThrow(() -> ComparisonSummaryWriter.readTargetSummaries(tempDir, SHERIFF),
+                        "a malformed summary must be skipped, not abort the run");
+
+        // Assert -- the good summary is read, the malformed one is silently dropped
+        assertEquals(1, summaries.size());
+        assertTrue(summaries.containsKey("proxiedStatic"));
+        assertFalse(summaries.containsKey("uploadLarge"));
+    }
+
+    @Test
     void shouldReturnNoSummariesWhenTargetDirectoryIsAbsent() throws Exception {
         // Arrange -- nothing on disk for this target
 

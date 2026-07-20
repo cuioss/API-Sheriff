@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.k6.benchmark;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
 import de.cuioss.tools.logging.CuiLogger;
 
 import java.io.IOException;
@@ -137,9 +138,15 @@ public final class ComparisonSummaryWriter {
                     .sorted()
                     .toList();
             for (Path file : summaryFiles) {
-                JsonObject summary = JsonParser.parseString(Files.readString(file))
-                        .getAsJsonObject();
-                summaries.put(benchmarkName(summary, file), summary);
+                try {
+                    JsonObject summary = JsonParser.parseString(Files.readString(file))
+                            .getAsJsonObject();
+                    summaries.put(benchmarkName(summary, file), summary);
+                } catch (JsonSyntaxException | IllegalStateException e) {
+                    // A single malformed or truncated summary (e.g. a k6 run killed mid-write) must
+                    // not abort the whole comparison — log the bad file and continue with the rest.
+                    LOGGER.error(e, K6BenchmarkLogMessages.ERROR.FAILED_PARSE_SUMMARY, file, e.getMessage());
+                }
             }
         }
         return summaries;

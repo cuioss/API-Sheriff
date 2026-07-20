@@ -231,6 +231,107 @@ class K6BenchmarkConverterTest {
     }
 
     @Test
+    void nonPrimitiveGatewayTargetFallsBackToUnknown() throws Exception {
+        // Arrange — gateway_target present but a JSON array (non-primitive). getAsString() would
+        // throw UnsupportedOperationException and crash the converter; the guard must fall back.
+        Path k6Dir = tempDir.resolve(K6ResultPostProcessor.K6_RESULTS_SUBDIRECTORY);
+        Files.createDirectories(k6Dir);
+        Files.writeString(k6Dir.resolve("weird-target-summary.json"), """
+                {
+                  "benchmark_name": "weirdTarget",
+                  "gateway_target": ["api-sheriff"],
+                  "start_time": "2026-07-19T10:00:00Z",
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": 1000.0,
+                  "latency_ms": {"p50": 1.0}
+                }
+                """);
+
+        // Act
+        JsonObject json = assertDoesNotThrow(this::processAndReadJson,
+                "a non-primitive gateway_target must not crash the converter");
+
+        // Assert — the benchmark is produced with the unknown-target fallback
+        JsonObject benchmark = benchmarkNamed(json, "weirdTarget");
+        assertNotNull(benchmark, "the benchmark must still be produced");
+        assertEquals("k6.unknown.weirdTarget", benchmark.get("fullName").getAsString(),
+                "a non-primitive gateway_target must fall back to 'unknown'");
+    }
+
+    @Test
+    void nonPrimitiveBenchmarkNameYieldsNoBenchmark() throws Exception {
+        // Arrange — a valid summary plus one whose benchmark_name is a JSON object. requiredString()
+        // must treat a non-primitive name as missing (skip), not crash on getAsString().
+        Path k6Dir = tempDir.resolve(K6ResultPostProcessor.K6_RESULTS_SUBDIRECTORY);
+        Files.createDirectories(k6Dir);
+        Files.writeString(k6Dir.resolve("good-summary.json"), """
+                {
+                  "benchmark_name": "goodRun",
+                  "gateway_target": "api-sheriff",
+                  "start_time": "2026-07-19T10:00:00Z",
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": 1000.0,
+                  "latency_ms": {"p50": 1.0}
+                }
+                """);
+        Files.writeString(k6Dir.resolve("bad-name-summary.json"), """
+                {
+                  "benchmark_name": {"unexpected": "object"},
+                  "gateway_target": "api-sheriff",
+                  "start_time": "2026-07-19T10:00:00Z",
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": 1000.0,
+                  "latency_ms": {"p50": 1.0}
+                }
+                """);
+
+        // Act
+        JsonObject json = assertDoesNotThrow(this::processAndReadJson,
+                "a non-primitive benchmark_name must not crash the converter");
+
+        // Assert — only the valid benchmark is emitted; the object-named summary is skipped
+        assertNotNull(benchmarkNamed(json, "goodRun"), "the valid benchmark must be present");
+        assertEquals(1, json.getAsJsonArray("benchmarks").size(),
+                "a summary with a non-primitive benchmark_name contributes no benchmark");
+    }
+
+    @Test
+    void nonPrimitiveMetadataFieldIsSkippedWithoutCrashing() throws Exception {
+        // Arrange — a valid summary plus one whose start_time is a JSON object (non-primitive).
+        // Pre-guard, instantOrNull's getAsString() threw UnsupportedOperationException — uncaught
+        // by the metadata parser's catch — and aborted the whole run.
+        Path k6Dir = tempDir.resolve(K6ResultPostProcessor.K6_RESULTS_SUBDIRECTORY);
+        Files.createDirectories(k6Dir);
+        Files.writeString(k6Dir.resolve("good-summary.json"), """
+                {
+                  "benchmark_name": "goodRun",
+                  "gateway_target": "api-sheriff",
+                  "start_time": "2026-07-19T10:00:00Z",
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": 1000.0,
+                  "latency_ms": {"p50": 1.0}
+                }
+                """);
+        Files.writeString(k6Dir.resolve("bad-time-summary.json"), """
+                {
+                  "benchmark_name": "badTime",
+                  "gateway_target": "api-sheriff",
+                  "start_time": {"nested": "not-a-string"},
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": 1000.0,
+                  "latency_ms": {"p50": 1.0}
+                }
+                """);
+
+        // Act — the non-primitive start_time must be treated as absent, not crash the run
+        JsonObject json = assertDoesNotThrow(this::processAndReadJson,
+                "a non-primitive metadata field must not abort processing");
+
+        // Assert — the valid run is still reported
+        assertNotNull(benchmarkNamed(json, "goodRun"), "the valid benchmark must be present");
+    }
+
+    @Test
     void onlyMeasuredPercentilesAreEmitted() throws Exception {
         // Arrange — a summary reporting only P50/P99; the absent percentiles must be omitted,
         // never estimated or fabricated.

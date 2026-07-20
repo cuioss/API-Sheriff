@@ -284,11 +284,16 @@ public class K6ResultPostProcessor {
     }
 
     private static String stringOrNull(JsonObject summary, String field) {
-        return summary.has(field) ? summary.get(field).getAsString() : null;
+        // Guard against a present-but-non-primitive field (JsonNull, array, object): getAsString()
+        // would throw UnsupportedOperationException / ClassCastException, which the caller does not
+        // catch. Treat a non-primitive field as absent.
+        return summary.has(field) && summary.get(field).isJsonPrimitive()
+                ? summary.get(field).getAsString() : null;
     }
 
     private static Instant instantOrNull(JsonObject summary, String field) {
-        return summary.has(field) ? Instant.parse(summary.get(field).getAsString()) : null;
+        return summary.has(field) && summary.get(field).isJsonPrimitive()
+                ? Instant.parse(summary.get(field).getAsString()) : null;
     }
 
     /**
