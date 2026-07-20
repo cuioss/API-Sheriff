@@ -443,7 +443,7 @@ class ConfigModelContractTest {
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
-            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null);
+            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null);
             assertTrue(cfg.anchor().isEmpty());
             assertTrue(cfg.auth().isEmpty());
             assertTrue(cfg.securityFilter().isEmpty());
@@ -611,9 +611,11 @@ class ConfigModelContractTest {
         void routeConfigRequiresIdAndMatch() {
             MatchConfig match = matchConfig();
             assertThrows(NullPointerException.class, () -> new RouteConfig(null, Optional.empty(), Optional.empty(),
-                    match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+                    match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty()));
             assertThrows(NullPointerException.class, () -> new RouteConfig("id", Optional.empty(), Optional.empty(),
-                    null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+                    null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty()));
         }
 
         @Test
