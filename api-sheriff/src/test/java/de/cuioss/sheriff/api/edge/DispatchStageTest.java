@@ -22,9 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -33,6 +37,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 
+import de.cuioss.sheriff.api.asset.DirectoryAssetSource;
+import de.cuioss.sheriff.api.asset.PathConfinement;
+import de.cuioss.sheriff.api.asset.UpstreamAssetSource;
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
@@ -48,6 +56,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 @DisplayName("DispatchStage — stage 6 streamed upstream dispatch")
 class DispatchStageTest {
@@ -267,6 +276,68 @@ class DispatchStageTest {
             // Assert — reusing an already-subscribed one-shot body stream is refused, no re-send
             assertEquals(1, attempts.get(),
                     "a retry that would reuse an already-subscribed one-shot body stream must be refused");
+        }
+    }
+
+    @Nested
+    @DisplayName("asset terminal-action serving")
+    class AssetServing {
+
+        @Test
+        @DisplayName("serves a directory asset over GET behind the gateway response envelope")
+        void servesDirectoryAssetOverGet(@TempDir Path root) throws Exception {
+            Files.writeString(root.resolve("app.css"), "body{color:red}");
+            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC);
+
+            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.GET, "/app.css");
+
+            assertEquals(200, served.status());
+            assertEquals("text/css; charset=utf-8", served.headers().get("Content-Type"),
+                    "the gateway sets the content type from its own extension map, not the source");
+            assertEquals("nosniff", served.headers().get("X-Content-Type-Options"));
+            assertEquals("body{color:red}", new String(served.body(), StandardCharsets.UTF_8));
+        }
+
+        @Test
+        @DisplayName("serves a directory asset over HEAD with an empty body")
+        void servesDirectoryAssetOverHead(@TempDir Path root) throws Exception {
+            Files.writeString(root.resolve("app.css"), "body{color:red}");
+            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC);
+
+            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.HEAD, "/app.css");
+
+            assertEquals(200, served.status());
+            assertEquals(0, served.body().length, "a HEAD response carries the governed headers but no body");
+        }
+
+        @Test
+        @DisplayName("rejects a non-read verb with 405 on the dispatch path (GET/HEAD-only)")
+        void rejectsNonReadVerb(@TempDir Path root) throws Exception {
+            Files.writeString(root.resolve("app.css"), "body{}");
+            DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC);
+
+            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.POST, "/app.css");
+
+            assertEquals(405, served.status(), "an asset action serves only GET and HEAD");
+        }
+
+        @Test
+        @DisplayName("serves an upstream asset, forcing no-store on an authenticated route through the envelope")
+        void servesUpstreamAssetGoverned() {
+            ResolvedUpstream upstream = new ResolvedUpstream("https", "cdn.internal", 443, "");
+            UpstreamAssetSource.UpstreamFetcher fetcher = target -> new UpstreamAssetSource.UpstreamFetcher.Fetched(
+                    200, Map.of("Content-Type", "text/plain", "Cache-Control", "public"),
+                    "PNGDATA".getBytes(StandardCharsets.UTF_8));
+            UpstreamAssetSource source = new UpstreamAssetSource(upstream, AccessLevel.AUTHENTICATED,
+                    new PathConfinement(), fetcher, 1024L);
+
+            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.GET, "/logo.png");
+
+            assertEquals(200, served.status());
+            assertEquals("image/png", served.headers().get("Content-Type"),
+                    "the gateway overrides the upstream content type from the extension map");
+            assertEquals("no-store", served.headers().get("Cache-Control"),
+                    "an authenticated asset is forced to no-store regardless of the upstream's Cache-Control");
         }
     }
 

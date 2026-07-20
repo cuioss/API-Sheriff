@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -30,11 +31,14 @@ import java.util.function.Supplier;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.api.asset.DirectoryAssetSource;
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.Protocol;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
@@ -60,6 +64,7 @@ class RouteRuntimeAssemblerTest {
     private RouteRuntimeAssembler.SecurityConfigurationFactory securityConfigFactory;
     private RouteRuntimeAssembler.UpstreamClientFactory clientFactory;
     private RouteRuntimeAssembler.ResilienceGuardFactory guardFactory;
+    private RouteRuntimeAssembler.AssetSourceFactory assetSourceFactory;
 
     @BeforeEach
     void setUp() {
@@ -68,6 +73,8 @@ class RouteRuntimeAssemblerTest {
         securityConfigFactory = filter -> SecurityConfiguration.builder().build();
         clientFactory = target -> vertx.createHttpClient();
         guardFactory = shape -> new StoredOnlyGuard();
+        assetSourceFactory = asset -> new DirectoryAssetSource(Path.of(asset.directory().orElse("/tmp")),
+                asset.access());
     }
 
     @AfterEach
@@ -88,7 +95,7 @@ class RouteRuntimeAssemblerTest {
                 route("r1", Protocol.HTTP, "none", Optional.of(sharedFilter), upstream("a.example")),
                 route("r2", Protocol.HTTP, "none", Optional.of(sharedFilter), upstream("a.example"))));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(1, invocations.get(), "The factory runs once for the shared filter shape");
         assertSame(runtimes.getFirst().getSecurityConfiguration().orElseThrow(),
@@ -105,7 +112,7 @@ class RouteRuntimeAssemblerTest {
                 route("r2", Protocol.HTTP, "none",
                         Optional.of(SecurityFilterConfig.builder().allowedPaths(List.of("/b")).build()), upstream("a.example"))));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertNotSame(runtimes.getFirst().getSecurityConfiguration().orElseThrow(),
                 runtimes.get(1).getSecurityConfiguration().orElseThrow(),
@@ -120,11 +127,13 @@ class RouteRuntimeAssemblerTest {
                 route("r2", Protocol.HTTP, "none", Optional.empty(), upstream("a.example")),
                 route("r3", Protocol.HTTP, "none", Optional.empty(), upstream("b.example"))));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
-        assertSame(runtimes.getFirst().getHttpClient(), runtimes.get(1).getHttpClient(),
+        assertSame(runtimes.getFirst().getHttpClient().orElseThrow(),
+                runtimes.get(1).getHttpClient().orElseThrow(),
                 "Routes sharing an upstream tuple reuse one client");
-        assertNotSame(runtimes.getFirst().getHttpClient(), runtimes.get(2).getHttpClient(),
+        assertNotSame(runtimes.getFirst().getHttpClient().orElseThrow(),
+                runtimes.get(2).getHttpClient().orElseThrow(),
                 "A different upstream tuple gets a distinct client");
     }
 
@@ -135,7 +144,7 @@ class RouteRuntimeAssemblerTest {
                 route("first", Protocol.HTTP, "none", Optional.empty(), upstream("a.example")),
                 route("second", Protocol.GRAPHQL, "bearer", Optional.empty(), upstream("b.example"))));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(List.of("first", "second"), runtimes.stream().map(RouteRuntime::getId).toList(),
                 "Assembly preserves the longest-prefix-first order");
@@ -146,13 +155,13 @@ class RouteRuntimeAssemblerTest {
     void shouldFailBootForSessionAndUnsupportedProtocols() {
         var session = assertThrows(GatewayException.class, () -> assembler.assemble(
                 new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory), "session auth must fail boot");
+                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "session auth must fail boot");
         var grpc = assertThrows(GatewayException.class, () -> assembler.assemble(
                 new RouteTable(List.of(route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory), "gRPC must fail boot");
+                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "gRPC must fail boot");
         var websocket = assertThrows(GatewayException.class, () -> assembler.assemble(
                 new RouteTable(List.of(route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory), "WebSocket must fail boot");
+                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "WebSocket must fail boot");
 
         assertEquals(EventType.CONFIG_INVALID, session.getEventType(), "session rejection is a config failure");
         assertEquals(EventType.CONFIG_INVALID, grpc.getEventType(), "gRPC rejection is a config failure");
@@ -166,9 +175,9 @@ class RouteRuntimeAssemblerTest {
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("scoped").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/s").build())
                 .effectiveAuth(auth).effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(upstream("a.example")).build()));
+                .upstream(Optional.of(upstream("a.example"))).build()));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertTrue(runtimes.getFirst().getRequiredScopes().containsAll(List.of("read", "write")),
                 "Required scopes flow from the effective auth to the runtime");
@@ -183,9 +192,9 @@ class RouteRuntimeAssemblerTest {
                 .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(upstream("a.example")).effectiveForward(forward).build()));
+                .upstream(Optional.of(upstream("a.example"))).effectiveForward(forward).build()));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(forward, runtimes.getFirst().getEffectiveForward(),
                 "The materialized forward allowlist flows to the runtime unchanged");
@@ -197,10 +206,32 @@ class RouteRuntimeAssemblerTest {
         RouteTable table = new RouteTable(List.of(
                 route("r1", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
 
-        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory);
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertTrue(runtimes.getFirst().getEffectiveForward().headersAllow().isEmpty(),
                 "An unforwarded route carries an empty, deny-by-default allowlist");
+    }
+
+    @Test
+    @DisplayName("Should assemble an asset route with a live source and no client or guard")
+    void shouldAssembleAssetRouteWithoutClientOrGuard() {
+        ResolvedRoute assetRoute = ResolvedRoute.builder()
+                .id("bundle").protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().pathPrefix("/assets").build())
+                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .asset(Optional.of(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC)))
+                .build();
+        RouteTable table = new RouteTable(List.of(assetRoute));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        RouteRuntime runtime = runtimes.getFirst();
+        assertTrue(runtime.getAssetSource().isPresent(), "an asset route carries a live asset source");
+        assertTrue(runtime.getUpstream().isEmpty(), "an asset route holds no proxy upstream");
+        assertTrue(runtime.getHttpClient().isEmpty(), "an asset route holds no Vert.x client");
+        assertTrue(runtime.getResilienceGuard().isEmpty(), "an asset route holds no resilience guard");
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require,
@@ -212,7 +243,7 @@ class RouteRuntimeAssemblerTest {
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .effectiveSecurityFilter(filter)
-                .upstream(upstream)
+                .upstream(Optional.of(upstream))
                 .build();
     }
 

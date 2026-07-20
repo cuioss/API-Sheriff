@@ -49,10 +49,18 @@ import lombok.Builder;
  *                               consumed), empty when none resolves
  * @param effectiveSecurityHeaders the materialized response-header posture carried
  *                               (not yet consumed), empty when none resolves
- * @param retryEnabled           the materialized upstream-retry toggle
+ * @param retryEnabled           the materialized upstream-retry toggle (meaningful
+ *                               only for a proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle
- * @param upstream               the resolved upstream target for the route's
- *                               endpoint (mandatory)
+ *                               (meaningful only for a proxy route)
+ * @param upstream               the resolved upstream target for a proxy route,
+ *                               present when the route's terminal action is proxy and
+ *                               empty for an asset route
+ * @param asset                  the resolved asset terminal action, present when the
+ *                               route serves assets and empty for a proxy route; a
+ *                               route resolves to exactly one terminal action, so
+ *                               {@code upstream} and {@code asset} are mutually
+ *                               exclusive (ADR-0014)
  * @param effectiveForward       the materialized, deny-by-default {@code forward}
  *                               allowlist consumed by stage 5; an empty
  *                               {@link ForwardConfig} when the route declares none
@@ -63,13 +71,16 @@ import lombok.Builder;
 public record ResolvedRoute(String id, Protocol protocol, Optional<String> anchor, MatchConfig match,
 AuthConfig effectiveAuth, List<HttpMethod> effectiveAllowedMethods,
 Optional<SecurityFilterConfig> effectiveSecurityFilter, Optional<SecurityHeadersConfig> effectiveSecurityHeaders,
-boolean retryEnabled, boolean notModifiedEnabled, ResolvedUpstream upstream, ForwardConfig effectiveForward) {
+boolean retryEnabled, boolean notModifiedEnabled, Optional<ResolvedUpstream> upstream, Optional<ResolvedAsset> asset,
+ForwardConfig effectiveForward) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying
      * {@code effectiveAllowedMethods}, normalizing absent optionals, defaulting an
-     * absent {@code protocol} to {@link Protocol#HTTP}, and defaulting an absent
-     * {@code effectiveForward} to a deny-by-default empty {@link ForwardConfig}.
+     * absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
+     * {@code effectiveForward} to a deny-by-default empty {@link ForwardConfig}, and
+     * enforcing the terminal-action invariant: exactly one of {@code upstream}
+     * (proxy) or {@code asset} resolves.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");
@@ -80,7 +91,12 @@ boolean retryEnabled, boolean notModifiedEnabled, ResolvedUpstream upstream, For
         effectiveAllowedMethods = effectiveAllowedMethods == null ? List.of() : List.copyOf(effectiveAllowedMethods);
         effectiveSecurityFilter = Objects.requireNonNullElse(effectiveSecurityFilter, Optional.empty());
         effectiveSecurityHeaders = Objects.requireNonNullElse(effectiveSecurityHeaders, Optional.empty());
-        Objects.requireNonNull(upstream, "upstream");
+        upstream = Objects.requireNonNullElse(upstream, Optional.empty());
+        asset = Objects.requireNonNullElse(asset, Optional.empty());
+        if (upstream.isPresent() == asset.isPresent()) {
+            throw new IllegalArgumentException(
+                    "route '" + id + "' must resolve exactly one terminal action (upstream XOR asset)");
+        }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
     }
 

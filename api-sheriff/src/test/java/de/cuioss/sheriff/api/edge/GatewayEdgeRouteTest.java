@@ -24,6 +24,7 @@ import java.lang.annotation.Annotation;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -249,7 +250,7 @@ class GatewayEdgeRouteTest {
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
+                .upstream(Optional.of(new ResolvedUpstream("https", id + ".example", 443, "")))
                 .build();
     }
 }

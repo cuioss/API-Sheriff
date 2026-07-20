@@ -82,8 +82,34 @@ class ConfigProducerTest {
                 access: public
             """;
 
+    /**
+     * A gateway with a single {@code type: asset} / {@code access: public} anchor. Paired with an
+     * endpoint whose route declares (or omits) an {@code asset} block, it exercises the ADR-0014
+     * terminal-action consistency rules on the startup-event path: the documents are schema-valid,
+     * so the violation is caught by {@code ConfigValidator}, not the schema.
+     */
+    private static final String GATEWAY_WITH_ASSET_ANCHOR = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            anchors:
+              assets:
+                path_prefix: /assets
+                type: asset
+                access: public
+            """;
+
     @TempDir
     Path configDir;
+
+    private void writeTopology(String aliasLine) throws IOException {
+        Files.writeString(configDir.resolve("topology.properties"), aliasLine);
+    }
+
+    private void writeEndpoint(String yaml) throws IOException {
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/web.yaml"), yaml);
+    }
 
     private ConfigProducer producerForGateway(String gatewayYaml) throws IOException {
         Files.writeString(configDir.resolve("gateway.yaml"), gatewayYaml);
@@ -218,5 +244,76 @@ class ConfigProducerTest {
                 "the abort should carry the refusing-to-start summary");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
                 "is type 'bff' and must declare access: authenticated");
+    }
+
+    /**
+     * The ADR-0014 terminal-action consistency rules must fire on the eager startup-event path: an
+     * asset-type anchor whose route declares no {@code asset} block aborts boot through
+     * {@code onStartup} → {@code buildOnce} → {@code ConfigValidator.validate}. The documents are
+     * schema-valid (the route is a well-formed proxy route), so reaching the abort proves the
+     * validator ran at startup, and the annotated ERROR record confirms the terminal-action rule
+     * tripped.
+     */
+    @Test
+    void shouldFailBootThroughStartupEventWhenAssetAnchorRouteHasNoAssetAction() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("WEB_BACKEND=https://web.internal:8443\n");
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: noasset
+                      match:
+                        path_prefix: /assets
+                        methods: ["GET"]
+                """);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "an asset-anchor route with no asset action must abort boot");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR, "declares no asset terminal action");
+    }
+
+    /**
+     * A valid asset route assembles cleanly through the startup path, and its terminal action is
+     * materialized onto the resolved route — the end-to-end YAML → {@code AssetConfig} →
+     * {@code ResolvedAsset} binding through {@code onStartup}.
+     */
+    @Test
+    void shouldAssembleAssetRouteThroughStartupEvent() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("WEB_BACKEND=https://web.internal:8443\n");
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: bundle
+                      match:
+                        path_prefix: /assets
+                        methods: ["GET"]
+                      asset:
+                        source: directory
+                        directory: /srv/assets
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "a valid asset route must assemble without failing startup");
+        RouteTable table = producer.routeTable();
+        assertEquals(1, table.routes().size(), "the asset route is merged into the table");
+        assertTrue(table.routes().getFirst().asset().isPresent(),
+                "the asset terminal action is materialized onto the resolved route");
     }
 }

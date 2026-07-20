@@ -35,6 +35,7 @@ import de.cuioss.sheriff.api.config.load.ConfigError;
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AnchorType;
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
@@ -117,6 +118,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateTerminalAction(gateway, endpoints, topology, errors),
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
@@ -466,6 +468,68 @@ public final class ConfigValidator {
         if (REQUIRE_SESSION.equals(require) && gateway.oidc().isEmpty()) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
+        }
+    }
+
+    /**
+     * Rule: the terminal-action / anchor-type consistency matrix (ADR-0014). A route whose
+     * resolving anchor is {@code type: asset} must declare an {@code asset} terminal action; a
+     * route under a {@code proxy} / {@code bff} anchor (or with no anchor) must not — its terminal
+     * action is the endpoint upstream. An {@code asset} block on a non-asset route is a boot
+     * failure. For a declared asset action, the source-specific field must be present and, for a
+     * {@code source: upstream} action, its topology alias must resolve. Every violation collects
+     * into the shared list; the rule never fails fast.
+     */
+    private static void validateTerminalAction(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            ResolvedTopology topology, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
+                boolean assetAnchor = anchor.map(a -> a.type() == AnchorType.ASSET).orElse(false);
+                boolean hasAsset = route.asset().isPresent();
+                if (assetAnchor && !hasAsset) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
+                                    .formatted(route.id(), anchor.get().name())));
+                } else if (!assetAnchor && hasAsset) {
+                    String context = anchor
+                            .map(a -> "its anchor '%s' is type '%s'".formatted(a.name(),
+                                    a.type().name().toLowerCase(Locale.ROOT)))
+                            .orElse("the route is unanchored");
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
+                                    .formatted(route.id(), context)));
+                }
+                route.asset().ifPresent(asset -> validateAssetSource(endpoint, route, asset, topology, errors));
+            }
+        }
+    }
+
+    /**
+     * The source-field half of the terminal-action rule (ADR-0014): a {@code source: directory}
+     * action requires a {@code directory} root; a {@code source: upstream} action requires an
+     * {@code upstream} topology alias that resolves.
+     */
+    private static void validateAssetSource(EndpointConfig endpoint, RouteConfig route, AssetConfig asset,
+            ResolvedTopology topology, List<ConfigError> errors) {
+        switch (asset.source()) {
+            case DIRECTORY -> {
+                if (asset.directory().isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "asset route '%s' declares source: directory but no directory root".formatted(route.id())));
+                }
+            }
+            case UPSTREAM -> {
+                Optional<String> alias = asset.upstream();
+                if (alias.isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "asset route '%s' declares source: upstream but no upstream alias".formatted(route.id())));
+                } else if (topology.lookup(alias.get()).isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "asset route '%s' upstream alias '%s' does not resolve in the topology"
+                                    .formatted(route.id(), alias.get())));
+                }
+            }
         }
     }
 

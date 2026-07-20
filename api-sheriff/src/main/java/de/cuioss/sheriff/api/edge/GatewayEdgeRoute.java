@@ -17,6 +17,7 @@ package de.cuioss.sheriff.api.edge;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
@@ -38,11 +39,16 @@ import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.config.SecurityConfigurationBuilder;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.api.ApiSheriffLogMessages;
+import de.cuioss.sheriff.api.asset.AssetSource;
+import de.cuioss.sheriff.api.asset.DirectoryAssetSource;
+import de.cuioss.sheriff.api.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.api.auth.AuthenticationStage;
 import de.cuioss.sheriff.api.auth.GatewayValidator;
 import de.cuioss.sheriff.api.config.model.ForwardedConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
+import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
 import de.cuioss.sheriff.api.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.api.events.EventCategory;
@@ -70,6 +76,7 @@ import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
@@ -207,7 +214,8 @@ public class GatewayEdgeRoute {
         this.routes = assembler.assemble(routeTable,
                 GatewayEdgeRoute::securityConfigurationFor,
                 target -> vertx.createHttpClient(),
-                this::guardFor);
+                this::guardFor,
+                GatewayEdgeRoute::assetSourceFor);
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
@@ -395,8 +403,17 @@ public class GatewayEdgeRoute {
         String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
         String canonical = requireCanonicalPath(request);
         String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        // An asset route serves its terminal action directly — the buffered, gateway-governed
+        // asset response — instead of streaming to an upstream. Auth (stage 4) has already run,
+        // so an unauthorized request never reaches the source (auth-before-source, ADR-0014).
+        if (route.getAssetSource().isPresent()) {
+            serveAsset(ctx, request, route, remainder);
+            return;
+        }
         String query = renderQuery(forward.query());
-        String uri = DispatchStage.upstreamRequestUri(route.getUpstream(), remainder, query);
+        ResolvedUpstream upstreamTarget = route.getUpstream()
+                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resolved upstream"));
+        String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
         long cap = route.getSecurityConfiguration().map(SecurityConfiguration::maxBodySize).orElse(defaultMaxBodySize);
 
         DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
@@ -413,6 +430,37 @@ public class GatewayEdgeRoute {
         ctx.vertx().runOnContext(v ->
                 responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
                         .onFailure(failure -> failRelay(ctx, failure)));
+    }
+
+    /**
+     * Serves an asset route's terminal action: resolves the confined asset through the route's
+     * {@link AssetSource} (behind the shared {@code PathConfinement} and gateway-owned
+     * {@code AssetResponseEnvelope}) and writes the buffered, governed response back to the
+     * client. GET/HEAD-only enforcement and header governance live in the source and envelope;
+     * this method only routes and writes.
+     */
+    private void serveAsset(RoutingContext ctx, PipelineRequest request, RouteRuntime route, String remainder) {
+        AssetSource source = route.getAssetSource()
+                .orElseThrow(() -> new IllegalStateException("asset dispatch requires an asset source"));
+        DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, request.method(), remainder);
+        writeBufferedAsset(ctx, request, served);
+    }
+
+    private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, DispatchStage.AssetDispatch served) {
+        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse response = ctx.response();
+            if (response.ended()) {
+                return;
+            }
+            response.setStatusCode(served.status());
+            // The stage-0 security headers (HSTS, frame options, …) apply to every response; the
+            // envelope's governed headers (fixed Content-Type, nosniff, no-store) are written last
+            // so they win any name collision.
+            stageHeaders.forEach(response::putHeader);
+            served.headers().forEach(response::putHeader);
+            response.end(Buffer.buffer(served.body()));
+        });
     }
 
     private void failRelay(RoutingContext ctx, Throwable failure) {
@@ -568,6 +616,26 @@ public class GatewayEdgeRoute {
 
     private static String stripTrailingSlash(String value) {
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
+    }
+
+    /**
+     * Builds the live {@link AssetSource} for an asset route's resolved terminal action: a
+     * {@link DirectoryAssetSource} rooted at the configured directory for a {@code directory}
+     * source, or an {@link UpstreamAssetSource} over the boot-resolved secondary origin for an
+     * {@code upstream} source. Both apply the gateway's confinement and response envelope; the
+     * upstream source rides its own SSRF-guarded fetch seam (ADR-0014), not the proxy data plane.
+     */
+    private static AssetSource assetSourceFor(ResolvedAsset asset) {
+        return switch (asset.source()) {
+            case DIRECTORY -> new DirectoryAssetSource(
+                    Path.of(asset.directory().orElseThrow(
+                            () -> new IllegalStateException("directory asset source requires a directory root"))),
+                    asset.access());
+            case UPSTREAM -> new UpstreamAssetSource(
+                    asset.upstream().orElseThrow(
+                            () -> new IllegalStateException("upstream asset source requires a resolved upstream")),
+                    asset.access());
+        };
     }
 
     /**

@@ -273,7 +273,7 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(methods))
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
+                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
                 .build();
     }
 

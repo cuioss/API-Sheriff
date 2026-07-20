@@ -32,6 +32,7 @@ import java.util.Optional;
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AnchorType;
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
@@ -39,6 +40,7 @@ import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
@@ -255,7 +257,7 @@ class RouteTableBuilderTest {
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
-            assertEquals("orders.internal", find(table, "r").upstream().host());
+            assertEquals("orders.internal", find(table, "r").upstream().orElseThrow().host());
         }
 
         @Test
@@ -685,6 +687,107 @@ class RouteTableBuilderTest {
                     "an unforwarded route resolves to an empty, deny-by-default allowlist");
             assertTrue(resolved.effectiveForward().queryAllow().isEmpty());
             assertTrue(resolved.effectiveForward().setHeaders().isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("Asset terminal-action materialization (ADR-0014)")
+    class AssetTerminalAction {
+
+        private AnchorConfig assetAnchor(String name, String prefix, AccessLevel access, String require) {
+            return AnchorConfig.builder()
+                    .name(name)
+                    .pathPrefix(prefix)
+                    .type(AnchorType.ASSET)
+                    .access(access)
+                    .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                    .build();
+        }
+
+        private RouteConfig assetRoute(String id, String prefix, String anchorName, AssetConfig asset) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .anchor(Optional.of(anchorName))
+                    .match(match(prefix, HttpMethod.GET))
+                    .asset(Optional.of(asset))
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should materialize a directory asset action and leave the proxy upstream empty")
+        void shouldMaterializeDirectoryAsset() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("assets", assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
+            AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                    .directory(Optional.of("/srv/assets")).build();
+            EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
+                    .anchor(Optional.of("assets")).auth(Optional.of(new AuthConfig("none", List.of())))
+                    .routes(List.of(assetRoute("bundle", "/assets", "assets", asset))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
+
+            ResolvedRoute resolved = find(table, "bundle");
+            assertTrue(resolved.upstream().isEmpty(), "an asset route carries no proxy upstream");
+            ResolvedAsset resolvedAsset = resolved.asset().orElseThrow();
+            assertAll("directory asset materialization",
+                    () -> assertEquals(AssetConfig.Source.DIRECTORY, resolvedAsset.source()),
+                    () -> assertEquals(Optional.of("/srv/assets"), resolvedAsset.directory()),
+                    () -> assertTrue(resolvedAsset.upstream().isEmpty(), "a directory action carries no upstream"),
+                    () -> assertEquals(AccessLevel.PUBLIC, resolvedAsset.access(),
+                            "the access level is inherited from the resolving anchor"));
+        }
+
+        @Test
+        @DisplayName("Should materialize an upstream asset action resolving its alias through the topology")
+        void shouldMaterializeUpstreamAsset() {
+            GatewayConfig config = gateway().anchors(Map.of("assets",
+                    assetAnchor("assets", "/assets", AccessLevel.AUTHENTICATED, "bearer"))).build();
+            AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
+                    .upstream(Optional.of("SECONDARY")).build();
+            EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
+                    .anchor(Optional.of("assets")).auth(Optional.empty())
+                    .routes(List.of(assetRoute("cdn", "/assets", "assets", asset))).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
+
+            ResolvedRoute resolved = find(table, "cdn");
+            ResolvedAsset resolvedAsset = resolved.asset().orElseThrow();
+            assertAll("upstream asset materialization",
+                    () -> assertEquals(AssetConfig.Source.UPSTREAM, resolvedAsset.source()),
+                    () -> assertEquals("secondary.internal", resolvedAsset.upstream().orElseThrow().host(),
+                            "the upstream alias resolves through the same topology the proxy action uses"),
+                    () -> assertTrue(resolvedAsset.directory().isEmpty(), "an upstream action carries no directory"),
+                    () -> assertEquals(AccessLevel.AUTHENTICATED, resolvedAsset.access()),
+                    () -> assertTrue(resolved.upstream().isEmpty(), "an asset route carries no proxy upstream"));
+        }
+
+        @Test
+        @DisplayName("Should reject an upstream asset action whose alias does not resolve")
+        void shouldRejectUnresolvableUpstreamAssetAlias() {
+            GatewayConfig config = gateway().anchors(Map.of("assets",
+                    assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
+            AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
+                    .upstream(Optional.of("MISSING")).build();
+            EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
+                    .anchor(Optional.of("assets")).auth(Optional.of(new AuthConfig("none", List.of())))
+                    .routes(List.of(assetRoute("cdn", "/assets", "assets", asset))).build();
+            ResolvedTopology topology = topologyWith("WEB");
+
+            assertThrows(RouteTableBuilder.RouteTableException.class,
+                    () -> builder.build(config, List.of(endpoint), topology));
+        }
+
+        @Test
+        @DisplayName("Should keep a proxy route's upstream present and its asset action empty (exclusivity)")
+        void shouldKeepProxyRouteExclusive() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertTrue(resolved.upstream().isPresent(), "a proxy route resolves an upstream terminal action");
+            assertTrue(resolved.asset().isEmpty(), "a proxy route carries no asset terminal action");
         }
     }
 
