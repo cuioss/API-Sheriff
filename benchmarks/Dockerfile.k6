@@ -1,0 +1,21 @@
+# k6 load generator for the API Sheriff benchmark lane.
+#
+# Digest-pinned to the exact grafana/k6 build the baseline lane is measured with: the
+# published numbers are only comparable across runs while the measuring engine is
+# byte-identical, so a floating tag is not acceptable here. The pinned version is also
+# the version Dockerfile.k6-dashboard must build its extension-enabled binary from --
+# a dashboard run and a baseline run measured by different engines are not comparable.
+FROM grafana/k6:2.1.0@sha256:65c920dc067d5e2e00befbf982af6ad6ad0117034e8b1c65817c7975c52d4669
+
+LABEL org.opencontainers.image.title="API Sheriff k6 benchmarks" \
+      org.opencontainers.image.description="k6 load generator carrying the API Sheriff benchmark scripts" \
+      org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# The build context is the repository root (see integration-tests/docker-compose.yml), so
+# the whole script tree is copied with its lib/ subdirectory intact -- the scripts import
+# ./lib/summary.js relative to themselves.
+COPY benchmarks/src/main/resources/k6-scripts/ /scripts/
+
+ENTRYPOINT ["k6"]
+CMD ["--help"]

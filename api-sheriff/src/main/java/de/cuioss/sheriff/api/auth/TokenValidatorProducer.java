@@ -27,7 +27,9 @@ import de.cuioss.sheriff.api.events.GatewayException;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 
+import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 
@@ -53,13 +55,42 @@ public class TokenValidatorProducer {
     private static final String SOURCE_FILE = "file";
 
     private final GatewayConfig gatewayConfig;
+    private final JwksTrustProfileResolver trustProfileResolver;
 
     /**
-     * @param gatewayConfig the bound gateway document carrying the {@code token_validation} block
+     * @param gatewayConfig        the bound gateway document carrying the {@code token_validation}
+     *                             block
+     * @param trustProfileResolver the single seam mapping a logical {@code jwks.tls_profile} name
+     *                             to concrete trust anchors
      */
     @Inject
-    public TokenValidatorProducer(GatewayConfig gatewayConfig) {
+    public TokenValidatorProducer(GatewayConfig gatewayConfig, JwksTrustProfileResolver trustProfileResolver) {
         this.gatewayConfig = gatewayConfig;
+        this.trustProfileResolver = trustProfileResolver;
+    }
+
+    /**
+     * Forces the validator to be assembled at boot rather than on the first bearer request, so a
+     * misconfigured issuer — an unresolvable {@code jwks.tls_profile}, a missing JWKS source —
+     * fails startup instead of surfacing as a runtime rejection once traffic arrives.
+     * <p>
+     * Merely observing {@link StartupEvent} with the validator as a parameter is NOT enough: an
+     * {@code @ApplicationScoped} bean is injected as a lazy client proxy, and ArC does not invoke
+     * {@link #gatewayTokenValidator()} until the first business method is called on that proxy.
+     * This method therefore invokes a method on the injected proxy ({@link Object#toString()}) to
+     * force contextual-instance creation at boot, which runs the full assembly path
+     * ({@code gatewayTokenValidator} → {@code toValidationIssuer} → {@code applyJwks} →
+     * {@code toHttpJwksLoaderConfig} → {@code trustProfileResolver.resolve}) and aborts startup on a
+     * misconfiguration.
+     *
+     * @param event     the Quarkus startup event
+     * @param validator the produced gateway validator proxy, whose first method call forces eager
+     *                  assembly
+     */
+    void onStartup(@Observes StartupEvent event, @GatewayValidator TokenValidator validator) {
+        // Invoke a method on the injected proxy to force contextual-instance creation at boot;
+        // without this the @ApplicationScoped validator stays unassembled until the first request.
+        validator.toString();
     }
 
     /**
@@ -67,7 +98,8 @@ public class TokenValidatorProducer {
      *
      * @return the gateway {@link TokenValidator}
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when {@code token_validation} is
-     *                          absent or an issuer declares no usable JWKS source
+     *                          absent, an issuer declares no usable JWKS source, or an issuer names
+     *                          a {@code jwks.tls_profile} the deployment does not define
      */
     @Produces
     @ApplicationScoped
@@ -83,7 +115,7 @@ public class TokenValidatorProducer {
         return TokenValidator.builder().issuerConfigs(issuers).build();
     }
 
-    private static de.cuioss.sheriff.token.validation.IssuerConfig toValidationIssuer(IssuerConfig issuer) {
+    private de.cuioss.sheriff.token.validation.IssuerConfig toValidationIssuer(IssuerConfig issuer) {
         de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder =
                 de.cuioss.sheriff.token.validation.IssuerConfig.builder().issuerIdentifier(issuer.issuer());
         // Audience is optional in the gateway config model (IssuerConfig#audience). token-sheriff
@@ -100,15 +132,10 @@ public class TokenValidatorProducer {
         return builder.build();
     }
 
-    private static void applyJwks(de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder,
+    private void applyJwks(de.cuioss.sheriff.token.validation.IssuerConfig.IssuerConfigBuilder builder,
             IssuerConfig issuer, IssuerConfig.Jwks jwks) {
         if (SOURCE_HTTP.equals(jwks.source())) {
-            String url = jwks.url().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' jwks source 'http' declares no url"));
-            builder.httpJwksLoaderConfig(HttpJwksLoaderConfig.builder()
-                    .issuerIdentifier(issuer.issuer())
-                    .jwksUrl(url)
-                    .build());
+            builder.httpJwksLoaderConfig(toHttpJwksLoaderConfig(issuer, jwks));
         } else if (SOURCE_FILE.equals(jwks.source())) {
             String file = jwks.file().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
                     "Issuer '" + issuer.name() + "' jwks source 'file' declares no file path"));
@@ -117,5 +144,45 @@ public class TokenValidatorProducer {
             throw new GatewayException(EventType.CONFIG_INVALID,
                     "Issuer '" + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
         }
+    }
+
+    /**
+     * Builds the loader config for an {@code http} JWKS source, applying the issuer's
+     * {@code allowed_egress_hosts} allowlist on top of token-sheriff's SSRF egress guard and
+     * the trust anchors its {@code tls_profile} names.
+     * <p>
+     * <strong>Secure by default.</strong> When {@code allowed_egress_hosts} is absent or
+     * empty this method calls no egress builder method at all, so the built config keeps
+     * {@link de.cuioss.sheriff.token.commons.transport.EgressPolicy#secureDefault()} — a
+     * JWKS URL resolving to a loopback, link-local, site-local, any-local, multicast, or
+     * unique-local address is refused. Each configured host is passed to
+     * {@link HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder#allowedEgressHost(String)},
+     * which exempts that single host and nothing else; the allowlist is host-exact, never
+     * a wildcard or a suffix match. This is the narrow widening the threat model's GW-05
+     * and BFF-07 prescribe for a trusted IdP that lives on a private network.
+     * <p>
+     * <strong>Default trust unless a profile is named.</strong> When {@code tls_profile} is
+     * absent no SSL context is set, so the JWKS client keeps the JVM's default trust store —
+     * the correct behaviour for an IdP presenting a publicly-trusted certificate. When a
+     * profile IS named, {@link JwksTrustProfileResolver} maps it to the deployment's trust
+     * anchors; an unresolvable name fails startup rather than falling back to default trust.
+     *
+     * @param issuer the gateway issuer entry, for the identifier and error context
+     * @param jwks   the issuer's {@code http} JWKS block
+     * @return the loader config carrying the resolved egress policy and trust anchors
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the block
+     *                          declares no url, or names an unresolvable {@code tls_profile}
+     */
+    HttpJwksLoaderConfig toHttpJwksLoaderConfig(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
+        String url = jwks.url().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
+                "Issuer '" + issuer.name() + "' jwks source 'http' declares no url"));
+        HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder builder = HttpJwksLoaderConfig.builder()
+                .issuerIdentifier(issuer.issuer())
+                .jwksUrl(url);
+        for (String host : jwks.allowedEgressHosts()) {
+            builder.allowedEgressHost(host);
+        }
+        jwks.tlsProfile().ifPresent(profile -> builder.sslContext(trustProfileResolver.resolve(issuer, profile)));
+        return builder.build();
     }
 }

@@ -13,10 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.api.wrk.benchmark;
+package de.cuioss.sheriff.api.k6.benchmark;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
 import de.cuioss.benchmarking.common.config.BenchmarkType;
-import de.cuioss.benchmarking.common.converter.WrkBenchmarkConverter;
 import de.cuioss.benchmarking.common.metrics.PrometheusMetricsManager;
 import de.cuioss.benchmarking.common.model.BenchmarkData;
 import de.cuioss.benchmarking.common.output.OutputDirectoryStructure;
@@ -29,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,34 +42,43 @@ import static de.cuioss.benchmarking.common.util.BenchmarkingLogMessages.ERROR;
 import static de.cuioss.benchmarking.common.util.BenchmarkingLogMessages.INFO;
 
 /**
- * Post-processor for WRK benchmark results.
+ * Post-processor for k6 benchmark results.
  * <p>
- * This class converts WRK output files to the central BenchmarkData format
- * and uses the unified report generation infrastructure from cui-benchmarking-common.
+ * Converts the k6 {@code handleSummary()} exports to the central {@link BenchmarkData} format
+ * via {@link K6BenchmarkConverter} and drives the unified report-generation infrastructure from
+ * {@code benchmarking-common}. This is the {@code main}-entry replacement for the wrk-era
+ * processor and preserves its downstream sequence exactly, so the badges / 10-run history /
+ * trends / GitHub Pages flow is unaffected by the toolchain swap.
+ * <p>
+ * Summaries are read from the {@code k6} subdirectory of the results directory, mirroring the
+ * {@code wrk} subdirectory contract the previous processor used. Per-benchmark start and end
+ * instants come from the summary JSON itself rather than from a text metadata block.
+ *
+ * @since 1.0
  */
-public class WrkResultPostProcessor {
+public class K6ResultPostProcessor {
 
-    private static final CuiLogger LOGGER = new CuiLogger(WrkResultPostProcessor.class);
+    private static final CuiLogger LOGGER = new CuiLogger(K6ResultPostProcessor.class);
 
-    // File naming constants
-    public static final String WRK_OUTPUT_FILE_SUFFIX = "-results.txt";
+    /** Name of the results subdirectory holding the k6 summary documents. */
+    public static final String K6_RESULTS_SUBDIRECTORY = "k6";
 
-    private final WrkBenchmarkConverter converter = new WrkBenchmarkConverter();
+    private final K6BenchmarkConverter converter = new K6BenchmarkConverter();
     private final ReportGenerator reportGenerator = new ReportGenerator();
     private final GitHubPagesGenerator gitHubPagesGenerator = new GitHubPagesGenerator();
     private final PrometheusMetricsManager prometheusMetricsManager = new PrometheusMetricsManager();
 
-    // Map to store benchmark metadata (name -> timestamps)
+    /** Benchmark name to its execution window, keyed by the exact {@code benchmark_name}. */
     private final Map<String, BenchmarkMetadata> benchmarkMetadataMap = new HashMap<>();
 
     /**
-     * Holds metadata for a benchmark execution.
+     * Holds the execution window of a benchmark run.
      */
     private record BenchmarkMetadata(String name, Instant startTime, Instant endTime) {
     }
 
     /**
-     * Main entry point for processing WRK benchmark results.
+     * Main entry point for processing k6 benchmark results.
      * Usage:
      *   - args[0]=inputDir, args[1]=outputDir (optional)
      *
@@ -74,15 +86,14 @@ public class WrkResultPostProcessor {
      */
     public static void main(String[] args) {
         if (args.length == 0) {
-            LOGGER.error(ERROR.WRK_USAGE_ERROR);
+            LOGGER.error(K6BenchmarkLogMessages.ERROR.USAGE_ERROR);
             System.exit(1);
         }
 
         try {
             Path inputDir = Path.of(args[0]);
-            WrkResultPostProcessor processor = new WrkResultPostProcessor();
+            K6ResultPostProcessor processor = new K6ResultPostProcessor();
 
-            // Normal processing mode
             Path outputDir = args.length > 1 ?
                     Path.of(args[1]) :
                     inputDir.getParent().resolve("benchmark-results");
@@ -92,96 +103,52 @@ public class WrkResultPostProcessor {
             LOGGER.info(INFO.RESULTS_AVAILABLE, outputDir);
 
         } catch (IOException e) {
-            LOGGER.error(e, ERROR.WRK_PROCESSOR_FAILED);
+            LOGGER.error(e, K6BenchmarkLogMessages.ERROR.PROCESSOR_FAILED);
             System.exit(1);
         }
     }
 
     /**
-     * Processes WRK output files and generates reports.
+     * Processes k6 summary files and generates reports.
      *
-     * @param inputDir Directory containing WRK output files
+     * @param inputDir Directory containing the {@code k6} summary subdirectory
      * @param outputDir Directory to write reports to
      * @throws IOException if processing fails
      */
     public void process(Path inputDir, Path outputDir) throws IOException {
-        LOGGER.info(INFO.WRK_PROCESSING_START);
+        LOGGER.info(K6BenchmarkLogMessages.INFO.PROCESSING_START, inputDir);
 
-        // Parse all WRK result files to extract metadata
-        parseBenchmarkMetadata(inputDir);
-
-        // Validate input directory
         if (!Files.exists(inputDir)) {
             throw new IllegalArgumentException("Input directory does not exist: " + inputDir);
         }
-
         if (!Files.isDirectory(inputDir)) {
             throw new IllegalArgumentException("Input path is not a directory: " + inputDir);
         }
 
-        // Check for WRK output files in wrk subdirectory
-        Path wrkDir = inputDir.resolve("wrk");
-        boolean hasWrkFiles = false;
-        if (Files.exists(wrkDir)) {
-            try (Stream<Path> files = Files.list(wrkDir)) {
-                // Same suffix contract as parseBenchmarkMetadata: canonical WRK output
-                // files are *-results.txt, so both the presence check here and the
-                // metadata parse key off WRK_OUTPUT_FILE_SUFFIX (no bare *.txt drift).
-                hasWrkFiles = files.anyMatch(p -> p.getFileName().toString().endsWith(WRK_OUTPUT_FILE_SUFFIX));
-            }
-        }
+        Path k6Dir = inputDir.resolve(K6_RESULTS_SUBDIRECTORY);
 
-        if (!hasWrkFiles) {
-            LOGGER.error(ERROR.NO_WRK_FILES, wrkDir);
-        }
+        // Parse the execution windows first — this fails loud when no usable summary exists,
+        // so an empty or missing k6 directory never silently produces an empty report.
+        parseBenchmarkMetadata(k6Dir);
 
-        // Convert WRK output to BenchmarkData from wrk subdirectory
-        BenchmarkData benchmarkData;
-        if (!Files.exists(wrkDir)) {
-            LOGGER.error(ERROR.WRK_DIR_NOT_EXIST, wrkDir);
-            benchmarkData = BenchmarkData.builder()
-                    .metadata(BenchmarkData.Metadata.builder()
-                            .reportVersion("2.0")
-                            .timestamp(Instant.now().toString())
-                            .displayTimestamp(Instant.now().toString())
-                            .benchmarkType("Integration Performance")
-                            .build())
-                    .overview(BenchmarkData.Overview.builder()
-                            .throughput("0 ops/s")
-                            .latency("0ms")
-                            .throughputBenchmarkName("N/A")
-                            .latencyBenchmarkName("N/A")
-                            .performanceScore(0)
-                            .performanceGrade("F")
-                            .performanceGradeClass("grade-f")
-                            .build())
-                    .benchmarks(List.of())
-                    .build();
-        } else {
-            benchmarkData = converter.convert(wrkDir);
-        }
+        BenchmarkData benchmarkData = converter.convert(k6Dir);
 
         if (benchmarkData.getBenchmarks() == null || benchmarkData.getBenchmarks().isEmpty()) {
             LOGGER.error(ERROR.NO_BENCHMARK_DATA);
         }
 
-        // Generate reports using new OutputDirectoryStructure (no duplication)
         Files.createDirectories(outputDir);
 
-        // Create OutputDirectoryStructure for organized file generation
         OutputDirectoryStructure structure = new OutputDirectoryStructure(outputDir);
         structure.ensureDirectories();
 
-        // Generate HTML reports directly to gh-pages-ready directory
         String deploymentPath = structure.getDeploymentDir().toString();
         reportGenerator.generateIndexPage(benchmarkData, BenchmarkType.INTEGRATION, deploymentPath);
         reportGenerator.generateTrendsPage(deploymentPath);
         reportGenerator.copySupportFiles(deploymentPath);
 
-        // Collect real-time Prometheus metrics for the benchmark execution
         collectPrometheusMetrics(benchmarkData, structure);
 
-        // Generate GitHub Pages deployment-specific assets (404.html, robots.txt, sitemap.xml)
         gitHubPagesGenerator.generateDeploymentAssets(structure);
     }
 
@@ -207,6 +174,10 @@ public class WrkResultPostProcessor {
                 }
 
                 BenchmarkMetadata resolved = metadata.get();
+                // collectMetricsForWrkBenchmark is the only Prometheus collection entry point the
+                // upstream benchmarking-common artifact exposes. Its wrk-branded name is an upstream
+                // API fact this plan deliberately does not touch; the rename belongs to the
+                // K6BenchmarkConverter upstreaming follow-up (plan 04b, design decision D5).
                 prometheusMetricsManager.collectMetricsForWrkBenchmark(
                         resolved.name,
                         resolved.startTime,
@@ -250,96 +221,90 @@ public class WrkResultPostProcessor {
     }
 
     /**
-     * Parse benchmark metadata from WRK result files.
+     * Parse the per-benchmark execution windows from the k6 summary files.
      *
-     * @param inputDir The directory containing benchmark results
+     * @param k6Dir The {@code k6} subdirectory holding the summary documents
      * @throws IOException if reading files fails
      */
-    private void parseBenchmarkMetadata(Path inputDir) throws IOException {
-        Path wrkDir = inputDir.resolve("wrk");
-        if (!Files.exists(wrkDir)) {
-            return;
+    private void parseBenchmarkMetadata(Path k6Dir) throws IOException {
+        if (!Files.exists(k6Dir)) {
+            LOGGER.error(K6BenchmarkLogMessages.ERROR.SUMMARY_DIR_NOT_EXIST, k6Dir);
+            throw new IllegalStateException(
+                    "CRITICAL: k6 summary directory does not exist: " + k6Dir
+                            + ". Ensure benchmarks were run successfully.");
         }
 
-        try (Stream<Path> files = Files.list(wrkDir)) {
-            List<Path> wrkFiles = files
-                    .filter(p -> p.getFileName().toString().endsWith(WRK_OUTPUT_FILE_SUFFIX))
+        try (Stream<Path> files = Files.list(k6Dir)) {
+            List<Path> summaryFiles = files
+                    .filter(p -> p.getFileName().toString()
+                            .endsWith(K6BenchmarkConverter.K6_SUMMARY_FILE_EXTENSION))
                     .toList();
 
-            if (wrkFiles.isEmpty()) {
-                String message = "CRITICAL: No WRK result files (*%s) found in %s. Ensure benchmarks were run successfully."
-                        .formatted(WRK_OUTPUT_FILE_SUFFIX, inputDir);
-                LOGGER.error(ERROR.NO_WRK_FILES, inputDir);
-                throw new IllegalStateException(message);
+            if (summaryFiles.isEmpty()) {
+                LOGGER.error(K6BenchmarkLogMessages.ERROR.NO_SUMMARY_FILES, k6Dir);
+                throw new IllegalStateException(
+                        "CRITICAL: No k6 summary files (*%s) found in %s. Ensure benchmarks were run successfully."
+                                .formatted(K6BenchmarkConverter.K6_SUMMARY_FILE_EXTENSION, k6Dir));
             }
 
-            for (Path wrkFile : wrkFiles) {
-                parseSingleBenchmarkMetadata(wrkFile);
+            for (Path summaryFile : summaryFiles) {
+                parseSingleBenchmarkMetadata(summaryFile);
             }
+        }
 
-            if (benchmarkMetadataMap.isEmpty()) {
-                String message = "CRITICAL: No valid benchmark metadata found in any result files";
-                LOGGER.error(ERROR.NO_BENCHMARK_DATA);
-                throw new IllegalStateException(message);
-            }
+        if (benchmarkMetadataMap.isEmpty()) {
+            LOGGER.error(ERROR.NO_BENCHMARK_DATA);
+            throw new IllegalStateException("CRITICAL: No valid benchmark metadata found in any summary files");
         }
     }
 
     /**
-     * Parse metadata from a single WRK result file.
+     * Parse the execution window from a single k6 summary file.
      *
-     * @param resultFile Path to the WRK result file
+     * @param summaryFile Path to the k6 summary file
      */
-    private void parseSingleBenchmarkMetadata(Path resultFile) {
+    private void parseSingleBenchmarkMetadata(Path summaryFile) {
         try {
-            List<String> lines = Files.readAllLines(resultFile);
-            String benchmarkName = null;
-            Instant startTime = null;
-            Instant endTime = null;
-            boolean inMetadata = false;
+            JsonObject summary = JsonParser.parseString(Files.readString(summaryFile)).getAsJsonObject();
 
-            for (String line : lines) {
-                if ("=== BENCHMARK METADATA ===".equals(line)) {
-                    inMetadata = true;
-                } else if ("=== WRK OUTPUT ===".equals(line)) {
-                    inMetadata = false;
-                } else if (inMetadata || line.startsWith("end_time:")) {
-                    if (line.startsWith("benchmark_name: ")) {
-                        benchmarkName = line.substring(16).trim();
-                    } else if (line.startsWith("start_time: ")) {
-                        long epochSeconds = Long.parseLong(line.substring(12).trim());
-                        startTime = Instant.ofEpochSecond(epochSeconds);
-                    } else if (line.startsWith("end_time: ")) {
-                        long epochSeconds = Long.parseLong(line.substring(10).trim());
-                        endTime = Instant.ofEpochSecond(epochSeconds);
-                    }
-                }
-            }
+            String benchmarkName = stringOrNull(summary, "benchmark_name");
+            Instant startTime = instantOrNull(summary, "start_time");
+            Instant endTime = instantOrNull(summary, "end_time");
 
             if (benchmarkName == null || startTime == null || endTime == null) {
-                LOGGER.error(ERROR.INCOMPLETE_METADATA, resultFile, benchmarkName, startTime, endTime);
+                LOGGER.error(ERROR.INCOMPLETE_METADATA, summaryFile, benchmarkName, startTime, endTime);
                 return;
             }
 
-            BenchmarkMetadata metadata = new BenchmarkMetadata(benchmarkName, startTime, endTime);
-            benchmarkMetadataMap.put(benchmarkName, metadata);
+            benchmarkMetadataMap.put(benchmarkName, new BenchmarkMetadata(benchmarkName, startTime, endTime));
 
-        } catch (IOException | NumberFormatException e) {
-            LOGGER.error(ERROR.FAILED_PARSE_METADATA, resultFile, e.getMessage());
+        } catch (IOException | JsonSyntaxException | IllegalStateException | DateTimeParseException e) {
+            LOGGER.error(e, K6BenchmarkLogMessages.ERROR.FAILED_PARSE_SUMMARY, summaryFile, e.getMessage());
         }
+    }
+
+    private static String stringOrNull(JsonObject summary, String field) {
+        // Guard against a present-but-non-primitive field (JsonNull, array, object): getAsString()
+        // would throw UnsupportedOperationException / ClassCastException, which the caller does not
+        // catch. Treat a non-primitive field as absent.
+        return summary.has(field) && summary.get(field).isJsonPrimitive()
+                ? summary.get(field).getAsString() : null;
+    }
+
+    private static Instant instantOrNull(JsonObject summary, String field) {
+        String value = stringOrNull(summary, field);
+        return value == null ? null : Instant.parse(value);
     }
 
     /**
      * Find metadata for a benchmark by its exact name.
      * <p>
-     * Metadata is keyed by the {@code benchmark_name} value read from the
-     * {@code === BENCHMARK METADATA ===} block of each {@value #WRK_OUTPUT_FILE_SUFFIX}
-     * result file, and the {@link BenchmarkData.Benchmark} name produced by the
-     * converter is that same {@code benchmark_name}. Matching is therefore an exact
-     * name lookup: the earlier bidirectional {@code contains()} fallback (plus the
-     * "single entry wins" heuristic) was nondeterministic whenever two benchmark
-     * names overlapped as substrings, and has been removed. A name with no exact
-     * metadata entry is a real mismatch — the caller logs it and skips that
+     * Metadata is keyed by the {@code benchmark_name} value read from each k6 summary document,
+     * and the {@link BenchmarkData.Benchmark} name the converter produces is that same value.
+     * Matching is therefore an exact name lookup: the earlier bidirectional {@code contains()}
+     * fallback (plus the "single entry wins" heuristic) was nondeterministic whenever two
+     * benchmark names overlapped as substrings, and is deliberately not reintroduced here. A name
+     * with no exact metadata entry is a real mismatch — the caller logs it and skips that
      * benchmark rather than silently binding to an unrelated run.
      *
      * @param benchmarkName The benchmark name from {@link BenchmarkData.Benchmark}

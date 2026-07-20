@@ -10,6 +10,11 @@ version: 1
 metadata:
   config_version: "integration-test"
 allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+tls:
+  # ALPN advertises h2 alongside http/1.1 so the http2 benchmark aspect negotiates
+  # HTTP/2 at the edge instead of silently falling back to HTTP/1.1 — a fallback
+  # would report an h2 number that was never measured over h2.
+  alpn: ["h2", "http/1.1"]
 anchors:
   api:
     path_prefix: /proxy
@@ -28,10 +33,72 @@ anchors:
     path_prefix: /secure
     auth:
       require: bearer
+  # --- Benchmark aspect namespaces (plan 04b) -------------------------------
+  # These give the k6 aspect matrix an API Sheriff side to measure, so the
+  # on-demand APISIX comparison has a route-for-route counterpart.
+  graphql:
+    path_prefix: /graphql
+    auth:
+      require: none
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    auth:
+      require: none
+    allowed_methods: ["POST"]
+    security_filter:
+      # 64 MiB — above the 50 MB upload aspect so the large-body run is MEASURED
+      # rather than rejected at the edge. A rejection path is faster than a
+      # transfer path, so an under-sized cap would report flatteringly good
+      # numbers instead of failing. APISIX mirrors this same limit.
+      max_body_bytes: 67108864
+  # Pre-provisioned declarations only — no behaviour is implemented here. The
+  # request pipeline still boot-rejects the ws/grpc protocols; roadmap plan 05
+  # owns that behaviour and slots it in without re-touching this topology.
+  ws:
+    path_prefix: /ws
+    auth:
+      require: none
+  grpc:
+    path_prefix: /grpc
+    auth:
+      require: none
 token_validation:
   issuers:
+    # Retained: BearerValidationIT's rejection scenarios resolve against this
+    # offline static-JWKS issuer, which needs no Keycloak at boot.
     - name: it-static
       issuer: https://api-sheriff.test/it
       jwks:
         source: file
         file: /app/certificates/test-jwks.json
+    # The bearer benchmark aspect mints its token from the Keycloak 'benchmark'
+    # realm. That realm's import pins frontendUrl https://keycloak:8443, so a
+    # minted token carries iss https://keycloak:8443/realms/benchmark regardless
+    # of the host-published 1443 mint port — the issuer value below MUST be that
+    # container-internal URL, not the host-published one, or every bearer request
+    # is rejected 401 and the aspect measures the rejection path while reporting
+    # it as bearer-validation throughput. JWKS is fetched over the shared
+    # api-sheriff network, where 'keycloak' resolves by service name.
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        # token-sheriff's SSRF egress guard refuses a JWKS URL that resolves to a
+        # private address. 'keycloak' is a compose service name resolving to the
+        # bridge network's site-local 172.x address, so without this entry the key
+        # set never loads and every bearer request fails — the aspect would then
+        # measure a rejection path while reporting it as bearer throughput. The
+        # allowlist is host-exact (no wildcard) and names only this one trusted,
+        # benchmark-local IdP: exactly the narrow widening GW-05 / BFF-07 permit.
+        # The 'it-static' issuer above is deliberately NOT widened — it loads from
+        # a mounted file and needs no egress at all.
+        allowed_egress_hosts: ["keycloak"]
+        # Keycloak serves a self-signed certificate here, so the JWKS client must verify it
+        # against the stack's own trust anchors rather than the JVM default store — otherwise
+        # the fetch fails PKIX path building and every bearer request is rejected 401, which
+        # would again measure a rejection path while reporting it as bearer throughput. This
+        # names a trust profile; it deliberately carries no store path and no password, so this
+        # document stays portable and secret-free. The deployment binds the name.
+        tls_profile: benchmark-idp

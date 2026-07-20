@@ -1,0 +1,16 @@
+{
+  "benchmark_name": "healthLiveCheck",
+  "gateway_target": "api-sheriff",
+  "start_time": "2026-07-19T10:00:00Z",
+  "end_time": "2026-07-19T10:01:00Z",
+  "requests_per_second": 8511.49,
+  "error_rate": 0.0,
+  "latency_ms": {
+    "avg": 5.87,
+    "stdev": 7.42,
+    "p50": 1.69,
+    "p75": 3.18,
+    "p90": 14.60,
+    "p99": 29.99
+  }
+}

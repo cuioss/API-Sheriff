@@ -134,15 +134,31 @@ services:
     networks:
       - api-sheriff
 
-  wrk:
+  k6:
     build:
       context: ..
-      dockerfile: benchmarks/Dockerfile.wrk
+      dockerfile: benchmarks/Dockerfile.k6
     networks:
       - api-sheriff
     profiles:
       - benchmark
     restart: "no"
+    # k6's handleSummary() writes one summary document per run into /results, which the
+    # K6ResultPostProcessor reads back from the host. K6_OUTPUT_DIR is set by the Maven
+    # benchmark executions; the default keeps a bare `docker compose run k6` working.
+    volumes:
+      - ${K6_OUTPUT_DIR:-../benchmarks/target/benchmark-results/k6}:/results
+    # The stock grafana/k6 image runs as an unprivileged uid that does not exist on the host,
+    # so it cannot write into the host-owned bind mount above. This is an ephemeral load
+    # generator on a local benchmark network with no published ports; running it as the host
+    # user is not an option because the uid is not known to compose, so it runs as root and
+    # the result files stay removable by `mvn clean` (the parent directory is host-owned).
+    user: "0:0"
+    environment:
+      - BENCHMARK_VUS
+      - BENCHMARK_DURATION
+      - BENCHMARK_MAX_ERROR_RATE
+      - GATEWAY_TARGET
 
 networks:
   api-sheriff:

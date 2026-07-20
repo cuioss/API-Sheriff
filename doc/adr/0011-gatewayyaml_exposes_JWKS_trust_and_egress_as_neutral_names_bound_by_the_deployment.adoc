@@ -1,0 +1,240 @@
+= ADR-0011: gateway.yaml exposes JWKS trust and egress as neutral names bound by the deployment
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: gateway.yaml is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material; exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and config stays neutral while startup diagnostics name the concrete runtime key.
+// tags: configuration-surface, jwks, token-validation, tls-trust, layering, secrets-handling, boot-sequence, portability
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Accepted
+
+== Context
+
+`gateway.yaml` is API Sheriff's own configuration language. Its `token_validation.issuers[]`
+entries are bound to a token-sheriff `HttpJwksLoaderConfig`, whose builder exposes roughly
+seventeen knobs. The gateway surface deliberately exposes only a small subset of them, so every
+knob promoted from that builder into `gateway.yaml` is a distinct architectural decision, not a
+mechanical pass-through.
+
+Two of those knobs are not optional refinements but preconditions for the gateway working at all
+in its ordinary deployment shapes:
+
+* *Egress.* token-sheriff's `EgressPolicy.secureDefault()` refuses a JWKS URL that resolves to a
+  loopback, link-local, site-local, any-local, multicast, or unique-local address. Without a
+  widening mechanism, API Sheriff can validate tokens only from a public-internet IdP. It cannot
+  reach a Kubernetes ClusterIP IdP (10.96.0.0/12), any Docker-network deployment, or an on-prem
+  IdP on RFC1918. That is backwards for a gateway, whose normal position is inside the same
+  private network as the identity provider it trusts.
+* *TLS trust.* The JWKS client verifies the IdP's server certificate against the JVM default trust
+  store. An IdP fronted by an internal or corporate CA -- or a cluster-internal IdP using the
+  cluster's own authority -- therefore fails PKIX path building. The key set never loads and every
+  bearer request is rejected, a trust failure that presents as a token failure.
+
+Both must therefore be configurable for production, not merely for tests. That settles *whether*
+to expose them. It leaves open *how*, and the how is the substance of this ADR.
+
+The choice point is a layering question. Trust anchors are held by the runtime the gateway is
+built on, in that runtime's own named-TLS-configuration surface. The obvious expedient is to let
+`gateway.yaml` reference that runtime construct directly. Doing so would make the product's
+configuration language depend on the identity of the framework underneath it: a user's
+`gateway.yaml` would encode a runtime concept, and a change of runtime would invalidate documents
+operators wrote, reviewed, and committed. A configuration language that leaks its implementation
+substrate is not a configuration language; it is an implementation detail with a YAML syntax.
+
+A second, orthogonal question follows. Trust *material* -- store paths, passwords, rotation --
+must live somewhere. Putting it in `gateway.yaml` would place secrets in the document operators
+edit and commit, and would oblige API Sheriff to re-implement key-store loading, format handling,
+and reload semantics that the runtime already implements.
+
+== Decision
+
+*`gateway.yaml` names intent in API Sheriff's own vocabulary; the deployment supplies material;
+exactly one component maps between them.*
+
+Three mechanisms realise this.
+
+=== 1. The issuer surface exposes egress and trust as neutral keys
+
+`token_validation.issuers[].jwks` carries two production capabilities:
+
+* `allowed_egress_hosts` -- a host-exact SSRF egress allowlist. Absent or empty preserves
+  `EgressPolicy.secureDefault()`; each entry exempts exactly one host, with no wildcard or suffix
+  form.
+* `tls_profile` -- the name of a logical trust profile used to verify the IdP's certificate.
+  Absent means the JVM default trust store, preserving prior behaviour exactly.
+
+Neither key, nor the JSON schema that validates them, mentions any runtime, TLS registry,
+truststore path, or password. `tls_profile` is a name in API Sheriff's vocabulary and carries no
+trust material.
+
+=== 2. Exactly one component knows the runtime binding
+
+A single mapping component translates a logical `tls_profile` name into the runtime's named TLS
+configuration and thence into an `SSLContext`, which it hands to the JWKS loader builder. It is
+the only place in the codebase that knows the mapping exists. Every other collaborator --
+including the producer that assembles the validator -- deals only in the logical name and the
+resulting `SSLContext`. Confining the binding to one seam is what makes `gateway.yaml` portable:
+the runtime underneath can change and only that component follows.
+
+=== 3. Config neutral, diagnostics concrete
+
+The neutrality rule is scoped deliberately, not applied uniformly:
+
+* `gateway.yaml` and its JSON schema *never* name the runtime.
+* Startup errors and user-facing documentation *do* name the concrete runtime key.
+
+An operator who names an unbound profile needs the exact knob to set, not an abstraction. The
+startup diagnostic therefore reads, in substance, ``jwks.tls_profile 'X' is not configured --
+define it via quarkus.tls.X.trust-store.*``. Neutrality protects the *configuration contract*;
+it is not a reason to make failures harder to diagnose.
+
+=== 4. Unresolvable means refuse to start
+
+A named-but-unbound profile fails startup, consistent with the existing configuration posture of
+refusing to serve on invalid configuration. It never falls back to default trust. The validator is
+assembled eagerly at boot so the failure surfaces at startup rather than on the first bearer
+request.
+
+== Consequences
+
+=== Positive
+
+* API Sheriff can validate tokens against the IdP deployments it will actually be placed next to:
+  cluster-internal, Docker-network, and on-prem behind an internal CA.
+* Trust-store passwords never appear in `gateway.yaml`. The document operators edit, review, and
+  commit stays secret-free.
+* API Sheriff does not re-implement key-store loading, format handling, or rotation; it consumes
+  the runtime's result rather than growing a second, weaker implementation.
+* The same `gateway.yaml` moves across environments that bind one profile name to different
+  anchors, with no edit.
+* A change of runtime invalidates one component, not every user's configuration.
+* Both widenings are opt-in and default-preserving: an issuer that omits them behaves exactly as
+  it did before either existed, so the secure default is never widened by accident.
+
+=== Negative
+
+* Configuring a private-network IdP behind an internal CA requires editing *two* places -- the
+  profile name in `gateway.yaml` and the binding in deployment configuration. The indirection is
+  the cost of portability and secret separation.
+* The binding is not visible in `gateway.yaml`, so a reader of that document alone cannot tell
+  which anchors a profile resolves to. The startup diagnostic and the configuration documentation
+  are the compensating mechanisms.
+
+=== Risks
+
+* *Operator confusion between the two knobs.* `allowed_egress_hosts` answers "may I connect to
+  this address?" and `tls_profile` answers "do I trust the certificate I get back?". A
+  private-network IdP behind an internal CA needs both, and configuring only one yields a failure
+  that looks like the other. Mitigated by documenting the pair together and by their distinct,
+  specific error messages.
+* *Egress widening is a real attack-surface increase.* Each `allowed_egress_hosts` entry exempts a
+  host from an SSRF guard. Mitigated by host-exactness (no wildcard or suffix form), so the
+  widening cannot be broadened by a typo, and by defaulting to no exemption at all.
+
+== Alternatives Considered
+
+=== Reference the runtime's named TLS configuration directly from gateway.yaml
+
+`gateway.yaml` would carry the runtime's own configuration name, removing the mapping component
+entirely. This is the simplest option and was seriously considered.
+
+Rejected on layering. It makes the product's configuration language depend on the identity of the
+framework beneath it. A user's `gateway.yaml` would encode a runtime concept, so a change of
+runtime would break documents the product told operators to write. The mapping component is a
+small, bounded price for keeping the configuration contract independent of its substrate.
+
+=== Carry trust material inline in gateway.yaml
+
+`gateway.yaml` would hold the truststore path and password directly, making the document
+self-contained and removing the two-place edit.
+
+Rejected on two counts. It places secrets in a document intended to be reviewed and committed, and
+it obliges API Sheriff to re-implement key-store loading, format support, and rotation that the
+runtime already provides -- a second implementation that would inevitably be weaker than the first.
+
+=== Fall back to default trust when a profile does not resolve
+
+An unresolvable profile would log a warning and continue on the JVM default trust store, making
+misconfiguration non-fatal.
+
+Rejected as the most dangerous option. It either defers the failure to an obscure JWKS fetch error
+later, or -- when the IdP happens to chain to a public CA -- quietly succeeds against anchors the
+operator never intended to trust. A trust decision that silently degrades is worse than one that
+refuses to start.
+
+=== Expose the whole HttpJwksLoaderConfig builder
+
+Every builder knob would be surfaced in `gateway.yaml` mechanically.
+
+Rejected because it makes the gateway's configuration surface a mirror of a dependency's API. Each
+promotion should be a deliberate decision about what API Sheriff means, with its own naming,
+defaulting, and documentation; a mechanical pass-through forfeits that and freezes the dependency's
+vocabulary into the product's contract.
+
+The unifying principle: `gateway.yaml` is the product's configuration language. Its keys are chosen
+for what API Sheriff means, not for what its dependencies or its runtime happen to call things.
+
+== Deferred knobs
+
+The following `HttpJwksLoaderConfig` knobs remain unexposed. Recording them is part of this
+decision, because several are production-significant and their absence is a known gap rather than
+an oversight:
+
+[cols="1,3", options="header"]
+|===
+| Knob | Note
+
+| `connectTimeoutSeconds`, `readTimeoutSeconds`
+| Production-significant. A slow or black-holed IdP currently cannot be bounded from configuration.
+
+| `retryConfig`
+| Production-significant. Retry behaviour on a failed JWKS fetch is not configurable.
+
+| `refreshIntervalSeconds`
+| Production-significant. Effectively fixed at 600 seconds today; deployments cannot tune key
+  refresh cadence.
+
+| `keyRotationGracePeriod`, `maxRetiredKeySets`
+| Production-significant. Tolerance for IdP key rotation is not configurable, which matters for
+  IdPs that rotate aggressively.
+
+| `wellKnownUri`
+| Discovery-based issuer configuration; the gateway requires an explicit JWKS URL instead.
+
+| `allowLoopbackEgress`
+| Deliberately not exposed. `allowed_egress_hosts` covers the legitimate cases host-exactly; a
+  blanket loopback opening is a broader widening than any known deployment needs.
+
+| `tlsVersions`
+| Protocol-version selection for the JWKS client; the runtime's defaults apply.
+
+| `parserConfig`
+| JWKS parsing limits.
+|===
+
+Exposing any of these is a separate decision and should follow the same discipline: a neutral key
+named for what API Sheriff means, with a default that preserves current behaviour.
+
+== References
+
+* link:../configuration.adoc[Configuration reference] -- the `token_validation` surface, the
+  `allowed_egress_hosts` and `tls_profile` field contracts, and the trust-profile mapping,
+  worked example, and failure mode
+* link:../security-threat-model.adoc[Security threat model] -- GW-05 and BFF-07, which prescribe
+  keeping the secure egress defaults and widening only for a trusted IdP
+* link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
+  runtime-specific assembly at the boundary rather than in the framework-agnostic core

@@ -398,7 +398,10 @@ URLs to `http`/`https` at boot (Plan 03 D5). Redirect following is disabled
 On the *control plane* (B4 -- OIDC discovery/JWKS/token), `token-sheriff-validation`'s
 `EgressPolicy` already blocks loopback/link-local/site-local/cloud-metadata targets on the
 initial fetch and every refresh (DNS-rebinding-safe); keep its secure defaults and only widen
-via `allowedEgressHost` for a trusted IdP. Operators should egress-restrict the gateway and
+via `allowedEgressHost` for a trusted IdP. The gateway exposes that widening as the per-issuer
+`token_validation.issuers[].jwks.allowed_egress_hosts` list in `gateway.yaml`: absent or empty
+keeps `EgressPolicy.secureDefault()`, and each entry exempts exactly one host (host-exact, no
+wildcard form). Operators should egress-restrict the gateway and
 avoid pointing a topology alias at link-local/metadata ranges (guide note, Plan 09).
 
 *Status:* COVERED (design). No request-controlled upstream exists; scheme allowlist is Plan
@@ -769,7 +772,9 @@ that blocks internal/metadata ranges on the initial fetch *and every background 
 window, and `getKeyInfo(kid)` never triggers an on-demand fetch -- so a flood of unknown
 `kid`s cannot drive a fetch storm. Its Quarkus JWKS-readiness health check already gates the
 ITs. Gateway residual: keep the secure egress defaults; widen only via `allowedEgressHost` for
-a trusted IdP.
+a trusted IdP -- surfaced in `gateway.yaml` as the per-issuer
+`token_validation.issuers[].jwks.allowed_egress_hosts` list (see <<gw-05>>), which defaults to
+the secure policy when absent or empty.
 
 *Status:* COVERED (validation lib, fail-closed, SSRF-guarded). Nothing for the gateway to
 build.

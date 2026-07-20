@@ -216,6 +216,13 @@ token_validation:                  # offline bearer validation (routes with auth
         source: http               # http | file
         url: https://idp.example.com/realms/main/protocol/openid-connect/certs
         # file: /etc/sheriff/jwks.json   (air-gapped deployments)
+        # allowed_egress_hosts: [idp.internal]   # SSRF egress allowlist; OMIT unless needed.
+                                   #   Absent/empty keeps the secure default (private-address
+                                   #   JWKS targets refused). Host-exact, no wildcard; widen
+                                   #   only for a trusted IdP on a private network (GW-05).
+        # tls_profile: corporate-idp             # logical trust profile; OMIT for a public-CA
+                                   #   IdP. Names trust anchors without carrying them; the
+                                   #   deployment binds the name. See "Trust profiles" below.
 
 oidc:                              # only used by the BFF variants (2 and 3)
   issuer: https://idp.example.com/realms/main
@@ -783,10 +790,105 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
 | `issuers[].jwks`
 | Key material for signature verification: `source: http` with a `url` (cached, periodically
   refreshed), or `source: file` -- the latter for air-gapped deployments.
+
+| `issuers[].jwks.allowed_egress_hosts`
+| SSRF egress allowlist for `source: http`, applied on the initial JWKS fetch *and* every
+  background refresh. *Omit it unless you must.* Absent or empty keeps
+  `EgressPolicy.secureDefault()`, which refuses a JWKS URL resolving to a loopback,
+  link-local, site-local, any-local, multicast, or unique-local address. Each entry exempts
+  exactly one host from that check -- the match is host-exact, with no wildcard or suffix
+  form -- so widen it only for a trusted IdP that genuinely lives on a private network, and
+  name that one host. See link:security-threat-model.adoc#gw-05[GW-05] and
+  link:security-threat-model.adoc#bff-07[BFF-07].
+
+| `issuers[].jwks.tls_profile`
+| Name of the logical *trust profile* used to verify the IdP's server certificate when fetching
+  the JWKS over `source: http`. Omit it for an IdP presenting a publicly-trusted certificate --
+  the JWKS client then uses the JVM default trust store. Name a profile when the IdP presents a
+  certificate from an internal or corporate CA. See link:#_jwks_trust_profiles[Trust profiles]
+  below for how a name is bound to concrete anchors.
 |===
 
 The BFF variants do *not* read this block: they validate the tokens they retrieve against the
 issuer configured in link:#_oidc[`oidc`].
+
+[[_jwks_trust_profiles]]
+==== Trust profiles (`jwks.tls_profile`)
+
+By default the JWKS client verifies the IdP's certificate against the JVM's default trust store.
+That is correct when the IdP presents a certificate from a public CA, and wrong in two common
+deployments: an IdP fronted by an *internal or corporate CA*, and a *cluster-internal IdP* whose
+certificate is issued by the cluster's own authority. In both cases the fetch fails PKIX path
+building, the key set never loads, and every bearer request is rejected -- a failure that looks
+like a token problem but is a trust problem.
+
+`tls_profile` fixes that by naming the trust anchors to use:
+
+[source,yaml]
+----
+token_validation:
+  issuers:
+    - name: corporate
+      issuer: https://idp.corp.internal/realms/main
+      jwks:
+        source: http
+        url: https://idp.corp.internal/realms/main/protocol/openid-connect/certs
+        allowed_egress_hosts: [idp.corp.internal]   # private address -> widen egress (GW-05)
+        tls_profile: corporate-idp                  # internal CA -> name the trust anchors
+----
+
+===== The name is not the material
+
+`tls_profile` is a *logical* name in API Sheriff's own vocabulary. It carries no trust store path,
+no password, and no runtime detail. The deployment binds the name to concrete trust material:
+
+[source,properties]
+----
+quarkus.tls.corporate-idp.trust-store.p12.path=/etc/sheriff/corporate-ca.p12
+quarkus.tls.corporate-idp.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
+----
+
+So the mapping runs `gateway.yaml` name -> deployment binding -> trust anchors -> JWKS client.
+`gateway.yaml` expresses *intent* ("verify this IdP against the corporate anchors"); the
+deployment supplies *material*. That split is deliberate, and it buys three things:
+
+* *Secrets stay out of `gateway.yaml`.* A trust-store password never appears in the document you
+  edit, review, and commit.
+* *No second key-store implementation.* Loading, formats, reloads, and rotation are already solved
+  on the deployment side; API Sheriff consumes the result rather than growing a weaker copy.
+* *Portability.* The same `gateway.yaml` moves between environments that bind the same profile
+  name to different anchors -- dev, staging, production -- with no edit.
+
+NOTE: `gateway.yaml` and its JSON schema deliberately never name the mechanism that binds the
+profile; that binding is an implementation detail behind a single seam. Startup *diagnostics*
+deliberately do name it, because an operator staring at an unbound profile needs the exact knob to
+set, not an abstraction.
+
+===== When the profile is not bound
+
+A named profile that the deployment does not define is a *startup failure*, not a fallback:
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but no such trust profile is
+configured — define it via quarkus.tls.corporate-idp.trust-store.*
+----
+
+The gateway refuses to start, consistent with how every other configuration violation is handled.
+Falling back to default trust would be worse than failing: it would either surface later as an
+obscure JWKS fetch error, or -- if the IdP happens to chain to a public CA -- quietly succeed
+against anchors the operator never intended to trust.
+
+An issuer that omits `tls_profile` is unaffected: no trust configuration is applied at all, and
+the JWKS client keeps the JVM default trust store.
+
+===== Relationship to `allowed_egress_hosts`
+
+The two settings are independent and frequently needed together, because they solve different
+halves of the same deployment. `allowed_egress_hosts` answers *"may I connect to this address?"*
+(the SSRF egress guard, which refuses private addresses by default); `tls_profile` answers *"do I
+trust the certificate I get back?"*. A cluster-internal IdP on a private address behind an internal
+CA needs both; a public-internet IdP behind a public CA needs neither.
 
 [[_oidc]]
 === `oidc`

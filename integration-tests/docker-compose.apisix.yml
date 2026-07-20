@@ -1,0 +1,135 @@
+# APISIX comparison overlay for the on-demand comparative benchmark lane.
+#
+# This is a THIRD OVERLAY, not a self-contained stack. "Standalone" applies only to
+# APISIX's own runtime mode (declarative YAML config provider, no etcd) -- it does
+# NOT mean a separately-launched Compose project, because:
+#   * nginx-static is defined only in docker-compose.benchmark.yml, and
+#   * the api-sheriff network in docker-compose.yml is a plain `driver: bridge`
+#     with no `external: true`, so it is Compose-project-scoped.
+#
+# The comparison lane is therefore ONE three-file merge, in this exact order:
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.benchmark.yml \
+#                  -f docker-compose.apisix.yml \
+#                  --profile comparison up
+#
+# Every service added here sits behind the dedicated `comparison` profile, so a
+# plain `docker compose up` on the default stack and `verify -Pintegration-tests`
+# both start no APISIX service.
+#
+# This file adds NO top-level networks block: the api-sheriff network is already
+# defined by docker-compose.yml and is referenced by name from the service below.
+services:
+  apisix:
+    # Digest-pinned; Dependabot cannot update this automatically, so bump the tag
+    # and the digest together. Check: https://hub.docker.com/r/apache/apisix
+    image: apache/apisix:3.14.0-debian@sha256:e3ef0a9d31e021e4c85d05caea051db9b1115009822e8b605cff999d51ca4141
+
+    # Gate every APISIX service behind the dedicated comparison profile.
+    profiles:
+      - comparison
+
+    ports:
+      # Host-side readiness probing and local debugging only; the benchmark itself
+      # reaches APISIX in-network as https://apisix:8443. 10443 is taken by the
+      # api-sheriff service, so the comparison edge publishes on 10444.
+      - "10444:8443"
+
+    # APISIX cannot be pointed at a certificate FILE for its TLS listener: its CLI
+    # overwrites the configured ssl_cert paths with a built-in placeholder, its
+    # ssl_client_hello phase aborts any handshake that matches no `ssls` entry, and
+    # `ssls` accepts inline PEM only. This entrypoint therefore splices the MOUNTED
+    # certificate into the route table at start-up and then execs the stock APISIX
+    # entrypoint, so src/main/docker/certificates stays the single source of truth
+    # instead of the private key being committed a second time inside apisix.yaml.
+    # The full rationale (with the exact source references) is in the script.
+    entrypoint:
+      - /bin/sh
+      - /entrypoint/render-tls-and-start.sh
+    command:
+      - docker-start
+
+    volumes:
+      # Declarative data-plane configuration (no etcd).
+      - ./src/main/docker/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      # The mirrored route table is mounted as a TEMPLATE: the entrypoint renders it
+      # (plus the TLS entry) to /usr/local/apisix/conf/apisix.yaml, which cannot
+      # itself be a read-only mount because the render writes there.
+      - ./src/main/docker/apisix/apisix.yaml:/templates/apisix.yaml:ro
+      - ./src/main/docker/apisix/render-tls-and-start.sh:/entrypoint/render-tls-and-start.sh:ro
+      # The SAME TLS material the api-sheriff and keycloak services mount, so all
+      # three edges present one certificate and the k6 clients need no per-target
+      # trust handling.
+      - ./src/main/docker/certificates:/certs:ro
+
+    depends_on:
+      # nginx-static comes from docker-compose.benchmark.yml -- the reason this
+      # overlay cannot be launched as its own Compose project. It is the ONLY
+      # upstream every APISIX route targets (see apisix.yaml's fairness invariant),
+      # so go-httpbin is deliberately absent here: APISIX routes nothing to it.
+      - nginx-static
+      - keycloak
+
+    # OWASP hardening: no privilege escalation, matching the api-sheriff service.
+    # api-sheriff additionally runs read_only with a tmpfs; APISIX/OpenResty needs a
+    # writable prefix for its rendered nginx.conf, logs and proxy temp paths, so a
+    # read-only root filesystem is deliberately not mirrored here.
+    security_opt:
+      - no-new-privileges:true
+
+    # Identical resource envelope to the api-sheriff service in docker-compose.yml.
+    # A comparison run in which the two gateways get different CPU or memory budgets
+    # measures the budget, not the gateways.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+
+    networks:
+      - api-sheriff
+
+    restart: unless-stopped
+
+  # Dashboard-enabled k6, used ONLY by the on-demand comparison lane (run-comparison.sh). It
+  # carries xk6-dashboard linked into the k6 binary so each aspect can additionally emit a
+  # self-contained HTML report; the baseline `k6` service in docker-compose.yml is untouched and
+  # stays the engine the CI lane measures with.
+  #
+  # Sits behind its OWN profile, deliberately distinct from the `comparison` profile the apisix
+  # service uses. `docker compose run` implicitly enables the target service's profile, so
+  # run-comparison.sh can drive it directly, while `up --profile comparison`, the default stack,
+  # `verify -Pintegration-tests` and the `-Pbenchmark` CI lane all start no dashboard container.
+  k6-dashboard:
+    build:
+      # Repository root, matching the baseline k6 service: the Dockerfile copies the whole
+      # k6-scripts tree so the lib/ imports resolve.
+      context: ..
+      dockerfile: benchmarks/Dockerfile.k6-dashboard
+
+    profiles:
+      - comparison-dashboard
+
+    networks:
+      - api-sheriff
+
+    restart: "no"
+
+    # Same default results mount as the baseline k6 service; run-comparison.sh overrides it with
+    # a per-target directory under the segregated comparison results root.
+    volumes:
+      - ${K6_OUTPUT_DIR:-../benchmarks/target/benchmark-results/k6}:/results
+
+    # Same rationale as the baseline k6 service: the image's unprivileged uid does not exist on
+    # the host and so cannot write into the host-owned bind mount above.
+    user: "0:0"
+
+    environment:
+      - BENCHMARK_VUS
+      - BENCHMARK_DURATION
+      - BENCHMARK_MAX_ERROR_RATE
+      - GATEWAY_TARGET

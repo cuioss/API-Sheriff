@@ -1,0 +1,130 @@
+# APISIX declarative route table for the on-demand comparative benchmark lane.
+#
+# Mounted at /usr/local/apisix/conf/apisix.yaml and read by the standalone yaml
+# config provider (deployment.role_data_plane.config_provider: yaml in the sibling
+# config.yaml). This table mirrors the API Sheriff benchmark routes one-for-one so
+# each k6 aspect measures the same request shape against both gateways.
+#
+# Parity reference (consulted, never modified by this file):
+#   sheriff-config/gateway.yaml            -- anchors, body cap, bearer issuer
+#   sheriff-config/endpoints/httpbin.yaml  -- proxy / graphql / upload routes
+#   sheriff-config/endpoints/secure.yaml   -- bearer-protected /secure route
+#
+# NOTE: the standalone provider requires the literal `#END` marker within the last
+# ten bytes of this file (apisix/core/config_yaml.lua seeks to end-10 and rejects
+# the file outright when the marker is absent). Keep `#END` as the final line and
+# add no trailing blank lines after it.
+
+upstreams:
+  # The SINGLE backend every benchmarked route on BOTH gateways targets. Matches
+  # what TOPOLOGY_UPSTREAM gives API Sheriff under docker-compose.benchmark.yml,
+  # which repoints the UPSTREAM alias from go-httpbin to this fast static nginx so
+  # the run measures gateway overhead rather than a JSON-serializing backend.
+  #
+  # FAIRNESS INVARIANT: every route below -- including the graphql and upload
+  # aspects -- rides this one upstream, because the API Sheriff side rides it for
+  # those aspects too (the benchmark overlay repoints the UPSTREAM alias for the
+  # WHOLE endpoint, not just the /proxy route). Pointing APISIX's graphql/upload
+  # routes at go-httpbin while API Sheriff's hit nginx-static would have measured
+  # go-httpbin's JSON serialization as APISIX latency and biased those two aspects
+  # in API Sheriff's favour. The consequence -- documented in the 04b fairness
+  # section -- is that the graphql and upload aspects measure GATEWAY PROCESSING
+  # (body cap enforcement, method matching, path rewriting) rather than real
+  # JSON/echo upstream work, which is the benchmark's stated intent.
+  - id: static-upstream
+    type: roundrobin
+    nodes:
+      "nginx-static:8080": 1
+
+routes:
+  # --- unauth aspect -------------------------------------------------------
+  # Mirrors httpbin.yaml's httpbin-proxy route under gateway.yaml's 'api' anchor
+  # (path_prefix /proxy, auth require: none). Driven by proxied_static.js at
+  # /proxy/static. No rewrite: API Sheriff forwards the matched path unchanged and
+  # nginx-static answers 200 on any path, so both edges present the same URI.
+  - id: unauth-proxied
+    uri: /proxy/*
+    upstream_id: static-upstream
+
+  # --- bearer aspect -------------------------------------------------------
+  # Mirrors secure.yaml's secure-proxy route under gateway.yaml's 'secure' anchor
+  # (path_prefix /secure, auth require: bearer). Driven by bearer_proxied.js at
+  # /secure/get with a token minted from the Keycloak 'benchmark' realm.
+  - id: bearer-proxied
+    uri: /secure/*
+    upstream_id: static-upstream
+    plugins:
+      openid-connect:
+        # client_id / client_secret / discovery are all required by the plugin
+        # schema even in bearer_only mode. They match benchmark-realm.json's
+        # confidential client, the same one bearer_proxied.js mints from.
+        client_id: benchmark-client
+        client_secret: benchmark-secret
+        discovery: https://keycloak:8443/realms/benchmark/.well-known/openid-configuration
+        # Reject an unauthenticated request outright instead of starting an
+        # authorization-code redirect: API Sheriff's bearer anchor has no
+        # interactive login flow to mirror.
+        bearer_only: true
+        # Validate the token OFFLINE against the realm's JWKS. This is the
+        # load-bearing parity setting: API Sheriff's benchmark-keycloak issuer
+        # validates locally against the same JWKS endpoint. Without use_jwks the
+        # plugin falls back to token introspection, which adds a Keycloak network
+        # round-trip PER REQUEST and would measure Keycloak's latency as APISIX's.
+        use_jwks: true
+        # Keycloak serves the shared self-signed localhost certificate on the
+        # internal network, so JWKS retrieval must not require a public chain.
+        ssl_verify: false
+
+  # --- graphql aspect ------------------------------------------------------
+  # Mirrors httpbin.yaml's httpbin-graphql route under gateway.yaml's 'graphql'
+  # anchor (path_prefix /graphql, allowed_methods POST, upstream path
+  # /anything/graphql). The rewrite is kept because API Sheriff rewrites the same
+  # way; nginx-static answers 200 on any path, so both edges do identical work.
+  - id: graphql-post
+    uri: /graphql
+    methods:
+      - POST
+    upstream_id: static-upstream
+    plugins:
+      proxy-rewrite:
+        uri: /anything/graphql
+
+  # --- upload aspects ------------------------------------------------------
+  # Mirror httpbin.yaml's two upload routes under gateway.yaml's 'upload' anchor.
+  # Kept as two routes (rather than one prefix match) so each aspect stays
+  # independently addressable, exactly as on the API Sheriff side. Both ride the
+  # 64 MiB client_max_body_size raised in config.yaml, mirroring the anchor's
+  # max_body_bytes: 67108864.
+  - id: upload-small
+    uri: /upload/small
+    methods:
+      - POST
+    upstream_id: static-upstream
+    plugins:
+      proxy-rewrite:
+        uri: /anything/upload-small
+
+  - id: upload-large
+    uri: /upload/large
+    methods:
+      - POST
+    upstream_id: static-upstream
+    plugins:
+      proxy-rewrite:
+        uri: /anything/upload-large
+
+  # --- pre-provisioned declarations only -----------------------------------
+  # Mirrors gateway.yaml's 'ws' and 'grpc' anchors, which are declarations with no
+  # behaviour behind them (the API Sheriff request pipeline still boot-rejects both
+  # protocols; roadmap plan 05 owns that behaviour). They exist here so the two
+  # topologies stay route-for-route comparable when that behaviour lands, and are
+  # driven by no k6 aspect today. An upstream is required for the route to be
+  # schema-valid, so both point at the static backend.
+  - id: ws-declaration
+    uri: /ws/*
+    upstream_id: static-upstream
+
+  - id: grpc-declaration
+    uri: /grpc/*
+    upstream_id: static-upstream
+#END

@@ -11,7 +11,7 @@
 
     <artifactId>benchmarks</artifactId>
     <name>API Sheriff Integration Benchmarks</name>
-    <description>WRK-based HTTP benchmarks for API Sheriff endpoints with integration test infrastructure</description>
+    <description>k6-based HTTP benchmarks for API Sheriff endpoints with integration test infrastructure</description>
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.benchmark.integration</maven.jar.plugin.automatic.module.name>
@@ -24,7 +24,7 @@
         <!-- Scripts location -->
         <integration.scripts.dir>${project.basedir}/../integration-tests/scripts</integration.scripts.dir>
 
-        <!-- Docker compose directory for WRK benchmarks -->
+        <!-- Docker compose directory for k6 benchmarks -->
         <integration.compose.dir>${project.basedir}/../integration-tests</integration.compose.dir>
 
         <!-- Integration test service URLs (host access via published ports) -->
@@ -33,18 +33,21 @@
         <keycloak.url>https://localhost:1443</keycloak.url>
         <quarkus.metrics.url>http://localhost:19000</quarkus.metrics.url>
 
-        <!-- WRK Configuration Properties -->
-        <wrk.duration>60s</wrk.duration>
-        <wrk.threads>5</wrk.threads>
-        <wrk.connections>50</wrk.connections>
-        <wrk.timeout>2s</wrk.timeout>
-        <wrk.latency>true</wrk.latency>
-        <wrk.script.dir>${project.basedir}/src/main/resources/wrk-scripts</wrk.script.dir>
-        <wrk.results.dir>${project.build.directory}/benchmark-results</wrk.results.dir>
-        <wrk.output.dir>${wrk.results.dir}/wrk</wrk.output.dir>
+        <!-- k6 Configuration Properties -->
+        <k6.duration>60s</k6.duration>
+        <k6.vus>50</k6.vus>
+        <!-- Reduced concurrency for the transfer-bound 50MB upload aspect. Every execution passes
+             BENCHMARK_VUS explicitly, so without a dedicated property the shared k6.vus (50) would
+             override upload_large.js's own reduced default and the aspect would run at full
+             concurrency — measuring link saturation and the load generator's own payload memory
+             (50MB per VU) instead of gateway transfer cost. See upload_large.js. -->
+        <k6.vus.upload.large>5</k6.vus.upload.large>
+        <k6.script.dir>${project.basedir}/src/main/resources/k6-scripts</k6.script.dir>
+        <k6.results.dir>${project.build.directory}/benchmark-results</k6.results.dir>
+        <k6.output.dir>${k6.results.dir}/k6</k6.output.dir>
 
         <!-- Benchmark history directory for trend analysis -->
-        <benchmark.history.dir>${wrk.results.dir}/history</benchmark.history.dir>
+        <benchmark.history.dir>${k6.results.dir}/history</benchmark.history.dir>
 
         <!-- Sonar configuration: Skip analysis for benchmarking modules -->
         <sonar.skip>true</sonar.skip>
@@ -121,7 +124,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Execute wrk benchmarks when skip.benchmark is false -->
+            <!-- Execute k6 benchmarks when skip.benchmark is false -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -180,7 +183,7 @@
                                     <executable>${integration.scripts.dir}/start-integration-container.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                     <environmentVariables>
-                                        <LOG_TARGET_DIR>${wrk.results.dir}</LOG_TARGET_DIR>
+                                        <LOG_TARGET_DIR>${k6.results.dir}</LOG_TARGET_DIR>
                                         <!-- Overlay the static nginx backend and repoint the gateway upstream -->
                                         <BENCHMARK_MODE>true</BENCHMARK_MODE>
                                     </environmentVariables>
@@ -198,8 +201,8 @@
                                     <executable>mkdir</executable>
                                     <arguments>
                                         <argument>-p</argument>
-                                        <argument>${wrk.results.dir}</argument>
-                                        <argument>${wrk.output.dir}</argument>
+                                        <argument>${k6.results.dir}</argument>
+                                        <argument>${k6.output.dir}</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
@@ -214,7 +217,7 @@
                                 <configuration>
                                     <executable>bash</executable>
                                     <arguments>
-                                        <argument>${wrk.script.dir}/pre-benchmark-health-check.sh</argument>
+                                        <argument>${k6.script.dir}/pre-benchmark-health-check.sh</argument>
                                     </arguments>
                                     <environmentVariables>
                                         <INTEGRATION_SERVICE_URL>${integration.service.url}</INTEGRATION_SERVICE_URL>
@@ -225,89 +228,239 @@
                                 </configuration>
                             </execution>
 
-                            <!-- Run WRK health/live benchmark -->
+                            <!-- Run k6 health/live benchmark -->
                             <execution>
-                                <id>run-wrk-health-live-benchmark</id>
+                                <id>run-k6-health-live-benchmark</id>
                                 <phase>integration-test</phase>
                                 <goals>
                                     <goal>exec</goal>
                                 </goals>
                                 <configuration>
-                                    <executable>bash</executable>
+                                    <executable>docker</executable>
                                     <arguments>
-                                        <argument>${wrk.script.dir}/health_live_benchmark.sh</argument>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/health_live.js</argument>
                                     </arguments>
-                                    <outputFile>${wrk.output.dir}/wrk-health-live-results.txt</outputFile>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
                                     <timeout>240000</timeout>
                                     <environmentVariables>
-                                        <WRK_THREADS>${wrk.threads}</WRK_THREADS>
-                                        <WRK_CONNECTIONS>${wrk.connections}</WRK_CONNECTIONS>
-                                        <WRK_DURATION>${wrk.duration}</WRK_DURATION>
-                                        <WRK_TIMEOUT>${wrk.timeout}</WRK_TIMEOUT>
-                                        <COMPOSE_DIR>${integration.compose.dir}</COMPOSE_DIR>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
                                     </environmentVariables>
                                 </configuration>
                             </execution>
 
-                            <!-- Run WRK api/health benchmark -->
+                            <!-- Run k6 api/health benchmark -->
                             <execution>
-                                <id>run-wrk-api-health-benchmark</id>
+                                <id>run-k6-api-health-benchmark</id>
                                 <phase>integration-test</phase>
                                 <goals>
                                     <goal>exec</goal>
                                 </goals>
                                 <configuration>
-                                    <executable>bash</executable>
+                                    <executable>docker</executable>
                                     <arguments>
-                                        <argument>${wrk.script.dir}/api_health_benchmark.sh</argument>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/gateway_health.js</argument>
                                     </arguments>
-                                    <outputFile>${wrk.output.dir}/wrk-api-health-results.txt</outputFile>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
                                     <timeout>240000</timeout>
                                     <environmentVariables>
-                                        <WRK_THREADS>${wrk.threads}</WRK_THREADS>
-                                        <WRK_CONNECTIONS>${wrk.connections}</WRK_CONNECTIONS>
-                                        <WRK_DURATION>${wrk.duration}</WRK_DURATION>
-                                        <WRK_TIMEOUT>${wrk.timeout}</WRK_TIMEOUT>
-                                        <COMPOSE_DIR>${integration.compose.dir}</COMPOSE_DIR>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
                                     </environmentVariables>
                                 </configuration>
                             </execution>
 
-                            <!-- Run WRK proxied-static benchmark (wrk -> gateway -> nginx) -->
+                            <!-- Run k6 proxied-static benchmark (k6 -> gateway -> nginx) -->
                             <execution>
-                                <id>run-wrk-proxied-static-benchmark</id>
+                                <id>run-k6-proxied-static-benchmark</id>
                                 <phase>integration-test</phase>
                                 <goals>
                                     <goal>exec</goal>
                                 </goals>
                                 <configuration>
-                                    <executable>bash</executable>
+                                    <executable>docker</executable>
                                     <arguments>
-                                        <argument>${wrk.script.dir}/proxied_static_benchmark.sh</argument>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/proxied_static.js</argument>
                                     </arguments>
-                                    <outputFile>${wrk.output.dir}/wrk-proxied-static-results.txt</outputFile>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
                                     <timeout>240000</timeout>
                                     <environmentVariables>
-                                        <WRK_THREADS>${wrk.threads}</WRK_THREADS>
-                                        <WRK_CONNECTIONS>${wrk.connections}</WRK_CONNECTIONS>
-                                        <WRK_DURATION>${wrk.duration}</WRK_DURATION>
-                                        <WRK_TIMEOUT>${wrk.timeout}</WRK_TIMEOUT>
-                                        <COMPOSE_DIR>${integration.compose.dir}</COMPOSE_DIR>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
                                     </environmentVariables>
                                 </configuration>
                             </execution>
 
-                            <!-- Process WRK results and generate reports -->
+                            <!-- Run k6 bearer-proxied benchmark (k6 -> gateway offline bearer
+                                 validation -> upstream). New CI coverage: the wrk-era runner
+                                 script existed on disk but was registered in no execution. -->
                             <execution>
-                                <id>process-wrk-results</id>
+                                <id>run-k6-bearer-proxied-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/bearer_proxied.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 http2 benchmark (ALPN-negotiated h2 on the same proxied
+                                 static route as the unauth aspect, so the pair isolates the
+                                 protocol's effect on gateway overhead). -->
+                            <execution>
+                                <id>run-k6-http2-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/http2.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 graphql benchmark (method-restricted JSON POST anchor) -->
+                            <execution>
+                                <id>run-k6-graphql-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/graphql.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 1MB upload benchmark (streaming request-body path at full
+                                 benchmark concurrency) -->
+                            <execution>
+                                <id>run-k6-upload-small-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/upload_small.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 50MB upload benchmark at REDUCED concurrency
+                                 (k6.vus.upload.large, not k6.vus) — see the property comment. -->
+                            <execution>
+                                <id>run-k6-upload-large-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/upload_large.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus.upload.large}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Process k6 results and generate reports -->
+                            <execution>
+                                <id>process-k6-results</id>
                                 <phase>post-integration-test</phase>
                                 <goals>
                                     <goal>java</goal>
                                 </goals>
                                 <configuration>
-                                    <mainClass>de.cuioss.sheriff.api.wrk.benchmark.WrkResultPostProcessor</mainClass>
+                                    <mainClass>de.cuioss.sheriff.api.k6.benchmark.K6ResultPostProcessor</mainClass>
                                     <arguments>
-                                        <argument>${wrk.results.dir}</argument>
+                                        <argument>${k6.results.dir}</argument>
                                     </arguments>
                                     <systemProperties>
                                         <systemProperty>
@@ -333,7 +486,7 @@
                                     <skip>${skip.container.lifecycle}</skip>
                                     <executable>${integration.scripts.dir}/dump-keycloak-logs.sh</executable>
                                     <arguments>
-                                        <argument>${wrk.results.dir}</argument>
+                                        <argument>${k6.results.dir}</argument>
                                     </arguments>
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
@@ -385,7 +538,7 @@
         <profile>
             <id>quick</id>
             <properties>
-                <wrk.duration>30s</wrk.duration>
+                <k6.duration>30s</k6.duration>
                 <skip.container.lifecycle>true</skip.container.lifecycle>
             </properties>
         </profile>

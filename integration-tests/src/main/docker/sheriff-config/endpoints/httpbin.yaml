@@ -25,3 +25,42 @@ endpoint:
       forward:
         headers_allow: ["Content-Type"]
         query_allow: ["probe", "page", "size", "req"]
+
+    # --- Benchmark aspect routes (plan 04b) ---------------------------------
+    # go-httpbin's /anything/* echo endpoint accepts POST bodies, so the graphql
+    # and upload aspects need no new upstream service. Each route overrides the
+    # endpoint's default 'api' anchor to join its own benchmark namespace.
+    # Content-Type is allow-listed on every POST route because the forward stage
+    # is deny-by-default — without it the body would not be echoed as sent.
+    - id: httpbin-graphql
+      protocol: graphql
+      anchor: graphql
+      match:
+        path_prefix: /graphql
+        methods: ["POST"]
+      upstream:
+        path: /anything/graphql
+      forward:
+        headers_allow: ["Content-Type"]
+
+    # The two upload routes are separate so each aspect is independently
+    # addressable; both ride the 'upload' anchor's raised body cap.
+    - id: httpbin-upload-small
+      anchor: upload
+      match:
+        path_prefix: /upload/small
+        methods: ["POST"]
+      upstream:
+        path: /anything/upload-small
+      forward:
+        headers_allow: ["Content-Type"]
+
+    - id: httpbin-upload-large
+      anchor: upload
+      match:
+        path_prefix: /upload/large
+        methods: ["POST"]
+      upstream:
+        path: /anything/upload-large
+      forward:
+        headers_allow: ["Content-Type"]
