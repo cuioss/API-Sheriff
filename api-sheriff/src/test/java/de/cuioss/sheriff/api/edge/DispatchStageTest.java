@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 
+import de.cuioss.sheriff.api.asset.AssetSource;
 import de.cuioss.sheriff.api.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.api.asset.PathConfinement;
 import de.cuioss.sheriff.api.asset.UpstreamAssetSource;
@@ -289,7 +290,7 @@ class DispatchStageTest {
             Files.writeString(root.resolve("app.css"), "body{color:red}");
             DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC);
 
-            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.GET, "/app.css");
+            AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.GET, "/app.css");
 
             assertEquals(200, served.status());
             assertEquals("text/css; charset=utf-8", served.headers().get("Content-Type"),
@@ -304,7 +305,7 @@ class DispatchStageTest {
             Files.writeString(root.resolve("app.css"), "body{color:red}");
             DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC);
 
-            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.HEAD, "/app.css");
+            AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.HEAD, "/app.css");
 
             assertEquals(200, served.status());
             assertEquals(0, served.body().length, "a HEAD response carries the governed headers but no body");
@@ -316,7 +317,7 @@ class DispatchStageTest {
             Files.writeString(root.resolve("app.css"), "body{}");
             DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC);
 
-            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.POST, "/app.css");
+            AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.POST, "/app.css");
 
             assertEquals(405, served.status(), "an asset action serves only GET and HEAD");
         }
@@ -331,7 +332,7 @@ class DispatchStageTest {
             UpstreamAssetSource source = new UpstreamAssetSource(upstream, AccessLevel.AUTHENTICATED,
                     new PathConfinement(), fetcher, 1024L);
 
-            DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, HttpMethod.GET, "/logo.png");
+            AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.GET, "/logo.png");
 
             assertEquals(200, served.status());
             assertEquals("image/png", served.headers().get("Content-Type"),

@@ -442,11 +442,11 @@ public class GatewayEdgeRoute {
     private void serveAsset(RoutingContext ctx, PipelineRequest request, RouteRuntime route, String remainder) {
         AssetSource source = route.getAssetSource()
                 .orElseThrow(() -> new IllegalStateException("asset dispatch requires an asset source"));
-        DispatchStage.AssetDispatch served = DispatchStage.serveAsset(source, request.method(), remainder);
+        AssetSource.Served served = DispatchStage.serveAsset(source, request.method(), remainder);
         writeBufferedAsset(ctx, request, served);
     }
 
-    private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, DispatchStage.AssetDispatch served) {
+    private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served) {
         Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();

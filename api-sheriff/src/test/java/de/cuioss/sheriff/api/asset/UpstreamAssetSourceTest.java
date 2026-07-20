@@ -89,7 +89,7 @@ class UpstreamAssetSourceTest {
     void shouldOverrideHostileContentType() {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Content-Type", "text/html-but-evil"), BODY);
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertAll(
                 () -> assertEquals(OK, served.status()),
@@ -106,7 +106,7 @@ class UpstreamAssetSourceTest {
     void shouldStripUpstreamSetCookie() {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Set-Cookie", "SID=1; HttpOnly", "X-Keep", "yes"), BODY);
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertAll(
                 () -> assertFalse(served.headers().keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
@@ -119,7 +119,7 @@ class UpstreamAssetSourceTest {
     void shouldForceNoStoreForAuthenticatedOverUpstreamPublic() {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Cache-Control", "public, max-age=99999"), BODY);
 
-        UpstreamAssetSource.Served served =
+        AssetSource.Served served =
                 source(AccessLevel.AUTHENTICATED, fetcher).serve(HttpMethod.GET, "secret.json");
 
         assertEquals(AssetResponseEnvelope.NO_STORE, served.headers().get(AssetResponseEnvelope.CACHE_CONTROL),
@@ -131,7 +131,7 @@ class UpstreamAssetSourceTest {
     void shouldKeepUpstreamCachingForPublicAccess() {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Cache-Control", "public, max-age=600"), BODY);
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "logo.png");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "logo.png");
 
         assertEquals("public, max-age=600", served.headers().get(AssetResponseEnvelope.CACHE_CONTROL));
     }
@@ -139,7 +139,7 @@ class UpstreamAssetSourceTest {
     @Test
     @DisplayName("Should confine the remainder and never touch the upstream on an out-of-root escape")
     void shouldConfineBeforeTouchingUpstream() {
-        UpstreamAssetSource.Served served =
+        AssetSource.Served served =
                 source(AccessLevel.PUBLIC, mustNotFetch()).serve(HttpMethod.GET, "../../secret");
 
         assertEquals(NOT_FOUND, served.status(), "an escape must be denied before the upstream is touched");
@@ -152,7 +152,7 @@ class UpstreamAssetSourceTest {
         UpstreamAssetSource source = new UpstreamAssetSource(
                 fileScheme, AccessLevel.PUBLIC, new PathConfinement(), mustNotFetch(), MAX_BYTES);
 
-        UpstreamAssetSource.Served served = source.serve(HttpMethod.GET, "app.js");
+        AssetSource.Served served = source.serve(HttpMethod.GET, "app.js");
 
         assertEquals(BAD_GATEWAY, served.status(), "only http/https are allowlisted egress schemes");
     }
@@ -160,7 +160,7 @@ class UpstreamAssetSourceTest {
     @Test
     @DisplayName("Should reject a write verb without touching the upstream")
     void shouldRejectWriteVerb() {
-        UpstreamAssetSource.Served served =
+        AssetSource.Served served =
                 source(AccessLevel.PUBLIC, mustNotFetch()).serve(HttpMethod.POST, "app.js");
 
         assertEquals(METHOD_NOT_ALLOWED, served.status());
@@ -172,7 +172,7 @@ class UpstreamAssetSourceTest {
         UpstreamFetcher fetcher = cannedFetcher(FOUND,
                 headers("Location", "https://evil.internal/loot"), new byte[0]);
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertAll(
                 () -> assertEquals(FOUND, served.status(), "the 302 is surfaced, not followed"),
@@ -185,7 +185,7 @@ class UpstreamAssetSourceTest {
         byte[] oversized = new byte[(int) MAX_BYTES + 1];
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Content-Type", "text/plain"), oversized);
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "big.bin");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "big.bin");
 
         assertEquals(PAYLOAD_TOO_LARGE, served.status(), "a body over the cap is refused");
     }
@@ -197,7 +197,7 @@ class UpstreamAssetSourceTest {
             throw new UpstreamFetcher.UpstreamTimeoutException(new HttpTimeoutException("slow"));
         };
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertEquals(GATEWAY_TIMEOUT, served.status());
     }
@@ -207,7 +207,7 @@ class UpstreamAssetSourceTest {
     void shouldServeHeadWithoutBody() {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Content-Type", "text/plain"), BODY);
 
-        UpstreamAssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.HEAD, "app.js");
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.HEAD, "app.js");
 
         assertAll(
                 () -> assertEquals(OK, served.status()),
@@ -242,7 +242,7 @@ class UpstreamAssetSourceTest {
             return new UpstreamFetcher.Fetched(OK, headers("Content-Type", "text/plain"), BODY);
         };
 
-        UpstreamAssetSource.Served served =
+        AssetSource.Served served =
                 source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "nested/app.js");
 
         assertEquals(OK, served.status());

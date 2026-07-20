@@ -29,8 +29,6 @@ import java.util.function.LongSupplier;
 
 
 import de.cuioss.sheriff.api.asset.AssetSource;
-import de.cuioss.sheriff.api.asset.DirectoryAssetSource;
-import de.cuioss.sheriff.api.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
@@ -145,64 +143,25 @@ public final class DispatchStage {
     }
 
     /**
-     * Serves an asset route's terminal action, adapting the source-specific served response
-     * to the gateway-uniform {@link AssetDispatch}.
+     * Serves an asset route's terminal action.
      * <p>
-     * The two sealed {@link AssetSource} kinds each apply their own gateway-owned
-     * {@code PathConfinement} and {@code AssetResponseEnvelope} governance before returning,
-     * so this method only routes to the matching source and normalizes the buffered result.
-     * The auth-before-source-resolution ordering is guaranteed by the caller: the edge
-     * pipeline authenticates and authorizes the request (stage 4) before this method is
-     * reached, so an unauthorized request never triggers a directory read or an upstream fetch.
+     * The {@link AssetSource} implementation applies its own gateway-owned
+     * {@code PathConfinement} and {@code AssetResponseEnvelope} governance before returning, so
+     * this method only forwards to the source. The auth-before-source-resolution ordering is
+     * guaranteed by the caller: the edge pipeline authenticates and authorizes the request
+     * (stage 4) before this method is reached, so an unauthorized request never triggers a
+     * directory read or an upstream fetch.
      *
      * @param source  the route's live asset source (directory or upstream)
      * @param method  the request verb; only {@code GET} and {@code HEAD} are served
      * @param subPath the request path remainder after the route prefix is stripped
      * @return the gateway-governed, buffered asset response
      */
-    public static AssetDispatch serveAsset(AssetSource source, HttpMethod method, String subPath) {
+    public static AssetSource.Served serveAsset(AssetSource source, HttpMethod method, String subPath) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(subPath, "subPath");
-        return switch (source) {
-            case DirectoryAssetSource directory -> {
-                DirectoryAssetSource.Served served = directory.serve(method, subPath);
-                yield new AssetDispatch(served.status(), served.headers(), served.body());
-            }
-            case UpstreamAssetSource upstream -> {
-                UpstreamAssetSource.Served served = upstream.serve(method, subPath);
-                yield new AssetDispatch(served.status(), served.headers(), served.body());
-            }
-        };
-    }
-
-    /**
-     * A gateway-governed, fully-buffered asset response — the source-agnostic result of the
-     * asset terminal action, ready for the edge to write back verbatim.
-     *
-     * @param status  the HTTP status code
-     * @param headers the gateway-governed response headers
-     * @param body    the response body; empty for {@code HEAD} and every non-200 outcome
-     * @author API Sheriff Team
-     * @since 1.0
-     */
-    public record AssetDispatch(int status, Map<String, String> headers, byte[] body) {
-
-        /**
-         * Canonical constructor defensively copying the headers and body.
-         */
-        public AssetDispatch {
-            headers = Map.copyOf(Objects.requireNonNull(headers, "headers"));
-            body = Objects.requireNonNull(body, "body").clone();
-        }
-
-        /**
-         * @return a defensive copy of the response body
-         */
-        @Override
-        public byte[] body() {
-            return body.clone();
-        }
+        return source.serve(method, subPath);
     }
 
     /**

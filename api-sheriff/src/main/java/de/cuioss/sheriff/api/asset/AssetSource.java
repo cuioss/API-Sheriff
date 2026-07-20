@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.asset;
 
 import java.util.Map;
+import java.util.Objects;
 
 
 import de.cuioss.sheriff.api.config.model.AccessLevel;
@@ -48,4 +49,44 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
  * @since 1.0
  */
 public sealed interface AssetSource permits DirectoryAssetSource, UpstreamAssetSource {
+
+    /**
+     * Serves the confined asset addressed by {@code subPath}.
+     *
+     * @param method  the request verb; only {@code GET} and {@code HEAD} are served
+     * @param subPath the untrusted request sub-path relative to the source's root
+     * @return the governed {@link Served} response
+     */
+    Served serve(HttpMethod method, String subPath);
+
+    /**
+     * A gateway-governed asset response — the shared shape both {@link AssetSource}
+     * implementations and the edge dispatcher use, from the raw source read through
+     * the buffered write-back.
+     *
+     * @param status  the HTTP status code
+     * @param headers the governed response headers (never source-dictated)
+     * @param body    the response body; empty for {@code HEAD} and every non-200
+     *                outcome
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    record Served(int status, Map<String, String> headers, byte[] body) {
+
+        /**
+         * Canonical constructor defensively copying the headers and body.
+         */
+        public Served {
+            headers = Map.copyOf(Objects.requireNonNull(headers, "headers"));
+            body = Objects.requireNonNull(body, "body").clone();
+        }
+
+        /**
+         * @return a defensive copy of the response body
+         */
+        @Override
+        public byte[] body() {
+            return body.clone();
+        }
+    }
 }

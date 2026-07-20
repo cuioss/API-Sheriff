@@ -68,7 +68,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should serve an in-root file with body and the governed envelope")
     void shouldServeInRootFile() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.GET, "index.html");
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "index.html");
 
         assertAll(
                 () -> assertEquals(OK, served.status(), "an in-root file should serve 200"),
@@ -84,7 +84,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should resolve the content type from the fixed map for a nested asset")
     void shouldResolveContentTypeFromMap() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.GET, "assets/app.css");
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "assets/app.css");
 
         assertAll(
                 () -> assertEquals(OK, served.status()),
@@ -95,7 +95,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should deny an out-of-root traversal with 404 and never read the sentinel")
     void shouldDenyOutOfRootTraversal() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.GET, "../secret.txt");
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "../secret.txt");
 
         assertAll(
                 () -> assertEquals(NOT_FOUND, served.status(), "an escape attempt must be denied"),
@@ -105,7 +105,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should return 404 for an in-root file that does not exist")
     void shouldReturnNotFoundForMissingFile() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.GET, "missing.js");
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "missing.js");
 
         assertEquals(NOT_FOUND, served.status(), "a missing in-root file is a 404");
     }
@@ -115,7 +115,7 @@ class DirectoryAssetSourceTest {
     void shouldForceNoStoreForAuthenticatedRoute() {
         DirectoryAssetSource authenticated = new DirectoryAssetSource(root, AccessLevel.AUTHENTICATED);
 
-        DirectoryAssetSource.Served served = authenticated.serve(HttpMethod.GET, "index.html");
+        AssetSource.Served served = authenticated.serve(HttpMethod.GET, "index.html");
 
         assertAll(
                 () -> assertEquals(OK, served.status()),
@@ -127,7 +127,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should not force no-store for a public route")
     void shouldNotForceNoStoreForPublicRoute() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.GET, "index.html");
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "index.html");
 
         assertNotEquals(AssetResponseEnvelope.NO_STORE,
                 served.headers().get(AssetResponseEnvelope.CACHE_CONTROL),
@@ -137,7 +137,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should serve HEAD with the governed headers and an empty body")
     void shouldServeHeadWithoutBody() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.HEAD, "index.html");
+        AssetSource.Served served = publicSource().serve(HttpMethod.HEAD, "index.html");
 
         assertAll(
                 () -> assertEquals(OK, served.status()),
@@ -150,7 +150,7 @@ class DirectoryAssetSourceTest {
     @Test
     @DisplayName("Should reject a write verb with 405")
     void shouldRejectWriteVerb() {
-        DirectoryAssetSource.Served served = publicSource().serve(HttpMethod.POST, "index.html");
+        AssetSource.Served served = publicSource().serve(HttpMethod.POST, "index.html");
 
         assertEquals(METHOD_NOT_ALLOWED, served.status(), "POST must be rejected 405");
     }

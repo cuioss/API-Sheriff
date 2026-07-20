@@ -130,6 +130,7 @@ public final class UpstreamAssetSource implements AssetSource {
      *         scheme or fetch error, {@code 504} on a timeout, {@code 413} for an
      *         oversized body, otherwise the governed upstream status
      */
+    @Override
     public Served serve(HttpMethod method, String remainder) {
         Objects.requireNonNull(method, "method");
         if (!AssetResponseEnvelope.isAllowedMethod(method)) {
@@ -296,35 +297,6 @@ public final class UpstreamAssetSource implements AssetSource {
             public UpstreamTimeoutException(Throwable cause) {
                 super("upstream fetch timed out", cause);
             }
-        }
-    }
-
-    /**
-     * A gateway-governed upstream-asset response.
-     *
-     * @param status  the (governed) HTTP status code
-     * @param headers the governed response headers (never upstream-dictated)
-     * @param body    the response body; empty for {@code HEAD}, a non-2xx upstream
-     *                status, and every rejection
-     * @author API Sheriff Team
-     * @since 1.0
-     */
-    public record Served(int status, Map<String, String> headers, byte[] body) {
-
-        /**
-         * Canonical constructor defensively copying the headers and body.
-         */
-        public Served {
-            headers = Map.copyOf(Objects.requireNonNull(headers, "headers"));
-            body = Objects.requireNonNull(body, "body").clone();
-        }
-
-        /**
-         * @return a defensive copy of the response body
-         */
-        @Override
-        public byte[] body() {
-            return body.clone();
         }
     }
 }

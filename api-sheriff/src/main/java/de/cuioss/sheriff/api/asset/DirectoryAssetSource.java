@@ -99,6 +99,7 @@ public final class DirectoryAssetSource implements AssetSource {
      *         {@code 404} for a confinement rejection or a missing file, {@code 413}
      *         for an oversized file, {@code 500} on a read error, otherwise {@code 200}
      */
+    @Override
     public Served serve(HttpMethod method, String subPath) {
         Objects.requireNonNull(method, "method");
         if (!AssetResponseEnvelope.isAllowedMethod(method)) {
@@ -122,35 +123,6 @@ public final class DirectoryAssetSource implements AssetSource {
             return new Served(OK, headers, body);
         } catch (IOException readFailure) {
             return new Served(SERVER_ERROR, Map.of(), EMPTY_BODY);
-        }
-    }
-
-    /**
-     * A gateway-governed directory-asset response.
-     *
-     * @param status  the HTTP status code
-     * @param headers the governed response headers (never source-dictated)
-     * @param body    the response body; empty for {@code HEAD} and every non-200
-     *                outcome
-     * @author API Sheriff Team
-     * @since 1.0
-     */
-    public record Served(int status, Map<String, String> headers, byte[] body) {
-
-        /**
-         * Canonical constructor defensively copying the headers and body.
-         */
-        public Served {
-            headers = Map.copyOf(Objects.requireNonNull(headers, "headers"));
-            body = Objects.requireNonNull(body, "body").clone();
-        }
-
-        /**
-         * @return a defensive copy of the response body
-         */
-        @Override
-        public byte[] body() {
-            return body.clone();
         }
     }
 }
