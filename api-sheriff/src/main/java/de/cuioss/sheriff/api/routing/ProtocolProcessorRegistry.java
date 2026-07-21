@@ -28,9 +28,10 @@ import de.cuioss.sheriff.api.events.GatewayException;
 /**
  * Boot-time registry mapping each supported {@link Protocol} to its {@link ProtocolProcessor}.
  * {@code HTTP} and {@code GRAPHQL} share a single {@link HttpProtocolProcessor} instance;
- * {@code WEBSOCKET} is served by a dedicated {@link WebSocketProtocolProcessor}. {@code GRPC}
- * remains deliberately absent, so {@link #require(Protocol, String)} fails boot with a clear
- * not-yet-implemented error for a route requesting it (until deliverable 6 registers it).
+ * {@code WEBSOCKET} is served by a dedicated {@link WebSocketProtocolProcessor}, and {@code GRPC}
+ * by a dedicated {@link GrpcProtocolProcessor}. Every supported protocol is now registered, so
+ * {@link #require(Protocol, String)} only fails boot for a protocol that is genuinely absent from
+ * the {@link Protocol} enum's served set.
  * <p>
  * A {@code protocol: websocket} route with {@code session} auth is still boot-rejected upstream by
  * {@code RouteRuntimeAssembler} (session-auth WebSocket routes remain unimplemented until Plan 07);
@@ -45,7 +46,8 @@ public final class ProtocolProcessorRegistry {
 
     /**
      * Builds the default registry: a shared HTTP processor for {@code HTTP} and {@code GRAPHQL},
-     * plus a dedicated WebSocket processor for {@code WEBSOCKET}.
+     * a dedicated WebSocket processor for {@code WEBSOCKET}, and a dedicated gRPC processor for
+     * {@code GRPC}.
      */
     public ProtocolProcessorRegistry() {
         HttpProtocolProcessor http = new HttpProtocolProcessor();
@@ -53,12 +55,12 @@ public final class ProtocolProcessorRegistry {
         map.put(Protocol.HTTP, http);
         map.put(Protocol.GRAPHQL, http);
         map.put(Protocol.WEBSOCKET, new WebSocketProtocolProcessor());
+        map.put(Protocol.GRPC, new GrpcProtocolProcessor());
         this.processors = Collections.unmodifiableMap(map);
     }
 
     /**
-     * Resolves the processor for a route's protocol, failing boot when the protocol is not
-     * yet implemented ({@code GRPC}).
+     * Resolves the processor for a route's protocol, failing boot when the protocol is not served.
      *
      * @param protocol the route's effective protocol
      * @param routeId  the route id, for the failure message

@@ -79,9 +79,12 @@ import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -165,6 +168,7 @@ public class GatewayEdgeRoute {
     private final ResponseStage responseStage;
     private final OriginValidationStage originValidationStage;
     private final WebSocketRelayStage webSocketRelayStage;
+    private final GrpcStatusMapper grpcStatusMapper;
 
     private final Semaphore admission;
     private final AtomicInteger inFlight = new AtomicInteger();
@@ -217,7 +221,7 @@ public class GatewayEdgeRoute {
         RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
         this.routes = assembler.assemble(routeTable,
                 GatewayEdgeRoute::securityConfigurationFor,
-                _ -> vertx.createHttpClient(),
+                target -> clientFor(vertx, target),
                 this::guardFor,
                 GatewayEdgeRoute::assetSourceFor);
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
@@ -234,6 +238,7 @@ public class GatewayEdgeRoute {
         this.responseStage = new ResponseStage();
         this.originValidationStage = new OriginValidationStage();
         this.webSocketRelayStage = new WebSocketRelayStage(upstreamFailureMapper, gatewayEventCounter);
+        this.grpcStatusMapper = new GrpcStatusMapper();
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
         // security-filter counts surface as sheriff_security_events_total, completing the fixed
@@ -386,10 +391,12 @@ public class GatewayEdgeRoute {
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
                     route.getEffectiveForward(), route.isNotModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
-            // upgrade to the opaque relay instead of the HTTP DispatchStage (deliverable 6 extends
-            // this branch for gRPC). Every other protocol takes the HTTP dispatch path.
+            // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
+            // and relays response trailers. Every other protocol takes the HTTP dispatch path.
             if (route.getProtocol() == Protocol.WEBSOCKET) {
                 dispatchWebSocket(ctx, request, route, forward);
+            } else if (route.getProtocol() == Protocol.GRPC) {
+                dispatchGrpc(ctx, request, route, forward);
             } else {
                 dispatchAndRelay(ctx, request, route, forward);
             }
@@ -404,7 +411,7 @@ public class GatewayEdgeRoute {
                 LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
             }
             recordError(ctx, rejected.getEventType());
-            renderProblem(ctx, request, rejected.getEventType());
+            renderRejection(ctx, request, rejected.getEventType());
         } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             renderProblem(ctx, request, null);
@@ -464,6 +471,38 @@ public class GatewayEdgeRoute {
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
         webSocketRelayStage.relay(ctx, route, forward.headers(), uri);
+    }
+
+    /**
+     * Dispatches a {@code protocol: grpc} route: streams the request opaquely to the forced-h2
+     * upstream via {@link GrpcDispatchStage}, then relays the upstream response — including its
+     * {@code grpc-status} / {@code grpc-message} trailers — with {@link ResponseStage#relayWithTrailers}.
+     * A dispatch failure (including an h2-negotiation failure) surfaces as a {@link GatewayException}
+     * that {@link #renderRejection} renders as a trailers-only gRPC status rather than problem+json.
+     */
+    private void dispatchGrpc(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
+            ForwardPolicyStage.Result forward) {
+        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
+        String canonical = requireCanonicalPath(request);
+        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String query = renderQuery(forward.query());
+        ResolvedUpstream upstreamTarget = route.getUpstream()
+                .orElseThrow(() -> new IllegalStateException("gRPC dispatch requires a resolved upstream"));
+        String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
+        long cap = route.getSecurityConfiguration().map(SecurityConfiguration::maxBodySize).orElse(defaultMaxBodySize);
+
+        GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(cap, upstreamFailureMapper);
+        long upstreamStartNanos = System.nanoTime();
+        HttpClientResponse upstream = grpcDispatchStage.dispatch(route, request.method(), uri, forward.headers(),
+                ctx.request());
+        sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
+        gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
+        // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
+        // like the HTTP relay path.
+        ctx.vertx().runOnContext(v ->
+                responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
+                                request.responseHeaders())
+                        .onFailure(failure -> failRelay(ctx, failure)));
     }
 
     /**
@@ -527,6 +566,22 @@ public class GatewayEdgeRoute {
             responseHeaders.forEach(response::putHeader);
             response.end();
         });
+    }
+
+    /**
+     * Renders a post-route-resolution rejection: a {@code protocol: grpc} route emits a trailers-only
+     * gRPC status via {@link GrpcStatusMapper} (a gRPC client cannot consume problem+json), every
+     * other route renders the RFC 9457 problem+json response. A rejection that fires before route
+     * selection (no selected route) always renders problem+json.
+     */
+    private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
+        RouteRuntime selected = request != null ? request.selectedRoute() : null;
+        if (selected != null && selected.getProtocol() == Protocol.GRPC) {
+            Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+            ctx.vertx().runOnContext(v -> grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders));
+            return;
+        }
+        renderProblem(ctx, request, eventType);
     }
 
     private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
@@ -670,6 +725,26 @@ public class GatewayEdgeRoute {
                             () -> new IllegalStateException("upstream asset source requires a resolved upstream")),
                     asset.access());
         };
+    }
+
+    /**
+     * Builds the shared Vert.x client for an upstream-target tuple. A gRPC route's tuple carries the
+     * {@code forcedHttp2} flag, so it gets a client forced to HTTP/2 (h2 over TLS with ALPN, or
+     * prior-knowledge h2c in cleartext) — gRPC requires HTTP/2 end-to-end. Every other tuple gets the
+     * default client (HTTP/1.1 with h2 upgrade negotiation).
+     */
+    private static HttpClient clientFor(Vertx vertx, RouteRuntimeAssembler.UpstreamTarget target) {
+        if (!target.forcedHttp2()) {
+            return vertx.createHttpClient();
+        }
+        HttpClientOptions options = new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2);
+        if ("https".equalsIgnoreCase(target.scheme())) {
+            options.setSsl(true).setUseAlpn(true);
+        } else {
+            // Prior-knowledge h2c: skip the HTTP/1.1 Upgrade dance and speak HTTP/2 in cleartext.
+            options.setHttp2ClearTextUpgrade(false);
+        }
+        return vertx.createHttpClient(options);
     }
 
     /**

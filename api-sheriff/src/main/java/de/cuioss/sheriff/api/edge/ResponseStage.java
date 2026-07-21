@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.Set;
 
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerResponse;
 
@@ -94,6 +95,58 @@ public final class ResponseStage {
         stageZeroSecurityHeaders.forEach((name, value) -> client.headers().set(name, value));
         applyResponseFraming(upstream, client);
         return upstream.pipeTo(client);
+    }
+
+    /**
+     * Relays the upstream response to the client <strong>including its trailing headers</strong> —
+     * the gRPC path, where {@code grpc-status} / {@code grpc-message} are carried in the HTTP/2
+     * response trailers (or, in the trailers-only case, the leading headers). The status and filtered
+     * headers are copied exactly as {@link #relay}, then the body is streamed with the client response
+     * held open ({@code endOnComplete(false)}); once the upstream body — and therefore its trailers —
+     * has fully arrived, the upstream trailers are copied onto the client response and it is ended, so
+     * the client observes the gRPC status. The response is set chunked so trailers are framed on an
+     * HTTP/1.1 client (HTTP/2 ignores the flag and frames trailers natively).
+     *
+     * @param upstream                 the upstream response (body + trailers still streaming)
+     * @param client                   the client response write stream
+     * @param notModifiedEnabled       whether the route honours conditional requests / responses
+     * @param stageZeroSecurityHeaders the stage-0 security headers accumulated on the response
+     * @return a future completing when the body and trailers have been fully relayed
+     */
+    public Future<Void> relayWithTrailers(HttpClientResponse upstream, HttpServerResponse client,
+            boolean notModifiedEnabled, Map<String, String> stageZeroSecurityHeaders) {
+        Objects.requireNonNull(upstream, "upstream");
+        Objects.requireNonNull(client, "client");
+        Objects.requireNonNull(stageZeroSecurityHeaders, "stageZeroSecurityHeaders");
+
+        client.setStatusCode(upstream.statusCode());
+        for (Map.Entry<String, String> header : upstream.headers()) {
+            if (isForwardableResponseHeader(header.getKey(), notModifiedEnabled)) {
+                client.headers().add(header.getKey(), header.getValue());
+            }
+        }
+        stageZeroSecurityHeaders.forEach((name, value) -> client.headers().set(name, value));
+        // gRPC trailers require a chunked (HTTP/1.1) or HTTP/2 response frame.
+        client.setChunked(true);
+
+        Promise<Void> relayed = Promise.promise();
+        upstream.pipe().endOnComplete(false).to(client).onComplete(piped -> {
+            if (piped.failed()) {
+                relayed.fail(piped.cause());
+                return;
+            }
+            for (Map.Entry<String, String> trailer : upstream.trailers()) {
+                client.putTrailer(trailer.getKey(), trailer.getValue());
+            }
+            client.end().onComplete(ended -> {
+                if (ended.succeeded()) {
+                    relayed.complete();
+                } else {
+                    relayed.fail(ended.cause());
+                }
+            });
+        });
+        return relayed.future();
     }
 
     /**

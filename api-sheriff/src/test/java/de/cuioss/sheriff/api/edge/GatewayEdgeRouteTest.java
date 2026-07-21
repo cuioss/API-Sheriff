@@ -131,19 +131,16 @@ class GatewayEdgeRouteTest {
     }
 
     @Test
-    @DisplayName("fails boot fast for a gRPC route (unsupported protocol)")
-    void failsBootForGrpcProtocol() {
+    @DisplayName("boots a gRPC route (now served by the gRPC processor)")
+    void bootsGrpcProtocol() {
         // Arrange
         RouteTable grpcTable = new RouteTable(List.of(
                 route("g", Protocol.GRPC, "none")));
 
-        // Act
-        GatewayException thrown = assertThrows(GatewayException.class, () -> newEdge(grpcTable),
-                "gRPC is unsupported and must fail boot");
-
-        // Assert
-        assertEquals(EventType.CONFIG_INVALID, thrown.getEventType(),
-                "A gRPC route is rejected as an invalid configuration");
+        // Act + Assert — GRPC is now registered, so a gRPC route assembles cleanly at boot (the boot
+        // rejection was removed with the gRPC processor).
+        assertDoesNotThrow(() -> newEdge(grpcTable),
+                "A gRPC route is served by the registered gRPC processor and boots cleanly");
     }
 
     @Test
