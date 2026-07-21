@@ -306,6 +306,33 @@ names the category but leaks no internal detail. The consolidated status mapping
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
 |===
 
+[[_grpc_error_contract]]
+==== gRPC rejections (trailers-only)
+
+A gRPC client cannot consume an `application/problem+json` body -- the RPC runtime only surfaces
+the gRPC status carried in the response *trailers*. So a gateway-generated rejection on a
+`protocol: grpc` route is *not* rendered as problem+json; it is emitted as a *trailers-only* gRPC
+response: an HTTP/2 response whose HEADERS frame carries `grpc-status` (and `grpc-message`) with
+*no message body and no DATA frame* (the gRPC "Trailers-Only" case). The gateway maps the same
+rejection it would render as an HTTP status for an HTTP route onto the canonical gRPC status:
+
+[cols="1,1,3"]
+|===
+| gRPC status | code | Gateway rejection (the HTTP status the same cause renders on an HTTP route)
+
+| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits, body size)
+| `UNAUTHENTICATED`    | 16 | `401` -- missing/invalid bearer token; invalid or expired session on a non-navigation request
+| `PERMISSION_DENIED`  | 7  | `403` -- valid credentials lacking a required scope; failed CSRF origin check
+| `NOT_FOUND`          | 5  | `404` -- no route matched (deny-by-default routing); reserved-for-passthrough `Host`; disabled endpoint
+| `UNIMPLEMENTED`      | 12 | `405` -- request method not in the matched route's effective `allowed_methods` allowlist
+| `UNAVAILABLE`        | 14 | `502` / `503` -- upstream connection failure / invalid upstream response, or circuit breaker open; *also* an HTTP/2 negotiation failure at dispatch (the forced-h2 upstream dial could not establish `h2`)
+| `DEADLINE_EXCEEDED`  | 4  | `504` -- upstream timeout (`connect_timeout_ms` / `read_timeout_ms`)
+|===
+
+The `429` (rate-limit, reserved) row has no gRPC mapping -- the feature is out of scope. Trailers
+carry the category name only, never internal detail, exactly as the problem+json contract does for
+HTTP routes.
+
 [[_metrics]]
 == Metrics
 
@@ -367,15 +394,28 @@ HTTP/3 / QUIC is deferred.
 | Core request/response. HTTP/2 is negotiated via ALPN (`h2`) on terminated TLS.
 
 | WebSocket
-| Proxied bidirectionally (Quarkus/Vert.x). Authentication is enforced on the handshake; the
-  established stream is relayed. A differentiator against the evaluated competitors (see
-  link:features-analysis.adoc[Feature Analysis]).
+| Proxied bidirectionally (Quarkus/Vert.x). The full inbound pipeline (security filter, auth,
+  forward policy) runs on the HTTP *upgrade* request *before* `101 Switching Protocols` is
+  returned, so authentication is enforced at *handshake time*. On a bearer WebSocket route the
+  client `Origin` is validated against the route's
+  link:configuration.adoc#_allowed_origins[`allowed_origins`] allowlist (exact match, fail-closed)
+  *before* the upstream is dialled. After `101` the connection is an *opaque bidirectional relay*
+  -- frames are forwarded verbatim in both directions and never inspected -- bounded by the
+  per-route link:configuration.adoc#_websocket[`websocket.idle_timeout_seconds`] idle reclaim (no
+  frame in either direction for the window closes the relay; ping/pong counts as activity). A
+  differentiator against the evaluated competitors (see link:features-analysis.adoc[Feature
+  Analysis]).
 
 | gRPC (incl. gRPCS)
 | gRPC rides on HTTP/2, so it is largely covered by the standard HTTP/2 path: the gateway
-  proxies the `h2`/`h2c` stream and applies auth + header injection to the request. "gRPCS" is
-  gRPC over terminated TLS. Body-level (protobuf frame) inspection is out of scope -- the
-  security filter operates on HTTP metadata only.
+  proxies the stream and applies auth + header injection to the request. The upstream dial is
+  *forced to h2* (gRPC requires HTTP/2 end-to-end); the response *trailers* (`grpc-status`,
+  `grpc-message`) are relayed back to the client untouched. "gRPCS" is gRPC over terminated TLS.
+  Body-level (protobuf frame) inspection is out of scope -- the security filter operates on HTTP
+  metadata only, never the protobuf payload. Gateway-generated rejections on a `protocol: grpc`
+  route are emitted as *trailers-only* gRPC responses (see
+  link:#_grpc_error_contract[gRPC rejections]), because a gRPC client cannot consume
+  `application/problem+json`.
 
 | GraphQL
 | A single POST endpoint over standard HTTP; routed and forwarded like any HTTP route. The
