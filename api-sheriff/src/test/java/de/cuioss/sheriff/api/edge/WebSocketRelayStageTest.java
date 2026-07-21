@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.edge;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.lang.annotation.Annotation;
@@ -50,7 +51,6 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
-import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
@@ -227,7 +227,7 @@ class WebSocketRelayStageTest {
         echoed.get(15, TimeUnit.SECONDS);
 
         // Assert — the upstream handshake never saw the denied header
-        assertEquals(null, upstreamCustomHeader.get(),
+        assertNull(upstreamCustomHeader.get(),
                 "a header outside the deny-by-default forward allowlist is not relayed to the upstream");
     }
 

@@ -501,7 +501,7 @@ public class GatewayEdgeRoute {
         // like the HTTP relay path.
         ctx.vertx().runOnContext(v ->
                 responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                                request.responseHeaders())
+                        request.responseHeaders())
                         .onFailure(failure -> failRelay(ctx, failure)));
     }
 

@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.routing;
 
+import java.util.EnumSet;
 import java.util.Set;
 
 
@@ -32,7 +33,7 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
  */
 public final class WebSocketProtocolProcessor implements ProtocolProcessor {
 
-    private static final Set<HttpMethod> UPGRADE_METHODS = Set.of(HttpMethod.GET);
+    private static final Set<HttpMethod> UPGRADE_METHODS = EnumSet.of(HttpMethod.GET);
 
     @Override
     public String id() {

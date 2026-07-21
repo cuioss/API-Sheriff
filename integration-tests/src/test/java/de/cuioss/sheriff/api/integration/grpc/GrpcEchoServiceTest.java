@@ -21,14 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.time.Duration;
 import java.util.List;
 
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 
 /**
  * Isolated unit tests for {@link GrpcEchoService}. The service is exercised directly (no
@@ -97,8 +97,8 @@ class GrpcEchoServiceTest {
 
             // Assert
             assertEquals(1, responses.size());
-            assertEquals("one", responses.get(0).getMessage());
-            assertEquals(0, responses.get(0).getIndex());
+            assertEquals("one", responses.getFirst().getMessage());
+            assertEquals(0, responses.getFirst().getIndex());
         }
     }
 

@@ -171,7 +171,7 @@ public final class RouteTableBuilder {
         Set<String> allowedOrigins = effectiveAllowedOrigins(route);
         Optional<Integer> idleTimeout = protocol == Protocol.WEBSOCKET
                 ? Optional.of(route.websocket().flatMap(WebSocketConfig::idleTimeoutSeconds)
-                        .orElse(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS))
+                .orElse(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS))
                 : Optional.empty();
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())

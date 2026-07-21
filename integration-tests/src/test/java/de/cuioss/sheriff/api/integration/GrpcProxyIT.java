@@ -24,6 +24,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+
 import de.cuioss.sheriff.api.integration.grpc.EchoGrpc;
 import de.cuioss.sheriff.api.integration.grpc.EchoRequest;
 import de.cuioss.sheriff.api.integration.grpc.EchoResponse;
@@ -133,7 +134,7 @@ class GrpcProxyIT extends BaseIntegrationTest {
         assertEquals(Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode(),
                 "the upstream grpc-status must be relayed to the client unchanged");
         assertTrue(failure.getStatus().getDescription() != null
-                        && failure.getStatus().getDescription().contains("intentional failure"),
+                && failure.getStatus().getDescription().contains("intentional failure"),
                 "the upstream grpc-message trailer must be relayed to the client");
     }
 

@@ -29,7 +29,6 @@ import java.security.cert.X509Certificate;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -85,7 +84,7 @@ class WebSocketProxyIT extends BaseIntegrationTest {
         // JDK WebSocket client offers no equivalent one-liner, so a trust-all context is built here.
         // Scoped to this black-box IT against a throwaway local certificate — never production trust.
         SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, new TrustManager[] {new TrustAllManager()}, new SecureRandom());
+        sslContext.init(null, new TrustManager[]{new TrustAllManager()}, new SecureRandom());
         httpClient = HttpClient.newBuilder().sslContext(sslContext).build();
     }
 

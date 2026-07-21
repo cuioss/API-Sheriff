@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.net.ConnectException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -52,12 +53,14 @@ import de.cuioss.sheriff.api.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.api.routing.RouteRuntime;
 
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.streams.ReadStream;
 import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -141,13 +144,13 @@ class GrpcDispatchStageTest {
             // Assert — the forced-h2 flag splits the client-sharing tuple, so the two routes hold
             // distinct clients even though the host:port is identical.
             assertEquals(2, capturedTargets.size(), "two distinct upstream tuples build two clients");
-            assertTrue(capturedTargets.get(0).forcedHttp2(), "the gRPC route's upstream target is forced to HTTP/2");
+            assertTrue(capturedTargets.getFirst().forcedHttp2(), "the gRPC route's upstream target is forced to HTTP/2");
             assertFalse(capturedTargets.get(1).forcedHttp2(), "the HTTP route's upstream target is not forced to HTTP/2");
-            assertEquals(capturedTargets.get(0).host(), capturedTargets.get(1).host(),
+            assertEquals(capturedTargets.getFirst().host(), capturedTargets.get(1).host(),
                     "both targets address the same host");
-            assertEquals(capturedTargets.get(0).port(), capturedTargets.get(1).port(),
+            assertEquals(capturedTargets.getFirst().port(), capturedTargets.get(1).port(),
                     "both targets address the same port");
-            assertNotSame(runtimes.get(0).getHttpClient().orElseThrow(),
+            assertNotSame(runtimes.getFirst().getHttpClient().orElseThrow(),
                     runtimes.get(1).getHttpClient().orElseThrow(),
                     "a gRPC route gets a forced-h2 client distinct from the HTTP/1.1 client to the same host:port");
         }
@@ -166,8 +169,8 @@ class GrpcDispatchStageTest {
 
             // Assert — one forced-h2 tuple, one shared client
             assertEquals(1, capturedTargets.size(), "two gRPC routes to one host:port share a single forced-h2 tuple");
-            assertTrue(capturedTargets.get(0).forcedHttp2(), "the shared tuple is forced to HTTP/2");
-            assertSame(runtimes.get(0).getHttpClient().orElseThrow(),
+            assertTrue(capturedTargets.getFirst().forcedHttp2(), "the shared tuple is forced to HTTP/2");
+            assertSame(runtimes.getFirst().getHttpClient().orElseThrow(),
                     runtimes.get(1).getHttpClient().orElseThrow(),
                     "gRPC routes sharing a host:port reuse one forced-h2 client");
         }
@@ -184,7 +187,7 @@ class GrpcDispatchStageTest {
         @DisplayName("maps an h2-negotiation dial failure through UPSTREAM_ERROR to gRPC UNAVAILABLE")
         void mapsH2DialFailureToUnavailable() {
             // Arrange — a forced-h2 dial that could not establish h2 surfaces as a connection failure
-            Throwable h2DialFailure = new java.net.ConnectException("failed to negotiate h2 with upstream");
+            Throwable h2DialFailure = new ConnectException("failed to negotiate h2 with upstream");
 
             // Act — the failure classifies as UPSTREAM_ERROR (502), which renders as gRPC UNAVAILABLE
             EventType classified = failureMapper.classify(h2DialFailure);
@@ -361,9 +364,9 @@ class GrpcDispatchStageTest {
      * A minimal {@link io.vertx.core.streams.ReadStream} fake mirroring {@code DispatchStageTest}:
      * captures the handler the byte-cap decorator installs and lets a test push buffers synchronously.
      */
-    private static final class TestReadStream implements io.vertx.core.streams.ReadStream<Buffer> {
+    private static final class TestReadStream implements ReadStream<Buffer> {
 
-        private io.vertx.core.Handler<Buffer> handler;
+        private Handler<Buffer> handler;
 
         void emit(Buffer buffer) {
             if (handler != null) {
@@ -372,33 +375,33 @@ class GrpcDispatchStageTest {
         }
 
         @Override
-        public io.vertx.core.streams.ReadStream<Buffer> handler(io.vertx.core.Handler<Buffer> handler) {
+        public ReadStream<Buffer> handler(Handler<Buffer> handler) {
             this.handler = handler;
             return this;
         }
 
         @Override
-        public io.vertx.core.streams.ReadStream<Buffer> exceptionHandler(io.vertx.core.Handler<Throwable> handler) {
+        public ReadStream<Buffer> exceptionHandler(Handler<Throwable> handler) {
             return this;
         }
 
         @Override
-        public io.vertx.core.streams.ReadStream<Buffer> pause() {
+        public ReadStream<Buffer> pause() {
             return this;
         }
 
         @Override
-        public io.vertx.core.streams.ReadStream<Buffer> resume() {
+        public ReadStream<Buffer> resume() {
             return this;
         }
 
         @Override
-        public io.vertx.core.streams.ReadStream<Buffer> fetch(long amount) {
+        public ReadStream<Buffer> fetch(long amount) {
             return this;
         }
 
         @Override
-        public io.vertx.core.streams.ReadStream<Buffer> endHandler(io.vertx.core.Handler<Void> endHandler) {
+        public ReadStream<Buffer> endHandler(Handler<Void> endHandler) {
             return this;
         }
     }
