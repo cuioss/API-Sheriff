@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# gRPC test endpoint backing GrpcProxyIT (deliverable 11). Both routes relay to the in-repo
+# Quarkus gRPC echo upstream (GRPC_ECHO -> grpc-echo:9000, forced-h2). A gRPC method path is
+# /{package}.Echo/{Method}; the client rides it under the route's /grpc/<aspect> match prefix
+# (GrpcProxyIT installs a path-prefixing ClientInterceptor), which the gateway strips so the
+# upstream receives the bare /{package}.Echo/{Method} path. The deny-by-default forward stage
+# means the gRPC framing metadata (content-type: application/grpc, te, grpc-encoding, ...) and
+# the client's custom metadata must be allow-listed for the call to cross to the upstream;
+# set_headers additionally injects a gateway-side metadata header (the injection GrpcProxyIT
+# exercises alongside the client-attached metadata).
+endpoint:
+  id: grpc
+  enabled: true
+  base_url: GRPC_ECHO
+  anchor: grpc
+  routes:
+    # Public gRPC relay: unary + server-streaming echo and grpc-status/trailer relay from the
+    # intentionally failing method. The forward allowlist carries the gRPC framing headers the
+    # opaque relay must pass through, plus the client's x-echo-meta metadata; set_headers injects
+    # x-sheriff-injected toward the upstream.
+    - id: grpc-echo
+      protocol: grpc
+      match:
+        path_prefix: /grpc/echo
+      forward:
+        headers_allow:
+          ["content-type", "te", "grpc-encoding", "grpc-accept-encoding", "grpc-timeout",
+           "user-agent", "x-echo-meta"]
+        set_headers:
+          x-sheriff-injected: gateway
+
+    # Bearer-protected gRPC route (route-level auth strengthens the public anchor). A tokenless
+    # call is rejected UNAUTHENTICATED as a trailers-only gRPC response (a gRPC client cannot
+    # consume problem+json) at the offline bearer stage, before any upstream dial.
+    - id: grpc-bearer
+      protocol: grpc
+      auth:
+        require: bearer
+      match:
+        path_prefix: /grpc/secure
+      forward:
+        headers_allow:
+          ["content-type", "te", "grpc-encoding", "grpc-accept-encoding", "grpc-timeout",
+           "user-agent"]
