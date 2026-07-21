@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.api.config;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -812,6 +813,25 @@ class RouteTableBuilderTest {
             ResolvedRoute resolved = find(table, "r");
             assertTrue(resolved.upstream().isPresent(), "a proxy route resolves an upstream terminal action");
             assertTrue(resolved.asset().isEmpty(), "a proxy route carries no asset terminal action");
+        }
+
+        @Test
+        @DisplayName("Should resolve the empty-Optional (no-asset) path to the upstream action without throwing (S3655 guard)")
+        void shouldResolveNoAssetPathWithoutThrowing() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(route("proxy-only", HttpMethod.GET))).build();
+
+            RouteTable table = assertDoesNotThrow(
+                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")),
+                    "the empty-Optional asset branch must resolve the upstream action without throwing");
+
+            ResolvedRoute resolved = find(table, "proxy-only");
+            assertAll("empty-Optional asset branch drives the upstream terminal action",
+                    () -> assertTrue(resolved.asset().isEmpty(), "the no-asset path leaves the asset action empty"),
+                    () -> assertTrue(resolved.upstream().isPresent(),
+                            "the guarded empty-asset branch resolves the upstream terminal action"),
+                    () -> assertEquals("orders.internal", resolved.upstream().orElseThrow().host(),
+                            "the resolved upstream host is driven from the guarded empty-asset branch"));
         }
     }
 

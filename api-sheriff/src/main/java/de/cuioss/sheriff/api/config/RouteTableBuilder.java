@@ -175,8 +175,9 @@ public final class RouteTableBuilder {
         // A route resolves to exactly one terminal action: an asset action (when the route
         // declares an asset block) is materialized here; otherwise the route proxies to its
         // endpoint upstream. ADR-0014: upstream XOR asset.
-        if (route.asset().isPresent()) {
-            builder.asset(Optional.of(resolveAsset(route, route.asset().get(), anchor, auth, topology)));
+        Optional<AssetConfig> asset = route.asset();
+        if (asset.isPresent()) {
+            builder.asset(Optional.of(resolveAsset(route, asset.get(), anchor, auth, topology)));
         } else {
             builder.upstream(Optional.of(upstream));
         }
