@@ -27,7 +27,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
+import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -315,5 +318,90 @@ class ConfigProducerTest {
         assertEquals(1, table.routes().size(), "the asset route is merged into the table");
         assertTrue(table.routes().getFirst().asset().isPresent(),
                 "the asset terminal action is materialized onto the resolved route");
+    }
+
+    /**
+     * A {@code source: upstream} asset route (the {@code /assets/cdn} shape from the integration
+     * config) whose upstream alias is declared in {@code topology.properties} must assemble cleanly
+     * through the startup path. An asset route's upstream is a per-route topology reference that the
+     * proxy-oriented {@code base_url} collection does not see, so {@code ConfigProducer} has to gather
+     * it into the topology-resolution set — otherwise a well-formed upstream asset route is rejected
+     * as unresolved. Asserting the decomposed upstream is materialized onto the route proves the alias
+     * reached the resolver and resolved (ADR-0014).
+     */
+    @Test
+    void shouldAssembleUpstreamAssetRouteWhenAliasIsDeclaredInTopology() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("""
+                WEB_BACKEND=https://web.internal:8443
+                ASSET_ORIGIN=http://asset-origin:80
+                """);
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: assets-upstream
+                      match:
+                        path_prefix: /assets
+                      asset:
+                        source: upstream
+                        upstream: ASSET_ORIGIN
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "an upstream asset route whose alias is declared in the topology must assemble without failing startup");
+        RouteTable table = producer.routeTable();
+        assertEquals(1, table.routes().size(), "the upstream asset route is merged into the table");
+        ResolvedAsset asset = table.routes().getFirst().asset()
+                .orElseThrow(() -> new AssertionError("the asset terminal action is materialized onto the resolved route"));
+        assertEquals(AssetConfig.Source.UPSTREAM, asset.source(), "the resolved asset carries the upstream source");
+        ResolvedUpstream upstream = asset.upstream()
+                .orElseThrow(() -> new AssertionError("the ASSET_ORIGIN alias resolved onto the asset action"));
+        assertEquals("asset-origin", upstream.host(), "the ASSET_ORIGIN alias decomposed to the declared host");
+        assertEquals(80, upstream.port(), "the ASSET_ORIGIN alias decomposed to the declared port");
+    }
+
+    /**
+     * The exact failure CI surfaced: a {@code source: upstream} asset route whose upstream alias is
+     * NOT declared in {@code topology.properties} must abort boot on the startup-event path with the
+     * ADR-0014 topology-resolution violation. The endpoint's own {@code base_url} alias IS declared,
+     * so the sole unresolved reference is the asset upstream — proving the asset alias is validated
+     * against the resolved topology, not merely the endpoints' {@code base_url} set, and that the
+     * violation is reported through {@code onStartup} → {@code buildOnce} → {@code ConfigValidator}.
+     */
+    @Test
+    void shouldFailBootThroughStartupEventWhenUpstreamAssetAliasIsUndeclared() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("WEB_BACKEND=https://web.internal:8443\n");
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: assets-upstream
+                      match:
+                        path_prefix: /assets
+                      asset:
+                        source: upstream
+                        upstream: ASSET_ORIGIN
+                """);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "an upstream asset route whose alias is absent from the topology must abort boot");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
+                "upstream alias 'ASSET_ORIGIN' does not resolve in the topology");
     }
 }
