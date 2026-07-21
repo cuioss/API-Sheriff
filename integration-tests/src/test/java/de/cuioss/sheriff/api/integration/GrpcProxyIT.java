@@ -28,13 +28,8 @@ import de.cuioss.sheriff.api.integration.grpc.EchoGrpc;
 import de.cuioss.sheriff.api.integration.grpc.EchoRequest;
 import de.cuioss.sheriff.api.integration.grpc.EchoResponse;
 
-import io.grpc.CallOptions;
-import io.grpc.Channel;
-import io.grpc.ClientCall;
-import io.grpc.ClientInterceptor;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
-import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.GrpcSslContexts;
@@ -54,11 +49,12 @@ import org.junit.jupiter.api.Test;
  * trailer relay, and the trailers-only rejection contract (deliverable 11) over the mounted
  * {@code endpoints/grpc.yaml} routes.
  * <p>
- * A gRPC method path is {@code /{package}.Echo/{Method}}; the gateway routes gRPC under a
- * {@code /grpc/<aspect>} anchor prefix, so a {@link #pathPrefix path-prefixing ClientInterceptor}
- * rewrites each call's full-method path to {@code /grpc/echo/…} (or {@code /grpc/secure/…}). The
- * gateway strips only its own match prefix, so the upstream receives the bare
- * {@code /{package}.Echo/{Method}} path.
+ * The gateway routes gRPC on the <em>bare service path</em> (operator decision 2026-07-21): a route
+ * matches the service-rooted {@code /{package}.Echo} prefix and sets an identical
+ * {@code upstream.path}, so the full {@code /{package}.Echo/{Method}} path reaches the upstream
+ * unchanged. There is no synthetic anchor prefix and no client-side path rewriting — a stock
+ * grpc-java channel dials the real service path and works as-is, so this suite installs
+ * <em>no</em> path-rewriting interceptor.
  * <p>
  * Metadata injection is exercised two ways on the echo route: the client attaches an
  * {@code x-echo-meta} request-metadata header (allow-listed in {@code grpc.yaml}), and the route's
@@ -68,7 +64,9 @@ import org.junit.jupiter.api.Test;
  * round-trips faithfully with both metadata surfaces active — proving the metadata path does not
  * corrupt the relay. Following the {@link BearerValidationIT} precedent, the bearer gRPC route is
  * exercised through its <em>rejection</em> path (no signing key to mint a token): a tokenless call
- * is rejected {@code UNAUTHENTICATED} as a trailers-only gRPC response before any upstream dial.
+ * is rejected {@code UNAUTHENTICATED} as a trailers-only gRPC response before any upstream dial. The
+ * public and bearer routes share the one Echo service path, so the bearer route is selected by a
+ * stock {@code x-sheriff-route: secure} request-metadata header the bearer stub attaches.
  */
 class GrpcProxyIT extends BaseIntegrationTest {
 
@@ -141,7 +139,7 @@ class GrpcProxyIT extends BaseIntegrationTest {
     @DisplayName("a tokenless call on a bearer gRPC route is rejected UNAUTHENTICATED (trailers-only)")
     void unauthenticatedBearerGrpcRejected() {
         EchoGrpc.EchoBlockingStub bearerStub = EchoGrpc.newBlockingStub(channel)
-                .withInterceptors(pathPrefix("grpc/secure/"));
+                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers("x-sheriff-route", "secure")));
 
         StatusRuntimeException failure = assertThrows(StatusRuntimeException.class,
                 () -> bearerStub.unary(EchoRequest.newBuilder().setMessage("no-token").build()),
@@ -152,33 +150,23 @@ class GrpcProxyIT extends BaseIntegrationTest {
     }
 
     /**
-     * A blocking stub for the public {@code grpc-echo} route: the path-prefix interceptor rides the
-     * call under {@code /grpc/echo/…}, and an {@code x-echo-meta} request-metadata header is attached
-     * to exercise the client-side metadata path.
+     * A blocking stub for the public {@code grpc-echo} route: a stock channel dials the real
+     * {@code /{package}.Echo/{Method}} service path (no path rewriting), and an {@code x-echo-meta}
+     * request-metadata header is attached to exercise the client-side metadata path.
      */
     private static EchoGrpc.EchoBlockingStub echoStub() {
-        Metadata metadata = new Metadata();
-        metadata.put(Metadata.Key.of("x-echo-meta", Metadata.ASCII_STRING_MARSHALLER), "sheriff-client");
         return EchoGrpc.newBlockingStub(channel)
-                .withInterceptors(pathPrefix("grpc/echo/"), MetadataUtils.newAttachHeadersInterceptor(metadata))
+                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers("x-echo-meta", "sheriff-client")))
                 .withDeadlineAfter(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /**
-     * A {@link ClientInterceptor} that prefixes each call's full-method name with {@code prefix}, so
-     * the gRPC {@code :path} becomes {@code /{prefix}{package}.Echo/{Method}} and the gateway routes
-     * it under the matching {@code /grpc/<aspect>} prefix (which it then strips for the upstream).
+     * A single-entry ASCII request-metadata block — the stock grpc-java way to attach a custom
+     * header to a call (selecting the bearer route, or exercising the echo route's metadata path).
      */
-    private static ClientInterceptor pathPrefix(String prefix) {
-        return new ClientInterceptor() {
-            @Override
-            public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(MethodDescriptor<ReqT, RespT> method,
-                    CallOptions callOptions, Channel next) {
-                MethodDescriptor<ReqT, RespT> prefixed = method.toBuilder()
-                        .setFullMethodName(prefix + method.getFullMethodName())
-                        .build();
-                return next.newCall(prefixed, callOptions);
-            }
-        };
+    private static Metadata headers(String name, String value) {
+        Metadata metadata = new Metadata();
+        metadata.put(Metadata.Key.of(name, Metadata.ASCII_STRING_MARSHALLER), value);
+        return metadata;
     }
 }
