@@ -1,0 +1,85 @@
+= ADR-0015 -- WebSocket Origin Fail-Closed Exact-Match Allowlist
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+A `protocol: websocket` route proxies a browser-initiated upgrade. Unlike an XHR/`fetch` call,
+a cross-origin WebSocket connection is *not* restrained by the browser's Same-Origin Policy: the
+browser will happily open a socket to any origin and attach the ambient credentials
+(cookies, and -- for a bearer route -- whatever the page chooses to send). The *only* defence
+against a malicious page opening an authenticated socket to the gateway is a *server-side `Origin`
+check* on the handshake. An accept-any-origin upgrader is a cross-site WebSocket hijacking (CSWSH)
+hole -- the class behind Nginx-UI CVE-2026-34403 and Dozzle CVE-2026-44985, and GW-09 in the
+link:../security-threat-model.adoc[threat model].
+
+Three forces shape how the check is configured:
+
+* *A bearer WebSocket route has no existing origin allowlist to reuse.* The BFF variants
+  (Plan 07) already carry `session.csrf.trusted_origins`, and a `require: session` WS route
+  reuses it -- the WS Origin check and the stage-0 CORS/CSRF posture are the same trust decision
+  there. A *bearer* WS route has no such set.
+* *CORS `allowed_origins` is a different trust decision.* `security_headers.cors.allowed_origins`
+  governs what the *browser* is told it may do with an XHR/`fetch` response (the preflight answer);
+  it is gateway/anchor-scoped and is about response-header emission. The WS `Origin` check is a
+  *per-route handshake admission* decision made *before* the upstream is dialled. Overloading the
+  CORS field would couple two unrelated postures and force a route-level CORS override that does
+  not otherwise exist.
+* *Fail-open is the dangerous default.* A bearer socket whose allowlist is absent or empty, if
+  treated as "any origin", is exactly the CSWSH hole -- and silently, since nothing rejects.
+
+== Decision
+
+Introduce a new per-route `allowed_origins` field, `security_headers`-adjacent but declared *per
+route* on bearer WebSocket routes, with *fail-closed exact-match* semantics defined *doc-first* in
+link:../configuration.adoc#_allowed_origins[`configuration.adoc`] (schema, field reference,
+validation-rules summary) before the implementing code:
+
+* *Exact match, no wildcards.* Each entry is a full origin string (`scheme://host[:port]`).
+  Matching compares scheme and port exactly and the host *case-insensitively* (RFC 6066). There
+  are no wildcards, suffix forms, or regular expressions -- every permitted origin is listed in
+  full.
+* *Fail-closed, no "any origin" default.* The handshake `Origin` must exactly match a listed
+  origin or the upgrade is rejected *before* any upstream dial. An *absent or empty*
+  `allowed_origins` on a bearer WebSocket route *fails the boot* -- there is deliberately no
+  accept-any default.
+* *Bearer only; session reuses the BFF set.* The field is validated only on a `protocol: websocket`
+  route whose effective auth is `require: bearer`. A `require: session` WS route (Plan 07) reuses
+  `session.csrf.trusted_origins` instead, keeping the WS Origin check and the CORS/CSRF posture one
+  decision. A socket is never authenticated on the ambient session cookie alone.
+
+== Consequences
+
+* CSWSH (GW-09) is closed for bearer WebSocket routes by construction: an unlisted origin cannot
+  complete the handshake, and a misconfigured (empty) allowlist fails the boot loudly rather than
+  admitting every origin.
+* The configuration surface grows one field with self-contained, boot-validated semantics; CORS
+  and the WS Origin check stay independent and separately auditable.
+* The rejection is emitted before the upstream is contacted, so a hijack attempt never reaches the
+  backend and is observable as a handshake-time WARN (see
+  link:../LogMessages.adoc[Log Messages]).
+
+== Rejected alternatives
+
+* *Accept-any-origin default* -- the CSWSH hole itself; rejected outright.
+* *Reuse `security_headers.cors.allowed_origins`* -- couples two unrelated trust decisions and
+  would require inventing a route-level CORS override; rejected.
+* *Wildcard / suffix matching* -- broadens the allowlist into the exact class of over-permissive
+  matching that produces origin-confusion bugs; rejected in favour of exact match.
+* *Derive the allowlist from the route `match.host`* -- the calling page's origin and the gateway
+  host are unrelated; rejected.
+
+== References
+
+* link:../configuration.adoc#_allowed_origins[Configuration -- `allowed_origins`] -- the
+  doc-first field definition (schema, field reference, validation rules).
+* link:../security-threat-model.adoc#gw-09[Threat Model -- GW-09] -- the CSWSH class this decision
+  closes.
+* link:0007-anchor-scoped-policy.adoc[ADR-0007] -- the anchor/route policy resolution the auth
+  floor rides on.
+* link:../plan/05-protocol-processors.adoc[Plan 05] -- the implementation plan for the WebSocket
+  processor and its Origin validation.

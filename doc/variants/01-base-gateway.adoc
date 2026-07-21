@@ -16,6 +16,14 @@ Use this variant when the caller is a service or a client that already holds its
 token (machine-to-machine, or an SPA that manages tokens elsewhere) and simply needs a
 hardened, validating entry point in front of the upstream.
 
+NOTE: *Protocol scope complete.* With link:../plan/05-protocol-processors.adoc[Plan 05]
+delivered, the base gateway serves all four initial-scope protocols -- HTTP/1.1 and HTTP/2,
+GraphQL (over HTTP), *WebSocket* (full pipeline on the handshake, `Origin` allowlist validation,
+then opaque bidirectional relay bounded by a per-route idle timeout), and *gRPC* (forced-h2
+upstream, trailer relay, trailers-only rejection mapping). This closes the
+link:../adr/0002-initial-scope.adoc[ADR-0002] protocol promise for Variant 1; HTTP/3 remains
+deferred.
+
 == Request Flow
 
 The client presents its own `Authorization: Bearer` token. API Sheriff applies the

@@ -63,12 +63,13 @@ The plans build strictly on one another:
   upstreams, Keycloak realm, TLS certificates and resource limits.
 | Plan 04
 
-| link:05-protocol-processors.adoc[05 -- Protocol Processors]
-| WebSocket upgrade proxying (full pipeline on the handshake, then bidirectional relay) and
-  gRPC over upstream h2 with *trailer* relay + a gRPC-status rejection mapping -- both native
-  to the ADR-0008 Vert.x transport. GraphQL already rides the HTTP processor. In-repo Quarkus
-  gRPC echo upstream for ITs. Closes the ADR-0002 protocol promise and with it the
-  link:../variants/01-base-gateway.adoc[Variant 1] scope.
+| link:05-protocol-processors.adoc[05 -- Protocol Processors] (delivered)
+| WebSocket upgrade proxying (full pipeline on the handshake, `Origin` allowlist validation,
+  then bidirectional relay bounded by a per-route idle timeout) and gRPC over upstream h2 with
+  *trailer* relay + a trailers-only gRPC-status rejection mapping -- both native to the ADR-0008
+  Vert.x transport. GraphQL already rides the HTTP processor. In-repo Quarkus gRPC echo upstream
+  for ITs; k6 WebSocket + gRPC benchmarks with the APISIX comparison matrix. Closes the ADR-0002
+  protocol promise and with it the link:../variants/01-base-gateway.adoc[Variant 1] scope.
 | Plan 04
 
 | link:06-tls-edge.adoc[06 -- TLS Edge: SNI Passthrough + mTLS]

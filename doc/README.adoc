@@ -171,6 +171,17 @@ implementing it.
   SSRF-controlled data plane, no parallel fetch stack), a gateway-owned response envelope, and
   canonicalize-and-confine path safety with auth-before-source-resolution ordering.
   *(Status: accepted.)*
+
+| link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]
+| WebSocket `Origin` fail-closed exact-match allowlist: a new per-route `allowed_origins` field
+  on bearer WebSocket routes (exact origins, host case-insensitive, no wildcards) rejects an
+  unlisted or missing-allowlist upgrade before any upstream dial -- closing CSWSH (GW-09) without
+  overloading CORS. *(Status: accepted.)*
+
+| link:adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]
+| gRPC gateway rejections are emitted as trailers-only gRPC responses (a gRPC client cannot
+  consume `application/problem+json`), with a canonical status mapping and h2-negotiation-failure
+  to `UNAVAILABLE`. *(Status: accepted.)*
 |===
 
 == Reading Order
