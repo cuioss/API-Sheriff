@@ -131,8 +131,8 @@ file-and-JSON-pointer error before any immutable value object is built:
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
   `anchor`, `auth`, `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's
-  `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream` and reserved
-  `rate_limit`.
+  `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream`, the WebSocket-route
+  `allowed_origins` and `websocket` blocks, and reserved `rate_limit`.
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -774,6 +774,79 @@ HTTP/3 is deferred. The value selects handshake/streaming behaviour only (WebSoc
 gRPC streaming); the semantics of each protocol -- and what the security filter does and does
 not inspect -- are defined once in
 link:architecture.adoc#_protocol_support[Architecture -- Protocol Support].
+
+A `protocol: websocket` route carries two additional per-route fields --
+link:#_allowed_origins[`allowed_origins`] (a mandatory `Origin` allowlist on bearer WebSocket
+routes) and link:#_websocket[`websocket`] (the established-relay idle-timeout bound) -- both
+documented immediately below.
+
+[[_allowed_origins]]
+=== `allowed_origins` (WebSocket routes)
+
+A per-route `Origin` allowlist for a `protocol: websocket` route whose *effective* auth is
+`require: bearer`. It is *`security_headers`-adjacent* -- an `Origin`-header check performed at
+the handshake, not a routing matcher -- but, unlike the gateway/anchor-scoped
+link:#_security_headers[`security_headers`] block, it is declared *per route*: the set of browser
+origins allowed to open a socket is a property of the individual bearer WebSocket route. The
+check runs on the HTTP upgrade request, *before* the upstream is dialled.
+
+[cols="1,3"]
+|===
+| Attribute | Value
+
+| Type
+| A *list* of origin strings, each `scheme://host[:port]`.
+
+| Default
+| *None.* There is deliberately no "any origin" default. On a bearer WebSocket route the field
+  is *mandatory and non-empty* (see Fail-closed).
+
+| Allowed values / matching
+| *Exact match*, compared as full origins (scheme + host + port). The *host* is compared
+  *case-insensitively* (hostnames are case-insensitive per RFC 6066); the *scheme and port* are
+  compared exactly. There are *no wildcards*, no suffix forms, and no regular expressions -- list
+  each permitted origin in full.
+
+| Fail-closed / validation
+| The upgrade request's `Origin` header must *exactly match* a listed origin or the *handshake is
+  rejected* before any upstream dial. An *absent or empty* `allowed_origins` on a bearer
+  WebSocket route *fails the boot* -- deny-by-default: a bearer socket with no allowlist would
+  otherwise admit every origin, which is never the intended posture. `allowed_origins` on a
+  non-`websocket` route, or on a WebSocket route whose effective auth is not `require: bearer`,
+  is a configuration error and fails the boot.
+|===
+
+[source,yaml]
+----
+# a bearer WebSocket route (endpoints/*.yaml)
+- id: live-updates
+  protocol: websocket
+  match: { path_prefix: /api/stream, host: api.example.com }
+  auth: { require: bearer }
+  allowed_origins:                 # MANDATORY, non-empty on a bearer WS route; exact origins
+    - https://app.example.com      #   (scheme+host+port), host case-insensitive, no wildcards
+  websocket:
+    idle_timeout_seconds: 300      # optional; default 300 (see "websocket" below)
+  upstream: { path: /stream }
+----
+
+[[_websocket]]
+=== `websocket` (WebSocket routes)
+
+Per-route tuning for an *established* `protocol: websocket` relay. Only the idle-timeout bound is
+configurable initially.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `idle_timeout_seconds`
+| *Per-route integer, default `300`.* Bounds an established bidirectional relay: when *no frame
+  travels in either direction* for this many seconds, the relay is closed. WebSocket
+  *ping/pong counts as activity*, so an application- or gateway-level heartbeat keeps the socket
+  open. When declared it must be a *positive integer*; when omitted, the default `300` applies. It
+  is valid *only* on a `protocol: websocket` route.
+|===
 
 [[_security_filtering]]
 === `security_filter`
@@ -1428,3 +1501,12 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   decrypt-only. `session.mode: server` requires an explicit `session.store` (only `memory` is
   valid) and uses neither encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
+* A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
+  *non-empty* link:#_allowed_origins[`allowed_origins`] list; an absent or empty allowlist *fails
+  the boot* (fail-closed -- there is no "any origin" default). Each entry is an exact origin
+  (`scheme://host[:port]`, host compared case-insensitively, scheme and port exact); wildcards,
+  suffix forms, and regular expressions are rejected. `allowed_origins` declared on a
+  non-`websocket` route, or on a WebSocket route whose effective auth is not `require: bearer`,
+  fails the boot.
+* `websocket.idle_timeout_seconds`, when declared, must be a *positive integer* (default `300`
+  when omitted); it is valid only on a `protocol: websocket` route.
