@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.quarkus;
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
 import de.cuioss.sheriff.api.config.model.AnchorType;
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
@@ -87,6 +88,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         UpstreamConfig.Retry.class,
         UpstreamConfig.NotModified.class,
         UpstreamConfig.CircuitBreaker.class,
+        AssetConfig.class,
+        AssetConfig.Source.class,
         RateLimitConfig.class,
         HttpMethod.class,
         Protocol.class,
