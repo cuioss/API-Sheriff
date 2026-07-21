@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import de.cuioss.sheriff.api.integration.grpc.EchoGrpc;
 import de.cuioss.sheriff.api.integration.grpc.EchoRequest;
 import de.cuioss.sheriff.api.integration.grpc.EchoResponse;
+import de.cuioss.sheriff.api.integration.grpc.SecureEchoGrpc;
 
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
@@ -65,8 +66,9 @@ import org.junit.jupiter.api.Test;
  * corrupt the relay. Following the {@link BearerValidationIT} precedent, the bearer gRPC route is
  * exercised through its <em>rejection</em> path (no signing key to mint a token): a tokenless call
  * is rejected {@code UNAUTHENTICATED} as a trailers-only gRPC response before any upstream dial. The
- * public and bearer routes share the one Echo service path, so the bearer route is selected by a
- * stock {@code x-sheriff-route: secure} request-metadata header the bearer stub attaches.
+ * bearer route rides a distinct {@code SecureEcho} service path (a bearer route on the same
+ * {@code Echo} path would not be statically disjoint from the public route and would fail the boot),
+ * driven by the stock generated {@link SecureEchoGrpc} stub.
  */
 class GrpcProxyIT extends BaseIntegrationTest {
 
@@ -138,8 +140,7 @@ class GrpcProxyIT extends BaseIntegrationTest {
     @Test
     @DisplayName("a tokenless call on a bearer gRPC route is rejected UNAUTHENTICATED (trailers-only)")
     void unauthenticatedBearerGrpcRejected() {
-        EchoGrpc.EchoBlockingStub bearerStub = EchoGrpc.newBlockingStub(channel)
-                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers("x-sheriff-route", "secure")));
+        SecureEchoGrpc.SecureEchoBlockingStub bearerStub = SecureEchoGrpc.newBlockingStub(channel);
 
         StatusRuntimeException failure = assertThrows(StatusRuntimeException.class,
                 () -> bearerStub.unary(EchoRequest.newBuilder().setMessage("no-token").build()),
@@ -155,18 +156,10 @@ class GrpcProxyIT extends BaseIntegrationTest {
      * request-metadata header is attached to exercise the client-side metadata path.
      */
     private static EchoGrpc.EchoBlockingStub echoStub() {
-        return EchoGrpc.newBlockingStub(channel)
-                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers("x-echo-meta", "sheriff-client")))
-                .withDeadlineAfter(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    }
-
-    /**
-     * A single-entry ASCII request-metadata block — the stock grpc-java way to attach a custom
-     * header to a call (selecting the bearer route, or exercising the echo route's metadata path).
-     */
-    private static Metadata headers(String name, String value) {
         Metadata metadata = new Metadata();
-        metadata.put(Metadata.Key.of(name, Metadata.ASCII_STRING_MARSHALLER), value);
-        return metadata;
+        metadata.put(Metadata.Key.of("x-echo-meta", Metadata.ASCII_STRING_MARSHALLER), "sheriff-client");
+        return EchoGrpc.newBlockingStub(channel)
+                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
+                .withDeadlineAfter(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 }

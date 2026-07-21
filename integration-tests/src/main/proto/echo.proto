@@ -22,6 +22,17 @@ service Echo {
   rpc Fail(EchoRequest) returns (EchoResponse);
 }
 
+// A second, bearer-protected echo service. The gateway routes gRPC on the bare service path, so
+// a public Echo route and a bearer route on the SAME /{package}.Echo path would not be statically
+// disjoint and would fail the boot. This distinct service gives the bearer gRPC route its own bare
+// path; GrpcProxyIT drives it with a stock generated stub (no path rewriting) and asserts that a
+// tokenless call is rejected UNAUTHENTICATED before any upstream dial — so the upstream
+// deliberately does NOT implement it.
+service SecureEcho {
+  // Unary echo behind the bearer gate; exercised only through its rejection path.
+  rpc Unary(EchoRequest) returns (EchoResponse);
+}
+
 message EchoRequest {
   // Payload echoed back verbatim.
   string message = 1;

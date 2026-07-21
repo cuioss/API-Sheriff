@@ -3,20 +3,20 @@
 # Quarkus gRPC echo upstream (GRPC_ECHO -> grpc-echo:9000, forced-h2).
 #
 # ROUTING MODEL — bare service path (operator decision 2026-07-21). A gRPC method path is the
-# service-rooted /{package}.{Service}/{Method}; for this proto that is
-# /de.cuioss.sheriff.api.integration.grpc.Echo/{Unary,ServerStream,Fail}. A route matches on the
-# bare service path via match.path_prefix and sets an IDENTICAL upstream.path, so the gateway's
-# path rewrite (upstream = stripTrailingSlash(upstream.path) + remainder-after-prefix)
-# reconstructs the full method path unchanged end-to-end. There is NO synthetic /grpc/<aspect>
-# anchor prefix and NO client-side path rewriting: a stock grpc-java channel (and k6's grpc
-# client) dials the real service path and works as-is.
+# service-rooted /{package}.{Service}/{Method}. A route matches on the bare service path via
+# match.path_prefix and sets an IDENTICAL upstream.path, so the gateway's path rewrite
+# (upstream = stripTrailingSlash(upstream.path) + remainder-after-prefix) reconstructs the full
+# method path unchanged end-to-end. There is NO synthetic /grpc/<aspect> anchor prefix and NO
+# client-side path rewriting: a stock grpc-java channel (and k6's grpc client) dials the real
+# service path and works as-is.
 #
-# The public and bearer routes share the same service path, so they cannot be distinguished by
-# path alone. The bearer route is selected by an additional match.headers predicate on a client-
-# attached x-sheriff-route: secure metadata header (attaching request metadata is stock grpc-java,
-# not a path hack). It is declared FIRST so the longest-prefix-first, declaration-order-stable
-# route sort evaluates it before the unconstrained public route: a call carrying the header selects
-# the bearer route, a call without it falls through to the public echo route.
+# The public and bearer routes ride DISTINCT services — Echo and SecureEcho — precisely because
+# the gateway rejects two routes that share an identical path_prefix unless they are statically
+# disjoint (see doc/configuration.adoc route selection). A bearer route on the SAME /{package}.Echo
+# path as the public route is not disjoint (a public gRPC client sends no distinguishing header or
+# host), so the bearer route is given its own SecureEcho service path. SecureEcho is defined in the
+# proto but deliberately NOT implemented upstream: the bearer route rejects a tokenless call before
+# any upstream dial, so it is never reached.
 #
 # The deny-by-default forward stage means the gRPC framing metadata (content-type: application/grpc,
 # te, grpc-encoding, ...) and the client's custom metadata must be allow-listed for the call to
@@ -27,30 +27,9 @@ endpoint:
   base_url: GRPC_ECHO
   anchor: grpc
   routes:
-    # Bearer-protected gRPC route (route-level auth strengthens the public anchor). Selected by the
-    # client-attached x-sheriff-route: secure metadata header on the shared Echo service path, and
-    # declared first so it is evaluated ahead of the unconstrained public route. A tokenless call is
-    # rejected UNAUTHENTICATED as a trailers-only gRPC response (a gRPC client cannot consume
-    # problem+json) at the offline bearer stage, before any upstream dial.
-    - id: grpc-bearer
-      protocol: grpc
-      auth:
-        require: bearer
-      match:
-        path_prefix: /de.cuioss.sheriff.api.integration.grpc.Echo
-        headers:
-          - name: x-sheriff-route
-            value: secure
-      upstream:
-        path: /de.cuioss.sheriff.api.integration.grpc.Echo
-      forward:
-        headers_allow:
-          ["content-type", "te", "grpc-encoding", "grpc-accept-encoding", "grpc-timeout",
-           "user-agent"]
-
     # Public gRPC relay: unary + server-streaming echo and grpc-status/trailer relay from the
-    # intentionally failing method. The match prefix is the bare service path and upstream.path is
-    # identical, so the full /{package}.Echo/{Method} path reaches the upstream unchanged. The
+    # intentionally failing method. The match prefix is the bare Echo service path and upstream.path
+    # is identical, so the full /{package}.Echo/{Method} path reaches the upstream unchanged. The
     # forward allowlist carries the gRPC framing headers the opaque relay must pass through, plus the
     # client's x-echo-meta metadata; set_headers injects x-sheriff-injected toward the upstream.
     - id: grpc-echo
@@ -65,3 +44,20 @@ endpoint:
            "user-agent", "x-echo-meta"]
         set_headers:
           x-sheriff-injected: gateway
+
+    # Bearer-protected gRPC route on the distinct SecureEcho service path (route-level auth
+    # strengthens the public anchor). A tokenless call is rejected UNAUTHENTICATED as a trailers-only
+    # gRPC response (a gRPC client cannot consume problem+json) at the offline bearer stage, before
+    # any upstream dial — so SecureEcho is never actually served upstream.
+    - id: grpc-bearer
+      protocol: grpc
+      auth:
+        require: bearer
+      match:
+        path_prefix: /de.cuioss.sheriff.api.integration.grpc.SecureEcho
+      upstream:
+        path: /de.cuioss.sheriff.api.integration.grpc.SecureEcho
+      forward:
+        headers_allow:
+          ["content-type", "te", "grpc-encoding", "grpc-accept-encoding", "grpc-timeout",
+           "user-agent"]

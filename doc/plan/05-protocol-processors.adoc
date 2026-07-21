@@ -130,6 +130,34 @@ changed versus the plan as originally written:
   stream-reset rate limit must not misfire on legitimate streaming, but must still bound an
   abusive reset loop).
 
+=== D2b -- gRPC route shape: bare service path (operator decision 2026-07-21)
+
+A gRPC route matches the *bare service path* -- `match.path_prefix: /{package}.{Service}` -- and
+sets an *identical* `upstream.path`. Because the gateway builds the upstream path as
+`upstream.path + remainder-after-prefix`, the identity of the two preserves the full
+`/{package}.{Service}/{Method}` method path end-to-end, so a *stock* gRPC client (grpc-java stub,
+k6 `k6/net/grpc` client) dials the real service path and needs no client-side rewriting. This is
+*pure route-yaml authoring*: the per-route config surface is final (D2 / Clarification 1 -- no
+config-model change in this plan) and already expresses it via `match.path_prefix` + `upstream.path`.
+
+*Rejected alternative -- synthetic anchor prefix.* The first implementation routed gRPC under a
+synthetic `/grpc/<aspect>` anchor prefix that the gateway stripped, which forced every client to
+prepend that prefix to the method path (in the ITs, a path-rewriting `ClientInterceptor`; a real
+consumer would need the same). That is non-standard: a stock gRPC client cannot talk to the gateway
+without gateway-specific path surgery. Rejected in favour of the bare service path, which any
+conformant gRPC client reaches unmodified.
+
+*Consequence -- distinct service paths for a public + bearer split.* Two routes that share an
+identical `path_prefix` must be statically disjoint (route-ordering rule, `doc/configuration.adoc`).
+A public Echo route and a bearer route on the *same* `/{package}.Echo` path are not disjoint -- a
+public gRPC client carries no distinguishing host or header to separate them, and a lone header
+matcher on one side establishes nothing. The bearer route therefore rides its own service path
+(the ITs use a distinct `SecureEcho` service, defined in the proto but not implemented upstream --
+the bearer route rejects a tokenless call `UNAUTHENTICATED` before any dial, so it is never
+reached). Rejected alternatives: a shared-path header/host discriminator (either forces the public
+route to demand a magic header that vanilla clients do not send, or depends on a route-ordering tie
+break the gateway explicitly does not honour).
+
 === D3 -- Test upstreams
 
 Per Plan 01 D2 research: WebSocket ITs use go-httpbin's `/websocket/echo` (already in the

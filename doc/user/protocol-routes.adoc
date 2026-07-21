@@ -77,17 +77,33 @@ client untouched. Author it in an `endpoints/*.yaml` file:
 
 [source,yaml]
 ----
-- id: orders-grpc
-  protocol: grpc
-  match: { path_prefix: /orders.OrderService, host: api.example.com }
-  auth: { require: bearer }
-  upstream: { host: orders-svc, port: 50051, path: "" }
+endpoint:
+  id: orders
+  base_url: ORDERS_GRPC            # topology alias -> orders-svc:50051
+  routes:
+    - id: orders-grpc
+      protocol: grpc
+      match: { path_prefix: /orders.OrderService }
+      auth: { require: bearer }
+      upstream: { path: /orders.OrderService }
 ----
 
+*Route on the bare service path.* A gRPC method path is service-rooted --
+`/{package}.{Service}/{Method}`. Match the route on the bare `/{package}.{Service}` prefix and set
+an *identical* `upstream.path`. Because the gateway builds the upstream path as
+`upstream.path + remainder-after-prefix` (see
+link:../configuration.adoc#_upstream[Configuration -- `upstream`]), the identity of the two makes
+the full method path reach the upstream *unchanged* -- a stock gRPC client dials the real service
+path and needs no gateway-specific rewriting. Point the endpoint's `base_url` at the gRPC service's
+`host:port` (via a topology alias); the gateway holds a forced-h2 client for that target distinct
+from any HTTP/1.1 route to the same `host:port`.
+
 A gRPC route carries no extra per-route fields beyond the standard `match`, `auth`, and
-`upstream` keys -- the forced-HTTP/2 upstream dial and the trailer relay are automatic. Point
-`upstream` at the gRPC service's `host:port`; the gateway holds a forced-h2 client for that
-target distinct from any HTTP/1.1 route to the same `host:port`.
+`upstream` keys -- the forced-HTTP/2 upstream dial and the trailer relay are automatic. Two gRPC
+routes that share the same service path must be *statically disjoint* (by host, method, or a header
+matcher -- see link:../configuration.adoc#_route_ordering[Configuration -- route ordering]); a
+public route and a bearer route on the *same* service path are not disjoint, so give each its own
+service path.
 
 === gRPC rejections are trailers-only
 
