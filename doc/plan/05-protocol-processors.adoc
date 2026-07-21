@@ -54,9 +54,16 @@ changed versus the plan as originally written:
   renders RFC 9457 directly on the Vert.x route, so the JAX-RS `quarkus.GatewayExceptionMapper`
   (`@Provider ExceptionMapper<GatewayException>`) is never reached by the data plane -- it is dead
   and is removed (subject to a live-wiring stop-guard).
-. *Investigate "verify reports green while tests errored".* A gate defect where the build wrapper
-  reported success despite errored tests; investigated and fixed so a genuine test error fails the
-  build.
+. *Investigate "verify reports green while tests errored".* Investigated (TASK-006): the reactor's
+  Surefire/Failsafe configuration carries *no* `testFailureIgnore`, and an empirical probe (a
+  deliberately-erroring test) confirms the reactor build *correctly* fails -- Maven reports
+  `BUILD FAILURE` on a single errored test (`Tests run: N, Errors: 1`). The pom is therefore *not*
+  the culprit and needs no change. The "green verify with errored tests" symptom is a *reporting*
+  defect in the `plan-marshall:build-maven` build wrapper, which returns `status: success` while the
+  underlying Maven reports `BUILD FAILURE` for a test error (its `status`/`errors[]` reflect
+  compiler-style errors, not Surefire test errors) -- plan-marshall infrastructure, out of scope for
+  this project's pom, recorded as a finding for the plan-marshall maintainers. CI (the
+  cuioss-organization reusable Maven build) keys off Maven's own exit code and is unaffected.
 --
 
 == Design Decisions
