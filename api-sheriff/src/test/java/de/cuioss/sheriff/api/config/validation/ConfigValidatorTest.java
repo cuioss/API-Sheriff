@@ -943,6 +943,96 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("gRPC anchor-namespace containment exemption (ADR-0007)")
+    class GrpcNamespaceExemption {
+
+        private static final String ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.Echo";
+        private static final String SECURE_ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.SecureEcho";
+
+        private static RouteConfig grpcRoute(String id, String prefix, String anchorName, Optional<AuthConfig> auth) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .protocol(Optional.of(Protocol.GRPC))
+                    .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                    .match(match(prefix, HttpMethod.POST))
+                    .auth(auth)
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Rule 3 exemption: a gRPC route on a bare service path outside its declared anchor is accepted")
+        void shouldExemptGrpcRouteFromDeclaredAnchorContainment() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a gRPC route on a service-rooted path outside its anchor namespace must not be rejected, got: "
+                            + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 3/4 exemption: two gRPC routes under one anchor on bare service paths boot cleanly (native IT scenario)")
+        void shouldAcceptTwoGrpcRoutesUnderOneAnchorOnBareServicePaths() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.empty()),
+                    grpcRoute("grpc-bearer", SECURE_ECHO_PATH, "grpc", Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "the two gRPC routes that failed the native IT boot must now validate cleanly, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4 exemption: a gRPC route that would squat inside a catch-all anchor namespace is accepted")
+        void shouldExemptGrpcRouteFromUndeclaredSquatterRule() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("root", anchor("root", "/", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", null,
+                    Optional.of(new AuthConfig("none", List.of())),
+                    grpcRoute("grpc-echo", ECHO_PATH, null, Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a gRPC route inside a catch-all anchor namespace must not be rejected as a squatter, got: "
+                            + errors);
+        }
+
+        @Test
+        @DisplayName("Containment stays enforced for a websocket route outside its declared anchor namespace")
+        void shouldStillEnforceContainmentForNonGrpcRoute() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
+            RouteConfig websocket = RouteConfig.builder().id("ws").anchor(Optional.of("api"))
+                    .protocol(Optional.of(Protocol.WEBSOCKET))
+                    .match(match("/billing", HttpMethod.GET))
+                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(), websocket);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "is not inside its declared anchor 'api'");
+        }
+
+        @Test
+        @DisplayName("Auth floor stays enforced for a gRPC route: effective 'none' still weakens a non-none anchor floor")
+        void shouldStillEnforceAuthFloorForGrpcRoute() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", "bearer")));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc", Optional.empty(),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.of(new AuthConfig("none", List.of()))));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertHasError(errors, "/endpoint/routes", "weakens the anchor 'grpc' floor 'bearer'");
+        }
+    }
+
+    @Nested
     @DisplayName("The fail-closed access→auth matrix (ADR-0013)")
     class AccessAuthMatrix {
 

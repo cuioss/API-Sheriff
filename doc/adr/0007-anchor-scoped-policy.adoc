@@ -80,6 +80,21 @@ Three lessons condense out:
   every route whose path falls inside *any* anchor's namespace must declare that anchor.
   A mismatch (declared anchor vs. actual path) or an undeclared squatter fails the boot.
   When no `anchors` block is configured, nothing changes.
+* *gRPC routes are exempt from the namespace-containment geometry.* A `protocol: grpc`
+  route rides the service-rooted `/{package}.{Service}/{Method}` path, whose service
+  component (e.g. `de.cuioss.sheriff.api.integration.grpc.Echo`) is a *single opaque path
+  segment* -- dots, no slashes. No non-root anchor `path_prefix` can contain such a path on
+  a segment boundary, and a stock gRPC client (grpc-java, k6's gRPC client) dials the real
+  service path and cannot be told to prepend a gateway namespace prefix -- so neither the
+  containment check (route inside its declared anchor) nor the squatter check (undeclared
+  route inside any anchor namespace) can ever be satisfied for a bare gRPC service path.
+  Both containment checks are therefore skipped for `protocol: grpc` routes. Only the
+  path-prefix *geometry* is exempt: a gRPC route still *declares* an anchor for its ADR-0013
+  type/access classification and its auth floor, and every other anchor rule --
+  declared-anchor existence, pairwise-disjoint anchor prefixes, the non-weakenable auth
+  floor, and the ADR-0013 access→auth matrix -- stays enforced for gRPC routes unchanged.
+  `websocket` and `http` routes keep full containment enforcement (a `/ws`-nested WebSocket
+  surface still validates its namespace membership).
 * *Inheritance chain and semantics*: `gateway` defaults -> `anchor` -> `endpoint` -> `route`,
   with *wholesale block replacement at every step, never a merge* -- the one rule the model
   already has, extended by one rung.

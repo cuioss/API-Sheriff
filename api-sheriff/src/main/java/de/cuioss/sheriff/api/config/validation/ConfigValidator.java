@@ -321,6 +321,18 @@ public final class ConfigValidator {
      * declared anchor's namespace; (4) every enabled route whose path lies inside
      * any anchor namespace declares exactly that anchor — an undeclared squatter
      * fails the boot (ADR-0007).
+     * <p>
+     * {@code protocol: grpc} routes are exempt from both containment rules. A gRPC
+     * method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
+     * service segment is a single opaque path segment (dots, no slashes), so it is
+     * structurally never nested under a gateway path namespace on a segment boundary
+     * — no non-root anchor {@code path_prefix} can contain it, and stock gRPC clients
+     * cannot be told to prepend a namespace prefix. Only the path-prefix containment
+     * geometry is skipped for gRPC routes: a gRPC route still declares an anchor for
+     * its ADR-0013 type/access classification and its ADR-0007 auth floor, and every
+     * other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
+     * non-weakenable auth floor, access→auth matrix) stays enforced for it unchanged.
+     * {@code websocket} and {@code http} routes keep full containment enforcement.
      */
     private static void validateAnchorNamespaceMembership(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
@@ -329,6 +341,11 @@ public final class ConfigValidator {
         }
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
+                if (route.protocol().orElse(Protocol.HTTP) == Protocol.GRPC) {
+                    // gRPC routes ride a service-rooted single-segment path that no gateway path
+                    // namespace can contain on a segment boundary — exempt from containment (rules 3 & 4).
+                    continue;
+                }
                 Optional<String> declaredName = declaredAnchorName(endpoint, route);
                 String routePrefix = route.match().pathPrefix();
                 checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
