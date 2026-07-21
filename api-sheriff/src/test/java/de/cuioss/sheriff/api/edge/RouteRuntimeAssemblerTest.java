@@ -154,13 +154,15 @@ class RouteRuntimeAssemblerTest {
     @Test
     @DisplayName("Should fail boot for session auth and a session-auth WebSocket; gRPC and WebSocket assemble")
     void shouldFailBootForSessionAndAssembleProtocolRoutes() {
-        var session = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "session auth must fail boot");
-        var webSocketTable = new RouteTable(List.of(route("sw", Protocol.WEBSOCKET, "session", Optional.empty(),
-                upstream("a.example"))));
-        var sessionWebSocket = assertThrows(GatewayException.class, () -> assembler.assemble(
-                        webSocketTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+        RouteTable sessionTable = new RouteTable(List.of(
+                route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example"))));
+        var session = assertThrows(GatewayException.class,
+                () -> assembler.assemble(sessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "session auth must fail boot");
+        RouteTable webSocketTable = new RouteTable(List.of(
+                route("sw", Protocol.WEBSOCKET, "session", Optional.empty(), upstream("a.example"))));
+        var sessionWebSocket = assertThrows(GatewayException.class,
+                () -> assembler.assemble(webSocketTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "session-auth WebSocket must fail boot");
 
         assertEquals(EventType.CONFIG_INVALID, session.getEventType(), "session rejection is a config failure");
@@ -169,15 +171,17 @@ class RouteRuntimeAssemblerTest {
 
         // A gRPC route now assembles cleanly (its boot rejection was removed when the gRPC processor
         // was registered) — the forced-h2 upstream client is built by the injected client factory.
-        assertDoesNotThrow(() -> assembler.assemble(
-                        new RouteTable(List.of(route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example")))),
-                        securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+        RouteTable grpcTable = new RouteTable(List.of(
+                route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example"))));
+        assertDoesNotThrow(
+                () -> assembler.assemble(grpcTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a gRPC route with non-session auth assembles cleanly");
 
         // A WebSocket route with non-session auth likewise assembles cleanly.
-        assertDoesNotThrow(() -> assembler.assemble(
-                        new RouteTable(List.of(route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example")))),
-                        securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+        RouteTable webSocketNoneTable = new RouteTable(List.of(
+                route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example"))));
+        assertDoesNotThrow(
+                () -> assembler.assemble(webSocketNoneTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a WebSocket route with non-session auth assembles cleanly");
     }
 
