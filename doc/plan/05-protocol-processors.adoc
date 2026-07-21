@@ -38,7 +38,7 @@ changed versus the plan as originally written:
 * *Benchmark tooling -- Clarification 1.* The `ghz`/`k6` split in the Work Breakdown is
   superseded: both new benchmarks are k6 scripts (see the NOTE on that item). `ghz` is not
   introduced.
-* *Config model is final -- no config-model change in this plan.* The per-route config surface
+* *Config model is final -- no config-model restructuring in this plan.* The per-route config surface
   the processors consume (the `ResolvedRoute` union materialized at boot) is already delivered by
   link:10-anchor-types-assets.adoc[Plan 10] / PR #84. This plan adds only the two doc-first
   fields (`allowed_origins`, `websocket.idle_timeout_seconds`) to the existing model; it does not

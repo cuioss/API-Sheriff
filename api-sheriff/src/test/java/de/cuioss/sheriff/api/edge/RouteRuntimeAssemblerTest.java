@@ -157,10 +157,10 @@ class RouteRuntimeAssemblerTest {
         var session = assertThrows(GatewayException.class, () -> assembler.assemble(
                 new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example")))),
                 securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "session auth must fail boot");
+        var webSocketTable = new RouteTable(List.of(route("sw", Protocol.WEBSOCKET, "session", Optional.empty(),
+                upstream("a.example"))));
         var sessionWebSocket = assertThrows(GatewayException.class, () -> assembler.assemble(
-                        new RouteTable(List.of(route("sw", Protocol.WEBSOCKET, "session", Optional.empty(),
-                                upstream("a.example")))),
-                        securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                        webSocketTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "session-auth WebSocket must fail boot");
 
         assertEquals(EventType.CONFIG_INVALID, session.getEventType(), "session rejection is a config failure");

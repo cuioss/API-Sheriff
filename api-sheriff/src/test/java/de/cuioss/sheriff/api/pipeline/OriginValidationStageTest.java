@@ -91,9 +91,10 @@ class OriginValidationStageTest {
     @DisplayName("a foreign origin is rejected fail-closed")
     void foreignOriginRejected() {
         PipelineRequest request = requestWithOrigin("https://evil.example.com");
+        Set<String> allowlist = Set.of("https://app.example.com");
 
         GatewayException thrown = assertThrows(GatewayException.class,
-                () -> stage.validate(request, ROUTE_ID, Set.of("https://app.example.com")));
+                () -> stage.validate(request, ROUTE_ID, allowlist));
         assertEquals(EventType.WEBSOCKET_ORIGIN_REJECTED, thrown.getEventType());
     }
 
@@ -101,9 +102,10 @@ class OriginValidationStageTest {
     @DisplayName("an absent Origin against a non-empty allowlist is rejected fail-closed")
     void absentOriginRejected() {
         PipelineRequest request = requestWithoutOrigin();
+        Set<String> allowlist = Set.of("https://app.example.com");
 
         GatewayException thrown = assertThrows(GatewayException.class,
-                () -> stage.validate(request, ROUTE_ID, Set.of("https://app.example.com")));
+                () -> stage.validate(request, ROUTE_ID, allowlist));
         assertEquals(EventType.WEBSOCKET_ORIGIN_REJECTED, thrown.getEventType());
     }
 }

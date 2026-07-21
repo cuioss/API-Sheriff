@@ -71,10 +71,17 @@ services:
       # also proxies to the protocol-appropriate backends go-httpbin (WebSocket echo)
       # and grpc-echo (gRPC Echo) -- both defined in the base docker-compose.yml and
       # shared with the API Sheriff side, keeping the ws/grpc rows symmetric.
-      - nginx-static
-      - go-httpbin
-      - grpc-echo
-      - keycloak
+      # Map form so grpc-echo can gate on service_healthy (parity with the api-sheriff
+      # service) — APISIX must not boot before the gRPC upstream is ready to accept
+      # connections, or early benchmark traffic fails.
+      nginx-static:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
 
     # OWASP hardening: no privilege escalation, matching the api-sheriff service.
     # api-sheriff additionally runs read_only with a tmpfs; APISIX/OpenResty needs a

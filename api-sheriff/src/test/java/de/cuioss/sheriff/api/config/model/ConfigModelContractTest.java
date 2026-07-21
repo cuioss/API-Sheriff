@@ -559,9 +559,10 @@ class ConfigModelContractTest {
             List<String> source = new ArrayList<>(List.of("https://app.example.com"));
             WebSocketConfig cfg = WebSocketConfig.builder().allowedOrigins(source).build();
             source.add("https://leak.example.com");
-            assertEquals(List.of("https://app.example.com"), cfg.allowedOrigins(),
+            List<String> origins = cfg.allowedOrigins();
+            assertEquals(List.of("https://app.example.com"), origins,
                     "mutating the source list after construction must not affect the record");
-            assertThrows(UnsupportedOperationException.class, () -> cfg.allowedOrigins().add("https://new.example.com"));
+            assertThrows(UnsupportedOperationException.class, () -> origins.add("https://new.example.com"));
         }
     }
 

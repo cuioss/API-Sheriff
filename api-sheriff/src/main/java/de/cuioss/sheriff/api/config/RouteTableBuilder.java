@@ -298,8 +298,9 @@ public final class RouteTableBuilder {
     /**
      * The materialized WebSocket {@code allowed_origins} allowlist, lower-cased once at
      * assembly for case-insensitive host matching (scheme and port are already
-     * case-insensitive), preserving declaration order. Empty for a route that declares
-     * no {@code websocket} block.
+     * case-insensitive). Iteration order is not significant — origin acceptance is an
+     * exact-membership test, so the set may be defensively re-copied downstream without
+     * any ordering guarantee. Empty for a route that declares no {@code websocket} block.
      */
     private static Set<String> effectiveAllowedOrigins(RouteConfig route) {
         Set<String> origins = new LinkedHashSet<>();

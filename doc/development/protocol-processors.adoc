@@ -123,8 +123,11 @@ To add a future protocol:
 . *Implement the SPI.* Add a `ProtocolProcessor` in `de.cuioss.sheriff.api.routing` declaring the
   protocol's `id()` and its served verbs. Mirror `GrpcProtocolProcessor` /
   `WebSocketProtocolProcessor` for a single-verb protocol.
-. *Register it.* Add the `Protocol` -> processor mapping in `ProtocolProcessorRegistry`. This alone
-  removes the boot rejection for that protocol.
+. *Register it.* Add the `Protocol` -> processor mapping in `ProtocolProcessorRegistry`. Registry
+  registration is one required step, not the whole contract: the `Protocol` enum must already carry
+  the value, and the per-route config-model support (schema/model fields plus their `ConfigValidator`
+  rules) and — where the protocol needs it — the dispatch arm below must also be in place before a
+  route of that protocol resolves and boots.
 . *Add a dispatch arm only if needed.* If the protocol rides the standard HTTP path (like GraphQL),
   no edge change is required -- it falls through to `dispatchAndRelay`. If it needs a distinct
   dispatch (a handshake, a specialised upstream client, or a non-problem+json rejection), add an

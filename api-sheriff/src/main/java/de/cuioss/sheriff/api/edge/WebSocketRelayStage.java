@@ -200,8 +200,8 @@ public final class WebSocketRelayStage {
             clientWs.closeHandler(v -> closeBoth(resolveCloseCode(clientWs.closeStatusCode()), clientWs.closeReason()));
             upstreamWs.closeHandler(v ->
                     closeBoth(resolveCloseCode(upstreamWs.closeStatusCode()), upstreamWs.closeReason()));
-            clientWs.exceptionHandler(t -> abort(t));
-            upstreamWs.exceptionHandler(t -> abort(t));
+            clientWs.exceptionHandler(this::abort);
+            upstreamWs.exceptionHandler(this::abort);
             resetIdle();
         }
 

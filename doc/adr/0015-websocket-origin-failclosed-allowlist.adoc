@@ -40,7 +40,8 @@ link:../configuration.adoc#_allowed_origins[`configuration.adoc`] (schema, field
 validation-rules summary) before the implementing code:
 
 * *Exact match, no wildcards.* Each entry is a full origin string (`scheme://host[:port]`).
-  Matching compares scheme and port exactly and the host *case-insensitively* (RFC 6066). There
+  Matching compares scheme and port exactly and the host *case-insensitively* (RFC 6454 web-origin
+  model; RFC 3986 §3.2.2 case-insensitive host comparison). There
   are no wildcards, suffix forms, or regular expressions -- every permitted origin is listed in
   full.
 * *Fail-closed, no "any origin" default.* The handshake `Origin` must exactly match a listed

@@ -246,6 +246,10 @@ class WebSocketRelayStageTest {
 
     @Test
     @DisplayName("keeps a heartbeated relay open past the idle window")
+    // NOSONAR java:S2925 - Thread.sleep is load-bearing: the assertion under test is that
+    // sub-second real activity, spaced across the real Vert.x idle-timer window, keeps the relay
+    // alive; the idle reclaim is a real setTimer, and no virtual clock is available to simulate it.
+    @SuppressWarnings("java:S2925")
     void heartbeatKeepsRelayOpen() throws Exception {
         // Arrange — the /ws-idle route idles after 1s; keep it busy with sub-second activity
         WebSocket socket = connect("/ws-idle/room", ALLOWED_ORIGIN);
