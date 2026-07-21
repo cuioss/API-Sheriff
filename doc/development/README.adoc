@@ -31,6 +31,11 @@ This tree is seeded here and grows as contributor-facing material lands.
 | link:../adr/0005-module-structure.adoc[ADR-0005 -- Module Structure]
 | Why the project is one Quarkus module today, with a package-layout + arch-gate seam kept
   clean so a core module is cheap to extract later.
+
+| link:sonar-quality-gate.adoc[SonarCloud Quality Gate -- Compliance Policy]
+| The rules around the authoritative, blocking SonarCloud gate -- zero new findings, never
+  merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,
+  and the fix-by-default / suppress-with-rationale escape hatch.
 |===
 
 == Scope of This Layer

@@ -101,6 +101,14 @@ As a security-focused API Gateway:
 - Follow OWASP guidelines, validate all inputs/outputs
 - Use secure defaults
 
+## Sonar / Quality Gate
+
+The cuioss-organization SonarCloud gate (project `cuioss_API-Sheriff`, declared via `.github/project.yml`) is the **authoritative, blocking source of truth** for code quality — target zero new findings, and never merge over a red gate or a stale green while analysis is pending. Thresholds are org-owned; reference the gate, never restate them here.
+
+**Fix by default.** Where a fix is genuinely not sensible (false positive, deliberate idiom, a rule fighting the design), suppress in-code with a rationale — `// NOSONAR java:SXXXX <why>` or `@SuppressWarnings("java:SXXXX")` — never by silently marking issues won't-fix / false-positive in the Sonar UI.
+
+See `doc/development/sonar-quality-gate.adoc` for the complete compliance policy (including the PR-new-code vs post-merge project-gate auditability nuance).
+
 ## Dependency Management
 
 - **Parent POM**: `de.cuioss:cui-java-parent:1.5.1`
