@@ -28,13 +28,13 @@
       "confidence_threshold": 95,
       "compatibility": "breaking",
       "simplicity": "lean",
-      "effort": "level-3",
+      "effort": "level-5",
       "revalidation": "auto"
     },
     "phase-3-outline": {
       "plan_without_asking": false,
       "q_gate_validation": "once",
-      "effort": "level-4"
+      "effort": "level-5"
     },
     "phase-4-plan": {
       "execute_without_asking": true,
@@ -64,7 +64,7 @@
       },
       "effort": {
         "default": "level-4",
-        "verification-feedback": "level-3"
+        "verification-feedback": "level-4"
       }
     },
     "phase-6-finalize": {
@@ -112,13 +112,13 @@
           "re_review_on_timeout": "ask",
           "review_rate_window_await": false,
           "review_rate_window_timeout_seconds": 3600,
-          "lane": "ask"
+          "lane": "auto"
         },
         "default:sonar-roundtrip": {
           "touched_file_cleanup": "new_code_only",
           "do_transition": false,
           "ce_wait_timeout_seconds": 600,
-          "lane": "ask"
+          "lane": "auto"
         },
         "default:lessons-capture": {
           "lane": "minimal"
