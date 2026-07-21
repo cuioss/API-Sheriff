@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// In-repo gRPC echo contract backing the gRPC integration-test matrix. The gateway
+// dials the echo upstream on the compose network so the ITs can assert unary echo,
+// server-streaming echo, and grpc-status/trailer relay from a deliberately failing
+// method. Kept intentionally tiny — this is test scaffolding, not a product surface.
+package de.cuioss.sheriff.api.integration.grpc;
+
+option java_multiple_files = true;
+option java_package = "de.cuioss.sheriff.api.integration.grpc";
+option java_outer_classname = "EchoProto";
+
+// Echo upstream exercised end-to-end through the gateway by GrpcProxyIT.
+service Echo {
+  // Unary: returns the request message unchanged (index 0).
+  rpc Unary(EchoRequest) returns (EchoResponse);
+
+  // Server-streaming: emits `count` responses (index 0..count-1), each echoing the message.
+  rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+
+  // Always fails with a non-OK grpc-status so the IT can assert trailer/status relay.
+  rpc Fail(EchoRequest) returns (EchoResponse);
+}
+
+message EchoRequest {
+  // Payload echoed back verbatim.
+  string message = 1;
+  // Number of responses the server-streaming method emits (clamped to >= 1).
+  int32 count = 2;
+}
+
+message EchoResponse {
+  // The echoed payload.
+  string message = 1;
+  // Zero-based position of this response within a (possibly single-element) stream.
+  int32 index = 2;
+}

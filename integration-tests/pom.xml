@@ -28,10 +28,23 @@
     </properties>
 
     <dependencies>
-        <!-- API Sheriff application (reactor dependency) -->
+        <!-- API Sheriff application. Scoped 'provided' so it orders the reactor build
+             (api-sheriff before integration-tests) and stays on the compile/test
+             classpath, yet is NOT bundled into the grpc-echo Quarkus fast-jar — that
+             echo application must not drag in and boot the gateway. No integration-test
+             source imports api-sheriff classes, so provided scope is sufficient. -->
         <dependency>
             <groupId>de.cuioss.sheriff.api</groupId>
             <artifactId>api-sheriff</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Quarkus gRPC extension: drives echo.proto codegen and hosts GrpcEchoService,
+             the in-repo echo upstream for the gRPC integration-test matrix. Version
+             managed by the Quarkus BOM. -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-grpc</artifactId>
         </dependency>
 
         <!-- Test dependencies -->
@@ -59,7 +72,13 @@
 
     <build>
         <plugins>
-            <!-- Disable Quarkus build for this module (app is api-sheriff) -->
+            <!-- Quarkus wiring for this module. The deployable application is api-sheriff,
+                 so the inherited 'default' execution (build + codegen) is disabled to keep
+                 the normal build from packaging integration-tests as a Quarkus app. A
+                 separate 'grpc-codegen' execution re-enables ONLY the gRPC proto codegen
+                 (generate-code / generate-code-tests) so echo.proto compiles into stubs.
+                 The 'grpc-echo' profile below re-enables the 'build' goal to produce the
+                 echo fast-jar for its container image. -->
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
@@ -67,6 +86,13 @@
                     <execution>
                         <id>default</id>
                         <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>grpc-codegen</id>
+                        <goals>
+                            <goal>generate-code</goal>
+                            <goal>generate-code-tests</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>
@@ -101,6 +127,30 @@
     </build>
 
     <profiles>
+        <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. Activated
+             only by the grpc-echo Dockerfile build stage; it re-enables the Quarkus
+             'build' goal that the normal module build deliberately leaves disabled. The
+             resulting target/quarkus-app is copied into the grpc-echo container image. -->
+        <profile>
+            <id>grpc-echo</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>io.quarkus</groupId>
+                        <artifactId>quarkus-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>grpc-echo-build</id>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Profile for running integration tests with native image -->
         <profile>
             <id>integration-tests</id>
