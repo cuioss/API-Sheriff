@@ -110,7 +110,7 @@ public final class PathConfinement {
                 return Optional.empty();
             }
             return Optional.of(resolved);
-        } catch (InvalidPathException malformed) {
+        } catch (InvalidPathException _) {
             return Optional.empty();
         }
     }

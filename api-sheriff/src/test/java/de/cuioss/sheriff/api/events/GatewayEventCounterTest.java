@@ -57,7 +57,7 @@ class GatewayEventCounterTest {
         int increments = 10_000;
 
         IntStream.range(0, increments).parallel()
-                .forEach(i -> counter.increment(EventType.SECURITY_FILTER_VIOLATION));
+                .forEach(_ -> counter.increment(EventType.SECURITY_FILTER_VIOLATION));
 
         assertEquals(increments, counter.getCount(EventType.SECURITY_FILTER_VIOLATION),
                 "Every concurrent increment must be counted");

@@ -213,7 +213,7 @@ public class GatewayEdgeRoute {
         RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
         this.routes = assembler.assemble(routeTable,
                 GatewayEdgeRoute::securityConfigurationFor,
-                target -> vertx.createHttpClient(),
+                _ -> vertx.createHttpClient(),
                 this::guardFor,
                 GatewayEdgeRoute::assetSourceFor);
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
@@ -257,7 +257,7 @@ public class GatewayEdgeRoute {
         while (inFlight.get() > 0 && System.nanoTime() < deadline) {
             try {
                 Thread.sleep(DRAIN_POLL_INTERVAL_MILLIS);
-            } catch (InterruptedException interrupted) {
+            } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
                 return;
             }
@@ -563,7 +563,7 @@ public class GatewayEdgeRoute {
         }
         try {
             return Long.parseLong(value.strip());
-        } catch (NumberFormatException notANumber) {
+        } catch (NumberFormatException _) {
             return -1L;
         }
     }

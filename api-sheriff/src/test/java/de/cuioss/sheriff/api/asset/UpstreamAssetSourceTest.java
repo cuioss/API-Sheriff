@@ -67,7 +67,7 @@ class UpstreamAssetSourceTest {
             new ResolvedUpstream("https", "assets.internal", 443, "/static");
 
     private static UpstreamFetcher cannedFetcher(int status, Map<String, String> headers, byte[] body) {
-        return target -> new UpstreamFetcher.Fetched(status, headers, body);
+        return _ -> new UpstreamFetcher.Fetched(status, headers, body);
     }
 
     private static UpstreamFetcher mustNotFetch() {

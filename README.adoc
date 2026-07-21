@@ -22,8 +22,8 @@ image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sherif
 
 *Benchmarks*
 
-image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-performance-badge.json[Integration Performance,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-index.html]
-image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-trend-badge.json[Integration Trend,link=https://cuioss.github.io/api-sheriff/benchmarks/integration-performance-trends.html]
+image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-performance-badge.json[Integration Performance,link=https://cuioss.github.io/api-sheriff/benchmarks/integration/index.html]
+image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-trend-badge.json[Integration Trend,link=https://cuioss.github.io/api-sheriff/benchmarks/integration/trends.html]
 
 https://github.com/cuioss/TokenSheriff/blob/main/benchmarking/doc/benchmark-metrics.adoc[Understand Performance Metrics]
 
@@ -56,7 +56,7 @@ Integration test coordinator — Docker infrastructure, native container builds,
 
 === Performance Benchmarking
 
-Integration benchmarks using WRK HTTP load testing with containerized environments.
+Integration benchmarks using k6 HTTP load testing with containerized environments.
 
 == Deployment
 

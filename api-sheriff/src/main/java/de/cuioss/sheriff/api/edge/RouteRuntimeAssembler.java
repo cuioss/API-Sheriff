@@ -129,8 +129,9 @@ public final class RouteRuntimeAssembler {
             // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
             // live source and skips the Vert.x client / resilience-guard dedup entirely — its
             // egress rides the source's own SSRF-controlled fetch seam, not the proxy data plane.
-            if (route.asset().isPresent()) {
-                runtime.assetSource(Optional.of(assetSourceFactory.create(route.asset().get())));
+            Optional<ResolvedAsset> asset = route.asset();
+            if (asset.isPresent()) {
+                runtime.assetSource(Optional.of(assetSourceFactory.create(asset.get())));
             } else {
                 ResolvedUpstream resolvedUpstream = route.upstream().orElseThrow(() -> new GatewayException(
                         EventType.CONFIG_INVALID,

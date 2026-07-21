@@ -104,8 +104,9 @@ public final class DispatchStage {
     public static String upstreamRequestUri(ResolvedUpstream upstream, String pathRemainder, String rawQuery) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(pathRemainder, "pathRemainder");
+        Objects.requireNonNull(rawQuery, "rawQuery");
         String path = stripTrailingSlash(upstream.basePath()) + pathRemainder;
-        return rawQuery == null || rawQuery.isEmpty() ? path : path + rawQuery;
+        return rawQuery.isEmpty() ? path : path + rawQuery;
     }
 
     /**
@@ -225,7 +226,7 @@ public final class DispatchStage {
 
     private HttpClientResponse awaitDispatch(RouteRuntime route, io.vertx.core.http.HttpMethod method,
             String requestUri, Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody,
-            AtomicLong bytesSent, AtomicBoolean bodyStreamSubscribed) throws Exception {
+            AtomicLong bytesSent, AtomicBoolean bodyStreamSubscribed) throws InterruptedException, ExecutionException {
         ResolvedUpstream upstream = route.getUpstream()
                 .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resolved upstream"));
         HttpClient httpClient = route.getHttpClient()

@@ -190,8 +190,9 @@ class DispatchStageTest {
             AtomicLong bytesSent = new AtomicLong();
             Callable<HttpClientResponse> failing = () -> {
                 attempts.incrementAndGet();
-                // awaitDispatch surfaces upstream failures as ExecutionException (from Future#get);
-                // guardedDispatch must unwrap it before mapping/retrying.
+                // NOSONAR java:S125 — explanatory prose about the ExecutionException-wrapping contract
+                // (awaitDispatch surfaces upstream failures via Future#get; guardedDispatch must unwrap
+                // it before mapping/retrying), NOT commented-out code — the throw below is live.
                 throw new ExecutionException("upstream down", new IllegalStateException("upstream down"));
             };
 
@@ -326,7 +327,7 @@ class DispatchStageTest {
         @DisplayName("serves an upstream asset, forcing no-store on an authenticated route through the envelope")
         void servesUpstreamAssetGoverned() {
             ResolvedUpstream upstream = new ResolvedUpstream("https", "cdn.internal", 443, "");
-            UpstreamAssetSource.UpstreamFetcher fetcher = target -> new UpstreamAssetSource.UpstreamFetcher.Fetched(
+            UpstreamAssetSource.UpstreamFetcher fetcher = _ -> new UpstreamAssetSource.UpstreamFetcher.Fetched(
                     200, Map.of("Content-Type", "text/plain", "Cache-Control", "public"),
                     "PNGDATA".getBytes(StandardCharsets.UTF_8));
             UpstreamAssetSource source = new UpstreamAssetSource(upstream, AccessLevel.AUTHENTICATED,

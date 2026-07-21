@@ -1,0 +1,70 @@
+= SonarCloud Quality Gate -- Compliance Policy
+:toc:
+:toclevels: 2
+:sectnums:
+
+The rules a contributor follows around the SonarCloud analysis of API Sheriff. This page states
+*the policy*; it deliberately does not restate the gate's concrete thresholds -- those are owned
+by the cuioss-organization and would drift if copied here.
+
+== The gate is authoritative, blocking, and required
+
+API Sheriff is analysed by the cuioss-organization SonarCloud project
+link:https://sonarcloud.io/project/overview?id=cuioss_API-Sheriff[`cuioss_API-Sheriff`]. The
+quality gate on that project is the *authoritative, blocking, required* check:
+
+* It is declared for this repository via link:../../.github/project.yml[`.github/project.yml`]
+  (`sonar.project-key: cuioss_API-Sheriff`) and runs inside the cuioss-organization *reusable
+  Maven build* -- it is not a step this repository configures or can weaken locally.
+* The gate thresholds, quality profiles, and new-code definition are *organization assets*. This
+  page *references* them as the single source of truth; it does not copy them. If the gate itself
+  needs to change, that is an organization-admin escalation, not a change to this repository.
+
+The target is *zero new findings*: a change must not introduce a new bug, vulnerability, security
+hotspot, or code smell that the gate counts against the new-code period.
+
+== Never merge over a red gate or a stale green
+
+* A *red* gate blocks the merge. Do not merge, and do not seek an administrative override -- fix
+  the finding (or suppress it with a rationale, see below) and let the gate go green on its own.
+* A *stale green* is equally disqualifying. When analysis is still pending (the SonarCloud
+  Compute Engine has not finished processing the latest commit), a previously-green status does
+  not describe the code you are about to ship. Wait for the analysis of the *current* commit to
+  complete before treating the gate as green.
+
+== PR new-code green is not project green
+
+SonarCloud reports two distinct things, and they are audited separately:
+
+* *PR new-code analysis* -- the findings the gate attributes to the changes on the pull request
+  branch. A green PR new-code gate is the *merge precondition*.
+* *Project analysis* -- the findings on `main` after the merge lands, over the whole project's
+  new-code period.
+
+A plan is *not "done" / "all green"* until the *post-merge PROJECT gate* is green. A transient
+PR-scoped new-code green is necessary but not sufficient: the completion report must reflect the
+project gate on `main`, not merely the PR gate. This is the auditability nuance -- always confirm
+the project dashboard, not just the PR check, before declaring compliance.
+
+== Fix by default; suppress only with a documented rationale
+
+Fixing the finding is the goal. Where a fix is genuinely not sensible -- a false positive, a
+deliberate idiom, or a rule fighting the design -- an *auditable in-code suppression* is the
+accepted escape hatch:
+
+* `// NOSONAR java:SXXXX <why>` on the flagged line, or
+* `@SuppressWarnings("java:SXXXX")` on the element,
+
+each carrying a short comment that justifies *why* the finding does not apply. The suppression
+lives in the source, in version control, where a reviewer can see and challenge it.
+
+Reaching zero by *silently marking issues won't-fix or false-positive in the SonarCloud UI* is
+*not acceptable* -- that decision leaves no trace in the codebase and cannot be reviewed in a pull
+request. Every deviation from a clean gate must be visible and justified in the source.
+
+== See also
+
+* link:../../.github/project.yml[`.github/project.yml`] -- the repository's SonarCloud declaration.
+* link:https://sonarcloud.io/project/overview?id=cuioss_API-Sheriff[SonarCloud project dashboard]
+  -- the authoritative gate status and the owner of the concrete thresholds.
+* link:README.adoc[Contributor Guide] -- the index for this documentation layer.

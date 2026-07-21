@@ -91,6 +91,7 @@
   },
   "skills_by_profile_reasoning": "general-dev: cross-cutting; java: Maven parent/aggregator POM; java-cui: inherits cui-java-parent, CUI build conventions",
   "tips": [
-    "Java 25 auto-imports java.lang.IO (println/print/readln) into every source file via JEP 512, so IO.println needs no explicit import. Review bots (gemini) false-positive 'IO cannot find symbol / add an import' and suggest reverting to System.out.println; do NOT apply that suggestion. Verify with mvn test-compile before dispositioning."
+    "Java 25 auto-imports java.lang.IO (println/print/readln) into every source file via JEP 512, so IO.println needs no explicit import. Review bots (gemini) false-positive 'IO cannot find symbol / add an import' and suggest reverting to System.out.println; do NOT apply that suggestion. Verify with mvn test-compile before dispositioning.",
+    "Sonar provider registration must use an HTTPS base URL: when a Sonar auth token is configured, workflow-integration-sonar fetch_findings rejects an http:// URL with 'HTTPS required when authentication is configured' (observed failing twice on PR 89 before the config was corrected mid-run). Always use an https:// scheme in the sonar provider config."
   ]
 }

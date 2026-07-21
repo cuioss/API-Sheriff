@@ -154,7 +154,7 @@ public final class UpstreamAssetSource implements AssetSource {
         URI target;
         try {
             target = upstreamUri(confined.get());
-        } catch (URISyntaxException malformed) {
+        } catch (URISyntaxException _) {
             return new Served(BAD_GATEWAY, Map.of(), EMPTY_BODY);
         }
         UpstreamFetcher.Fetched fetched;
@@ -162,7 +162,7 @@ public final class UpstreamAssetSource implements AssetSource {
             fetched = fetcher.fetch(target);
         } catch (UpstreamFetcher.UpstreamTimeoutException timeout) {
             return new Served(GATEWAY_TIMEOUT, Map.of(), EMPTY_BODY);
-        } catch (IOException fetchFailure) {
+        } catch (IOException _) {
             return new Served(BAD_GATEWAY, Map.of(), EMPTY_BODY);
         }
         if (fetched.body().length > maxBytes) {
@@ -375,10 +375,10 @@ public final class UpstreamAssetSource implements AssetSource {
                 if (this == other) {
                     return true;
                 }
-                return other instanceof Fetched fetched
-                        && status == fetched.status
-                        && headers.equals(fetched.headers)
-                        && Arrays.equals(body, fetched.body);
+                return other instanceof Fetched(var otherStatus, var otherHeaders, var otherBody)
+                        && status == otherStatus
+                        && headers.equals(otherHeaders)
+                        && Arrays.equals(body, otherBody);
             }
 
             /**

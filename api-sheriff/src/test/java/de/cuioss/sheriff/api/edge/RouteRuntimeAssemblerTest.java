@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.edge;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -70,9 +71,9 @@ class RouteRuntimeAssemblerTest {
     void setUp() {
         vertx = Vertx.vertx();
         assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
-        securityConfigFactory = filter -> SecurityConfiguration.builder().build();
-        clientFactory = target -> vertx.createHttpClient();
-        guardFactory = shape -> new StoredOnlyGuard();
+        securityConfigFactory = _ -> SecurityConfiguration.builder().build();
+        clientFactory = _ -> vertx.createHttpClient();
+        guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(Path.of(asset.directory().orElse("/tmp")),
                 asset.access());
     }
@@ -153,15 +154,18 @@ class RouteRuntimeAssemblerTest {
     @Test
     @DisplayName("Should fail boot for session auth and unsupported protocols")
     void shouldFailBootForSessionAndUnsupportedProtocols() {
-        var session = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "session auth must fail boot");
-        var grpc = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "gRPC must fail boot");
-        var websocket = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "WebSocket must fail boot");
+        RouteTable sessionTable = new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example"))));
+        var session = assertThrows(GatewayException.class,
+                () -> assembler.assemble(sessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "session auth must fail boot");
+        RouteTable grpcTable = new RouteTable(List.of(route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example"))));
+        var grpc = assertThrows(GatewayException.class,
+                () -> assembler.assemble(grpcTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "gRPC must fail boot");
+        RouteTable webSocketTable = new RouteTable(List.of(route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example"))));
+        var websocket = assertThrows(GatewayException.class,
+                () -> assembler.assemble(webSocketTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "WebSocket must fail boot");
 
         assertEquals(EventType.CONFIG_INVALID, session.getEventType(), "session rejection is a config failure");
         assertEquals(EventType.CONFIG_INVALID, grpc.getEventType(), "gRPC rejection is a config failure");
@@ -232,6 +236,23 @@ class RouteRuntimeAssemblerTest {
         assertTrue(runtime.getUpstream().isEmpty(), "an asset route holds no proxy upstream");
         assertTrue(runtime.getHttpClient().isEmpty(), "an asset route holds no Vert.x client");
         assertTrue(runtime.getResilienceGuard().isEmpty(), "an asset route holds no resilience guard");
+    }
+
+    @Test
+    @DisplayName("Should assemble the empty-Optional (no-asset) proxy path into an upstream/client/guard runtime without throwing (S3655 guard)")
+    void shouldAssembleNoAssetProxyPathWithoutThrowing() {
+        RouteTable table = new RouteTable(List.of(
+                route("proxy-only", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+
+        List<RouteRuntime> runtimes = assertDoesNotThrow(
+                () -> assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "the empty-Optional asset branch must assemble the proxy runtime without throwing");
+
+        RouteRuntime runtime = runtimes.getFirst();
+        assertTrue(runtime.getAssetSource().isEmpty(), "the no-asset path carries no asset source");
+        assertTrue(runtime.getUpstream().isPresent(), "the guarded empty-asset branch resolves the proxy upstream");
+        assertTrue(runtime.getHttpClient().isPresent(), "the proxy path builds a Vert.x client");
+        assertTrue(runtime.getResilienceGuard().isPresent(), "the proxy path builds a resilience guard");
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require,
