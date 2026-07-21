@@ -425,12 +425,12 @@ public final class ConfigValidator {
                 requires.add(effectiveRequire(gateway, endpoint, route));
             }
         }
-        if (requires.contains("bearer")
+        if (requires.contains(REQUIRE_BEARER)
                 && gateway.tokenValidation().map(tv -> tv.issuers().isEmpty()).orElse(true)) {
             errors.add(new ConfigError(GATEWAY_FILE, "/token_validation",
                     "effective auth 'bearer' requires token_validation with at least one issuer"));
         }
-        if (requires.contains("session") && gateway.oidc().isEmpty()) {
+        if (requires.contains(REQUIRE_SESSION) && gateway.oidc().isEmpty()) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc", "effective auth 'session' requires an oidc block"));
         }
     }

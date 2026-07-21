@@ -53,6 +53,8 @@ public class TokenValidatorProducer {
 
     private static final String SOURCE_HTTP = "http";
     private static final String SOURCE_FILE = "file";
+    /** Shared prefix for the per-issuer {@code CONFIG_INVALID} error messages. */
+    private static final String ISSUER_PREFIX = "Issuer '";
 
     private final GatewayConfig gatewayConfig;
     private final JwksTrustProfileResolver trustProfileResolver;
@@ -127,7 +129,7 @@ public class TokenValidatorProducer {
                 builder::expectedAudience,
                 () -> builder.audienceValidationDisabled(true));
         IssuerConfig.Jwks jwks = issuer.jwks().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                "Issuer '" + issuer.name() + "' declares no jwks source"));
+                ISSUER_PREFIX + issuer.name() + "' declares no jwks source"));
         applyJwks(builder, issuer, jwks);
         return builder.build();
     }
@@ -138,11 +140,11 @@ public class TokenValidatorProducer {
             builder.httpJwksLoaderConfig(toHttpJwksLoaderConfig(issuer, jwks));
         } else if (SOURCE_FILE.equals(jwks.source())) {
             String file = jwks.file().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' jwks source 'file' declares no file path"));
+                    ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path"));
             builder.jwksFilePath(file);
         } else {
             throw new GatewayException(EventType.CONFIG_INVALID,
-                    "Issuer '" + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
+                    ISSUER_PREFIX + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
         }
     }
 
@@ -175,7 +177,7 @@ public class TokenValidatorProducer {
      */
     HttpJwksLoaderConfig toHttpJwksLoaderConfig(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
         String url = jwks.url().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                "Issuer '" + issuer.name() + "' jwks source 'http' declares no url"));
+                ISSUER_PREFIX + issuer.name() + "' jwks source 'http' declares no url"));
         HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder builder = HttpJwksLoaderConfig.builder()
                 .issuerIdentifier(issuer.issuer())
                 .jwksUrl(url);
