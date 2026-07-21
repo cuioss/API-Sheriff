@@ -101,16 +101,18 @@ class RouteRuntimeTest {
         }
 
         @Test
-        @DisplayName("Should fail boot for unsupported protocols")
+        @DisplayName("Should fail boot for the unsupported gRPC protocol; WebSocket is now served")
         void shouldFailBootForUnsupportedProtocols() {
             var grpc = assertThrows(GatewayException.class,
                     () -> registry.require(Protocol.GRPC, "grpc-route"), "gRPC must fail boot");
-            var websocket = assertThrows(GatewayException.class,
-                    () -> registry.require(Protocol.WEBSOCKET, "ws-route"), "WebSocket must fail boot");
 
             assertEquals(EventType.CONFIG_INVALID, grpc.getEventType(), "gRPC rejection is a config failure");
-            assertEquals(EventType.CONFIG_INVALID, websocket.getEventType(), "WebSocket rejection is a config failure");
             assertFalse(registry.supports(Protocol.GRPC), "gRPC is unsupported");
+
+            // WEBSOCKET is now registered, so it resolves the WebSocket processor rather than failing.
+            assertTrue(registry.supports(Protocol.WEBSOCKET), "WebSocket is now supported");
+            assertEquals("websocket", registry.require(Protocol.WEBSOCKET, "ws-route").id(),
+                    "a WebSocket route resolves the WebSocket processor");
         }
     }
 

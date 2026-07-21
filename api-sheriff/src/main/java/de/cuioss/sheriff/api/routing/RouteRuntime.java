@@ -131,4 +131,21 @@ public final class RouteRuntime {
      */
     @Builder.Default
     private final Optional<AssetSource> assetSource = Optional.empty();
+
+    /**
+     * The materialized, lower-cased exact-match {@code Origin} allowlist enforced on a WebSocket
+     * upgrade (GW-09 / CSWSH). Empty for a non-WebSocket route, and empty (no enforcement) for a
+     * non-bearer WebSocket route that declares no allowlist — a bearer WebSocket route always
+     * resolves a non-empty allowlist (fail-closed at boot).
+     */
+    @Builder.Default
+    private final Set<String> effectiveAllowedOrigins = Set.of();
+
+    /**
+     * The materialized WebSocket idle timeout with the {@code 300}-second default applied; empty
+     * for a non-WebSocket route. Bounds an established relay — no frame in either direction, with
+     * ping/pong counting as activity.
+     */
+    @Builder.Default
+    private final Optional<Integer> effectiveWebSocketIdleTimeoutSeconds = Optional.empty();
 }

@@ -28,8 +28,13 @@ import de.cuioss.sheriff.api.events.GatewayException;
 /**
  * Boot-time registry mapping each supported {@link Protocol} to its {@link ProtocolProcessor}.
  * {@code HTTP} and {@code GRAPHQL} share a single {@link HttpProtocolProcessor} instance;
- * {@code GRPC} and {@code WEBSOCKET} are deliberately absent, so {@link #require(Protocol, String)}
- * fails boot with a clear not-yet-implemented error for a route requesting them.
+ * {@code WEBSOCKET} is served by a dedicated {@link WebSocketProtocolProcessor}. {@code GRPC}
+ * remains deliberately absent, so {@link #require(Protocol, String)} fails boot with a clear
+ * not-yet-implemented error for a route requesting it (until deliverable 6 registers it).
+ * <p>
+ * A {@code protocol: websocket} route with {@code session} auth is still boot-rejected upstream by
+ * {@code RouteRuntimeAssembler} (session-auth WebSocket routes remain unimplemented until Plan 07);
+ * this registry only decides which processor serves the protocol.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -39,19 +44,21 @@ public final class ProtocolProcessorRegistry {
     private final Map<Protocol, ProtocolProcessor> processors;
 
     /**
-     * Builds the default registry: a shared HTTP processor for {@code HTTP} and {@code GRAPHQL}.
+     * Builds the default registry: a shared HTTP processor for {@code HTTP} and {@code GRAPHQL},
+     * plus a dedicated WebSocket processor for {@code WEBSOCKET}.
      */
     public ProtocolProcessorRegistry() {
         HttpProtocolProcessor http = new HttpProtocolProcessor();
         Map<Protocol, ProtocolProcessor> map = new EnumMap<>(Protocol.class);
         map.put(Protocol.HTTP, http);
         map.put(Protocol.GRAPHQL, http);
+        map.put(Protocol.WEBSOCKET, new WebSocketProtocolProcessor());
         this.processors = Collections.unmodifiableMap(map);
     }
 
     /**
      * Resolves the processor for a route's protocol, failing boot when the protocol is not
-     * yet implemented ({@code GRPC} / {@code WEBSOCKET}).
+     * yet implemented ({@code GRPC}).
      *
      * @param protocol the route's effective protocol
      * @param routeId  the route id, for the failure message

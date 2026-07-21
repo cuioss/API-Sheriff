@@ -124,7 +124,9 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedPaths(route.effectiveSecurityFilter()
                             .map(SecurityFilterConfig::allowedPaths).orElse(List.of()))
                     .retryEnabled(route.retryEnabled())
-                    .notModifiedEnabled(route.notModifiedEnabled());
+                    .notModifiedEnabled(route.notModifiedEnabled())
+                    .effectiveAllowedOrigins(route.effectiveAllowedOrigins())
+                    .effectiveWebSocketIdleTimeoutSeconds(route.effectiveWebSocketIdleTimeoutSeconds());
 
             // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
             // live source and skips the Vert.x client / resilience-guard dedup entirely — its

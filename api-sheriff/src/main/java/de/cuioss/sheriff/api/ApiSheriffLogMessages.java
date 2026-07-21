@@ -27,8 +27,8 @@ import lombok.experimental.UtilityClass;
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and
  * assertable. This catalogue's identifier ranges are disjoint from
  * {@link de.cuioss.sheriff.api.config.ConfigLogMessages}'s (the boot-time configuration
- * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1-2} /
- * {@code 100} / {@code 103-104} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
+ * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1} / {@code 4} /
+ * {@code 100} / {@code 103-106} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
  * there — never renumber one catalogue without checking the other for a collision.
  * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
  * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
@@ -53,6 +53,13 @@ public final class ApiSheriffLogMessages {
                 .prefix(PREFIX)
                 .identifier(1)
                 .template("Route table compiled: %s route runtime(s) assembled")
+                .build();
+
+        /** A WebSocket upgrade was accepted and the opaque bidirectional relay was established. */
+        public static final LogRecord WEBSOCKET_RELAY_ESTABLISHED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(4)
+                .template("WebSocket relay established for route '%s'")
                 .build();
     }
 
@@ -84,6 +91,24 @@ public final class ApiSheriffLogMessages {
                 .prefix(PREFIX)
                 .identifier(104)
                 .template("Circuit breaker closed for upstream '%s'")
+                .build();
+
+        /**
+         * A WebSocket upgrade was rejected by the Origin allowlist (GW-09 / CSWSH). Records the
+         * route id and the rejection disposition ({@code absent} or {@code foreign}) only — the raw
+         * offending {@code Origin} value is never logged.
+         */
+        public static final LogRecord WEBSOCKET_ORIGIN_REJECTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(105)
+                .template("WebSocket upgrade rejected on route '%s': %s origin")
+                .build();
+
+        /** An established WebSocket relay was reclaimed after exceeding its idle timeout. */
+        public static final LogRecord WEBSOCKET_IDLE_RECLAIM = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(106)
+                .template("WebSocket relay on route '%s' reclaimed after idle timeout of %s seconds")
                 .build();
     }
 }

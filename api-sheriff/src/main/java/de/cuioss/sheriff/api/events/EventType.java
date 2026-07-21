@@ -84,14 +84,35 @@ public enum EventType {
     /** The circuit breaker is open; the upstream was not called. */
     UPSTREAM_CIRCUIT_OPEN(EventCategory.UPSTREAM, 503),
     /** The upstream call exceeded its configured timeout. */
-    UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504);
+    UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
+
+    // --- WebSocket (403 on the handshake; 1001 "Going Away" close on the established relay) ---
+
+    /**
+     * A WebSocket upgrade presented a foreign or absent {@code Origin} against the route's
+     * effective allowlist (GW-09 / cross-site WebSocket hijacking). Rejected as an HTTP
+     * {@code 403} <em>before</em> the {@code 101} upgrade completes, so it carries an HTTP mapping.
+     */
+    WEBSOCKET_ORIGIN_REJECTED(EventCategory.AUTHORIZATION, 403),
+    /**
+     * An established WebSocket relay was reclaimed after exceeding its per-route
+     * {@code idle_timeout_seconds}. It occurs after the {@code 101} upgrade, so it has no HTTP
+     * mapping; the edge closes both legs with WebSocket close code {@code 1001} (Going Away).
+     */
+    WEBSOCKET_IDLE_TIMEOUT(null, 0, 1001);
 
     private final @Nullable EventCategory category;
     private final int httpStatus;
+    private final int wsCloseCode;
 
     EventType(@Nullable EventCategory category, int httpStatus) {
+        this(category, httpStatus, 0);
+    }
+
+    EventType(@Nullable EventCategory category, int httpStatus, int wsCloseCode) {
         this.category = category;
         this.httpStatus = httpStatus;
+        this.wsCloseCode = wsCloseCode;
     }
 
     /**
@@ -121,5 +142,13 @@ public enum EventType {
      */
     public boolean hasHttpMapping() {
         return httpStatus > 0;
+    }
+
+    /**
+     * @return the WebSocket close code the edge sends when this event terminates an established
+     *         relay, or {@code 0} when the event has no WebSocket-close mapping
+     */
+    public int wsCloseCode() {
+        return wsCloseCode;
     }
 }

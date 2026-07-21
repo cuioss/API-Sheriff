@@ -47,6 +47,7 @@ import de.cuioss.sheriff.api.auth.GatewayValidator;
 import de.cuioss.sheriff.api.config.model.ForwardedConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedAsset;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
@@ -60,6 +61,7 @@ import de.cuioss.sheriff.api.forward.TcpPeerGate;
 import de.cuioss.sheriff.api.pipeline.BasicChecksStage;
 import de.cuioss.sheriff.api.pipeline.CanonicalPathGuard;
 import de.cuioss.sheriff.api.pipeline.FramingGate;
+import de.cuioss.sheriff.api.pipeline.OriginValidationStage;
 import de.cuioss.sheriff.api.pipeline.PipelineRequest;
 import de.cuioss.sheriff.api.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.api.pipeline.SecurityHeadersStage;
@@ -161,6 +163,8 @@ public class GatewayEdgeRoute {
     private final AuthenticationStage authenticationStage;
     private final ForwardPolicyStage forwardPolicyStage;
     private final ResponseStage responseStage;
+    private final OriginValidationStage originValidationStage;
+    private final WebSocketRelayStage webSocketRelayStage;
 
     private final Semaphore admission;
     private final AtomicInteger inFlight = new AtomicInteger();
@@ -228,6 +232,8 @@ public class GatewayEdgeRoute {
         this.authenticationStage = new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
+        this.originValidationStage = new OriginValidationStage();
+        this.webSocketRelayStage = new WebSocketRelayStage(upstreamFailureMapper, gatewayEventCounter);
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
         // security-filter counts surface as sheriff_security_events_total, completing the fixed
@@ -379,7 +385,14 @@ public class GatewayEdgeRoute {
             authenticationStage.process(request);
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
                     route.getEffectiveForward(), route.isNotModifiedEnabled());
-            dispatchAndRelay(ctx, request, route, forward);
+            // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
+            // upgrade to the opaque relay instead of the HTTP DispatchStage (deliverable 6 extends
+            // this branch for gRPC). Every other protocol takes the HTTP dispatch path.
+            if (route.getProtocol() == Protocol.WEBSOCKET) {
+                dispatchWebSocket(ctx, request, route, forward);
+            } else {
+                dispatchAndRelay(ctx, request, route, forward);
+            }
         } catch (GatewayException rejected) {
             // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
             if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
@@ -430,6 +443,27 @@ public class GatewayEdgeRoute {
         ctx.vertx().runOnContext(v ->
                 responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
                         .onFailure(failure -> failRelay(ctx, failure)));
+    }
+
+    /**
+     * Dispatches a {@code protocol: websocket} route: validates the handshake {@code Origin} against
+     * the route's effective allowlist (a foreign / absent origin throws a
+     * {@link EventType#WEBSOCKET_ORIGIN_REJECTED} {@link GatewayException} rendered as {@code 403}
+     * before any upstream contact — GW-09 / CSWSH), then hands the upgrade to the opaque
+     * {@link WebSocketRelayStage}. The upstream dial and the client upgrade are performed by the
+     * relay stage, so no HTTP {@link ResponseStage} relay runs for a WebSocket route.
+     */
+    private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
+            ForwardPolicyStage.Result forward) {
+        originValidationStage.validate(request, route.getId(), route.getEffectiveAllowedOrigins());
+        String prefix = stripTrailingSlash(route.getMatcher().pathPrefix());
+        String canonical = requireCanonicalPath(request);
+        String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
+        String query = renderQuery(forward.query());
+        ResolvedUpstream upstreamTarget = route.getUpstream()
+                .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
+        String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
+        webSocketRelayStage.relay(ctx, route, forward.headers(), uri);
     }
 
     /**

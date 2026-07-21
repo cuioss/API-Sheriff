@@ -147,19 +147,32 @@ class GatewayEdgeRouteTest {
     }
 
     @Test
-    @DisplayName("fails boot fast for a WebSocket route (unsupported protocol)")
-    void failsBootForWebSocketProtocol() {
+    @DisplayName("boots a WebSocket route (now served by the WebSocket processor)")
+    void bootsWebSocketProtocol() {
         // Arrange
         RouteTable webSocketTable = new RouteTable(List.of(
                 route("w", Protocol.WEBSOCKET, "none")));
 
-        // Act
+        // Act + Assert — WEBSOCKET is now registered, so a WebSocket route assembles cleanly at boot
+        // (the boot rejection was removed with the WebSocket processor).
+        assertDoesNotThrow(() -> newEdge(webSocketTable),
+                "A WebSocket route is served by the registered WebSocket processor and boots cleanly");
+    }
+
+    @Test
+    @DisplayName("fails boot fast for a session-auth WebSocket route (session unimplemented)")
+    void failsBootForSessionAuthWebSocket() {
+        // Arrange
+        RouteTable webSocketTable = new RouteTable(List.of(
+                route("w", Protocol.WEBSOCKET, "session")));
+
+        // Act — session-auth WebSocket routes remain unimplemented until Plan 07
         GatewayException thrown = assertThrows(GatewayException.class, () -> newEdge(webSocketTable),
-                "WebSocket is unsupported and must fail boot");
+                "Session-auth WebSocket routes are not yet implemented and must fail boot");
 
         // Assert
         assertEquals(EventType.CONFIG_INVALID, thrown.getEventType(),
-                "A WebSocket route is rejected as an invalid configuration");
+                "A session-auth WebSocket route is rejected as an invalid configuration");
     }
 
     @Test
