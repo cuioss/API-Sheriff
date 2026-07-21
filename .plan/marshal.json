@@ -290,7 +290,7 @@
       "lessons_superseded_days": 0,
       "temp_on_maintenance": true
     },
-    "provisioned_version": "0.1.1166",
-    "config_seed_fingerprint": "38d03331"
+    "provisioned_version": "0.1.1172",
+    "config_seed_fingerprint": "daa4978b"
   }
 }
