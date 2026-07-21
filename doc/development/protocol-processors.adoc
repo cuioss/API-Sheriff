@@ -1,0 +1,144 @@
+= Protocol Processors -- the SPI and the edge dispatch seam
+:toc:
+:toclevels: 2
+:sectnums:
+
+A contributor-facing guide to how API Sheriff serves more than one wire protocol behind a single
+data-plane edge: the `ProtocolProcessor` SPI, the boot-time registry that binds a protocol to its
+processor, and the per-request *protocol-dispatch seam* in the edge that routes WebSocket and gRPC
+requests down their specialised paths. It describes *how the code is organised* and *how to add a
+processor*; the protocol semantics are defined once in
+link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support], and the design
+decisions in link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] and
+link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016].
+
+== The `ProtocolProcessor` SPI
+
+`de.cuioss.sheriff.api.routing.ProtocolProcessor` is the small seam that carries the *verb
+semantics* of a protocol -- which HTTP methods a route of that protocol may serve. It is
+deliberately narrow:
+
+* `id()` -- the stable processor identifier (`http`, `websocket`, `grpc`).
+* `standardMethods()` -- the set of methods the protocol serves by default.
+* `supports(HttpMethod)` -- whether a given verb is in scope for the protocol.
+
+The three implementations live alongside it in `de.cuioss.sheriff.api.routing`:
+
+[cols="1,3"]
+|===
+| Implementation | Verb scope
+
+| `HttpProtocolProcessor`
+| Every proxyable HTTP verb. Shared by `HTTP` and `GRAPHQL` routes -- GraphQL rides the standard
+  HTTP path.
+
+| `WebSocketProtocolProcessor`
+| `GET` only -- a WebSocket route is entered by the HTTP upgrade handshake.
+
+| `GrpcProtocolProcessor`
+| `POST` only -- every gRPC call is an HTTP/2 `POST` to a service/method path.
+|===
+
+A processor carries *only* the verb semantics. The protocol-specific dispatch behaviour
+(handshake, streaming, trailer relay, rejection rendering) lives in the edge stages described
+below, not in the processor.
+
+== The registry
+
+`ProtocolProcessorRegistry` maps each supported `Protocol` to its processor at boot:
+
+* `HTTP` and `GRAPHQL` share a single `HttpProtocolProcessor` instance.
+* `WEBSOCKET` resolves a dedicated `WebSocketProtocolProcessor`.
+* `GRPC` resolves a dedicated `GrpcProtocolProcessor`.
+
+`require(Protocol, routeId)` resolves the processor for a route and fails the boot with a
+`CONFIG_INVALID` `GatewayException` only when a protocol is genuinely unregistered. Every protocol
+in the served set is registered, so boot fails only for an unsupported protocol -- never merely
+because a route selects WebSocket or gRPC.
+
+`RouteRuntimeAssembler` calls `require(...)` once per route at assembly time and stores the
+resolved processor on the immutable `RouteRuntime`.
+
+== The edge protocol-dispatch seam
+
+`GatewayEdgeRoute` runs every request through the fixed pipeline (stages 0--5) uniformly,
+regardless of protocol. After stage 5 (the forward policy) it reaches the *protocol-dispatch
+seam* and branches on the selected route's protocol:
+
+[source,java]
+----
+if (route.getProtocol() == Protocol.WEBSOCKET) {
+    dispatchWebSocket(ctx, request, route, forward);
+} else if (route.getProtocol() == Protocol.GRPC) {
+    dispatchGrpc(ctx, request, route, forward);
+} else {
+    dispatchAndRelay(ctx, request, route, forward);   // HTTP / GraphQL
+}
+----
+
+Each arm lives in `de.cuioss.sheriff.api.edge`:
+
+=== WebSocket -- handshake and opaque relay
+
+`dispatchWebSocket` validates the handshake `Origin` against the route's effective allowlist via
+`OriginValidationStage` (a foreign or absent origin is rejected `403` *before* any upstream dial --
+GW-09 / CSWSH), then hands the upgrade to `WebSocketRelayStage`. The relay stage dials the
+upstream, completes the client upgrade, relays frames opaquely in both directions, and reclaims an
+established relay that idles past the route's `idle_timeout_seconds` (closing both legs with
+WebSocket code `1001`). No HTTP `ResponseStage` relay runs for a WebSocket route.
+
+=== gRPC -- forced-h2 dispatch and trailer relay
+
+`dispatchGrpc` streams the request opaquely to the forced-HTTP/2 upstream via `GrpcDispatchStage`,
+then relays the upstream response -- including its `grpc-status` / `grpc-message` trailers -- with
+`ResponseStage.relayWithTrailers`. Three collaborators carry the gRPC deltas:
+
+* *Forced-h2 upstream client.* gRPC requires HTTP/2 end-to-end, so the h2 protocol version joins
+  the client-sharing tuple key: `RouteRuntimeAssembler.UpstreamTarget` carries a `forcedHttp2`
+  flag, so a gRPC route to `host:port` holds a client distinct from an HTTP/1.1 route to the same
+  `host:port`. `GatewayEdgeRoute.clientFor(...)` builds that forced-h2 client (h2 over TLS with
+  ALPN, or prior-knowledge h2c in cleartext).
+* *Opaque frame streaming.* `GrpcDispatchStage` reuses the byte-capped streaming dispatch of
+  `DispatchStage`, so the request/response bodies stream as opaque length-prefixed frames (the
+  gateway never inspects the protobuf payload) under the same body cap and stream-aware retry gate
+  as the HTTP path. The Plan-04 GW-08 HTTP/2 abuse bounds hold on the gRPC path because they are
+  enforced by the shared inbound transport (`EdgeHardeningOptions`), not per-protocol.
+* *Trailer relay and rejection mapping.* `ResponseStage.relayWithTrailers` streams the body with
+  the client response held open, then copies the upstream trailers onto the client and ends it, so
+  the client observes the gRPC status. A gateway-generated rejection on a gRPC route is rendered by
+  `GrpcStatusMapper` as a *trailers-only* gRPC response (HTTP `200`, `application/grpc`,
+  `grpc-status` / `grpc-message`) rather than problem+json -- an h2-negotiation failure maps to
+  `UNAVAILABLE`. See link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC
+  rejections].
+
+=== HTTP / GraphQL -- streamed relay
+
+`dispatchAndRelay` is the default path: it dispatches over `DispatchStage` and relays the streamed
+upstream response with `ResponseStage.relay`. GraphQL uses this path unchanged.
+
+== Adding a new protocol processor
+
+To add a future protocol:
+
+. *Implement the SPI.* Add a `ProtocolProcessor` in `de.cuioss.sheriff.api.routing` declaring the
+  protocol's `id()` and its served verbs. Mirror `GrpcProtocolProcessor` /
+  `WebSocketProtocolProcessor` for a single-verb protocol.
+. *Register it.* Add the `Protocol` -> processor mapping in `ProtocolProcessorRegistry`. This alone
+  removes the boot rejection for that protocol.
+. *Add a dispatch arm only if needed.* If the protocol rides the standard HTTP path (like GraphQL),
+  no edge change is required -- it falls through to `dispatchAndRelay`. If it needs a distinct
+  dispatch (a handshake, a specialised upstream client, or a non-problem+json rejection), add an
+  arm to the protocol-dispatch seam in `GatewayEdgeRoute.process(...)` and a `dispatch*` method,
+  following `dispatchWebSocket` / `dispatchGrpc`. A distinct upstream client shape joins the
+  `UpstreamTarget` tuple key so it is deduplicated correctly.
+. *Test it.* Add a processor verb-semantics test (see `GrpcProtocolProcessorTest`) and a
+  dispatch/edge test for any new stage (see `GrpcDispatchStageTest`,
+  `WebSocketRelayStageTest`).
+
+== See also
+
+* link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] -- protocol semantics.
+* link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections] -- the trailers-only mapping.
+* link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] -- WebSocket Origin fail-closed allowlist.
+* link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] -- gRPC trailers-only rejection mapping.
+* link:../user/protocol-routes.adoc[Operator Guide -- Protocol Routes] -- how operators configure these routes.
