@@ -1,0 +1,13 @@
+/* Static asset served by the source: directory asset route (/assets/static/app.css).
+   Mounted read-only into the api-sheriff container at /app/assets. The gateway sets
+   Content-Type: text/css from the .css extension (never from the source) and adds
+   X-Content-Type-Options: nosniff. */
+:root {
+    --sheriff-accent: #1f6feb;
+}
+
+body {
+    color: #222;
+    background: #fff;
+    font-family: system-ui, sans-serif;
+}

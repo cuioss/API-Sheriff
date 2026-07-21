@@ -26,7 +26,9 @@ import java.util.Set;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.api.asset.AssetSource;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
@@ -82,15 +84,19 @@ public final class RouteRuntimeAssembler {
      * @param securityConfigFactory builds one {@link SecurityConfiguration} per security-filter shape
      * @param clientFactory         builds one {@link HttpClient} per upstream target tuple
      * @param guardFactory          builds one {@link Guard} per resilience shape
+     * @param assetSourceFactory    builds the live {@link AssetSource} for an asset route's
+     *                              terminal action
      * @return the assembled runtimes, in the table's longest-prefix-first order
      * @throws GatewayException when a route requests {@code session} auth or an unsupported protocol
      */
     public List<RouteRuntime> assemble(RouteTable table, SecurityConfigurationFactory securityConfigFactory,
-            UpstreamClientFactory clientFactory, ResilienceGuardFactory guardFactory) {
+            UpstreamClientFactory clientFactory, ResilienceGuardFactory guardFactory,
+            AssetSourceFactory assetSourceFactory) {
         Objects.requireNonNull(table, "table");
         Objects.requireNonNull(securityConfigFactory, "securityConfigFactory");
         Objects.requireNonNull(clientFactory, "clientFactory");
         Objects.requireNonNull(guardFactory, "guardFactory");
+        Objects.requireNonNull(assetSourceFactory, "assetSourceFactory");
 
         Map<SecurityFilterConfig, SecurityConfiguration> securityCache = new HashMap<>();
         Map<UpstreamTarget, HttpClient> clientCache = new HashMap<>();
@@ -104,13 +110,7 @@ public final class RouteRuntimeAssembler {
             Optional<SecurityConfiguration> securityConfiguration = route.effectiveSecurityFilter()
                     .map(filter -> securityCache.computeIfAbsent(filter, securityConfigFactory::create));
 
-            UpstreamTarget target = UpstreamTarget.of(route.upstream());
-            HttpClient client = clientCache.computeIfAbsent(target, clientFactory::create);
-
-            ResilienceShape shape = new ResilienceShape(target, route.retryEnabled());
-            Guard guard = guardCache.computeIfAbsent(shape, guardFactory::create);
-
-            runtimes.add(RouteRuntime.builder()
+            RouteRuntime.RouteRuntimeBuilder runtime = RouteRuntime.builder()
                     .id(route.id())
                     .protocol(route.protocol())
                     .matcher(RouteMatcher.from(route.match()))
@@ -124,11 +124,27 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedPaths(route.effectiveSecurityFilter()
                             .map(SecurityFilterConfig::allowedPaths).orElse(List.of()))
                     .retryEnabled(route.retryEnabled())
-                    .notModifiedEnabled(route.notModifiedEnabled())
-                    .upstream(route.upstream())
-                    .httpClient(client)
-                    .resilienceGuard(guard)
-                    .build());
+                    .notModifiedEnabled(route.notModifiedEnabled());
+
+            // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
+            // live source and skips the Vert.x client / resilience-guard dedup entirely — its
+            // egress rides the source's own SSRF-controlled fetch seam, not the proxy data plane.
+            if (route.asset().isPresent()) {
+                runtime.assetSource(Optional.of(assetSourceFactory.create(route.asset().get())));
+            } else {
+                ResolvedUpstream resolvedUpstream = route.upstream().orElseThrow(() -> new GatewayException(
+                        EventType.CONFIG_INVALID,
+                        "Route '" + route.id() + "' resolves no terminal action (neither upstream nor asset)"));
+                UpstreamTarget target = UpstreamTarget.of(resolvedUpstream);
+                HttpClient client = clientCache.computeIfAbsent(target, clientFactory::create);
+                ResilienceShape shape = new ResilienceShape(target, route.retryEnabled());
+                Guard guard = guardCache.computeIfAbsent(shape, guardFactory::create);
+                runtime.upstream(Optional.of(resolvedUpstream))
+                        .httpClient(Optional.of(client))
+                        .resilienceGuard(Optional.of(guard));
+            }
+
+            runtimes.add(runtime.build());
         }
         return List.copyOf(runtimes);
     }
@@ -210,5 +226,20 @@ public final class RouteRuntimeAssembler {
          * @return the built guard
          */
         Guard create(ResilienceShape shape);
+    }
+
+    /**
+     * Factory building the live {@link AssetSource} for an asset route's resolved terminal
+     * action — a directory reader for a {@code directory} source, an SSRF-guarded upstream
+     * fetcher for an {@code upstream} source.
+     */
+    @FunctionalInterface
+    public interface AssetSourceFactory {
+
+        /**
+         * @param asset the resolved asset terminal action
+         * @return the built asset source
+         */
+        AssetSource create(ResolvedAsset asset);
     }
 }

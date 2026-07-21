@@ -1,0 +1,111 @@
+= ADR-0013 -- Anchor Type and Access Axes
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] made the anchor the owner of a URL
+namespace and the carrier of an inherited, non-weakenable policy floor (`auth`,
+`security_filter`, `security_headers`, `allowed_methods`). What an anchor *is* -- a plain
+reverse proxy, a Backend-For-Frontend surface, or a static-asset surface -- and *who may reach
+it* -- an anonymous caller or an authenticated one -- were left implicit, inferred from the
+combination of `auth.require`, the presence of an `oidc` block, and the terminal action wired
+behind the route. Leaving both facts implicit costs a security gateway on two fronts:
+
+* *Fail-open by omission.* An anchor's intended audience lives only in the operator's head. A
+  surface meant to require authentication that is accidentally configured with `require: none`
+  reads as a deliberate public surface -- there is no declared expectation for the validator to
+  contradict, so the boot succeeds and the surface is silently open. This is the same
+  fail-open risk ADR-0007 removed for the *namespace* dimension, still present for the
+  *audience* dimension.
+* *Overloaded auth semantics.* Tying "what kind of surface is this" to the specific auth
+  mechanism couples anchor classification to OAuth/OIDC. A deployment that fronts a purely
+  internal, network-authenticated backend, or that serves public static assets, has no natural
+  place to state its posture without borrowing auth vocabulary that does not fit.
+
+=== Prior art
+
+Two traditions classify routes differently:
+
+* *Infrastructure proxies* (NGINX, Traefik, HAProxy, APISIX) type a route *implicitly and
+  positionally*: the presence of a `proxy_pass`, an `upstream`/`serviceRef`, or a `root`/static
+  directive is what makes a route a proxy or a file server. There is no explicit, mandatory
+  "this is what this route is" declaration, and access control is a bolt-on plugin that is
+  frequently optional -- a route with no auth plugin is simply open.
+* *Application security frameworks* (Spring Security, Jakarta Security, and the OWASP
+  access-control guidance behind them) make access an *explicit, first-class, mandatory* axis:
+  every URL pattern declares `permitAll` / `authenticated` / `hasRole(...)`, and the default
+  posture for an undeclared pattern is deny. The audience of a surface is a declared fact the
+  framework enforces, not an emergent property of which filters happen to be wired.
+
+API Sheriff is a security gateway, not a general-purpose proxy; the application-security
+tradition is the right fit. The audience of a surface, and the kind of surface it is, should be
+*declared* and *enforced at boot*, exactly as ADR-0007 declared and enforced namespace
+membership.
+
+== Decision
+
+Add two *required*, orthogonal classification axes to every anchor:
+
+* `type` (`proxy` \| `bff` \| `asset`) -- what the anchor is. `proxy` is a plain reverse-proxy
+  surface, `bff` a Backend-For-Frontend surface, `asset` a static-asset surface
+  (link:0014-asset-serving-terminal-action.adoc[ADR-0014]). The former `passthrough` `type`
+  value is renamed to `proxy` -- a clean-slate value rename (pre-1.0, no deprecation shim). This
+  is an anchor-`type` value rename only; it does *not* touch the unrelated TLS-L4
+  `tls.passthrough_sni` surface, which keeps its name.
+* `access` (`public` \| `authenticated`) -- who may reach the anchor. `public` is an anonymous
+  surface; `authenticated` requires a fully-backed auth posture.
+
+Both axes are *mandatory on every anchor*; a missing axis is a refused boot. The axes drive a
+fail-closed boot matrix (link:../plan/10-anchor-types-assets.adoc[Plan 10]): `access:
+authenticated` requires an effective non-`none` `require` with its backing block present;
+`access: public` combined with an auth block is a boot failure; `type: bff` requires `access:
+authenticated`. The matrix rules join `ConfigValidator.DEFAULT_RULES` and run on the eager
+startup-event path, collecting all violations in one pass (single-reporter,
+link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]).
+
+Three arguments carry the decision:
+
+. *Non-OAuth extensibility.* An explicit `type` axis lets the gateway grow new terminal
+  behaviours (asset serving now, more later) without overloading auth semantics, and an
+  explicit `access` axis expresses audience independently of the specific mechanism -- a
+  network-authenticated or asset deployment declares its posture without borrowing OAuth
+  vocabulary.
+. *Fail-closed declaration.* Because both axes are required and the matrix is enforced at boot,
+  a surface's intended audience is a declared expectation the validator can contradict. An
+  authenticated surface accidentally left open no longer boots. This extends ADR-0007's
+  fail-closed namespace guarantee to the audience and kind dimensions.
+. *Linear, not combinatorial, growth.* Two orthogonal axes, declared independently, grow
+  linearly as the vocabulary expands -- adding a `type` value or an `access` value is one new
+  enum constant, not a new named "mode" for every type-x-access combination. A single fused
+  "mode" axis would grow combinatorially and re-entangle the two concerns.
+
+== Consequences
+
+* Every anchor gains two required fields; existing anchor-construction sites (model, schema,
+  fixtures, tests) must supply them. This is a breaking config change -- accepted under the
+  pre-1.0 rules.
+* The audience of every surface becomes structural and boot-enforced: an authenticated surface
+  cannot be silently public, and a `bff` surface cannot be public by construction.
+* The `type` axis gives the asset terminal action
+  (link:0014-asset-serving-terminal-action.adoc[ADR-0014]) a declared home without overloading
+  the proxy/BFF vocabulary.
+* `passthrough` disappears as an anchor `type` value; the TLS `tls.passthrough_sni` surface is
+  untouched, so the rename cannot be confused with a TLS-edge change.
+
+== References
+
+* link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] -- anchor-scoped policy, the decision
+  this extends.
+* link:0014-asset-serving-terminal-action.adoc[ADR-0014] -- the asset terminal action the
+  `asset` type classifies.
+* link:../configuration.adoc[Configuration Model] -- the anchor schema and validation-rules
+  summary the axes extend.
+* link:../plan/10-anchor-types-assets.adoc[Plan 10] -- the implementation plan for the axes and
+  the fail-closed matrix.
+* https://owasp.org/Top10/A01_2021-Broken_Access_Control/[OWASP Top 10 -- A01 Broken Access
+  Control] -- the deny-by-default, explicit-declaration posture this adopts.

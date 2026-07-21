@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# Public asset endpoint (ADR-0014) exercised by DirectoryAssetServingIT and
+# UpstreamAssetServingIT. It carries two asset terminal-action routes under the
+# 'assets-public' anchor (/assets, access: public):
+#
+#   * /assets/static/*  -> source: directory, root /app/assets (the read-only
+#     volume mount). The gateway confines the request sub-path under the root and
+#     serves the file through the response envelope.
+#   * /assets/cdn/*     -> source: upstream, alias ASSET_ORIGIN (the secondary
+#     static server 'asset-origin'). The gateway fetches the confined remainder over
+#     the same SSRF-controlled egress the proxy uses and re-serves it under
+#     gateway-owned response governance.
+#
+# base_url is mandatory on every endpoint; an asset route never proxies to it, so it
+# points at the same resolvable UPSTREAM alias the proxy endpoints use and is unused.
+# The endpoint declares require: none because the 'assets-public' anchor is
+# access: public and carries no auth block (ADR-0013).
+endpoint:
+  id: assets
+  enabled: true
+  base_url: UPSTREAM
+  anchor: assets-public
+  auth:
+    require: none
+  routes:
+    - id: assets-directory
+      anchor: assets-public
+      match:
+        path_prefix: /assets/static
+      asset:
+        source: directory
+        directory: /app/assets
+    - id: assets-upstream
+      anchor: assets-public
+      match:
+        path_prefix: /assets/cdn
+      asset:
+        source: upstream
+        upstream: ASSET_ORIGIN

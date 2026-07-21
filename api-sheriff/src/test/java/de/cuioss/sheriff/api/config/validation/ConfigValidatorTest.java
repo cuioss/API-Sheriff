@@ -28,7 +28,10 @@ import java.util.Optional;
 
 import de.cuioss.sheriff.api.config.RouteTableBuilder;
 import de.cuioss.sheriff.api.config.load.ConfigError;
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AnchorType;
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardedConfig;
@@ -56,6 +59,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
@@ -129,10 +134,36 @@ class ConfigValidatorTest {
     }
 
     private static AnchorConfig anchor(String name, String prefix, String require) {
+        // The ADR-0007 anchor rules (prefix disjointness, namespace membership, auth floor) are
+        // orthogonal to the ADR-0013 access->auth matrix, so these fixtures stay matrix-consistent
+        // by construction: an anchor with no auth floor is access: public (public + no auth block is
+        // matrix-clean), while an anchor carrying a floor is access: authenticated (a non-'none'
+        // floor is what access: authenticated requires).
         return AnchorConfig.builder()
                 .name(name)
                 .pathPrefix(prefix)
+                .type(AnchorType.PROXY)
+                .access(require == null ? AccessLevel.PUBLIC : AccessLevel.AUTHENTICATED)
                 .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                .build();
+    }
+
+    private static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
+            String require) {
+        return AnchorConfig.builder()
+                .name(name)
+                .pathPrefix(prefix)
+                .type(type)
+                .access(access)
+                .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                .build();
+    }
+
+    private static GatewayConfig gatewayWithAnchorAndIssuer(AnchorConfig anchorConfig) {
+        return validGateway()
+                .anchors(Map.of(anchorConfig.name(), anchorConfig))
+                .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
+                        IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
                 .build();
     }
 
@@ -158,6 +189,130 @@ class ConfigValidatorTest {
                 .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
                 .match(match(prefix, methods))
                 .build();
+    }
+
+    private static RouteConfig assetRoute(String id, String prefix, String anchorName, AssetConfig asset,
+            HttpMethod... methods) {
+        return RouteConfig.builder()
+                .id(id)
+                .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                .match(match(prefix, methods))
+                .asset(Optional.of(asset))
+                .build();
+    }
+
+    private static AssetConfig directoryAsset(String root) {
+        return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                .directory(root == null ? Optional.empty() : Optional.of(root)).build();
+    }
+
+    private static AssetConfig upstreamAsset(String alias) {
+        return AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
+                .upstream(alias == null ? Optional.empty() : Optional.of(alias)).build();
+    }
+
+    @Nested
+    @DisplayName("Terminal-action / anchor-type consistency (ADR-0014)")
+    class TerminalActionConsistency {
+
+        @Test
+        @DisplayName("Should accept a directory asset route under an asset anchor")
+        void shouldAcceptDirectoryAssetUnderAssetAnchor() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an upstream asset route whose alias resolves")
+        void shouldAcceptUpstreamAssetWithResolvableAlias() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    assetRoute("cdn", "/assets", "assets", upstreamAsset("SECONDARY"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject an asset-type anchor route that declares no asset terminal action")
+        void shouldRejectAssetAnchorWithoutAssetBlock() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    anchoredRoute("noasset", "/assets", "assets", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
+
+            assertHasError(errors, "/endpoint/routes", "declares no asset terminal action");
+        }
+
+        @Test
+        @DisplayName("Should reject an asset block on a route under a proxy anchor")
+        void shouldRejectAssetBlockUnderProxyAnchor() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api",
+                    matrixAnchor("api", "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    assetRoute("mixed", "/api", "api", directoryAsset("/srv/assets"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            assertHasError(errors, "/endpoint/routes", "requires an asset-type anchor");
+        }
+
+        @Test
+        @DisplayName("Should reject an asset block on an unanchored route")
+        void shouldRejectAssetBlockOnUnanchoredRoute() {
+            GatewayConfig gateway = validGateway().build();
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("plain").enabled(true).baseUrl("PLAIN")
+                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .routes(List.of(assetRoute("loose", "/loose", null, directoryAsset("/srv/assets"), HttpMethod.GET)))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("PLAIN"));
+
+            assertHasError(errors, "/endpoint/routes", "the route is unanchored");
+        }
+
+        @Test
+        @DisplayName("Should reject an upstream asset source whose topology alias does not resolve")
+        void shouldRejectUnresolvableUpstreamAssetAlias() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    assetRoute("cdn", "/assets", "assets", upstreamAsset("MISSING"), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
+
+            assertHasError(errors, "/endpoint/routes", "does not resolve in the topology");
+        }
+
+        @Test
+        @DisplayName("Should reject a directory asset source that declares no directory root")
+        void shouldRejectDirectoryAssetWithoutRoot() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    assetRoute("bundle", "/assets", "assets", directoryAsset(null), HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
+
+            assertHasError(errors, "/endpoint/routes", "no directory root");
+        }
     }
 
     @Nested
@@ -782,6 +937,136 @@ class ConfigValidatorTest {
 
             assertTrue(errors.isEmpty(),
                     () -> "sibling anchors sharing only a leading substring must stay disjoint, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("The fail-closed access→auth matrix (ADR-0013)")
+    class AccessAuthMatrix {
+
+        @Test
+        @DisplayName("Rule bff→authenticated: Should reject a type 'bff' anchor that is not access: authenticated")
+        void shouldRejectBffAnchorThatIsNotAuthenticated() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "portal", matrixAnchor("portal", "/portal", AnchorType.BFF, AccessLevel.PUBLIC, null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/portal", "is type 'bff' and must declare access: authenticated");
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = AnchorType.class, names = {"PROXY", "ASSET"})
+        @DisplayName("Rule public+auth: Should reject an access: public anchor declaring an auth block for any non-bff type")
+        void shouldRejectPublicAnchorDeclaringAuthBlock(AnchorType type) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "open", matrixAnchor("open", "/open", type, AccessLevel.PUBLIC, "bearer")));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/open", "is access: public and must not declare an auth block");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"none", "bearer", "session"})
+        @DisplayName("Rule public+auth: Should reject an access: public anchor for every auth-floor value in the vocabulary")
+        void shouldRejectPublicAnchorForEveryAuthFloorValue(String require) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "open", matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, require)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/open", "is access: public and must not declare an auth block");
+        }
+
+        @Test
+        @DisplayName("Rule authenticated→floor: Should reject an access: authenticated anchor declaring no auth floor at all")
+        void shouldRejectAuthenticatedAnchorWithNoAuthBlock() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/secure", "declares no non-'none' auth floor");
+        }
+
+        @Test
+        @DisplayName("Rule authenticated→floor: Should reject an access: authenticated anchor whose floor is 'none'")
+        void shouldRejectAuthenticatedAnchorWithNoneFloor() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, "none")));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/secure", "declares no non-'none' auth floor");
+        }
+
+        @Test
+        @DisplayName("Rule authenticated backing: Should reject an authenticated bearer floor with no token_validation issuer")
+        void shouldRejectAuthenticatedBearerFloorWithoutIssuer() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, "bearer")));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/secure",
+                    "access: authenticated bearer floor requires token_validation with at least one issuer");
+        }
+
+        @Test
+        @DisplayName("Rule authenticated backing: Should reject an authenticated session floor with no oidc block")
+        void shouldRejectAuthenticatedSessionFloorWithoutOidc() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, "session")));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/anchors/secure",
+                    "access: authenticated session floor requires an oidc block");
+        }
+
+        @Test
+        @DisplayName("Should accept a type 'bff' anchor that is access: authenticated with a backed bearer floor")
+        void shouldAcceptAuthenticatedBffWithBackedBearerFloor() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(
+                    matrixAnchor("portal", "/portal", AnchorType.BFF, AccessLevel.AUTHENTICATED, "bearer"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a bff+authenticated anchor with a backed bearer floor must satisfy the matrix, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = AnchorType.class, names = {"PROXY", "ASSET"})
+        @DisplayName("Should accept an access: public anchor with no auth block for any non-bff type")
+        void shouldAcceptPublicAnchorWithoutAuthBlock(AnchorType type) {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "open", matrixAnchor("open", "/open", type, AccessLevel.PUBLIC, null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a public anchor declaring no auth block must satisfy the matrix, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report every matrix violation together in one pass")
+        void shouldAggregateMatrixViolationsInOnePass() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of(
+                    "portal", matrixAnchor("portal", "/portal", AnchorType.BFF, AccessLevel.PUBLIC, null),
+                    "open", matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, "bearer"),
+                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null)));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll("all three matrix violations surface together",
+                    () -> assertTrue(errors.size() >= 3, () -> "expected at least three violations, got: " + errors),
+                    () -> assertHasError(errors, "/anchors/portal",
+                            "is type 'bff' and must declare access: authenticated"),
+                    () -> assertHasError(errors, "/anchors/open",
+                            "is access: public and must not declare an auth block"),
+                    () -> assertHasError(errors, "/anchors/secure", "declares no non-'none' auth floor"));
         }
     }
 

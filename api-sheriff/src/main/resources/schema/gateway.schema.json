@@ -137,15 +137,17 @@
     },
     "anchors": {
       "type": "object",
-      "description": "Optional named, namespace-scoped policy anchors. Each anchor OWNS a disjoint path namespace (path_prefix) and carries the policy floor for every route inside it. Anchor prefixes must be pairwise disjoint (enforced in code).",
+      "description": "Optional named, namespace-scoped policy anchors. Each anchor OWNS a disjoint path namespace (path_prefix) and carries the policy floor for every route inside it. Every anchor declares two required classification axes: 'type' (proxy/bff/asset; the former 'passthrough' value renamed to 'proxy') and 'access' (public/authenticated). Anchor prefixes must be pairwise disjoint (enforced in code).",
       "additionalProperties": false,
       "patternProperties": {
         "^[a-z][a-z0-9_-]*$": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path_prefix"],
+          "required": ["path_prefix", "type", "access"],
           "properties": {
             "path_prefix": { "type": "string" },
+            "type": { "type": "string", "enum": ["proxy", "bff", "asset"] },
+            "access": { "type": "string", "enum": ["public", "authenticated"] },
             "auth": { "$ref": "#/$defs/auth" },
             "security_filter": { "$ref": "#/$defs/securityFilter" },
             "security_headers": { "$ref": "#/$defs/securityHeaders" },

@@ -46,6 +46,19 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # Secondary static origin backing the source: upstream asset route (/assets/cdn).
+  # nginx serves the mounted static content at http://asset-origin:80 on the internal
+  # network; the gateway fetches confined assets from it over the fixed-topology,
+  # SSRF-controlled egress and re-serves them under the response envelope. No host
+  # port is published — it is reached only by the gateway on the compose network.
+  asset-origin:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./src/main/docker/asset-origin:/usr/share/nginx/html:ro
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
   api-sheriff:
     image: "api-sheriff:distroless"
     build:
@@ -80,12 +93,18 @@ services:
     depends_on:
       - keycloak
       - go-httpbin
+      - asset-origin
 
     volumes:
       # Read-only certificate mount (production pattern)
       - ./src/main/docker/certificates:/app/certificates:ro
       # Read-only file-based gateway configuration mount (production pattern)
       - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      # Read-only static-asset directory backing the source: directory asset route
+      # (/assets/static and /secure-assets). Mounted at /app/assets, matching the
+      # `directory:` root in the asset endpoint config. A read-only mount into the
+      # read_only container is fine — bind mounts are independent of the root fs.
+      - ./src/main/docker/assets:/app/assets:ro
       # Mount target directory for log files (defaults to ./target)
       - ${LOG_TARGET_DIR:-./target}:/logs:rw
 

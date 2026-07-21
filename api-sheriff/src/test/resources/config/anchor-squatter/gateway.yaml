@@ -1,9 +1,15 @@
-# Anchor-squatter gateway: declares an 'api' anchor owning /api. The sibling
-# endpoints/squatter.yaml places a route inside /api without declaring the anchor,
-# so the ADR-0007 namespace-membership rule refuses the boot (ConfigFailFastTest).
+# Anchor-squatter gateway: declares an 'api' anchor owning /api, carrying the
+# required type/access axes (ADR-0013) so schema validation passes and the boot
+# reaches the semantic namespace check. The sibling endpoints/squatter.yaml places
+# a route inside /api without declaring the anchor, so the ADR-0007
+# namespace-membership rule refuses the boot (ConfigFailFastTest). The anchor is
+# access: public with no auth block, so it stays access->auth matrix consistent and
+# the boot fails only for the squatter reason.
 version: 1
 metadata:
   config_version: "anchor-squatter-test"
 anchors:
   api:
     path_prefix: /api
+    type: proxy
+    access: public

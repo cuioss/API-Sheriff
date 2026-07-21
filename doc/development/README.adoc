@@ -1,0 +1,50 @@
+= API Sheriff -- Contributor Guide
+:toc:
+:toclevels: 2
+:sectnums:
+
+The *contributor layer* of the API Sheriff documentation. These documents are written for the
+people who *build* the gateway -- compiling and testing the modules, understanding the module
+layout, and following the project conventions. They describe how the codebase is put together
+and how to work in it, distinct from the link:../README.adoc[design documentation] (which
+defines *what* is built) and the link:../user/README.adoc[operator guide] (which describes how
+to *run* the finished gateway).
+
+This tree is seeded here and grows as contributor-facing material lands.
+
+== Contents
+
+[cols="1,3"]
+|===
+| Document | Purpose
+
+| link:../plan/README.adoc[Implementation Plans]
+| The sequenced plans that build the design, each naming its required-reading design docs, the
+  shared execution workflow, and the project *conventions* (integration-tests-in-plan,
+  benchmarks, dependency approvals, the three-layer documentation convention, pre-1.0 rules).
+
+| link:../technical_aspects.adoc[Technical Aspects]
+| The CUI libraries the codebase builds on -- `cui-http` (inbound security filtering,
+  forwarded-header resolution), `token-sheriff-validation`, `token-sheriff-client`, logging and
+  testing -- and how they are wired in.
+
+| link:../adr/0005-module-structure.adoc[ADR-0005 -- Module Structure]
+| Why the project is one Quarkus module today, with a package-layout + arch-gate seam kept
+  clean so a core module is cheap to extract later.
+|===
+
+== Scope of This Layer
+
+Documents in `doc/development/` cover:
+
+* *Build* -- the Maven module structure (`api-sheriff`, `integration-tests`, `benchmarks`) and
+  the canonical build commands.
+* *Test* -- the unit, module, and integration test layers, the CUI test generator, and the
+  coverage floor.
+* *Module layout* -- package structure, the framework-agnostic seam
+  (link:../adr/0005-module-structure.adoc[ADR-0005]), and the arch-gate that guards it.
+* *Conventions* -- the project-wide rules recorded in the link:../plan/README.adoc[plan
+  conventions] and `CLAUDE.md`.
+
+Design rationale lives in the link:../README.adoc[design documentation]; this layer describes
+how to *work in* the codebase that implements it.

@@ -404,12 +404,22 @@ keeps `EgressPolicy.secureDefault()`, and each entry exempts exactly one host (h
 wildcard form). Operators should egress-restrict the gateway and
 avoid pointing a topology alias at link-local/metadata ranges (guide note, Plan 09).
 
+The `source: upstream` asset action (link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014])
+reuses this exact posture rather than opening a parallel fetch stack: a fixed, boot-resolved
+topology upstream (never selected by request content), the `http`/`https` scheme allowlist,
+`followRedirects(NEVER)`, and a bounded response size and read/connect timeout. A hostile asset
+upstream can therefore neither redirect the fetch to an internal address nor be chosen by the
+client; its response metadata is additionally overridden by the gateway-owned asset envelope
+(fixed content type, stripped `Set-Cookie`, forced `no-store` for authenticated access).
+
 *Status:* COVERED (design). No request-controlled upstream exists; scheme allowlist is Plan
-03 D5; redirect-follow-off is a documented default.
+03 D5; redirect-follow-off is a documented default; the upstream asset source reuses the same
+fixed-topology + scheme-allowlist + no-redirect controls (ADR-0014).
 
 *Assertion.* No request input (path, header, body) can change the resolved upstream host; a
 topology alias with a non-http(s) scheme fails boot; the data-plane client does not follow
-upstream 3xx to a new host.
+upstream 3xx to a new host; the upstream asset source honours the same no-redirect and
+fixed-topology guarantees and bounds the response size and timeout.
 
 [#gw-06]
 === GW-06 -- TLS/SNI fail-open, upstream cert verification, mTLS bypass
@@ -570,11 +580,25 @@ enforce the secrets rule on the *pre-substitution* scalar (Plan 03 D5). The Grav
 double-patch is the lesson for the validator: close the whole *class* (canonicalize-then-
 contain + a full traversal/encoding regression corpus), not one spelling.
 
+The asset-serving action (link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]) *reopens*
+this class with a second client-supplied file-path surface: the request-path remainder of a
+`source: directory` or `source: upstream` asset route. Both sources close it through one shared
+`PathConfinement`, applied *before* the backing store is touched: `cui-http`'s
+`URLPathValidationPipeline` canonicalizes the untrusted remainder (rejecting encoded traversal,
+encoded slash, mixed/double encoding, `%00`, overlong UTF-8, backslash, and `..;/`), then the
+gateway confines the normalized path under the configured root/prefix and rejects any escape.
+Honouring the Gravitee lesson, a generator-driven traversal/encoding regression corpus
+(`PathConfinementTest`) asserts the whole *class* is closed for the shared confinement, not one
+spelling.
+
 *Status:* COVERED/ELIMINATED. No SQL, no SAML, no management endpoints; config-path handling
-and secrets-on-raw-value are Plan 03 D5.
+and secrets-on-raw-value are Plan 03 D5; the asset-serving file-path surface (ADR-0014) is
+confined by the shared `PathConfinement` and proven by the traversal/encoding corpus.
 
 *Assertion.* No SQL or SAML code path exists; config file resolution cannot escape the config
-directory via `..`/encoding; a full traversal corpus is rejected; the secrets rule is
+directory via `..`/encoding; a full traversal corpus is rejected; asset file resolution -- for
+both the local-directory and upstream sources -- cannot escape the configured root/prefix via
+`..`/encoding, proven by the same full corpus (`PathConfinementTest`); the secrets rule is
 evaluated on the raw scalar (a literal secret is rejected even if it would substitute to a
 valid value).
 
@@ -966,13 +990,13 @@ plan amendment (next section).
 | <<gw-02>> | Reject ambiguous HTTP framing | Gateway/web-server (cui-http out of scope) -- Plan 04 | GAP
 | <<gw-03>> | Header CR/LF reject; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + Plan 04 (hop-by-hop) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation | cui-http resolver + ADR-0003 / Plan 04 (peer gate) / 03 D5 (trust-all) | COVERED
-| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) | ADR-0004 / Plan 03 D5 / token-sheriff `EgressPolicy` | COVERED
+| <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / Plan 03 D5 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; test behaviour not flag | Plan 06 | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 / Plan 04 / 03 D5 | PARTIAL
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Plan 04 / 05 | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade | Plan 05 | GAP
 | <<gw-10>> | No admin API / no scripting / no default creds | Design / Plan 04 | ELIMINATED
-| <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path handling | Design / Plan 03 D5 | COVERED
+| <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / Plan 03 D5 / ADR-0014 (`PathConfinement`) | COVERED
 | <<gw-12>> | problem+json category-only; no secret in logs | cui-http + token-sheriff mappers / Plan 04 / 03 D5 | PARTIAL
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) / Plan 07 D2 | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use | Engine `FlowContext` + Plan 07 D2b (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)

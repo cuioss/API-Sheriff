@@ -35,11 +35,21 @@ import lombok.Builder;
  * allowed. Anchors vanish at runtime: the route-table builder materializes each
  * route's effective values and the request pipeline never consults an anchor.
  * <p>
+ * Every anchor additionally declares two required classification axes (decision:
+ * ADR-0013): {@link AnchorType type} ({@code proxy} / {@code bff} / {@code asset} —
+ * the former {@code passthrough} value renamed to {@code proxy}) and
+ * {@link AccessLevel access} ({@code public} / {@code authenticated}). Both are
+ * mandatory on every anchor and drive the fail-closed access-to-auth boot matrix.
+ * <p>
  * {@code name} is the anchor's map key from {@code gateway.yaml}, injected during
  * loading; it is not a property of the anchor block itself.
  *
  * @param name             the anchor name (its map key, mandatory)
  * @param pathPrefix       the owned path namespace (mandatory)
+ * @param type             the anchor kind (mandatory) — {@code proxy} /
+ *                         {@code bff} / {@code asset}
+ * @param access           the anchor audience (mandatory) — {@code public} /
+ *                         {@code authenticated}
  * @param auth             the anchor-level auth floor, empty when the anchor
  *                         declares none
  * @param securityFilter   the anchor-level security filter, empty when the anchor
@@ -52,18 +62,21 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record AnchorConfig(String name, String pathPrefix, Optional<AuthConfig> auth,
+public record AnchorConfig(String name, String pathPrefix, AnchorType type, AccessLevel access,
+Optional<AuthConfig> auth,
 Optional<SecurityFilterConfig> securityFilter, Optional<SecurityHeadersConfig> securityHeaders,
 List<HttpMethod> allowedMethods) {
 
     /**
-     * Canonical constructor requiring {@code name} and {@code pathPrefix},
-     * defensively copying {@code allowedMethods}, and normalizing absent optional
-     * blocks to {@link Optional#empty()}.
+     * Canonical constructor requiring {@code name}, {@code pathPrefix},
+     * {@code type} and {@code access}, defensively copying {@code allowedMethods},
+     * and normalizing absent optional blocks to {@link Optional#empty()}.
      */
     public AnchorConfig {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(pathPrefix, "pathPrefix");
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(access, "access");
         auth = Objects.requireNonNullElse(auth, Optional.empty());
         securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());
         securityHeaders = Objects.requireNonNullElse(securityHeaders, Optional.empty());

@@ -40,6 +40,9 @@ import lombok.Builder;
  *                       global default applies
  * @param forward        the forwarding allowlist, empty when nothing is forwarded
  * @param upstream       the upstream target settings, empty when omitted
+ * @param asset          the asset terminal-action settings, empty when omitted; a
+ *                       route carries at most one terminal action, so {@code asset}
+ *                       and {@code upstream} are mutually exclusive (ADR-0014)
  * @param rateLimit      the reserved rate-limit block, empty when omitted
  * @author API Sheriff Team
  * @since 1.0
@@ -47,7 +50,7 @@ import lombok.Builder;
 @Builder
 public record RouteConfig(String id, Optional<Protocol> protocol, Optional<String> anchor, MatchConfig match,
 Optional<AuthConfig> auth, Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward,
-Optional<UpstreamConfig> upstream, Optional<RateLimitConfig> rateLimit) {
+Optional<UpstreamConfig> upstream, Optional<AssetConfig> asset, Optional<RateLimitConfig> rateLimit) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match} and normalizing
@@ -62,6 +65,7 @@ Optional<UpstreamConfig> upstream, Optional<RateLimitConfig> rateLimit) {
         securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());
         forward = Objects.requireNonNullElse(forward, Optional.empty());
         upstream = Objects.requireNonNullElse(upstream, Optional.empty());
+        asset = Objects.requireNonNullElse(asset, Optional.empty());
         rateLimit = Objects.requireNonNullElse(rateLimit, Optional.empty());
     }
 }

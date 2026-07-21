@@ -21,6 +21,7 @@ import java.util.Set;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.api.asset.AssetSource;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -96,18 +97,38 @@ public final class RouteRuntime {
     @Builder.Default
     private final List<String> effectiveAllowedPaths = List.of();
 
-    /** The materialized upstream-retry toggle. */
+    /** The materialized upstream-retry toggle (meaningful only for a proxy route). */
     private final boolean retryEnabled;
 
-    /** The materialized HTTP-304 not-modified toggle. */
+    /** The materialized HTTP-304 not-modified toggle (meaningful only for a proxy route). */
     private final boolean notModifiedEnabled;
 
-    /** The resolved upstream target. */
-    private final ResolvedUpstream upstream;
+    /**
+     * The resolved upstream target for a proxy route; empty for an asset route. A route
+     * carries exactly one terminal action — a proxy {@link #upstream} or an
+     * {@link #assetSource} — never both (ADR-0014).
+     */
+    @Builder.Default
+    private final Optional<ResolvedUpstream> upstream = Optional.empty();
 
-    /** The shared Vert.x client for this route's upstream tuple (one instance per tuple). */
-    private final HttpClient httpClient;
+    /**
+     * The shared Vert.x client for a proxy route's upstream tuple (one instance per
+     * tuple); empty for an asset route.
+     */
+    @Builder.Default
+    private final Optional<HttpClient> httpClient = Optional.empty();
 
-    /** The shared SmallRye Fault-Tolerance guard for this route's resilience shape. */
-    private final Guard resilienceGuard;
+    /**
+     * The shared SmallRye Fault-Tolerance guard for a proxy route's resilience shape;
+     * empty for an asset route.
+     */
+    @Builder.Default
+    private final Optional<Guard> resilienceGuard = Optional.empty();
+
+    /**
+     * The live asset source serving an asset route's terminal action (a directory
+     * reader or an SSRF-guarded upstream fetcher); empty for a proxy route.
+     */
+    @Builder.Default
+    private final Optional<AssetSource> assetSource = Optional.empty();
 }

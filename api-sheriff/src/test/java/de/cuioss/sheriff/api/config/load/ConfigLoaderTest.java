@@ -31,7 +31,9 @@ import java.util.Map;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AnchorType;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
@@ -362,6 +364,8 @@ class ConfigLoaderTest {
                 anchors:
                   api:
                     path_prefix: /api
+                    type: proxy
+                    access: authenticated
                     auth:
                       require: bearer
                     security_filter:
@@ -380,6 +384,9 @@ class ConfigLoaderTest {
         assertEquals("bearer", api.auth().orElseThrow().require());
         assertEquals(Optional.of("strict"), api.securityFilter().orElseThrow().profile());
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), api.allowedMethods());
+        assertEquals(AnchorType.PROXY, api.type(), "the required type axis binds (case-insensitive from 'proxy')");
+        assertEquals(AccessLevel.AUTHENTICATED, api.access(),
+                "the required access axis binds (case-insensitive from 'authenticated')");
     }
 
     @Test
@@ -389,6 +396,8 @@ class ConfigLoaderTest {
                 anchors:
                   api:
                     path_prefix: /api
+                    type: proxy
+                    access: authenticated
                     bogus_key: true
                 """);
 
@@ -407,6 +416,8 @@ class ConfigLoaderTest {
                 anchors:
                   api:
                     path_prefix: /api
+                    type: proxy
+                    access: authenticated
                     auth:
                       require: bearer
                 """);
@@ -437,6 +448,8 @@ class ConfigLoaderTest {
                 anchors:
                   api:
                     path_prefix: /api
+                    type: proxy
+                    access: authenticated
                     auth:
                       require: bearer
                 """);

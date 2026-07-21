@@ -1,0 +1,252 @@
+= Plan 10 -- Anchor Type/Access Axes and Asset-Serving Terminal Action
+:toc:
+:toclevels: 3
+:sectnums:
+
+[IMPORTANT]
+====
+*Ordering: this plan extends anchors (link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007],
+Plan 03) and reuses the upstream data plane (Plan 04).* It adds two mandatory classification
+axes to every anchor and a second terminal action; both build on a materialized route table
+and the existing SSRF-controlled upstream client, so they land after those two plans are in
+place. It is independent of the BFF track (Plans 07/08).
+====
+
+== Goal
+
+Add two *required* declaration axes to every `gateway.yaml` anchor and a second terminal
+action to the route table:
+
+* `type` (`proxy` \| `bff` \| `asset`) and `access` (`public` \| `authenticated`) -- both
+  mandatory on every anchor, validated fail-closed at boot. The former `passthrough` anchor
+  `type` value is renamed to `proxy` (a clean-slate value rename, no deprecation shim); this
+  is an anchor-`type` rename only and does *not* touch the unrelated TLS-L4 `tls.passthrough_sni`
+  surface.
+* *Asset serving* as a second terminal action alongside `upstream`, with two sources --
+  `directory` (a local mount) and `upstream` (reusing the existing upstream model, data-plane
+  client, circuit breaker, and SSRF controls -- no parallel fetch stack). Both sources apply
+  canonicalize-and-confine path safety before the source is touched and enforce auth *before*
+  source resolution, and both serve through a single gateway-owned response envelope.
+
+The plan is authored *doc-first*: this design doc and the two ADRs land before the code that
+implements them. All nine deliverable groups (below) ship in this one plan -- the operator
+explicitly declined an (A)/(B) split.
+
+== Required Reading (before implementation)
+
+Read these documents *in full* before touching code; the semantics are specified there, not
+here:
+
+. link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007 -- Anchor-Scoped Policy] -- the anchor
+  concept this plan extends: namespace-scoped policy floor, single declared membership,
+  wholesale replacement, boot-time erasure into the route table.
+. link:../configuration.adoc[Configuration Model] -- the anchor and route schema this plan
+  extends, the validation-rules conventions (collect *all* violations, single authoritative
+  reporter per link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]), and the
+  `upstream` terminal action the asset action sits beside.
+. link:../adr/0008-data-plane-transport.adoc[ADR-0008 -- Data-Plane Transport] -- the shared
+  upstream client, resilience guards, and streaming model the `upstream` asset source reuses.
+. link:../security-threat-model.adoc[Threat Model] -- the path-traversal failure class
+  (currently rated covered for config-path handling) that the asset file-path surface
+  reopens, and GW-05 (SSRF via proxy/upstream control).
+. link:../architecture.adoc[Architecture] -- the request lifecycle and terminal-action seam
+  the asset action plugs into.
+
+The two ADRs this plan records -- ADR-0013 (anchor type/access axes) and ADR-0014
+(asset-serving terminal action) -- are authored as deliverable group 1 below; they become
+required reading for every later group in this plan.
+
+== Prerequisites
+
+* Plan 03 delivered: anchors are parsed, validated, and materialized into the route table
+  through `ConfigValidator.DEFAULT_RULES` and `RouteTableBuilder`.
+* Plan 04 delivered: the upstream data plane (fixed-topology upstream resolution, scheme
+  allowlist, `EgressPolicy`, `followRedirects(NEVER)`, circuit breaker, bounded size/timeout)
+  the `upstream` asset source reuses.
+* Boot validation is already forced eagerly through
+  `ConfigProducer.onStartup(@Observes StartupEvent)` -> `buildOnce()` ->
+  `ConfigValidator.validate(...)`; the new matrix rules join `DEFAULT_RULES` and run on that
+  same startup-event path (no lazy-CDI-proxy inertness, the failure mode PR #82 surfaced).
+* `cui-http`'s `URLPathValidationPipeline` is on the classpath (inbound path canonicalization:
+  percent-decoding, `..`/dot-segment and duplicate-slash collapse, unconditional
+  traversal/`%00`/overlong/backslash rejection).
+
+== Design Decisions
+
+Recorded in ADR-0013 / ADR-0014 (this plan) and the configuration/architecture docs; restated
+here only as implementation directives. Each `Dn` maps to one deliverable group.
+
+=== D1 -- Record the ADRs (type/access axes, asset terminal action)
+
+* ADR-0013 records the three-argument rationale for two *explicit* axes -- non-OAuth
+  extensibility, fail-closed declaration, and linear (not combinatorial) growth -- plus the
+  prior-art survey contrasting infrastructure proxies (implicit/positional route typing) with
+  application security frameworks (explicit access declaration). It cross-references ADR-0007,
+  which it extends.
+* ADR-0014 records asset serving as a second terminal action: the two-source model, the
+  reuse of the existing upstream model/client/circuit-breaker/SSRF controls (no parallel fetch
+  stack), the gateway-owned response envelope, and canonicalize-and-confine with
+  auth-before-source-resolution ordering.
+* Both ADRs are registered in link:../README.adoc[the documentation index]'s Architecture
+  Decisions table.
+
+=== D2 -- Required `type`/`access` axes on the anchor model and schema
+
+* New enum `AnchorType` (`proxy` \| `bff` \| `asset`) and `AccessLevel`
+  (`public` \| `authenticated`), following the existing `HttpMethod`/`Protocol` enum
+  conventions (`public` maps to a Java-safe constant name -- it is a reserved word).
+* `AnchorConfig` gains required `AnchorType type` and `AccessLevel access` components,
+  non-null-enforced in the canonical constructor (both mandatory on *every* anchor).
+* `gateway.schema.json` adds `type` and `access` to the `anchors` object, both `required`.
+  The `passthrough -> proxy` rename is a `type` *value* rename here; `tls.passthrough_sni` is
+  untouched.
+* Existing-consumer sweep: every test that constructs an `AnchorConfig` now supplies the two
+  new mandatory fields; the anchor-bearing YAML fixtures gain matrix-consistent `type`/`access`
+  axes (a `public` `bff` would trip the D3 rule, so positive fixtures stay matrix-consistent).
+
+=== D3 -- Fail-closed access->auth matrix on the startup-event path
+
+Add these rules to `ConfigValidator.DEFAULT_RULES` (collect into the shared `errors` list with
+file/pointer context, never fail-fast -- ADR-0009 single-reporter):
+
+. `access` is required on every anchor (schema/model enforce the structural default; the
+  validator asserts the resolved posture agrees);
+. `access: authenticated` requires a fully-backed auth posture (an effective non-`none`
+  `require` with its backing block present, reusing the existing
+  `effectiveAuth`/`validateEffectiveAuth` machinery);
+. `access: public` combined with an auth block is a boot failure;
+. `type: bff` requires `access: authenticated`.
+
+The rules are proven enforced through the *startup-event path* (`ConfigProducerTest` asserting
+`buildOnce()` aborts boot on an invalid matrix), not only a direct `ConfigValidator` call.
+
+=== D4 -- Asset terminal-action config, response envelope, and path-confinement core
+
+* `AssetConfig` -- the asset terminal-action config record: `source` (`directory` \|
+  `upstream`) plus source-specific fields. `RouteConfig` gains `Optional<AssetConfig> asset`
+  (a route carries at most one terminal action; existing `upstream` sites default to empty).
+  `endpoint.schema.json` adds the `asset` block with the `source` discriminator.
+* `AssetResponseEnvelope` -- the gateway-owned response envelope: fixed content-type map,
+  `X-Content-Type-Options: nosniff`, governed caching that forces `no-store` for
+  `access: authenticated` regardless of source, stripped `Set-Cookie`, GET/HEAD-only
+  enforcement.
+* `PathConfinement` -- canonicalize-and-confine: reuse `cui-http` `URLPathValidationPipeline`
+  for canonicalization, then confine the normalized path to the configured root/prefix (reject
+  any escape), applied *before* the source is touched.
+* `AssetSource` -- the sealed source seam permitting `DirectoryAssetSource` and
+  `UpstreamAssetSource` (D5/D6); it defines the auth-before-source-resolution ordering
+  contract.
+* The path-safety corpus is generator-driven (`@GeneratorsSource`): encoded traversal, encoded
+  slash, mixed/double encoding, `%00`, overlong, backslash, `..;/`, trailing-slash variants --
+  proving no path escapes confinement (closes the *class*, not one spelling).
+
+=== D5 -- Asset source: local directory
+
+`DirectoryAssetSource` serves from a local directory / volume mount (no classpath-embedded
+resources -- out of scope) through the shared `PathConfinement` and `AssetResponseEnvelope`:
+resolve the confined path under the configured directory root and stream the file with bounded
+size. Tests assert in-root serving, out-of-root denial, content-type resolution from the fixed
+map, and `no-store` forcing for authenticated access.
+
+=== D6 -- Asset source: upstream (reusing the SSRF-controlled data plane)
+
+`UpstreamAssetSource` serves from an upstream target reusing the existing upstream model
+(resolved `base_url` + `upstream.path` + remainder), the shared data-plane client, the circuit
+breaker, `upstream_defaults`, and the SSRF controls (fixed-topology upstream, scheme allowlist,
+`EgressPolicy`, `followRedirects(NEVER)`) plus bounded response size and timeout -- *no parallel
+fetch stack*. It applies `PathConfinement` to the remainder before the upstream is touched, and
+passes the response through `AssetResponseEnvelope` so the gateway overrides a hostile upstream
+`Content-Type`, strips `Set-Cookie`, and forces `no-store` on an authenticated asset even when
+the upstream sent `Cache-Control: public`. Governance tests use MockWebServer /
+`@ModuleDispatcher`.
+
+=== D7 -- Reopen and close the path-traversal threat-model entry
+
+Reopen the path-traversal entry (currently rated covered/eliminated for config-path handling)
+to account for the new asset-serving file-path surface; document that the class is closed for
+*both* sources via canonicalize-then-contain (`cui-http` `URLPathValidationPipeline` + gateway
+confinement) plus the generator-driven regression corpus (D4), citing the assertion. Review
+GW-05 (SSRF via proxy features / upstream control) and add an upstream-asset-source clause
+noting the reuse of fixed-topology upstream, scheme allowlist, `EgressPolicy`, and
+`followRedirects(NEVER)`. Update the validation matrix rows and statuses accordingly.
+
+=== D8 -- Integration tests: real mounted directory and real secondary server
+
+Two ITs under the established `de/cuioss/sheriff/api/integration/` package:
+`DirectoryAssetServingIT` (a real mounted directory / volume) and `UpstreamAssetServingIT` (a
+real secondary upstream server). The compose stack gains a mounted asset directory and a
+secondary static/upstream server (siblings: `docker-compose.jfr.yml`,
+`docker-compose.benchmark.yml`, `docker-compose.apisix.yml`); the IT gateway config
+(`integration-tests/src/main/docker/sheriff-config/gateway.yaml`) gains `type: asset` anchors
+with both `access` levels and routes for the two sources, plus the `type`/`access` axes on
+existing anchors. Per the *integration-tests-are-part-of-the-plan* convention, both sources are
+exercised end-to-end, positive and negative paths.
+
+=== D9 -- Document the axes and asset action in the reference/design docs
+
+* `configuration.adoc`: document the required `type`/`access` axes, the access->auth matrix
+  rules, the `passthrough -> proxy` value rename, and the asset terminal action with both
+  sources and its response-envelope / path-safety governance. Keep the dual reference/design
+  voice (per the Plan-01 documentation-tree classification fix).
+* `architecture.adoc`: document asset serving as a second terminal action in the request
+  lifecycle, the auth-before-source-resolution ordering, and the shared gateway-owned response
+  envelope; note the upstream-source reuse of the existing data plane (no parallel fetch stack).
+
+== Work Breakdown
+
+. *ADRs* (D1) -- ADR-0013 and ADR-0014, registered in link:../README.adoc[the doc index].
+. *Anchor axes* (D2) -- `AnchorType`/`AccessLevel` enums, `AnchorConfig` extension, schema
+  `required` axes, `passthrough -> proxy` rename, existing-consumer test + fixture sweep.
+. *Access->auth matrix* (D3) -- the four `DEFAULT_RULES`, generator-driven unit tests, and the
+  startup-event-path assertion in `ConfigProducerTest`.
+. *Asset core* (D4) -- `AssetConfig`/`RouteConfig` + `endpoint.schema.json`,
+  `AssetResponseEnvelope`, `PathConfinement`, the sealed `AssetSource` seam,
+  `package-info.java`, and the adversarial confinement + envelope-governance tests.
+. *Directory source* (D5) -- `DirectoryAssetSource` + tests.
+. *Upstream source* (D6) -- `UpstreamAssetSource` + governance/SSRF-reuse tests.
+. *Threat model* (D7) -- reopen/close the path-traversal entry and the GW-05 clause.
+. *Integration tests* (D8) -- the two asset ITs, the compose stack additions, and the IT
+  gateway config.
+. *Reference docs* (D9) -- `configuration.adoc` and `architecture.adoc`.
+
+== Execution Workflow
+
+Standard workflow per link:README.adoc#_execution_workflow_every_plan[the plan README];
+branch `feature/anchor-types-assets`. Doc-first: the ADRs and this design doc land before the
+code groups; the design docs govern, this plan only sequences. Deviations discovered during
+implementation are fixed in the design docs in the same PR, never silently in code.
+
+== Acceptance Criteria
+
+* Every anchor requires both `type` and `access`; a missing axis is a binding/validation
+  failure. No residual `passthrough` anchor `type` vocabulary remains; `tls.passthrough_sni`
+  is untouched.
+* Each of the four matrix conditions produces a boot failure with a file/pointer-annotated
+  `ConfigError`, aggregated in one pass, and is proven enforced via the startup-event path.
+* Canonicalize-and-confine is applied before any source access and rejects the full
+  adversarial corpus (the *class*, not one spelling). The response envelope forces `no-store`
+  for authenticated assets, strips `Set-Cookie`, sets `nosniff`, and limits to GET/HEAD.
+* A `source: directory` asset serves confined local files, and a `source: upstream` asset
+  serves through the existing SSRF-controlled data plane, both through the gateway-owned
+  envelope; the upstream source overrides hostile upstream response metadata with no parallel
+  fetch stack.
+* The path-traversal threat-model entry reflects the asset-serving surface and its closing
+  assertion; GW-05 carries an upstream-asset-source clause where the review finds it needed.
+* Both asset sources are exercised end-to-end against real infrastructure (mounted directory +
+  secondary server), positive and negative paths.
+* `configuration.adoc` and `architecture.adoc` describe the shipped axes, matrix, and asset
+  action consistent with the delivered schema and code.
+* Quality gate + full verify pass (canonical build commands, `CLAUDE.md`); coverage of the
+  changed packages >= 80%; the asset integration profile passes locally and on CI.
+
+== Out of Scope
+
+* Classpath-embedded asset resources -- only local directory mounts and upstream sources serve
+  assets.
+* A parallel fetch stack for the upstream asset source -- it reuses the existing upstream
+  model, client, circuit breaker, and SSRF controls unchanged.
+* Any anchor `type` value beyond `proxy` / `bff` / `asset`, or any `access` value beyond
+  `public` / `authenticated` (add later only with a doc-first change).
+* Multi-terminal-action routes -- a route carries at most one terminal action.
+* Rate limiting and dynamic configuration (out of scope project-wide;
+  link:../adr/0002-initial-scope.adoc[ADR-0002]).

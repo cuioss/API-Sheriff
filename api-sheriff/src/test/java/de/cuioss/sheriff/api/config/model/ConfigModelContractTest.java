@@ -70,6 +70,8 @@ class ConfigModelContractTest {
         return AnchorConfig.builder()
                 .name("api")
                 .pathPrefix("/api")
+                .type(AnchorType.PROXY)
+                .access(AccessLevel.AUTHENTICATED)
                 .auth(Optional.of(auth()))
                 .securityFilter(Optional.of(securityFilterConfig()))
                 .securityHeaders(Optional.of(securityHeadersConfig()))
@@ -188,7 +190,7 @@ class ConfigModelContractTest {
                 .effectiveSecurityHeaders(Optional.of(securityHeadersConfig()))
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
-                .upstream(resolvedUpstream())
+                .upstream(Optional.of(resolvedUpstream()))
                 .effectiveForward(new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "api-sheriff")))
                 .build();
     }
@@ -268,7 +270,8 @@ class ConfigModelContractTest {
                             new SecurityDefaultsConfig(Optional.of("strict")),
                             new SecurityDefaultsConfig(Optional.of("lenient"))),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
-                            AnchorConfig.builder().name("bff").pathPrefix("/bff").build()),
+                            AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
+                                    .access(AccessLevel.AUTHENTICATED).build()),
                     voCase("ForwardedConfig",
                             new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both")),
                             new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both")),
@@ -321,7 +324,7 @@ class ConfigModelContractTest {
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
                             ResolvedRoute.builder().id("other").match(matchConfig()).effectiveAuth(auth())
-                                    .upstream(resolvedUpstream()).build()),
+                                    .upstream(Optional.of(resolvedUpstream())).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
                             MatchConfig.builder().pathPrefix("/other").build()),
                     voCase("MatchConfig.HeaderMatcher",
@@ -378,9 +381,10 @@ class ConfigModelContractTest {
 
         @Test
         void anchorConfigBuilderMatchesConstructor() {
-            AnchorConfig viaCtor = new AnchorConfig("api", "/api", Optional.of(auth()), Optional.empty(),
-                    Optional.empty(), List.of(HttpMethod.GET));
-            AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").auth(Optional.of(auth()))
+            AnchorConfig viaCtor = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
+                    Optional.of(auth()), Optional.empty(), Optional.empty(), List.of(HttpMethod.GET));
+            AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").type(AnchorType.PROXY)
+                    .access(AccessLevel.AUTHENTICATED).auth(Optional.of(auth()))
                     .allowedMethods(List.of(HttpMethod.GET)).build();
             assertEquals(viaCtor, viaBuilder);
         }
@@ -439,7 +443,7 @@ class ConfigModelContractTest {
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
-            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null);
+            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null);
             assertTrue(cfg.anchor().isEmpty());
             assertTrue(cfg.auth().isEmpty());
             assertTrue(cfg.securityFilter().isEmpty());
@@ -447,7 +451,7 @@ class ConfigModelContractTest {
 
         @Test
         void anchorConfigNormalizesAbsentComponents() {
-            AnchorConfig cfg = new AnchorConfig("api", "/api", null, null, null, null);
+            AnchorConfig cfg = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null);
             assertTrue(cfg.auth().isEmpty());
             assertTrue(cfg.securityFilter().isEmpty());
             assertTrue(cfg.securityHeaders().isEmpty());
@@ -457,7 +461,7 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentOptionals() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, resolvedUpstream(), null);
+                    true, Optional.of(resolvedUpstream()), Optional.empty(), null);
             assertTrue(cfg.anchor().isEmpty());
             assertTrue(cfg.effectiveSecurityFilter().isEmpty());
             assertTrue(cfg.effectiveSecurityHeaders().isEmpty());
@@ -481,7 +485,7 @@ class ConfigModelContractTest {
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());
             assertTrue(new OidcConfig.Csrf(null).trustedOrigins().isEmpty());
-            assertTrue(new AnchorConfig("api", "/api", null, null, null, null).allowedMethods().isEmpty());
+            assertTrue(new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null).allowedMethods().isEmpty());
         }
     }
 
@@ -552,15 +556,23 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void anchorConfigRequiresNameAndPathPrefix() {
+        void anchorConfigRequiresNamePathPrefixTypeAndAccess() {
             NullPointerException noName = assertThrows(NullPointerException.class,
-                    () -> new AnchorConfig(null, "/api", Optional.empty(), Optional.empty(), Optional.empty(),
-                            List.of()));
+                    () -> new AnchorConfig(null, "/api", AnchorType.PROXY, AccessLevel.PUBLIC, Optional.empty(),
+                            Optional.empty(), Optional.empty(), List.of()));
             assertEquals("name", noName.getMessage());
             NullPointerException noPrefix = assertThrows(NullPointerException.class,
-                    () -> new AnchorConfig("api", null, Optional.empty(), Optional.empty(), Optional.empty(),
-                            List.of()));
+                    () -> new AnchorConfig("api", null, AnchorType.PROXY, AccessLevel.PUBLIC, Optional.empty(),
+                            Optional.empty(), Optional.empty(), List.of()));
             assertEquals("pathPrefix", noPrefix.getMessage());
+            NullPointerException noType = assertThrows(NullPointerException.class,
+                    () -> new AnchorConfig("api", "/api", null, AccessLevel.PUBLIC, Optional.empty(),
+                            Optional.empty(), Optional.empty(), List.of()));
+            assertEquals("type", noType.getMessage());
+            NullPointerException noAccess = assertThrows(NullPointerException.class,
+                    () -> new AnchorConfig("api", "/api", AnchorType.PROXY, null, Optional.empty(),
+                            Optional.empty(), Optional.empty(), List.of()));
+            assertEquals("access", noAccess.getMessage());
         }
 
         @Test
@@ -599,23 +611,33 @@ class ConfigModelContractTest {
         void routeConfigRequiresIdAndMatch() {
             MatchConfig match = matchConfig();
             assertThrows(NullPointerException.class, () -> new RouteConfig(null, Optional.empty(), Optional.empty(),
-                    match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+                    match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty()));
             assertThrows(NullPointerException.class, () -> new RouteConfig("id", Optional.empty(), Optional.empty(),
-                    null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()));
+                    null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty()));
         }
 
         @Test
-        void resolvedRouteRequiresIdMatchAuthAndUpstream() {
+        void resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction() {
             assertThrows(NullPointerException.class, () -> new ResolvedRoute(null, Protocol.HTTP, Optional.empty(),
                     matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
-                    resolvedUpstream(), null));
+                    Optional.of(resolvedUpstream()), Optional.empty(), null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(), null,
-                    auth(), List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream(), null));
+                    auth(), List.of(), Optional.empty(), Optional.empty(), true, true, Optional.of(resolvedUpstream()),
+                    Optional.empty(), null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                    matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true, resolvedUpstream(),
-                    null));
-            assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                    matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, null, null));
+                    matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true,
+                    Optional.of(resolvedUpstream()), Optional.empty(), null));
+            assertThrows(IllegalArgumentException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
+                            matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, Optional.empty(),
+                            Optional.empty(), null),
+                    "a route with neither an upstream nor an asset terminal action is rejected (XOR)");
+            assertThrows(IllegalArgumentException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
+                            matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
+                            Optional.of(resolvedUpstream()), Optional.of(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC)),
+                            null),
+                    "a route with both an upstream and an asset terminal action is rejected (XOR)");
         }
     }
 
@@ -660,6 +682,8 @@ class ConfigModelContractTest {
             AnchorConfig cfg = anchorConfig();
             assertEquals("api", cfg.name());
             assertEquals("/api", cfg.pathPrefix());
+            assertEquals(AnchorType.PROXY, cfg.type());
+            assertEquals(AccessLevel.AUTHENTICATED, cfg.access());
             assertEquals(Optional.of(auth()), cfg.auth());
             assertTrue(cfg.securityFilter().isPresent());
             assertTrue(cfg.securityHeaders().isPresent());

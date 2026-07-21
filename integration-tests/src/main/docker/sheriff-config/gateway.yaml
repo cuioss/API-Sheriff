@@ -4,8 +4,16 @@
 # the single httpbin endpoint's /proxy route under the 'api' anchor; the disjoint
 # 'bff' anchor demonstrates the two-anchor namespace model (ADR-0007). Anchor
 # materialization is behaviour-neutral for this conforming config, so the existing
-# routed-request IT keeps passing. require: none on the anchor means no
-# token_validation / oidc block is required here.
+# routed-request IT keeps passing.
+#
+# Every anchor carries the two mandatory classification axes (ADR-0013): `type`
+# (proxy | bff | asset) and `access` (public | authenticated), boot-validated by the
+# fail-closed access->auth matrix. A `public` anchor declares NO auth block (public is
+# the absence of auth), so the require: none postures that previously lived on the
+# public anchors now live on their endpoints; the `authenticated` anchors keep their
+# non-none auth floor. The two `asset` anchors (ADR-0014) serve static content through
+# the gateway-owned response envelope: `assets-public` (public directory + upstream
+# sources) and `assets-secure` (authenticated directory source, bearer-gated).
 version: 1
 metadata:
   config_version: "integration-test"
@@ -18,12 +26,12 @@ tls:
 anchors:
   api:
     path_prefix: /proxy
-    auth:
-      require: none
+    type: proxy
+    access: public
   bff:
     path_prefix: /bff
-    auth:
-      require: none
+    type: proxy
+    access: public
   # Bearer-protected namespace exercised by BearerValidationIT. The gateway's own
   # token_validation issuer loads its key set from the mounted static JWKS file
   # (no Keycloak dependency), so the validator is ready offline at boot. The IT
@@ -31,6 +39,8 @@ anchors:
   # reach the upstream — proving upstream count = 0 on every bearer rejection.
   secure:
     path_prefix: /secure
+    type: proxy
+    access: authenticated
     auth:
       require: bearer
   # --- Benchmark aspect namespaces (plan 04b) -------------------------------
@@ -38,13 +48,13 @@ anchors:
   # on-demand APISIX comparison has a route-for-route counterpart.
   graphql:
     path_prefix: /graphql
-    auth:
-      require: none
+    type: proxy
+    access: public
     allowed_methods: ["POST"]
   upload:
     path_prefix: /upload
-    auth:
-      require: none
+    type: proxy
+    access: public
     allowed_methods: ["POST"]
     security_filter:
       # 64 MiB — above the 50 MB upload aspect so the large-body run is MEASURED
@@ -57,12 +67,36 @@ anchors:
   # owns that behaviour and slots it in without re-touching this topology.
   ws:
     path_prefix: /ws
-    auth:
-      require: none
+    type: proxy
+    access: public
   grpc:
     path_prefix: /grpc
+    type: proxy
+    access: public
+  # --- Asset terminal-action namespaces (ADR-0014) --------------------------
+  # A public asset surface serving static content two ways: a directory source
+  # backed by the read-only /app/assets volume mount, and an upstream source
+  # backed by the secondary 'asset-origin' static server (topology alias
+  # ASSET_ORIGIN). Only GET/HEAD are served; the gateway-owned response envelope
+  # sets the content type from the file extension, adds X-Content-Type-Options:
+  # nosniff, and strips any upstream Set-Cookie.
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  # A bearer-gated asset surface (directory source). access: authenticated forces
+  # the envelope to Cache-Control: no-store and, crucially, enforces auth BEFORE the
+  # source is resolved — an unauthenticated request is rejected 401 and never reads
+  # a file (auth-before-source, ADR-0014). The bearer floor reuses the same offline
+  # token_validation issuers the 'secure' anchor relies on.
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
     auth:
-      require: none
+      require: bearer
 token_validation:
   issuers:
     # Retained: BearerValidationIT's rejection scenarios resolve against this

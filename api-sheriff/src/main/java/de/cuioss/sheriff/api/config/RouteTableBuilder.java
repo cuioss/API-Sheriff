@@ -24,13 +24,16 @@ import java.util.Objects;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.AnchorConfig;
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.AuthConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.ForwardConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.Protocol;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
@@ -71,6 +74,8 @@ public final class RouteTableBuilder {
 
     private static final List<HttpMethod> STANDARD_ALLOWED_METHODS = List.copyOf(EnumSet.allOf(HttpMethod.class));
 
+    /** The {@link AuthConfig#require()} value meaning no authentication is required; also the
+     * display fallback for an absent anchor name / security-filter profile in {@link #logPosture}. */
     private static final String NONE = "none";
 
     /**
@@ -99,7 +104,7 @@ public final class RouteTableBuilder {
             UpstreamDefaultsConfig defaults = resolveDefaults(gateway, endpoint);
             for (RouteConfig route : endpoint.routes()) {
                 Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
-                resolved.add(resolveRoute(gateway, route, endpoint, anchor, upstream, defaults));
+                resolved.add(resolveRoute(gateway, route, endpoint, anchor, upstream, defaults, topology));
             }
         }
 
@@ -134,7 +139,8 @@ public final class RouteTableBuilder {
     }
 
     private static ResolvedRoute resolveRoute(GatewayConfig gateway, RouteConfig route, EndpointConfig endpoint,
-            Optional<AnchorConfig> anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults) {
+            Optional<AnchorConfig> anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
+            ResolvedTopology topology) {
         AuthConfig auth = route.auth().or(endpoint::auth).or(() -> anchor.flatMap(AnchorConfig::auth))
                 .orElseThrow(() -> new RouteTableException(
                         "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
@@ -154,7 +160,7 @@ public final class RouteTableBuilder {
                 .flatMap(UpstreamConfig.NotModified::enabled)
                 .orElse(defaults.notModifiedEnabled());
         ForwardConfig effectiveForward = route.forward().orElseGet(() -> ForwardConfig.builder().build());
-        ResolvedRoute resolved = ResolvedRoute.builder()
+        ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())
                 .protocol(route.protocol().orElse(Protocol.HTTP))
                 .anchor(anchor.map(AnchorConfig::name))
@@ -165,11 +171,68 @@ public final class RouteTableBuilder {
                 .effectiveSecurityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
-                .upstream(upstream)
-                .effectiveForward(effectiveForward)
-                .build();
+                .effectiveForward(effectiveForward);
+        // A route resolves to exactly one terminal action: an asset action (when the route
+        // declares an asset block) is materialized here; otherwise the route proxies to its
+        // endpoint upstream. ADR-0014: upstream XOR asset.
+        if (route.asset().isPresent()) {
+            builder.asset(Optional.of(resolveAsset(route, route.asset().get(), anchor, auth, topology)));
+        } else {
+            builder.upstream(Optional.of(upstream));
+        }
+        ResolvedRoute resolved = builder.build();
         logPosture(resolved);
         return resolved;
+    }
+
+    /**
+     * Materializes a route's asset terminal action (ADR-0014). A {@code directory}
+     * source carries its configured root; an {@code upstream} source resolves its
+     * topology alias through the same {@link ResolvedTopology} the proxy action uses —
+     * no parallel resolution. The effective access level the gateway-owned response
+     * envelope (asset package) keys its caching on is
+     * {@link #effectiveAccessLevel(Optional, AuthConfig) derived from the route's
+     * effective auth posture}, not the anchor's static {@code access} declaration alone
+     * — a route or endpoint may legally strengthen a {@code public}-access anchor's
+     * floor with its own {@code auth} block (ADR-0007 forbids weakening the floor, not
+     * strengthening it), and such a route must still be governed {@code no-store} even
+     * though its anchor stays {@code access: public}.
+     */
+    private static ResolvedAsset resolveAsset(RouteConfig route, AssetConfig asset, Optional<AnchorConfig> anchor,
+            AuthConfig effectiveAuth, ResolvedTopology topology) {
+        AccessLevel access = effectiveAccessLevel(anchor, effectiveAuth);
+        return switch (asset.source()) {
+            case DIRECTORY -> ResolvedAsset.directory(asset.directory().orElseThrow(() -> new RouteTableException(
+                            "asset route '%s' declares source: directory but no directory root".formatted(route.id()))),
+                    access);
+            case UPSTREAM -> {
+                String alias = asset.upstream().orElseThrow(() -> new RouteTableException(
+                        "asset route '%s' declares source: upstream but no upstream alias".formatted(route.id())));
+                ResolvedUpstream resolvedUpstream = topology.lookup(alias).orElseThrow(() -> new RouteTableException(
+                        "asset route '%s' upstream alias '%s' does not resolve in the topology"
+                                .formatted(route.id(), alias)));
+                yield ResolvedAsset.upstream(resolvedUpstream, access);
+            }
+        };
+    }
+
+    /**
+     * The access level the asset response envelope keys its caching governance on: a route whose
+     * effective auth requires authentication ({@code require} not {@code none}) is always treated
+     * as {@link AccessLevel#AUTHENTICATED}, regardless of the anchor's declared {@code access} —
+     * the anchor's {@code access} only supplies the fallback when the route is effectively
+     * unauthenticated. This closes the gap where a route or endpoint strengthens a
+     * {@code public}-access anchor's auth floor: the served asset must still be forced
+     * {@code no-store} even though the anchor itself stays {@code access: public}. Defaults to
+     * {@link AccessLevel#PUBLIC} for an unanchored, effectively-unauthenticated asset route (the
+     * configuration validator rejects an asset action on a non-asset anchor before assembly, so
+     * this default is a defensive floor).
+     */
+    private static AccessLevel effectiveAccessLevel(Optional<AnchorConfig> anchor, AuthConfig effectiveAuth) {
+        if (!NONE.equals(effectiveAuth.require())) {
+            return AccessLevel.AUTHENTICATED;
+        }
+        return anchor.map(AnchorConfig::access).orElse(AccessLevel.PUBLIC);
     }
 
     private static void logPosture(ResolvedRoute route) {

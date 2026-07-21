@@ -61,7 +61,10 @@ built* and *how the parts fit together*.
 
 | link:configuration.adoc[Configuration Model]
 | The static, immutable YAML mapping schema: routing, URL/parameter whitelisting,
-  security filtering, TLS (termination and passthrough), and per-route limits.
+  security filtering, TLS (termination and passthrough), and per-route limits. This document
+  has a *dual role* -- it is both the authoritative operator-facing configuration reference
+  (indexed from the link:user/README.adoc[operator guide]) and a design document; it stays
+  under `doc/` and is not relocated into `doc/user/`.
 
 | link:security-threat-model.adoc[Threat Model & CVE-Derived Validation Baseline]
 | Trust boundaries and STRIDE, plus a failure catalogue where every class that produced a
@@ -99,6 +102,9 @@ link:plan/README.adoc[`plan/`]: base implementation and configuration management
 a doc/code reconciliation & quality-debt sweep, then endpoint anchors, the request pipeline,
 protocol processors, the TLS edge, the two BFF
 variants (server-session first), and release readiness -- the full sequence to the 1.0 cut.
+A later feature plan (link:plan/10-anchor-types-assets.adoc[plan 10]) adds two required anchor
+classification axes (`type`/`access`) with a fail-closed boot matrix and asset serving as a
+second terminal action (`directory` and `upstream` sources).
 Rate limiting is out of scope. Each plan names the design documents that must be read before
 implementing it.
 
@@ -150,6 +156,20 @@ implementing it.
   throws and aborts boot, while an unresolvable additional (`passthrough_sni`) alias is
   skipped silently -- the configuration validator stays the single authoritative reporter
   of alias-resolvability violations.
+  *(Status: accepted.)*
+
+| link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]
+| Anchor type/access axes: two required, orthogonal classification axes on every anchor --
+  `type` (`proxy`/`bff`/`asset`) and `access` (`public`/`authenticated`) -- validated
+  fail-closed at boot, extending link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]. The
+  `passthrough -> proxy` value rename does not touch `tls.passthrough_sni`.
+  *(Status: accepted.)*
+
+| link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]
+| Asset serving as a second terminal action alongside `upstream`, with `directory` and
+  `upstream` sources (the latter reusing the link:adr/0008-data-plane-transport.adoc[ADR-0008]
+  SSRF-controlled data plane, no parallel fetch stack), a gateway-owned response envelope, and
+  canonicalize-and-confine path safety with auth-before-source-resolution ordering.
   *(Status: accepted.)*
 |===
 

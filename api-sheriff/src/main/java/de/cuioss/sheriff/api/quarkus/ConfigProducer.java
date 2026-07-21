@@ -16,8 +16,10 @@
 package de.cuioss.sheriff.api.quarkus;
 
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.api.config.ConfigLogMessages;
@@ -26,10 +28,12 @@ import de.cuioss.sheriff.api.config.load.ConfigError;
 import de.cuioss.sheriff.api.config.load.ConfigLoadException;
 import de.cuioss.sheriff.api.config.load.ConfigLoader;
 import de.cuioss.sheriff.api.config.load.EnvSecretResolver;
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.EndpointConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
 import de.cuioss.sheriff.api.config.model.Metadata;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
+import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.RouteTable;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.topology.TopologyResolver;
@@ -127,8 +131,8 @@ public class ConfigProducer {
             EnvSecretResolver resolver = new EnvSecretResolver();
             ConfigLoader.LoadedConfig loaded = new ConfigLoader(directory, resolver).load();
             List<EndpointConfig> enabled = loaded.endpoints().stream().filter(EndpointConfig::enabled).toList();
-            ResolvedTopology topology = new TopologyResolver(resolver).resolve(directory.resolve(TOPOLOGY_FILE), enabled,
-                    loaded.gateway().tls().map(TlsConfig::passthroughSni).map(Map::values).orElse(List.of()));
+            ResolvedTopology topology = new TopologyResolver(resolver)
+                    .resolve(directory.resolve(TOPOLOGY_FILE), enabled, additionalTopologyAliases(loaded, enabled));
             List<ConfigError> violations = new ConfigValidator().validate(loaded.gateway(), enabled, topology);
             if (!violations.isEmpty()) {
                 abort(violations);
@@ -143,6 +147,35 @@ public class ConfigProducer {
             LOGGER.error(e, ConfigLogMessages.ERROR.CONFIG_STARTUP_ABORTED, e.getMessage());
             throw new IllegalStateException("Refusing to start — configuration is invalid", e);
         }
+    }
+
+    /**
+     * The topology aliases that must resolve independently of any enabled endpoint's
+     * {@code base_url}: the {@code tls.passthrough_sni} relay targets and every
+     * {@code source: upstream} asset route's upstream alias (ADR-0014). An asset route's
+     * upstream is a per-route topology reference that the proxy-oriented {@code base_url}
+     * collection in {@link TopologyResolver} does not see, so it is gathered here and
+     * passed alongside the passthrough targets, otherwise the {@link ConfigValidator} and
+     * {@link RouteTableBuilder} asset-source lookup would reject a well-formed
+     * {@code /assets/cdn}-style upstream asset route as unresolved.
+     *
+     * @param loaded  the loaded gateway configuration (source of the passthrough targets)
+     * @param enabled the enabled endpoints whose asset routes are scanned for upstream aliases
+     * @return the deduplicated, insertion-ordered set of additional aliases to resolve
+     */
+    private static Set<String> additionalTopologyAliases(ConfigLoader.LoadedConfig loaded,
+            List<EndpointConfig> enabled) {
+        Set<String> aliases = new LinkedHashSet<>(
+                loaded.gateway().tls().map(TlsConfig::passthroughSni).map(Map::values).orElse(List.of()));
+        for (EndpointConfig endpoint : enabled) {
+            for (RouteConfig route : endpoint.routes()) {
+                route.asset()
+                        .filter(asset -> asset.source() == AssetConfig.Source.UPSTREAM)
+                        .flatMap(AssetConfig::upstream)
+                        .ifPresent(aliases::add);
+            }
+        }
+        return aliases;
     }
 
     private static void abort(List<ConfigError> violations) {

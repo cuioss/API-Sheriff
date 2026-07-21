@@ -28,6 +28,7 @@ import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
 
+import de.cuioss.sheriff.api.asset.AssetSource;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.events.EventType;
@@ -38,6 +39,7 @@ import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
@@ -132,10 +134,34 @@ public final class DispatchStage {
         AtomicBoolean bodyStreamSubscribed = new AtomicBoolean();
         StreamAwareRetryGate retryGate = new StreamAwareRetryGate(route.isRetryEnabled());
         io.vertx.core.http.HttpMethod upstreamMethod = io.vertx.core.http.HttpMethod.valueOf(method.name());
-        return guardedDispatch(route.getResilienceGuard(), retryGate, method, bytesSent::get,
+        Guard guard = route.getResilienceGuard()
+                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resilience guard"));
+        return guardedDispatch(guard, retryGate, method, bytesSent::get,
                 bodyStreamSubscribed::get,
                 () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, requestBody, bytesSent,
                         bodyStreamSubscribed));
+    }
+
+    /**
+     * Serves an asset route's terminal action.
+     * <p>
+     * The {@link AssetSource} implementation applies its own gateway-owned
+     * {@code PathConfinement} and {@code AssetResponseEnvelope} governance before returning, so
+     * this method only forwards to the source. The auth-before-source-resolution ordering is
+     * guaranteed by the caller: the edge pipeline authenticates and authorizes the request
+     * (stage 4) before this method is reached, so an unauthorized request never triggers a
+     * directory read or an upstream fetch.
+     *
+     * @param source  the route's live asset source (directory or upstream)
+     * @param method  the request verb; only {@code GET} and {@code HEAD} are served
+     * @param subPath the request path remainder after the route prefix is stripped
+     * @return the gateway-governed, buffered asset response
+     */
+    public static AssetSource.Served serveAsset(AssetSource source, HttpMethod method, String subPath) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(subPath, "subPath");
+        return source.serve(method, subPath);
     }
 
     /**
@@ -200,14 +226,17 @@ public final class DispatchStage {
     private HttpClientResponse awaitDispatch(RouteRuntime route, io.vertx.core.http.HttpMethod method,
             String requestUri, Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody,
             AtomicLong bytesSent, AtomicBoolean bodyStreamSubscribed) throws Exception {
-        ResolvedUpstream upstream = route.getUpstream();
+        ResolvedUpstream upstream = route.getUpstream()
+                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resolved upstream"));
+        HttpClient httpClient = route.getHttpClient()
+                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires an upstream client"));
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())
                 .setPort(upstream.port())
                 .setSsl("https".equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
-        Future<HttpClientResponse> response = route.getHttpClient().request(options)
+        Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
                     forwardHeaders.forEach(request::putHeader);
                     // The one-shot inbound body stream is subscribed the instant it is handed to

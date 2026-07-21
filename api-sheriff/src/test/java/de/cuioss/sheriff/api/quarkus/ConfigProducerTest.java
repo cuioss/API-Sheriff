@@ -27,7 +27,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 
+import de.cuioss.sheriff.api.config.model.AssetConfig;
 import de.cuioss.sheriff.api.config.model.GatewayConfig;
+import de.cuioss.sheriff.api.config.model.ResolvedAsset;
+import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -63,8 +66,53 @@ class ConfigProducerTest {
                 "%s": "%s"
             """.formatted(PASSTHROUGH_HOST, PASSTHROUGH_ALIAS);
 
+    /**
+     * A gateway whose single anchor violates the ADR-0013 access→auth matrix: a
+     * {@code type: bff} anchor declared {@code access: public} (a bff surface must be
+     * {@code access: authenticated}). The document is schema-valid — both required
+     * classification axes are present — so the violation is caught by
+     * {@link de.cuioss.sheriff.api.config.validation.ConfigValidator}, not the schema,
+     * which is what makes it exercise the startup-event validation path.
+     */
+    private static final String GATEWAY_WITH_MATRIX_VIOLATION = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            anchors:
+              portal:
+                path_prefix: /portal
+                type: bff
+                access: public
+            """;
+
+    /**
+     * A gateway with a single {@code type: asset} / {@code access: public} anchor. Paired with an
+     * endpoint whose route declares (or omits) an {@code asset} block, it exercises the ADR-0014
+     * terminal-action consistency rules on the startup-event path: the documents are schema-valid,
+     * so the violation is caught by {@code ConfigValidator}, not the schema.
+     */
+    private static final String GATEWAY_WITH_ASSET_ANCHOR = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            anchors:
+              assets:
+                path_prefix: /assets
+                type: asset
+                access: public
+            """;
+
     @TempDir
     Path configDir;
+
+    private void writeTopology(String aliasLine) throws IOException {
+        Files.writeString(configDir.resolve("topology.properties"), aliasLine);
+    }
+
+    private void writeEndpoint(String yaml) throws IOException {
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/web.yaml"), yaml);
+    }
 
     private ConfigProducer producerForGateway(String gatewayYaml) throws IOException {
         Files.writeString(configDir.resolve("gateway.yaml"), gatewayYaml);
@@ -177,5 +225,183 @@ class ConfigProducerTest {
 
         assertTrue(exception.getMessage().contains("Refusing to start"),
                 "the abort should carry the refusing-to-start summary");
+    }
+
+    /**
+     * The fail-closed access→auth matrix (ADR-0013) must be enforced on the eager
+     * startup-event path, not only through a direct {@code ConfigValidator} call: a
+     * matrix-violating anchor aborts boot through {@code onStartup} → {@code buildOnce}
+     * → {@code ConfigValidator.validate}. The bff+public anchor is schema-valid, so
+     * reaching the abort proves the validator ran at startup, and the annotated ERROR
+     * record confirms it was the matrix rule that tripped.
+     */
+    @Test
+    void shouldFailBootThroughStartupEventWhenAccessAuthMatrixIsViolated() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_MATRIX_VIOLATION);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "a matrix-violating anchor must abort boot on the startup-event path");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
+                "is type 'bff' and must declare access: authenticated");
+    }
+
+    /**
+     * The ADR-0014 terminal-action consistency rules must fire on the eager startup-event path: an
+     * asset-type anchor whose route declares no {@code asset} block aborts boot through
+     * {@code onStartup} → {@code buildOnce} → {@code ConfigValidator.validate}. The documents are
+     * schema-valid (the route is a well-formed proxy route), so reaching the abort proves the
+     * validator ran at startup, and the annotated ERROR record confirms the terminal-action rule
+     * tripped.
+     */
+    @Test
+    void shouldFailBootThroughStartupEventWhenAssetAnchorRouteHasNoAssetAction() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("WEB_BACKEND=https://web.internal:8443\n");
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: noasset
+                      match:
+                        path_prefix: /assets
+                        methods: ["GET"]
+                """);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "an asset-anchor route with no asset action must abort boot");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR, "declares no asset terminal action");
+    }
+
+    /**
+     * A valid asset route assembles cleanly through the startup path, and its terminal action is
+     * materialized onto the resolved route — the end-to-end YAML → {@code AssetConfig} →
+     * {@code ResolvedAsset} binding through {@code onStartup}.
+     */
+    @Test
+    void shouldAssembleAssetRouteThroughStartupEvent() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("WEB_BACKEND=https://web.internal:8443\n");
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: bundle
+                      match:
+                        path_prefix: /assets
+                        methods: ["GET"]
+                      asset:
+                        source: directory
+                        directory: /srv/assets
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "a valid asset route must assemble without failing startup");
+        RouteTable table = producer.routeTable();
+        assertEquals(1, table.routes().size(), "the asset route is merged into the table");
+        assertTrue(table.routes().getFirst().asset().isPresent(),
+                "the asset terminal action is materialized onto the resolved route");
+    }
+
+    /**
+     * A {@code source: upstream} asset route (the {@code /assets/cdn} shape from the integration
+     * config) whose upstream alias is declared in {@code topology.properties} must assemble cleanly
+     * through the startup path. An asset route's upstream is a per-route topology reference that the
+     * proxy-oriented {@code base_url} collection does not see, so {@code ConfigProducer} has to gather
+     * it into the topology-resolution set — otherwise a well-formed upstream asset route is rejected
+     * as unresolved. Asserting the decomposed upstream is materialized onto the route proves the alias
+     * reached the resolver and resolved (ADR-0014).
+     */
+    @Test
+    void shouldAssembleUpstreamAssetRouteWhenAliasIsDeclaredInTopology() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("""
+                WEB_BACKEND=https://web.internal:8443
+                ASSET_ORIGIN=http://asset-origin:80
+                """);
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: assets-upstream
+                      match:
+                        path_prefix: /assets
+                      asset:
+                        source: upstream
+                        upstream: ASSET_ORIGIN
+                """);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "an upstream asset route whose alias is declared in the topology must assemble without failing startup");
+        RouteTable table = producer.routeTable();
+        assertEquals(1, table.routes().size(), "the upstream asset route is merged into the table");
+        ResolvedAsset asset = table.routes().getFirst().asset()
+                .orElseThrow(() -> new AssertionError("the asset terminal action is materialized onto the resolved route"));
+        assertEquals(AssetConfig.Source.UPSTREAM, asset.source(), "the resolved asset carries the upstream source");
+        ResolvedUpstream upstream = asset.upstream()
+                .orElseThrow(() -> new AssertionError("the ASSET_ORIGIN alias resolved onto the asset action"));
+        assertEquals("asset-origin", upstream.host(), "the ASSET_ORIGIN alias decomposed to the declared host");
+        assertEquals(80, upstream.port(), "the ASSET_ORIGIN alias decomposed to the declared port");
+    }
+
+    /**
+     * The exact failure CI surfaced: a {@code source: upstream} asset route whose upstream alias is
+     * NOT declared in {@code topology.properties} must abort boot on the startup-event path with the
+     * ADR-0014 topology-resolution violation. The endpoint's own {@code base_url} alias IS declared,
+     * so the sole unresolved reference is the asset upstream — proving the asset alias is validated
+     * against the resolved topology, not merely the endpoints' {@code base_url} set, and that the
+     * violation is reported through {@code onStartup} → {@code buildOnce} → {@code ConfigValidator}.
+     */
+    @Test
+    void shouldFailBootThroughStartupEventWhenUpstreamAssetAliasIsUndeclared() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_ASSET_ANCHOR);
+        writeTopology("WEB_BACKEND=https://web.internal:8443\n");
+        writeEndpoint("""
+                endpoint:
+                  id: web
+                  enabled: true
+                  base_url: WEB_BACKEND
+                  anchor: assets
+                  auth:
+                    require: none
+                  routes:
+                    - id: assets-upstream
+                      match:
+                        path_prefix: /assets
+                      asset:
+                        source: upstream
+                        upstream: ASSET_ORIGIN
+                """);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "an upstream asset route whose alias is absent from the topology must abort boot");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
+                "upstream alias 'ASSET_ORIGIN' does not resolve in the topology");
     }
 }
