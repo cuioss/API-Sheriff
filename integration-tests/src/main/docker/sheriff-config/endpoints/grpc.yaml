@@ -26,6 +26,12 @@ endpoint:
   enabled: true
   base_url: GRPC_ECHO
   anchor: grpc
+  # The 'grpc' anchor is access: public and therefore carries no auth block (ADR-0013),
+  # so the endpoint declares the require: none posture itself — inherited by the public
+  # route (grpc-echo). The bearer route below overrides it with a route-level auth block
+  # (route auth wins over endpoint/anchor auth in the resolution chain, ADR-0007).
+  auth:
+    require: none
   routes:
     # Public gRPC relay: unary + server-streaming echo and grpc-status/trailer relay from the
     # intentionally failing method. The match prefix is the bare Echo service path and upstream.path

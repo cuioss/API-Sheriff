@@ -11,6 +11,12 @@ endpoint:
   enabled: true
   base_url: WS_UPSTREAM
   anchor: ws
+  # The 'ws' anchor is access: public and therefore carries no auth block (ADR-0013),
+  # so the endpoint declares the require: none posture itself — inherited by every public
+  # route (ws-echo, ws-idle). The bearer route below overrides it with a route-level auth
+  # block (route auth wins over endpoint/anchor auth in the resolution chain, ADR-0007).
+  auth:
+    require: none
   routes:
     # Public WebSocket relay with a populated Origin allowlist. Drives two scenarios:
     #   * echo round-trip — a handshake carrying an allow-listed Origin upgrades and the opaque
