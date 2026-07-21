@@ -25,6 +25,13 @@
 
         <!-- Skip Sonar analysis for integration tests -->
         <sonar.skip>true</sonar.skip>
+
+        <!-- Skip javadoc jar attachment: this module is an IT coordinator, not a
+             published/consumed artifact, so it has no javadoc consumers. Attaching the
+             javadoc jar would drag the quarkus-grpc generated protobuf stubs onto the
+             javadoc tool's sourcepath (which it cannot resolve), breaking the pre-commit
+             profile. Suppressing it here keeps the fix module-scoped. -->
+        <maven.javadoc.skip>true</maven.javadoc.skip>
     </properties>
 
     <dependencies>
