@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.asset;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 
@@ -87,6 +88,49 @@ public sealed interface AssetSource permits DirectoryAssetSource, UpstreamAssetS
         @Override
         public byte[] body() {
             return body.clone();
+        }
+
+        /**
+         * Value equality over the status, headers, and body <em>content</em> — the
+         * generated accessor would compare the {@code body} array by identity, so it is
+         * overridden to use {@link Arrays#equals(byte[], byte[])}.
+         *
+         * @param other the object to compare against
+         * @return {@code true} when {@code other} is a {@code Served} with the same status,
+         *         headers, and body bytes
+         */
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            return other instanceof Served served
+                    && status == served.status
+                    && headers.equals(served.headers)
+                    && Arrays.equals(body, served.body);
+        }
+
+        /**
+         * Content-based hash consistent with {@link #equals(Object)} — the {@code body}
+         * array contributes via {@link Arrays#hashCode(byte[])} rather than identity.
+         *
+         * @return the content hash
+         */
+        @Override
+        public int hashCode() {
+            return Objects.hash(status, headers, Arrays.hashCode(body));
+        }
+
+        /**
+         * Renders the status and headers with only the body <em>length</em> — the body
+         * bytes are never dumped, since an asset response may carry sensitive content on
+         * this security-focused gateway.
+         *
+         * @return a body-content-free description of this response
+         */
+        @Override
+        public String toString() {
+            return "Served[status=%d, headers=%s, body.length=%d]".formatted(status, headers, body.length);
         }
     }
 }

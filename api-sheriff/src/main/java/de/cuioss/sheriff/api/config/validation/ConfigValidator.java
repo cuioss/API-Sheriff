@@ -488,9 +488,13 @@ public final class ConfigValidator {
                 boolean assetAnchor = anchor.map(a -> a.type() == AnchorType.ASSET).orElse(false);
                 boolean hasAsset = route.asset().isPresent();
                 if (assetAnchor && !hasAsset) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    // assetAnchor is derived from anchor.map(...).orElse(false), so it can only be
+                    // true when the anchor is present; ifPresent makes that guarantee provable
+                    // rather than dereferencing the Optional with a bare get().
+                    anchor.ifPresent(resolvedAnchor -> errors.add(new ConfigError(endpointFile(endpoint),
+                            ENDPOINT_ROUTES_POINTER,
                             "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
-                                    .formatted(route.id(), anchor.get().name())));
+                                    .formatted(route.id(), resolvedAnchor.name()))));
                 } else if (!assetAnchor && hasAsset) {
                     String context = anchor
                             .map(a -> "its anchor '%s' is type '%s'".formatted(a.name(),

@@ -16,10 +16,14 @@
 package de.cuioss.sheriff.api.asset;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
@@ -214,6 +218,69 @@ class UpstreamAssetSourceTest {
                 () -> assertEquals(0, served.body().length, "HEAD carries no body"),
                 () -> assertEquals("text/javascript; charset=utf-8",
                         served.headers().get(AssetResponseEnvelope.CONTENT_TYPE)));
+    }
+
+    @Test
+    @DisplayName("Should map a transport IOException to 502")
+    void shouldMapFetchFailureToBadGateway() {
+        UpstreamFetcher fetcher = target -> {
+            throw new IOException("connection refused");
+        };
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+
+        assertEquals(BAD_GATEWAY, served.status(), "a transport failure surfaces as 502");
+    }
+
+    @Test
+    @DisplayName("Should construct the default source with the SSRF-guarded transport fetcher")
+    void shouldConstructWithDefaultFetcher() {
+        assertDoesNotThrow(() -> new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC),
+                "the two-arg constructor wires the default confinement, transport fetcher, timeouts, and cap");
+    }
+
+    @Test
+    @DisplayName("Fetched equals/hashCode compare the body by content, not array identity")
+    void fetchedEqualsIsContentBased() {
+        Map<String, String> headers = headers("Content-Type", "text/plain");
+        UpstreamFetcher.Fetched first = new UpstreamFetcher.Fetched(OK, headers, BODY.clone());
+        UpstreamFetcher.Fetched second = new UpstreamFetcher.Fetched(OK, headers, BODY.clone());
+
+        assertAll(
+                () -> assertEquals(first, second, "two Fetched with equal body bytes are equal"),
+                () -> assertEquals(first.hashCode(), second.hashCode(), "equal Fetched share a hashCode"),
+                () -> assertEquals(first, first, "a Fetched equals itself"));
+    }
+
+    @Test
+    @DisplayName("Fetched with differing body bytes are not equal")
+    void fetchedWithDifferentBodyNotEqual() {
+        Map<String, String> headers = headers("Content-Type", "text/plain");
+        UpstreamFetcher.Fetched first = new UpstreamFetcher.Fetched(OK, headers, BODY);
+        UpstreamFetcher.Fetched other =
+                new UpstreamFetcher.Fetched(OK, headers, "different".getBytes(StandardCharsets.UTF_8));
+
+        assertAll(
+                () -> assertNotEquals(first, other, "differing body bytes break equality"),
+                () -> assertNotEquals(first, new UpstreamFetcher.Fetched(NOT_FOUND, headers, BODY),
+                        "a differing status breaks equality"),
+                () -> assertNotEquals(BODY, first, "a Fetched never equals an unrelated type"));
+    }
+
+    @Test
+    @DisplayName("Fetched toString reports only the body length, never the raw bytes")
+    void fetchedToStringHidesBody() {
+        byte[] secret = "top-secret-token".getBytes(StandardCharsets.UTF_8);
+        UpstreamFetcher.Fetched fetched =
+                new UpstreamFetcher.Fetched(OK, headers("Content-Type", "text/plain"), secret);
+
+        String rendered = fetched.toString();
+
+        assertAll(
+                () -> assertTrue(rendered.contains("body.length=" + secret.length),
+                        "the length is rendered for diagnostics"),
+                () -> assertFalse(rendered.contains("top-secret-token"),
+                        "the raw upstream body bytes must never be dumped"));
     }
 
     @Test

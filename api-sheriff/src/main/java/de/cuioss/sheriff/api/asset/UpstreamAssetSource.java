@@ -360,6 +360,50 @@ public final class UpstreamAssetSource implements AssetSource {
             public byte[] body() {
                 return body.clone();
             }
+
+            /**
+             * Value equality over the status, headers, and body <em>content</em> — the
+             * generated accessor would compare the {@code body} array by identity, so it
+             * is overridden to use {@link Arrays#equals(byte[], byte[])}.
+             *
+             * @param other the object to compare against
+             * @return {@code true} when {@code other} is a {@code Fetched} with the same
+             *         status, headers, and body bytes
+             */
+            @Override
+            public boolean equals(Object other) {
+                if (this == other) {
+                    return true;
+                }
+                return other instanceof Fetched fetched
+                        && status == fetched.status
+                        && headers.equals(fetched.headers)
+                        && Arrays.equals(body, fetched.body);
+            }
+
+            /**
+             * Content-based hash consistent with {@link #equals(Object)} — the
+             * {@code body} array contributes via {@link Arrays#hashCode(byte[])} rather
+             * than identity.
+             *
+             * @return the content hash
+             */
+            @Override
+            public int hashCode() {
+                return Objects.hash(status, headers, Arrays.hashCode(body));
+            }
+
+            /**
+             * Renders the status and headers with only the body <em>length</em> — the raw
+             * upstream body bytes are never dumped, since they may carry sensitive content
+             * on this security-focused gateway.
+             *
+             * @return a body-content-free description of this upstream response
+             */
+            @Override
+            public String toString() {
+                return "Fetched[status=%d, headers=%s, body.length=%d]".formatted(status, headers, body.length);
+            }
         }
 
         /**
