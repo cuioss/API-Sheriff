@@ -1312,5 +1312,25 @@ class ConfigValidatorTest {
             assertTrue(errors.isEmpty(),
                     () -> "a non-bearer WebSocket route may omit allowed_origins; got: " + errors);
         }
+
+        @Test
+        @DisplayName("Should reject a non-websocket route that declares a websocket block")
+        void shouldRejectWebSocketBlockOnNonWebSocketRoute() {
+            GatewayConfig gateway = validGateway().build();
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(60));
+            RouteConfig httpRoute = RouteConfig.builder()
+                    .id("http-with-ws")
+                    .protocol(Optional.of(Protocol.HTTP))
+                    .match(match("/http-with-ws", HttpMethod.GET))
+                    .auth(Optional.empty())
+                    .websocket(Optional.of(websocket))
+                    .build();
+            EndpointConfig endpoint = webSocketEndpoint("WS", httpRoute);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes",
+                    "declares a websocket block but its protocol is not 'websocket'");
+        }
     }
 }

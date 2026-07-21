@@ -24,10 +24,14 @@ LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"
 
 WORKDIR /app
 # Quarkus fast-jar layout: quarkus-run.jar plus the lib/, app/ and quarkus/ trees.
-COPY --from=build /src/integration-tests/target/quarkus-app/ /app/
+# Owned by the non-root runtime UID so the JVM can read the app without running as root.
+COPY --chown=10001:10001 --from=build /src/integration-tests/target/quarkus-app/ /app/
 
 # Separate gRPC server, bound on all interfaces so the gateway can reach it by service name.
 EXPOSE 9000
+
+# Drop privileges: run the echo service as a non-root numeric UID (no /etc/passwd entry needed).
+USER 10001:10001
 
 ENTRYPOINT ["java", \
     "-Dquarkus.grpc.server.use-separate-server=true", \

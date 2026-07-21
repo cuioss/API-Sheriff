@@ -4,7 +4,8 @@
 # Usage: ./dump-keycloak-logs.sh <target-directory>
 # Example: ./dump-keycloak-logs.sh target
 #
-# Note: Quarkus logs are written directly to target/quarkus-logs/quarkus.log via file logging
+# Note: Quarkus logs are written by default to target/quarkus-logs/quarkus.log via file logging
+#       (this script only dumps the Keycloak container logs to the <target-directory> argument)
 
 set -euo pipefail
 
