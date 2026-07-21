@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.asset;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -22,18 +23,25 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow;
 
 
 import de.cuioss.sheriff.api.config.model.AccessLevel;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * The secondary-origin {@link AssetSource} (decision: ADR-0014).
@@ -190,7 +198,11 @@ public final class UpstreamAssetSource implements AssetSource {
 
     /**
      * The SSRF-guarded default fetch seam: a blocking JDK HTTP client that never follows
-     * redirects, honours a connect and read timeout, and reads a bounded body.
+     * redirects, honours a connect and read timeout, and reads a <strong>streamed</strong>,
+     * mid-flight-abort-capped body — consistent with the proxy data plane's
+     * {@code DispatchStage.ByteCappedBodyStream} (ADR-0006): the fetch never buffers the whole
+     * upstream body before enforcing {@code maxBytes}, it stops pulling further chunks and
+     * completes as soon as the cap is crossed.
      * <p>
      * The redirect-{@code NEVER} policy is the SSRF control that keeps a hostile upstream
      * from bouncing the fetch to an internal address; the fixed-topology target supplied
@@ -212,7 +224,7 @@ public final class UpstreamAssetSource implements AssetSource {
             HttpRequest request = HttpRequest.newBuilder(target).timeout(readTimeout).GET().build();
             HttpResponse<byte[]> response;
             try {
-                response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+                response = client.send(request, info -> new CappedByteArrayBodySubscriber(maxBytes));
             } catch (HttpTimeoutException timeout) {
                 throw new UpstreamFetcher.UpstreamTimeoutException(timeout);
             } catch (InterruptedException interrupted) {
@@ -220,6 +232,9 @@ public final class UpstreamAssetSource implements AssetSource {
                 throw new IOException("upstream fetch interrupted", interrupted);
             }
             byte[] body = response.body();
+            // The subscriber already stopped pulling once the cap was crossed, so body is at most
+            // one in-flight chunk past maxBytes; this backstop trims it to a fixed, small over-cap
+            // size so callers checking body.length > maxBytes see a stable signal either way.
             if (body.length > maxBytes) {
                 body = Arrays.copyOf(body, (int) Math.min(maxBytes + 1, body.length));
             }
@@ -231,6 +246,65 @@ public final class UpstreamAssetSource implements AssetSource {
             });
             return new UpstreamFetcher.Fetched(response.statusCode(), headers, body);
         };
+    }
+
+    /**
+     * A {@link HttpResponse.BodySubscriber} that accumulates the upstream body only up to
+     * {@code maxBytes} and then <strong>cancels its subscription</strong> — the mid-flight abort
+     * that keeps a large or slow (hostile or merely misbehaving) asset upstream from forcing the
+     * gateway to buffer an unbounded response into memory before the size cap has any effect,
+     * mirroring {@code DispatchStage.ByteCappedBodyStream}'s streamed request-body cap.
+     */
+    private static final class CappedByteArrayBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
+
+        private final long maxBytes;
+        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        private final CompletableFuture<byte[]> result = new CompletableFuture<>();
+        private Flow.@Nullable Subscription subscription;
+        private long bytesSeen;
+
+        CappedByteArrayBodySubscriber(long maxBytes) {
+            this.maxBytes = maxBytes;
+        }
+
+        @Override
+        public CompletionStage<byte[]> getBody() {
+            return result;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            this.subscription = subscription;
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(List<ByteBuffer> items) {
+            for (ByteBuffer item : items) {
+                byte[] chunk = new byte[item.remaining()];
+                item.get(chunk);
+                buffer.writeBytes(chunk);
+                bytesSeen += chunk.length;
+            }
+            if (bytesSeen > maxBytes && subscription != null) {
+                // Abort the in-flight fetch: stop pulling further chunks. The over-cap buffer
+                // already accumulated is enough to trip the caller's body.length > maxBytes check
+                // (backstop-trimmed there), without ever reading the remainder of a large body.
+                subscription.cancel();
+                result.complete(buffer.toByteArray());
+            }
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            result.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            // A no-op when the cap-crossed branch in onNext already completed result.
+            result.complete(buffer.toByteArray());
+        }
     }
 
     /**

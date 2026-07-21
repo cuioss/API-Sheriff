@@ -32,8 +32,11 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
  * Serves regular files from a configured directory root — no classpath-embedded
  * resources — through the two shared, gateway-owned primitives:
  * {@link PathConfinement} maps the untrusted request sub-path to a target proven to
- * lie inside the root (any escape or malformed encoding is a 404), and
- * {@link AssetResponseEnvelope} governs every served response (fixed content type,
+ * lie inside the root lexically (any encoding-based escape or malformed encoding is a
+ * 404), and this class additionally verifies the resolved target's <em>real</em> path
+ * (symlinks followed) still lies inside the root's real path before it is touched — so
+ * a symlink planted under root cannot serve content that lives outside it. Every
+ * response is then governed by {@link AssetResponseEnvelope} (fixed content type,
  * {@code nosniff}, forced {@code no-store} for authenticated access, stripped
  * {@code Set-Cookie}). Only {@code GET} and {@code HEAD} are served; a {@code HEAD}
  * carries the governed headers with an empty body. Files larger than the configured
@@ -96,8 +99,9 @@ public final class DirectoryAssetSource implements AssetSource {
      * @param method  the request verb; only {@code GET} and {@code HEAD} are served
      * @param subPath the untrusted request sub-path relative to the root
      * @return the governed {@link Served} response — {@code 405} for a non-read verb,
-     *         {@code 404} for a confinement rejection or a missing file, {@code 413}
-     *         for an oversized file, {@code 500} on a read error, otherwise {@code 200}
+     *         {@code 404} for a confinement rejection, a symlink escape, or a missing
+     *         file, {@code 413} for an oversized file, {@code 500} on a read error,
+     *         otherwise {@code 200}
      */
     @Override
     public Served serve(HttpMethod method, String subPath) {
@@ -113,6 +117,9 @@ public final class DirectoryAssetSource implements AssetSource {
         if (!Files.isRegularFile(file)) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
+        if (!realPathWithinRoot(file)) {
+            return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
+        }
         try {
             if (Files.size(file) > maxBytes) {
                 return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
@@ -123,6 +130,28 @@ public final class DirectoryAssetSource implements AssetSource {
             return new Served(OK, headers, body);
         } catch (IOException readFailure) {
             return new Served(SERVER_ERROR, Map.of(), EMPTY_BODY);
+        }
+    }
+
+    /**
+     * Verifies the confined {@code file}'s symlink-resolved real path still lies inside the
+     * configured root's real path.
+     * <p>
+     * {@link PathConfinement} closes the encoding/traversal class <em>lexically</em>: it proves
+     * the requested path's normalized string starts with the root's normalized string. A symlink
+     * entry living under {@code root} — planted by a compromised deploy step, a hostile archive
+     * extraction, or any other write access to the mounted volume — can lexically resolve inside
+     * root while its followed target lives outside it; that is a different spelling of the same
+     * escape class the confinement javadoc claims closes entirely. Resolving both sides through
+     * {@link Path#toRealPath(java.nio.file.LinkOption...)} (default: follow symlinks) and
+     * comparing the real paths closes that spelling too. Fails closed: any I/O failure resolving
+     * either real path (a TOCTOU removal, an unresolvable symlink cycle) is treated as an escape.
+     */
+    private boolean realPathWithinRoot(Path file) {
+        try {
+            return file.toRealPath().startsWith(root.toRealPath());
+        } catch (IOException unresolvable) {
+            return false;
         }
     }
 }

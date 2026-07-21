@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -37,8 +38,10 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Tests for {@link DirectoryAssetSource}: in-root files serve through the shared
  * {@link AssetResponseEnvelope}; the shared {@link PathConfinement} denies every
- * out-of-root escape; the content type resolves from the fixed gateway map; and an
- * {@link AccessLevel#AUTHENTICATED} route forces {@code Cache-Control: no-store}.
+ * out-of-root escape (lexically, via encoding/traversal); a symlink planted under root
+ * that resolves outside it is independently denied by the real-path check; the content
+ * type resolves from the fixed gateway map; and an {@link AccessLevel#AUTHENTICATED}
+ * route forces {@code Cache-Control: no-store}.
  */
 class DirectoryAssetSourceTest {
 
@@ -100,6 +103,27 @@ class DirectoryAssetSourceTest {
         assertAll(
                 () -> assertEquals(NOT_FOUND, served.status(), "an escape attempt must be denied"),
                 () -> assertEquals(0, served.body().length, "no byte of the sentinel is served"));
+    }
+
+    @Test
+    @DisplayName("Should deny a symlink under root that resolves outside it (real-path escape)")
+    void shouldDenySymlinkEscapingRoot() {
+        Path outsideTarget = tempDir.resolve("secret.txt");
+        Path link = root.resolve("linked-secret.txt");
+        try {
+            Files.createSymbolicLink(link, outsideTarget);
+        } catch (IOException | UnsupportedOperationException unsupported) {
+            assumeTrue(false,
+                    "symbolic links are not supported/permitted in this environment: " + unsupported.getMessage());
+        }
+
+        AssetSource.Served served = publicSource().serve(HttpMethod.GET, "linked-secret.txt");
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status(),
+                        "a symlink resolving outside the root must be denied even though it lexically "
+                                + "sits inside root"),
+                () -> assertEquals(0, served.body().length, "no byte of the symlink target is served"));
     }
 
     @Test

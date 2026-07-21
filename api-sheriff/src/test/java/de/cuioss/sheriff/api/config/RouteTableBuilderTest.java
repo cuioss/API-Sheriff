@@ -762,6 +762,30 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should force AUTHENTICATED access when a route auth override strengthens a public-access anchor")
+        void shouldTreatRouteAuthOverrideAsAuthenticatedUnderPublicAccessAnchor() {
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("assets", assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
+            AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
+                    .directory(Optional.of("/srv/assets")).build();
+            RouteConfig route = RouteConfig.builder().id("bundle").anchor(Optional.of("assets"))
+                    .match(match("/assets", HttpMethod.GET))
+                    .auth(Optional.of(new AuthConfig("bearer", List.of())))
+                    .asset(Optional.of(asset)).build();
+            EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
+                    .anchor(Optional.of("assets")).auth(Optional.empty()).routes(List.of(route)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
+
+            ResolvedRoute resolved = find(table, "bundle");
+            assertEquals("bearer", resolved.effectiveAuth().require(),
+                    "the route-level override should strengthen the public anchor's absent auth floor");
+            assertEquals(AccessLevel.AUTHENTICATED, resolved.asset().orElseThrow().access(),
+                    "a route whose effective auth requires bearer must be governed AUTHENTICATED "
+                            + "for caching purposes even though its anchor stays access: public");
+        }
+
+        @Test
         @DisplayName("Should reject an upstream asset action whose alias does not resolve")
         void shouldRejectUnresolvableUpstreamAssetAlias() {
             GatewayConfig config = gateway().anchors(Map.of("assets",

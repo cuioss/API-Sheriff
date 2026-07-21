@@ -35,9 +35,13 @@ import lombok.Builder;
  * carried: {@link AssetConfig.Source#DIRECTORY} carries a {@code directory} root and
  * no upstream; {@link AssetConfig.Source#UPSTREAM} carries a boot-{@code resolved}
  * upstream (a topology alias decomposed exactly like the proxy action's upstream) and
- * no directory. The {@link AccessLevel access} level — inherited from the route's
- * resolving anchor (ADR-0013) — is the axis the gateway-owned response envelope keys
- * its caching on ({@link AccessLevel#AUTHENTICATED} forces {@code no-store}).
+ * no directory. The {@link AccessLevel access} level is the axis the gateway-owned
+ * response envelope keys its caching on ({@link AccessLevel#AUTHENTICATED} forces
+ * {@code no-store}); it is derived from the route's <em>effective</em> auth posture
+ * (ADR-0013), falling back to the resolving anchor's declared {@code access} only when
+ * the route is effectively unauthenticated — a route or endpoint that strengthens a
+ * {@code public}-access anchor's auth floor with its own {@code auth} block still
+ * resolves to {@link AccessLevel#AUTHENTICATED} here.
  *
  * @param source    the asset content source discriminator (mandatory)
  * @param access    the effective access level of the serving route (mandatory), the
