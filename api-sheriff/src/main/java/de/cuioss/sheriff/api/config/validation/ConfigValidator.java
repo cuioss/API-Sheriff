@@ -328,21 +328,40 @@ public final class ConfigValidator {
             for (RouteConfig route : endpoint.routes()) {
                 Optional<String> declaredName = declaredAnchorName(endpoint, route);
                 String routePrefix = route.match().pathPrefix();
-                declaredName.map(gateway.anchors()::get).filter(Objects::nonNull).ifPresent(anchor -> {
-                    if (!prefixContains(anchor.pathPrefix(), routePrefix)) {
-                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                                "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
-                                        .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
-                    }
-                });
-                for (AnchorConfig anchor : gateway.anchors().values()) {
-                    if (prefixContains(anchor.pathPrefix(), routePrefix)
-                            && !declaredName.map(anchor.name()::equals).orElse(false)) {
-                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                                "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
-                                        .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
-                    }
-                }
+                checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
+                checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routePrefix, errors);
+            }
+        }
+    }
+
+    /**
+     * Rule (3): an enabled route's {@code match.path_prefix} must lie inside its declared anchor's
+     * namespace (ADR-0007). A no-op when the route declares no anchor, or its declared anchor name
+     * is not a defined anchor.
+     */
+    private static void checkRouteInsideDeclaredAnchorNamespace(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, Optional<String> declaredName, String routePrefix, List<ConfigError> errors) {
+        declaredName.map(gateway.anchors()::get).filter(Objects::nonNull).ifPresent(anchor -> {
+            if (!prefixContains(anchor.pathPrefix(), routePrefix)) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
+                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+            }
+        });
+    }
+
+    /**
+     * Rule (4): an enabled route whose path lies inside any anchor namespace must declare exactly
+     * that anchor — an undeclared squatter fails the boot (ADR-0007).
+     */
+    private static void checkRouteDeclaresContainingAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, Optional<String> declaredName, String routePrefix, List<ConfigError> errors) {
+        for (AnchorConfig anchor : gateway.anchors().values()) {
+            if (prefixContains(anchor.pathPrefix(), routePrefix)
+                    && !declaredName.map(anchor.name()::equals).orElse(false)) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
+                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
             }
         }
     }

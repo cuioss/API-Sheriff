@@ -190,8 +190,9 @@ class DispatchStageTest {
             AtomicLong bytesSent = new AtomicLong();
             Callable<HttpClientResponse> failing = () -> {
                 attempts.incrementAndGet();
-                // awaitDispatch surfaces upstream failures as ExecutionException (from Future#get);
-                // guardedDispatch must unwrap it before mapping/retrying.
+                // NOSONAR java:S125 — explanatory prose about the ExecutionException-wrapping contract
+                // (awaitDispatch surfaces upstream failures via Future#get; guardedDispatch must unwrap
+                // it before mapping/retrying), NOT commented-out code — the throw below is live.
                 throw new ExecutionException("upstream down", new IllegalStateException("upstream down"));
             };
 
