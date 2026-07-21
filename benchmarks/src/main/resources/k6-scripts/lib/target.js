@@ -72,3 +72,26 @@ export function baseUrl() {
 export function targetUrl(path) {
     return `${baseUrl()}${path}`;
 }
+
+/**
+ * Builds an absolute WebSocket URL for a route path on the targeted gateway, reusing the same
+ * host/target resolution as {@link targetUrl} but on the `wss://` scheme the WebSocket upgrade
+ * requires.
+ *
+ * @param {string} path the WebSocket route path, with a leading slash (e.g. `/ws/echo`)
+ * @returns {string} the absolute `wss://` URL to open the socket against
+ */
+export function wsUrl(path) {
+    return `${baseUrl().replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')}${path}`;
+}
+
+/**
+ * Resolves the `host:port` address a k6 gRPC client dials the targeted gateway on — the base URL
+ * with its scheme stripped. TLS is negotiated by the client (`plaintext: false`); the gateway
+ * forces HTTP/2 to the upstream, so the client speaks ordinary gRPC over TLS to the edge.
+ *
+ * @returns {string} the `host:port` address (e.g. `api-sheriff:8443`)
+ */
+export function grpcAddress() {
+    return baseUrl().replace(/^https?:\/\//, '');
+}

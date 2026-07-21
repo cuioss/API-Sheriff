@@ -24,24 +24,26 @@ The two lanes run deliberately different sets, so a number is always attributabl
 |Lane |Executions |Contents
 
 |CI baseline (`-Pbenchmark`)
-|8
-|The six matrix aspects *plus* the two retained non-matrix benchmarks `healthLiveCheck` and
+|10
+|The eight matrix aspects *plus* the two retained non-matrix benchmarks `healthLiveCheck` and
  `gatewayHealth`.
 
 |On-demand comparison (`run-comparison.sh`)
-|6
-|The six matrix aspects only.
+|8
+|The eight matrix aspects only.
 |===
 
 The two health benchmarks are excluded from the comparison lane on purpose: they measure the
 Quarkus management port and API Sheriff's own `/api/health` surface, neither of which APISIX
 exposes. Driving them against APISIX would still label their summaries `gateway_target: apisix`
 while actually measuring API Sheriff — mislabelled data that reads as correct. `run-comparison.sh`
-closes its aspect list to the six comparable aspects so that is unreachable.
+closes its aspect list to the eight comparable aspects so that is unreachable.
 
 == The aspect matrix
 
-These six aspects exist route-for-route on both gateways and are the comparable set.
+These eight aspects exist route-for-route on both gateways and are the comparable set. The first
+six ride the single static fairness backend and measure pure gateway overhead; the last two (`ws`,
+`grpc`) ride protocol-appropriate backends instead — see the fairness caveat below the table.
 
 [cols="1,1,3", options="header"]
 |===
@@ -77,7 +79,31 @@ These six aspects exist route-for-route on both gateways and are the comparable 
 |`upload_large.js`
 |The transfer-bound body path at *reduced* concurrency. Reports throughput (MBps) alongside
  latency.
+
+|`ws`
+|`websocket_echo.js`
+|The WebSocket upgrade handshake and opaque frame relay: per-message echo round-trip through the
+ gateway to go-httpbin's `/websocket/echo`. Reports round-trips/second and round-trip latency.
+
+|`grpc`
+|`grpc_unary.js`
+|A unary gRPC call over the forced-HTTP/2 relay on the bare service path, against the in-repo
+ `grpc-echo` service. Reports calls/second and call latency. (Per Clarification 1 this k6 gRPC
+ benchmark supersedes the plan doc's `ghz` proposal, keeping the whole matrix on one load generator.)
 |===
+
+[NOTE]
+====
+*Fairness caveat for `ws` and `grpc`.* The first six aspects all ride the single static `nginx`
+fairness backend, so they measure *pure gateway overhead* (see the fairness invariant under
+Methodology). The `ws` and `grpc` aspects cannot: no static HTTP backend speaks WebSocket or gRPC.
+They ride *protocol-appropriate* backends instead — go-httpbin's WebSocket echo for `ws` and the
+in-repo `grpc-echo` service for `grpc` — and both gateways target the *same* two backends, so the
+two rows stay symmetric across gateways. The consequence, accepted deliberately: these two rows
+fold a real protocol backend's echo cost into the number, so they are *protocol-relay comparisons*,
+not backend-free gateway-overhead measurements like the other six. Read them as "aspect X costs N%
+more on gateway A than on gateway B", never as an absolute relay-throughput claim.
+====
 
 === Retained non-matrix benchmarks
 
@@ -155,14 +181,21 @@ API Sheriff, APISIX and Keycloak all mount the same certificate bundle, so every
 certificate and the load generator needs no per-target trust handling. TLS termination cost is
 therefore common to both sides.
 
-Identical routes, one upstream::
-Every benchmarked route on *both* gateways targets the same fast static nginx backend
+Identical routes, one upstream (six HTTP aspects)::
+Every *HTTP* benchmarked route on *both* gateways targets the same fast static nginx backend
 (`nginx-static`). This is the *fairness invariant*: pointing one gateway's `graphql` / `upload`
 routes at the JSON-serializing `go-httpbin` while the other hit `nginx-static` would fold the
 backend's serialization cost into one side's number only. The accepted consequence is that the
 `graphql` and `upload` aspects measure *gateway processing* — method matching, body-cap
 enforcement, path rewriting — rather than real JSON or echo upstream work. That is the benchmark's
 stated intent, not a limitation to work around.
+
+Protocol-appropriate backends (`ws`, `grpc`)::
+The `ws` and `grpc` aspects are the deliberate exception to the single-backend invariant: no static
+HTTP backend speaks WebSocket or gRPC. Each rides a protocol backend shared by *both* gateways —
+go-httpbin's `/websocket/echo` for `ws`, the in-repo `grpc-echo` service for `grpc` — so the two
+sides stay symmetric even though these rows are not backend-free. See the fairness caveat under
+_The aspect matrix_ for how to read the two rows.
 
 Readiness, not warm-up discard::
 `pre-benchmark-health-check.sh` gates every run on the stack actually serving, so no run starts

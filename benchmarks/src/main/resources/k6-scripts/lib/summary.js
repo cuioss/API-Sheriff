@@ -19,6 +19,16 @@
  * The body-transfer aspects (`uploadSmall` / `uploadLarge`) additionally carry a
  * `throughput_mbps` field; every other field is common to all scripts.
  *
+ * The HTTP aspects source their headline figures from k6's built-in `http_req_duration` /
+ * `http_reqs` / `http_req_failed` metrics. The non-HTTP protocol aspects added for plan-05
+ * (`websocketEcho`, `grpcUnary`) do not populate those metrics — k6 records gRPC calls under
+ * `grpc_req_duration` and WebSocket traffic under `ws_*`, with no built-in request/failure rate.
+ * {@link buildSummary} therefore accepts `durationMetric` / `requestsMetric` / `failuresMetric`
+ * option overrides so those aspects can name the trend/counter/rate metrics that actually
+ * characterise them (a custom trend for the round-trip/call latency, a counter for the throughput
+ * rate, a custom rate for the failure fraction). The overrides default to the `http_*` names, so
+ * every existing HTTP script is unchanged.
+ *
  * Latency values are passed through in milliseconds -- k6 reports `http_req_duration` in ms
  * and the converter performs no unit conversion -- so no rounding-or-scaling step can
  * introduce a conversion regression between the engine and the report.
@@ -89,7 +99,10 @@ function round(value, digits = 2) {
  *
  * @param {string} benchmarkName the stable benchmark name -- also the gh-pages history/trend key
  * @param {object} data the k6 end-of-test summary object
- * @param {{throughput?: boolean}} [options={}] opt-ins for aspect-specific summary fields
+ * @param {{throughput?: boolean, durationMetric?: string, requestsMetric?: string,
+ *          failuresMetric?: string}} [options={}] opt-ins for aspect-specific summary fields and
+ *          per-aspect overrides of which k6 metric backs the latency / request-rate / failure-rate
+ *          figures (defaulting to the built-in `http_*` metrics)
  * @returns {object} a k6 `handleSummary()` return mapping output paths to their content
  */
 export function buildSummary(benchmarkName, data, options = {}) {
@@ -98,9 +111,9 @@ export function buildSummary(benchmarkName, data, options = {}) {
     const durationMs = typeof state.testRunDurationMs === 'number' ? state.testRunDurationMs : 0;
 
     const metrics = data.metrics || {};
-    const duration = (metrics.http_req_duration || {}).values || {};
-    const requests = (metrics.http_reqs || {}).values || {};
-    const failures = (metrics.http_req_failed || {}).values || {};
+    const duration = (metrics[options.durationMetric || 'http_req_duration'] || {}).values || {};
+    const requests = (metrics[options.requestsMetric || 'http_reqs'] || {}).values || {};
+    const failures = (metrics[options.failuresMetric || 'http_req_failed'] || {}).values || {};
 
     const latency = { avg: round(duration.avg) };
     for (const [field, k6Key] of PERCENTILES) {

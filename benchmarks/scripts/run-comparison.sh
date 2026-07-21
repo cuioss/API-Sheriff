@@ -15,7 +15,7 @@
 #   run-comparison.sh [--target NAME] [--aspects a,b,c] [--output DIR] [--duration D] [--vus N]
 #
 #   --target    gateway to measure: api-sheriff (default) | apisix | both
-#   --aspects   comma-separated subset of the matrix (default: all six)
+#   --aspects   comma-separated subset of the matrix (default: all eight)
 #   --output    results root (default: target/comparison-results)
 #   --duration  k6 run duration per aspect (default: 60s)
 #   --vus       VU override for the throughput aspects; upload-50MB keeps its reduced
@@ -39,12 +39,19 @@
 set -euo pipefail
 
 # --- the matrix -------------------------------------------------------------
-# Aspect name -> k6 script. ONLY these six are comparable across gateways. The retained
+# Aspect name -> k6 script. ONLY these eight are comparable across gateways. The retained
 # healthLiveCheck and gatewayHealth benchmarks are deliberately absent: they measure API Sheriff's
 # own management port and /api/health surface, which APISIX does not expose. Driving them under
 # GATEWAY_TARGET=apisix would still label their summaries `gateway_target: apisix` while actually
 # measuring API Sheriff -- mislabelled data that reads as correct. Keeping the matrix closed here
 # is what makes that unreachable.
+#
+# FAIRNESS CAVEAT for ws / grpc. The six HTTP aspects all ride the single static nginx fairness
+# backend (see apisix.yaml's fairness invariant), so they measure pure gateway overhead. The ws and
+# grpc aspects CANNOT: no static backend speaks their protocol. They ride protocol-appropriate
+# backends instead -- go-httpbin's /websocket/echo for ws and the in-repo grpc-echo service for
+# grpc -- on BOTH gateways, so the two sides stay symmetric even though these two rows fold a real
+# protocol backend's cost into the number. That caveat is documented in README.adoc and apisix.yaml.
 declare -A ASPECT_SCRIPTS=(
     [unauth]=proxied_static.js
     [bearer]=bearer_proxied.js
@@ -52,8 +59,10 @@ declare -A ASPECT_SCRIPTS=(
     [graphql]=graphql.js
     [upload-1MB]=upload_small.js
     [upload-50MB]=upload_large.js
+    [ws]=websocket_echo.js
+    [grpc]=grpc_unary.js
 )
-ALL_ASPECTS="unauth,bearer,http2,graphql,upload-1MB,upload-50MB"
+ALL_ASPECTS="unauth,bearer,http2,graphql,upload-1MB,upload-50MB,ws,grpc"
 
 # Reduced concurrency for the transfer-bound aspect; see upload_large.js for the rationale (per-VU
 # 50MB payload memory, and link saturation masking the gateway difference).

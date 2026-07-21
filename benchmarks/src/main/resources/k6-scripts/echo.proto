@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+// Benchmark-lane copy of the in-repo gRPC echo contract, shipped to the k6 script directory so
+// the k6 gRPC client (grpc_unary.js) can load the descriptor and derive the real service/method
+// path. Source of truth: integration-tests/src/main/proto/echo.proto — the gateway relays this
+// service opaquely, so the two copies only need to agree on the package/service/method names and
+// the request/response shapes. Keep them in sync when the echo contract changes.
+package de.cuioss.sheriff.api.integration.grpc;
+
+option java_multiple_files = true;
+option java_package = "de.cuioss.sheriff.api.integration.grpc";
+option java_outer_classname = "EchoProto";
+
+// Echo upstream relayed end-to-end through the gateway by the grpc matrix aspect. The grpc_unary.js
+// benchmark drives only Echo/Unary; SecureEcho mirrors the integration-tests contract (the
+// bearer-protected service the ITs exercise) and is unused by the benchmark.
+service Echo {
+  // Unary: returns the request message unchanged (index 0).
+  rpc Unary(EchoRequest) returns (EchoResponse);
+
+  // Server-streaming: emits `count` responses (index 0..count-1), each echoing the message.
+  rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+
+  // Always fails with a non-OK grpc-status so the IT can assert trailer/status relay.
+  rpc Fail(EchoRequest) returns (EchoResponse);
+}
+
+// The bearer-protected echo service (see integration-tests/src/main/proto/echo.proto). Carried here
+// only to keep the two proto copies in sync; the benchmark never calls it.
+service SecureEcho {
+  rpc Unary(EchoRequest) returns (EchoResponse);
+}
+
+message EchoRequest {
+  // Payload echoed back verbatim.
+  string message = 1;
+  // Number of responses the server-streaming method emits (clamped to >= 1).
+  int32 count = 2;
+}
+
+message EchoResponse {
+  // The echoed payload.
+  string message = 1;
+  // Zero-based position of this response within a (possibly single-element) stream.
+  int32 index = 2;
+}
