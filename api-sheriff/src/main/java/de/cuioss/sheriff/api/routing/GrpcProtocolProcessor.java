@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.api.routing;
 
+import java.util.EnumSet;
 import java.util.Set;
 
 
@@ -33,7 +34,7 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
  */
 public final class GrpcProtocolProcessor implements ProtocolProcessor {
 
-    private static final Set<HttpMethod> GRPC_METHODS = Set.of(HttpMethod.POST);
+    private static final Set<HttpMethod> GRPC_METHODS = EnumSet.of(HttpMethod.POST);
 
     @Override
     public String id() {

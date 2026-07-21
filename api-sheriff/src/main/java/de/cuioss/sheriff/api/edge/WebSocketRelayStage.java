@@ -91,17 +91,27 @@ public final class WebSocketRelayStage {
     /**
      * Dials the upstream WebSocket and, on success, upgrades the client and establishes the opaque
      * relay. Runs asynchronously on the request's Vert.x context; the caller returns immediately.
+     * <p>
+     * The stage-0 security headers accumulated on the request are retained across the asynchronous
+     * dial so that a handshake-failure response ({@link #onUpstreamFailure}) carries the same
+     * gateway-controlled headers as the HTTP ({@link ResponseStage#relay}) and gRPC
+     * ({@link GrpcStatusMapper#renderRejection}) rejection paths.
      *
-     * @param ctx            the routing context (client request/response and Vert.x handle)
-     * @param route          the resolved route runtime (upstream, shared client, idle timeout)
-     * @param forwardHeaders the deny-by-default forwarded header set computed by stage 5
-     * @param requestUri     the upstream request URI (path + allow-listed query)
+     * @param ctx             the routing context (client request/response and Vert.x handle)
+     * @param route           the resolved route runtime (upstream, shared client, idle timeout)
+     * @param forwardHeaders  the deny-by-default forwarded header set computed by stage 5
+     * @param securityHeaders the stage-0 security headers accumulated on the response, applied to a
+     *                        handshake-failure response before it is ended
+     * @param requestUri      the upstream request URI (path + allow-listed query)
      */
-    public void relay(RoutingContext ctx, RouteRuntime route, Map<String, String> forwardHeaders, String requestUri) {
+    public void relay(RoutingContext ctx, RouteRuntime route, Map<String, String> forwardHeaders,
+            Map<String, String> securityHeaders, String requestUri) {
         Objects.requireNonNull(ctx, "ctx");
         Objects.requireNonNull(route, "route");
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
+        Objects.requireNonNull(securityHeaders, "securityHeaders");
         Objects.requireNonNull(requestUri, "requestUri");
+        Map<String, String> retainedSecurityHeaders = Map.copyOf(securityHeaders);
         HttpClient client = route.getHttpClient()
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires an upstream client"));
         ResolvedUpstream upstream = route.getUpstream()
@@ -114,7 +124,7 @@ public final class WebSocketRelayStage {
         forwardHeaders.forEach(options::addHeader);
         ctx.vertx().runOnContext(v -> client.webSocket(options)
                 .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs))
-                .onFailure(failure -> onUpstreamFailure(ctx, route, failure)));
+                .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }
 
     private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs) {
@@ -129,7 +139,8 @@ public final class WebSocketRelayStage {
                 });
     }
 
-    private void onUpstreamFailure(RoutingContext ctx, RouteRuntime route, Throwable failure) {
+    private void onUpstreamFailure(RoutingContext ctx, RouteRuntime route, Throwable failure,
+            Map<String, String> securityHeaders) {
         int status;
         if (failure instanceof UpgradeRejectedException rejected) {
             // The upstream explicitly refused the upgrade with a status — relay it verbatim.
@@ -147,6 +158,9 @@ public final class WebSocketRelayStage {
             return;
         }
         if (!response.headWritten()) {
+            // Apply the gateway (stage-0) security headers before the head is written, mirroring the
+            // HTTP (ResponseStage.relay) and gRPC (GrpcStatusMapper.renderRejection) rejection paths.
+            securityHeaders.forEach(response::putHeader);
             response.setStatusCode(status);
         }
         response.end();

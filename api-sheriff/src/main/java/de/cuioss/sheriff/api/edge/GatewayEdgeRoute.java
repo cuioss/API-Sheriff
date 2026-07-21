@@ -470,7 +470,7 @@ public class GatewayEdgeRoute {
         ResolvedUpstream upstreamTarget = route.getUpstream()
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        webSocketRelayStage.relay(ctx, route, forward.headers(), uri);
+        webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri);
     }
 
     /**

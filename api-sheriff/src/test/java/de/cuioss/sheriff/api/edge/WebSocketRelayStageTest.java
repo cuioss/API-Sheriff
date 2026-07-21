@@ -43,12 +43,14 @@ import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteTable;
+import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.UpgradeRejectedException;
@@ -119,7 +121,10 @@ class WebSocketRelayStageTest {
                 wsRoute("wsidle", "/ws-idle", "none", upstreamPort, Set.of(), Optional.of(1)),
                 wsRoute("wsdead", "/ws-dead", "none", deadPort, Set.of(), Optional.empty())));
 
-        GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).build();
+        GatewayConfig gatewayConfig = GatewayConfig.builder()
+                .version(1)
+                .securityHeaders(Optional.of(securityHeaders()))
+                .build();
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()));
@@ -211,6 +216,24 @@ class WebSocketRelayStageTest {
     }
 
     @Test
+    @DisplayName("preserves the stage-0 security headers on a WebSocket handshake failure")
+    void preservesSecurityHeadersOnHandshakeFailure() {
+        // Act — the /ws-dead route's upstream is unreachable, so the handshake fails 502 before the 101
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> connect("/ws-dead/room", ALLOWED_ORIGIN));
+
+        // Assert — the failed-handshake response still carries the gateway (stage-0) security headers,
+        // mirroring the HTTP (ResponseStage.relay) and gRPC (GrpcStatusMapper.renderRejection) contract
+        UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
+        assertEquals(502, rejected.getStatus());
+        MultiMap headers = rejected.getHeaders();
+        assertEquals("nosniff", headers.get("X-Content-Type-Options"),
+                "a failed WebSocket handshake carries the stage-0 X-Content-Type-Options header");
+        assertEquals("DENY", headers.get("X-Frame-Options"),
+                "a failed WebSocket handshake carries the stage-0 X-Frame-Options header");
+    }
+
+    @Test
     @DisplayName("forwards no non-allow-listed handshake header to the upstream (deny-by-default)")
     void deniesNonAllowlistedForwardHeader() throws Exception {
         // Arrange — a custom header the route's (empty) forward allowlist does not permit
@@ -273,6 +296,13 @@ class WebSocketRelayStageTest {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
                 .setHost("localhost").setPort(frontPort).setURI(uri).addHeader("Origin", origin);
         return wsClient.connect(options).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+    }
+
+    private static SecurityHeadersConfig securityHeaders() {
+        return SecurityHeadersConfig.builder()
+                .contentTypeNosniff(Optional.of(Boolean.TRUE))
+                .frameDeny(Optional.of(Boolean.TRUE))
+                .build();
     }
 
     private static ResolvedRoute wsRoute(String id, String pathPrefix, String require, int upstreamPort,
