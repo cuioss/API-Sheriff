@@ -58,8 +58,10 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code path_prefix} length (most specific first), and
  * materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, and the effective deny-by-default {@code forward}
- * allowlist into a {@link ResolvedRoute}. The inheritance chains
+ * / not-modified toggles, the effective deny-by-default {@code forward}
+ * allowlist, and the effective upstream base path (the route-level
+ * {@code upstream.path} replacing the alias-derived base path when declared)
+ * into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
  * step — ADR-0007) are resolved here, once, so the request pipeline never
  * re-implements them and never consults an anchor. The effective posture of each
@@ -194,11 +196,38 @@ public final class RouteTableBuilder {
         if (asset.isPresent()) {
             builder.asset(Optional.of(resolveAsset(route, asset.get(), anchor, auth, topology)));
         } else {
-            builder.upstream(Optional.of(upstream));
+            builder.upstream(Optional.of(applyRouteUpstreamPath(upstream, route)));
         }
         ResolvedRoute resolved = builder.build();
         logPosture(resolved);
         return resolved;
+    }
+
+    /**
+     * Materializes the route-level {@code upstream.path} into the route's effective upstream base
+     * path. A route that declares a non-blank {@code upstream.path} <em>replaces</em> the
+     * alias-derived base path with it (the bare-service-path routing model): the forward URI is
+     * then reconstructed as {@code stripTrailingSlash(upstream.path) + remainder-after-prefix} by
+     * {@link de.cuioss.sheriff.api.edge.DispatchStage#upstreamRequestUri}, so a gRPC route's
+     * {@code /{package}.{Service}} segment (and a benchmark route's {@code /anything/<aspect>}
+     * rewrite) reaches the upstream instead of being stripped. The alias host / port / scheme are
+     * carried through unchanged, so the client- and guard-sharing tuple
+     * ({@link de.cuioss.sheriff.api.edge.RouteRuntimeAssembler.UpstreamTarget}, keyed on
+     * scheme/host/port) is unaffected. A route without {@code upstream.path} keeps the
+     * alias-derived base path unchanged — the default proxy behavior.
+     *
+     * @param aliasUpstream the endpoint's alias-resolved upstream (shared across the endpoint's
+     *                      routes)
+     * @param route         the route whose optional {@code upstream.path} overrides the base path
+     * @return the per-route upstream carrying the effective base path
+     */
+    private static ResolvedUpstream applyRouteUpstreamPath(ResolvedUpstream aliasUpstream, RouteConfig route) {
+        return route.upstream()
+                .flatMap(UpstreamConfig::path)
+                .filter(path -> !path.isBlank())
+                .map(path -> new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(),
+                        aliasUpstream.port(), path))
+                .orElse(aliasUpstream);
     }
 
     /**

@@ -135,6 +135,16 @@ class RouteTableBuilderTest {
         return RouteConfig.builder().id(id).match(match("/" + id)).upstream(Optional.of(upstream.build())).build();
     }
 
+    private static RouteConfig routeWithUpstreamPath(String id, String pathPrefix, String upstreamPath) {
+        UpstreamConfig upstream = UpstreamConfig.builder().path(Optional.of(upstreamPath)).build();
+        return RouteConfig.builder().id(id).match(match(pathPrefix)).upstream(Optional.of(upstream)).build();
+    }
+
+    private static ResolvedTopology topologyWithBasePath(String alias, String basePath) {
+        return new ResolvedTopology(Map.of(alias,
+                new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, basePath)));
+    }
+
     private static EndpointConfig.EndpointConfigBuilder endpoint(String id, String alias) {
         return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias)
                 .auth(Optional.of(new AuthConfig("none", List.of())));
@@ -169,6 +179,74 @@ class RouteTableBuilderTest {
 
     private static ResolvedRoute find(RouteTable table, String id) {
         return table.routes().stream().filter(route -> route.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    @Nested
+    @DisplayName("Route-level upstream.path materialization")
+    class UpstreamPathMaterialization {
+
+        @Test
+        @DisplayName("Should materialize a non-blank route upstream.path as the effective base path")
+        void shouldMaterializeRouteUpstreamPath() {
+            EndpointConfig endpoint = endpoint("grpc", "GRPC")
+                    .routes(List.of(routeWithUpstreamPath("grpc-echo",
+                            "/de.cuioss.sheriff.api.integration.grpc.Echo",
+                            "/de.cuioss.sheriff.api.integration.grpc.Echo")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("GRPC"));
+
+            ResolvedUpstream upstream = find(table, "grpc-echo").upstream().orElseThrow();
+            assertAll("the route upstream.path becomes the effective base path so the service segment survives",
+                    () -> assertEquals("/de.cuioss.sheriff.api.integration.grpc.Echo", upstream.basePath(),
+                            "the bare-service route path is materialized as the upstream base path"),
+                    () -> assertEquals("grpc.internal", upstream.host(),
+                            "the alias host is carried through unchanged"),
+                    () -> assertEquals(443, upstream.port(), "the alias port is carried through unchanged"));
+        }
+
+        @Test
+        @DisplayName("Should replace a non-empty alias base path with the route upstream.path (not append)")
+        void shouldReplaceAliasBasePathWithRouteUpstreamPath() {
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithUpstreamPath("httpbin-graphql", "/graphql", "/anything/graphql")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", "/anything"));
+
+            assertEquals("/anything/graphql", find(table, "httpbin-graphql").upstream().orElseThrow().basePath(),
+                    "the route upstream.path replaces the alias base path wholesale — it must not be doubled to "
+                            + "/anything/anything/graphql");
+        }
+
+        @Test
+        @DisplayName("Should keep the alias base path when a route declares no upstream.path")
+        void shouldKeepAliasBasePathWithoutRouteUpstreamPath() {
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithPrefix("httpbin-proxy", "/proxy", HttpMethod.GET)))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", "/anything"));
+
+            assertEquals("/anything", find(table, "httpbin-proxy").upstream().orElseThrow().basePath(),
+                    "a route without upstream.path keeps the alias-derived base path — the default proxy behavior");
+        }
+
+        @Test
+        @DisplayName("Should keep the alias base path when the route upstream.path is blank")
+        void shouldKeepAliasBasePathWhenRouteUpstreamPathBlank() {
+            EndpointConfig endpoint = endpoint("httpbin", "UPSTREAM")
+                    .routes(List.of(routeWithUpstreamPath("httpbin-blank", "/proxy", "   ")))
+                    .build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint),
+                    topologyWithBasePath("UPSTREAM", "/anything"));
+
+            assertEquals("/anything", find(table, "httpbin-blank").upstream().orElseThrow().basePath(),
+                    "a blank upstream.path is treated as absent, keeping the alias base path");
+        }
     }
 
     @Nested
