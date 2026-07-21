@@ -6,9 +6,11 @@
 # each k6 aspect measures the same request shape against both gateways.
 #
 # Parity reference (consulted, never modified by this file):
-#   sheriff-config/gateway.yaml            -- anchors, body cap, bearer issuer
-#   sheriff-config/endpoints/httpbin.yaml  -- proxy / graphql / upload routes
-#   sheriff-config/endpoints/secure.yaml   -- bearer-protected /secure route
+#   sheriff-config/gateway.yaml              -- anchors, body cap, bearer issuer
+#   sheriff-config/endpoints/httpbin.yaml    -- proxy / graphql / upload routes
+#   sheriff-config/endpoints/secure.yaml     -- bearer-protected /secure route
+#   sheriff-config/endpoints/websocket.yaml  -- ws-echo relay route (ws aspect)
+#   sheriff-config/endpoints/grpc.yaml       -- bare-service-path Echo route (grpc aspect)
 #
 # NOTE: the standalone provider requires the literal `#END` marker within the last
 # ten bytes of this file (apisix/core/config_yaml.lua seeks to end-10 and rejects
@@ -35,6 +37,30 @@ upstreams:
     type: roundrobin
     nodes:
       "nginx-static:8080": 1
+
+  # PROTOCOL-APPROPRIATE backends for the ws and grpc aspects. These two aspects
+  # are the documented exception to the single-static-backend fairness invariant
+  # above: no static HTTP backend speaks WebSocket or gRPC, so each rides a real
+  # protocol backend on BOTH gateways. go-httpbin serves a WebSocket echo at
+  # /websocket/echo, and the in-repo grpc-echo service serves the Echo gRPC
+  # contract; API Sheriff's ws/grpc routes target the very same two backends
+  # (WS_UPSTREAM -> go-httpbin, GRPC_ECHO -> grpc-echo), so the two sides stay
+  # symmetric. The FAIRNESS CAVEAT, documented in README.adoc: the ws and grpc
+  # rows fold a real protocol backend's echo cost into the number, so unlike the
+  # six HTTP rows they are NOT pure gateway-overhead measurements — read them as
+  # protocol-relay comparisons, symmetric across gateways but not backend-free.
+  - id: ws-echo-upstream
+    type: roundrobin
+    nodes:
+      "go-httpbin:8080": 1
+
+  # grpc-echo speaks plaintext h2c on :9000 (no TLS), so the upstream scheme is
+  # grpc (not grpcs). APISIX proxies the gRPC call over HTTP/2 to it.
+  - id: grpc-echo-upstream
+    scheme: grpc
+    type: roundrobin
+    nodes:
+      "grpc-echo:9000": 1
 
 routes:
   # --- unauth aspect -------------------------------------------------------
@@ -113,18 +139,28 @@ routes:
       proxy-rewrite:
         uri: /anything/upload-large
 
-  # --- pre-provisioned declarations only -----------------------------------
-  # Mirrors gateway.yaml's 'ws' and 'grpc' anchors, which are declarations with no
-  # behaviour behind them (the API Sheriff request pipeline still boot-rejects both
-  # protocols; roadmap plan 05 owns that behaviour). They exist here so the two
-  # topologies stay route-for-route comparable when that behaviour lands, and are
-  # driven by no k6 aspect today. An upstream is required for the route to be
-  # schema-valid, so both point at the static backend.
-  - id: ws-declaration
-    uri: /ws/*
-    upstream_id: static-upstream
+  # --- ws aspect -----------------------------------------------------------
+  # Mirrors endpoints/websocket.yaml's ws-echo route. Driven by websocket_echo.js
+  # at /ws/echo. enable_websocket lets APISIX proxy the upgrade and relay frames;
+  # proxy-rewrite maps the gateway path to go-httpbin's echo path, exactly as API
+  # Sheriff's ws-echo route relays to WS_UPSTREAM's /websocket/echo. API Sheriff
+  # additionally enforces a fail-closed Origin allowlist on this route; APISIX has
+  # no equivalent gate, which is part of the ws-row fairness caveat above.
+  - id: ws-echo
+    uri: /ws/echo
+    enable_websocket: true
+    upstream_id: ws-echo-upstream
+    plugins:
+      proxy-rewrite:
+        uri: /websocket/echo
 
-  - id: grpc-declaration
-    uri: /grpc/*
-    upstream_id: static-upstream
+  # --- grpc aspect ---------------------------------------------------------
+  # Mirrors endpoints/grpc.yaml's grpc-echo route on the bare service path. Driven
+  # by grpc_unary.js against /de.cuioss.sheriff.api.integration.grpc.Echo/Unary.
+  # The grpc-scheme upstream makes APISIX proxy the call over HTTP/2 to grpc-echo,
+  # matching API Sheriff's forced-h2 relay to the same in-repo Echo service. No
+  # path rewrite: the full method path is preserved end-to-end on both gateways.
+  - id: grpc-echo
+    uri: /de.cuioss.sheriff.api.integration.grpc.Echo/*
+    upstream_id: grpc-echo-upstream
 #END

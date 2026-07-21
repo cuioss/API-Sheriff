@@ -44,13 +44,16 @@ import lombok.Builder;
  *                       route carries at most one terminal action, so {@code asset}
  *                       and {@code upstream} are mutually exclusive (ADR-0014)
  * @param rateLimit      the reserved rate-limit block, empty when omitted
+ * @param websocket      the per-route WebSocket settings ({@code allowed_origins},
+ *                       {@code idle_timeout_seconds}), empty for non-WebSocket routes
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
 public record RouteConfig(String id, Optional<Protocol> protocol, Optional<String> anchor, MatchConfig match,
 Optional<AuthConfig> auth, Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward,
-Optional<UpstreamConfig> upstream, Optional<AssetConfig> asset, Optional<RateLimitConfig> rateLimit) {
+Optional<UpstreamConfig> upstream, Optional<AssetConfig> asset, Optional<RateLimitConfig> rateLimit,
+Optional<WebSocketConfig> websocket) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match} and normalizing
@@ -67,5 +70,6 @@ Optional<UpstreamConfig> upstream, Optional<AssetConfig> asset, Optional<RateLim
         upstream = Objects.requireNonNullElse(upstream, Optional.empty());
         asset = Objects.requireNonNullElse(asset, Optional.empty());
         rateLimit = Objects.requireNonNullElse(rateLimit, Optional.empty());
+        websocket = Objects.requireNonNullElse(websocket, Optional.empty());
     }
 }

@@ -36,6 +36,8 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-1 |EDGE |Route table compiled: %s route runtime(s) assembled |Logged once at startup, after the frozen route table is compiled into the immutable per-route `RouteRuntime` set the request pipeline serves from
 |ApiSheriff-2 |CONFIG |Configuration loaded successfully (config_version='%s') |Logged once at startup after the file-based configuration is read, validated, and assembled into the route table
 |ApiSheriff-3 |CONFIG |Route '%s' effective posture: anchor='%s', auth.require='%s', filter='%s' |Logged once per route during route-table assembly, reporting the materialized effective posture (resolving anchor, effective auth requirement, effective security-filter profile) — anchors vanish at runtime, so the boot log is the discoverability record (ADR-0007)
+|ApiSheriff-4 |EDGE |WebSocket relay established on route '%s' (upstream '%s') |Logged once when a WebSocket upgrade completes (101 Switching Protocols) and the opaque bidirectional relay to the upstream begins (Plan 05 WebSocket processor)
+|ApiSheriff-5 |EDGE |WebSocket relay on route '%s' reclaimed after idle timeout (%s seconds) |Logged when an established WebSocket relay is closed because no frame travelled in either direction for the per-route websocket.idle_timeout_seconds window; ping/pong counts as activity, so only genuinely dead sockets are reaped
 |===
 
 == WARN Level (100-199)
@@ -48,6 +50,7 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-102 |CONFIG |trusted_proxies entry '%s' covers a very broad address range (prefix /%s) — review whether such broad proxy trust is intended |Logged during startup validation when a trusted_proxies CIDR entry is broad-but-not-total (shorter than /8 for IPv4, /32 for IPv6); total address-space coverage is rejected outright as a validation error
 |ApiSheriff-103 |EDGE |Circuit breaker opened for upstream '%s' |Logged when a route's SmallRye Fault-Tolerance circuit breaker transitions to OPEN after its configured consecutive-failure threshold, so the breaker's protective posture is always an audited event
 |ApiSheriff-104 |EDGE |Circuit breaker closed for upstream '%s' |Logged when a route's circuit breaker transitions back to CLOSED after recovery
+|ApiSheriff-105 |EDGE |WebSocket upgrade rejected on route '%s': Origin '%s' is not in the allowed_origins allowlist |Logged when a bearer WebSocket handshake presents an Origin that does not exactly match the route's allowed_origins allowlist; the upgrade is refused before any upstream dial (fail-closed CSWSH defence, GW-09 / ADR-0015)
 |===
 
 == ERROR Level (200-299)

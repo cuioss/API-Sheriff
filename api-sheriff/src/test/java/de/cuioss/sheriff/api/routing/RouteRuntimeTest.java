@@ -18,7 +18,6 @@ package de.cuioss.sheriff.api.routing;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -30,8 +29,6 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.api.config.model.Protocol;
-import de.cuioss.sheriff.api.events.EventType;
-import de.cuioss.sheriff.api.events.GatewayException;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -101,16 +98,18 @@ class RouteRuntimeTest {
         }
 
         @Test
-        @DisplayName("Should fail boot for unsupported protocols")
-        void shouldFailBootForUnsupportedProtocols() {
-            var grpc = assertThrows(GatewayException.class,
-                    () -> registry.require(Protocol.GRPC, "grpc-route"), "gRPC must fail boot");
-            var websocket = assertThrows(GatewayException.class,
-                    () -> registry.require(Protocol.WEBSOCKET, "ws-route"), "WebSocket must fail boot");
+        @DisplayName("Should serve gRPC and WebSocket with their dedicated processors")
+        void shouldServeGrpcAndWebSocketProcessors() {
+            // GRPC is now registered (its boot rejection was removed), so it resolves the dedicated
+            // gRPC processor rather than failing boot.
+            assertTrue(registry.supports(Protocol.GRPC), "gRPC is now supported");
+            assertEquals("grpc", registry.require(Protocol.GRPC, "grpc-route").id(),
+                    "a gRPC route resolves the dedicated gRPC processor");
 
-            assertEquals(EventType.CONFIG_INVALID, grpc.getEventType(), "gRPC rejection is a config failure");
-            assertEquals(EventType.CONFIG_INVALID, websocket.getEventType(), "WebSocket rejection is a config failure");
-            assertFalse(registry.supports(Protocol.GRPC), "gRPC is unsupported");
+            // WEBSOCKET is likewise registered and resolves the WebSocket processor.
+            assertTrue(registry.supports(Protocol.WEBSOCKET), "WebSocket is now supported");
+            assertEquals("websocket", registry.require(Protocol.WEBSOCKET, "ws-route").id(),
+                    "a WebSocket route resolves the WebSocket processor");
         }
     }
 

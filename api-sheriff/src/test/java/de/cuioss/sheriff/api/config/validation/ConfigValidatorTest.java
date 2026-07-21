@@ -40,6 +40,7 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.IssuerConfig;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.OidcConfig;
+import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
@@ -47,6 +48,7 @@ import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -941,6 +943,96 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("gRPC anchor-namespace containment exemption (ADR-0007)")
+    class GrpcNamespaceExemption {
+
+        private static final String ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.Echo";
+        private static final String SECURE_ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.SecureEcho";
+
+        private static RouteConfig grpcRoute(String id, String prefix, String anchorName, Optional<AuthConfig> auth) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .protocol(Optional.of(Protocol.GRPC))
+                    .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                    .match(match(prefix, HttpMethod.POST))
+                    .auth(auth)
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Rule 3 exemption: a gRPC route on a bare service path outside its declared anchor is accepted")
+        void shouldExemptGrpcRouteFromDeclaredAnchorContainment() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a gRPC route on a service-rooted path outside its anchor namespace must not be rejected, got: "
+                            + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 3/4 exemption: two gRPC routes under one anchor on bare service paths boot cleanly (native IT scenario)")
+        void shouldAcceptTwoGrpcRoutesUnderOneAnchorOnBareServicePaths() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
+                    Optional.of(new AuthConfig("none", List.of())),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.empty()),
+                    grpcRoute("grpc-bearer", SECURE_ECHO_PATH, "grpc", Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "the two gRPC routes that failed the native IT boot must now validate cleanly, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Rule 4 exemption: a gRPC route that would squat inside a catch-all anchor namespace is accepted")
+        void shouldExemptGrpcRouteFromUndeclaredSquatterRule() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("root", anchor("root", "/", null)));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", null,
+                    Optional.of(new AuthConfig("none", List.of())),
+                    grpcRoute("grpc-echo", ECHO_PATH, null, Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a gRPC route inside a catch-all anchor namespace must not be rejected as a squatter, got: "
+                            + errors);
+        }
+
+        @Test
+        @DisplayName("Containment stays enforced for a websocket route outside its declared anchor namespace")
+        void shouldStillEnforceContainmentForNonGrpcRoute() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
+            RouteConfig websocket = RouteConfig.builder().id("ws").anchor(Optional.of("api"))
+                    .protocol(Optional.of(Protocol.WEBSOCKET))
+                    .match(match("/billing", HttpMethod.GET))
+                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(), websocket);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "is not inside its declared anchor 'api'");
+        }
+
+        @Test
+        @DisplayName("Auth floor stays enforced for a gRPC route: effective 'none' still weakens a non-none anchor floor")
+        void shouldStillEnforceAuthFloorForGrpcRoute() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", "bearer")));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc", Optional.empty(),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.of(new AuthConfig("none", List.of()))));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
+
+            assertHasError(errors, "/endpoint/routes", "weakens the anchor 'grpc' floor 'bearer'");
+        }
+    }
+
+    @Nested
     @DisplayName("The fail-closed access→auth matrix (ADR-0013)")
     class AccessAuthMatrix {
 
@@ -1107,6 +1199,138 @@ class ConfigValidatorTest {
                     () -> assertHasError(errors, "/version", "unsupported config version"),
                     () -> assertHasError(errors, "/endpoint/base_url", "unresolved topology alias: MISSING"),
                     () -> assertHasError(errors, "/endpoint/routes", "outside the effective allowed_methods"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Fail-closed WebSocket allowlist (ADR-0015)")
+    class WebSocketAllowlist {
+
+        private static GatewayConfig gatewayWithIssuer() {
+            return validGateway()
+                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .build();
+        }
+
+        private static EndpointConfig webSocketEndpoint(String alias, RouteConfig route) {
+            return EndpointConfig.builder()
+                    .id("ws-ep").enabled(true).baseUrl(alias)
+                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .routes(List.of(route))
+                    .build();
+        }
+
+        private static RouteConfig webSocketRoute(String id, Optional<WebSocketConfig> websocket,
+                Optional<AuthConfig> auth) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .protocol(Optional.of(Protocol.WEBSOCKET))
+                    .match(match("/" + id, HttpMethod.GET))
+                    .auth(auth)
+                    .websocket(websocket)
+                    .build();
+        }
+
+        private static Optional<AuthConfig> bearer() {
+            return Optional.of(new AuthConfig("bearer", List.of()));
+        }
+
+        @Test
+        @DisplayName("Should reject a bearer WebSocket route with no websocket block (fail-closed)")
+        void shouldRejectBearerWebSocketRouteWithAbsentAllowedOrigins() {
+            GatewayConfig gateway = gatewayWithIssuer();
+            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", Optional.empty(), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "must declare a non-empty allowed_origins allowlist");
+        }
+
+        @Test
+        @DisplayName("Should reject a bearer WebSocket route with an empty allowed_origins allowlist")
+        void shouldRejectBearerWebSocketRouteWithEmptyAllowedOrigins() {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of(), Optional.empty());
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "fail-closed");
+        }
+
+        @ParameterizedTest(name = "wildcard entry \"{0}\" is rejected")
+        @ValueSource(strings = {"*", "https://*.example.com"})
+        @DisplayName("Should reject wildcard entries in allowed_origins")
+        void shouldRejectWildcardAllowedOrigin(String wildcard) {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of(wildcard), Optional.empty());
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "wildcards are not permitted");
+        }
+
+        @ParameterizedTest(name = "idle_timeout_seconds = {0} is rejected")
+        @ValueSource(ints = {0, -1, -300})
+        @DisplayName("Should reject a non-positive idle_timeout_seconds")
+        void shouldRejectNonPositiveIdleTimeout(int timeout) {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(timeout));
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "idle_timeout_seconds must be a positive integer");
+        }
+
+        @Test
+        @DisplayName("Should accept a bearer WebSocket route with exact origins and a positive idle timeout")
+        void shouldAcceptBearerWebSocketRouteWithExactOrigins() {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(60));
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should not require allowed_origins for a non-bearer WebSocket route")
+        void shouldNotRequireAllowedOriginsForNonBearerWebSocketRoute() {
+            GatewayConfig gateway = validGateway().build();
+            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", Optional.empty(), Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a non-bearer WebSocket route may omit allowed_origins; got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject a non-websocket route that declares a websocket block")
+        void shouldRejectWebSocketBlockOnNonWebSocketRoute() {
+            GatewayConfig gateway = validGateway().build();
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(60));
+            RouteConfig httpRoute = RouteConfig.builder()
+                    .id("http-with-ws")
+                    .protocol(Optional.of(Protocol.HTTP))
+                    .match(match("/http-with-ws", HttpMethod.GET))
+                    .auth(Optional.empty())
+                    .websocket(Optional.of(websocket))
+                    .build();
+            EndpointConfig endpoint = webSocketEndpoint("WS", httpRoute);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes",
+                    "declares a websocket block but its protocol is not 'websocket'");
         }
     }
 }

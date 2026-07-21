@@ -1,0 +1,79 @@
+= ADR-0016 -- gRPC Trailers-Only Rejection Status Mapping
+:toc:
+:toclevels: 2
+
+== Status
+
+Accepted.
+
+== Context
+
+The gateway's standard rejection envelope is an `application/problem+json` (RFC 9457) response
+(link:../architecture.adoc#_error_contract[error contract]). That envelope is unusable on a
+`protocol: grpc` route: a gRPC client's runtime does not surface an arbitrary HTTP response body
+to the caller -- it surfaces the *gRPC status* carried in the response *trailers* (`grpc-status`,
+`grpc-message`). A gateway that answered a rejected gRPC request with a problem+json *body* would
+produce, at the client, an opaque "malformed response" / `INTERNAL` error that hides the real
+reason (unauthenticated, method not allowed, upstream down).
+
+Two facts constrain the answer:
+
+* *A rejection may occur before the upstream is reached* (auth failure, verb gate, security
+  filter) -- so the gateway must be able to *originate* a gRPC-shaped rejection, not merely relay
+  one from the upstream.
+* *Whether the upstream actually speaks h2 is unknowable at boot.* The upstream dial is forced to
+  HTTP/2, but negotiation can still fail at dispatch (a remote capability, not config); that
+  failure needs a defined gRPC status too.
+
+== Decision
+
+Gateway-generated rejections on a `protocol: grpc` route are emitted as *trailers-only* gRPC
+responses -- an HTTP/2 response whose HEADERS frame carries `grpc-status` (and `grpc-message`)
+with *no DATA frame and no body* (the gRPC "Trailers-Only" case). The gateway maps the same
+rejection it would render as an HTTP status on an HTTP route onto the canonical gRPC status,
+defined *doc-first* in the link:../architecture.adoc#_grpc_error_contract[error contract] in the
+same PR as the code:
+
+[cols="1,1,2"]
+|===
+| gRPC status | code | Gateway rejection (HTTP status the same cause renders on an HTTP route)
+
+| `INVALID_ARGUMENT`  | 3  | `400` -- security-filter violation
+| `UNAUTHENTICATED`   | 16 | `401` -- missing/invalid bearer token
+| `PERMISSION_DENIED` | 7  | `403` -- valid credentials lacking a scope; failed CSRF check
+| `NOT_FOUND`         | 5  | `404` -- no route matched
+| `UNIMPLEMENTED`     | 12 | `405` -- method not in the route's effective `allowed_methods`
+| `UNAVAILABLE`       | 14 | `502` / `503` -- upstream connection failure / circuit open; *also* an HTTP/2 negotiation failure at the forced-h2 dispatch
+| `DEADLINE_EXCEEDED` | 4  | `504` -- upstream timeout
+|===
+
+The trailers carry the category name only, never internal detail -- the same no-leak rule the
+problem+json contract enforces for HTTP routes. The reserved `429` (rate limiting, out of scope)
+has no mapping.
+
+== Consequences
+
+* A gRPC client receives a rejection its runtime can surface as a first-class `StatusRuntimeException`
+  with the correct code, instead of an opaque parse/`INTERNAL` failure.
+* The forced-h2 upstream failure mode has a defined contract (`UNAVAILABLE`), so a backend that
+  cannot negotiate h2 fails predictably rather than as an ambiguous transport error.
+* The mapping lives once in the architecture error contract and is unit-tested per row; the
+  processor and the doc cannot drift because the doc is authored in the same PR and governs.
+
+== Rejected alternatives
+
+* *Answer with an `application/problem+json` body on the gRPC route* -- unusable by a gRPC client;
+  it surfaces as an opaque malformed-response error. Rejected.
+* *Relay only the HTTP status code with no gRPC status* -- a gRPC client keys on the trailers, not
+  the HTTP status line; the caller would see `UNKNOWN`. Rejected.
+* *Close the stream / connection on rejection* -- indistinguishable from a network failure and
+  loses the reason entirely. Rejected.
+
+== References
+
+* link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)]
+  -- the doc-first mapping table this decision records.
+* link:../architecture.adoc#_error_contract[Architecture -- Error Contract] -- the HTTP-route
+  problem+json envelope this decision translates for gRPC.
+* link:../plan/05-protocol-processors.adoc[Plan 05] -- the gRPC processor implementation and its
+  per-row unit tests.

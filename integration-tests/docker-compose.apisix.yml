@@ -65,11 +65,23 @@ services:
 
     depends_on:
       # nginx-static comes from docker-compose.benchmark.yml -- the reason this
-      # overlay cannot be launched as its own Compose project. It is the ONLY
-      # upstream every APISIX route targets (see apisix.yaml's fairness invariant),
-      # so go-httpbin is deliberately absent here: APISIX routes nothing to it.
-      - nginx-static
-      - keycloak
+      # overlay cannot be launched as its own Compose project. It is the static
+      # fairness backend the six HTTP aspects ride (see apisix.yaml's fairness
+      # invariant). The ws and grpc aspects cannot ride a static backend, so APISIX
+      # also proxies to the protocol-appropriate backends go-httpbin (WebSocket echo)
+      # and grpc-echo (gRPC Echo) -- both defined in the base docker-compose.yml and
+      # shared with the API Sheriff side, keeping the ws/grpc rows symmetric.
+      # Map form so grpc-echo can gate on service_healthy (parity with the api-sheriff
+      # service) — APISIX must not boot before the gRPC upstream is ready to accept
+      # connections, or early benchmark traffic fails.
+      nginx-static:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
 
     # OWASP hardening: no privilege escalation, matching the api-sheriff service.
     # api-sheriff additionally runs read_only with a tmpfs; APISIX/OpenResty needs a

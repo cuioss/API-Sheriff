@@ -30,6 +30,42 @@ protocol promise and, with it, the link:../variants/01-base-gateway.adoc[Variant
 * Plan 04 delivered: the pipeline runs HTTP routes end-to-end; `grpc`/`websocket` routes are
   boot-rejected by the registry this plan extends.
 
+== Orchestration Notes (2026-07 update)
+
+Rationale recorded at execution time, so a contributor reading this plan sees what actually
+changed versus the plan as originally written:
+
+* *Benchmark tooling -- Clarification 1.* The `ghz`/`k6` split in the Work Breakdown is
+  superseded: both new benchmarks are k6 scripts (see the NOTE on that item). `ghz` is not
+  introduced.
+* *Config model is final -- no config-model restructuring in this plan.* The per-route config surface
+  the processors consume (the `ResolvedRoute` union materialized at boot) is already delivered by
+  link:10-anchor-types-assets.adoc[Plan 10] / PR #84. This plan adds only the two doc-first
+  fields (`allowed_origins`, `websocket.idle_timeout_seconds`) to the existing model; it does not
+  restructure it.
+* *Parent-POM baseline.* The build tracks `de.cuioss:cui-java-parent 1.5.4` (bumped from the
+  1.5.1 recorded in earlier plans); no functional change is implied for this plan beyond building
+  on the current baseline.
+* *Two folded work items.* This plan absorbs two small, related clean-ups discovered against the
+  Plan 04 edge, rather than opening separate plans for them:
++
+--
+. *Remove the orphaned JAX-RS `GatewayExceptionMapper`.* `edge.GatewayEdgeRoute.renderProblem(...)`
+  renders RFC 9457 directly on the Vert.x route, so the JAX-RS `quarkus.GatewayExceptionMapper`
+  (`@Provider ExceptionMapper<GatewayException>`) is never reached by the data plane -- it is dead
+  and is removed (subject to a live-wiring stop-guard).
+. *Investigate "verify reports green while tests errored".* Investigated (TASK-006): the reactor's
+  Surefire/Failsafe configuration carries *no* `testFailureIgnore`, and an empirical probe (a
+  deliberately-erroring test) confirms the reactor build *correctly* fails -- Maven reports
+  `BUILD FAILURE` on a single errored test (`Tests run: N, Errors: 1`). The pom is therefore *not*
+  the culprit and needs no change. The "green verify with errored tests" symptom is a *reporting*
+  defect in the `plan-marshall:build-maven` build wrapper, which returns `status: success` while the
+  underlying Maven reports `BUILD FAILURE` for a test error (its `status`/`errors[]` reflect
+  compiler-style errors, not Surefire test errors) -- plan-marshall infrastructure, out of scope for
+  this project's pom, recorded as a finding for the plan-marshall maintainers. CI (the
+  cuioss-organization reusable Maven build) keys off Maven's own exit code and is unaffected.
+--
+
 == Design Decisions
 
 === D1 -- WebSocket processor: full pipeline on the handshake, opaque relay after 101
@@ -94,6 +130,34 @@ protocol promise and, with it, the link:../variants/01-base-gateway.adoc[Variant
   stream-reset rate limit must not misfire on legitimate streaming, but must still bound an
   abusive reset loop).
 
+=== D2b -- gRPC route shape: bare service path (operator decision 2026-07-21)
+
+A gRPC route matches the *bare service path* -- `match.path_prefix: /{package}.{Service}` -- and
+sets an *identical* `upstream.path`. Because the gateway builds the upstream path as
+`upstream.path + remainder-after-prefix`, the identity of the two preserves the full
+`/{package}.{Service}/{Method}` method path end-to-end, so a *stock* gRPC client (grpc-java stub,
+k6 `k6/net/grpc` client) dials the real service path and needs no client-side rewriting. This is
+*pure route-yaml authoring*: the per-route config surface is final (D2 / Clarification 1 -- no
+config-model change in this plan) and already expresses it via `match.path_prefix` + `upstream.path`.
+
+*Rejected alternative -- synthetic anchor prefix.* The first implementation routed gRPC under a
+synthetic `/grpc/<aspect>` anchor prefix that the gateway stripped, which forced every client to
+prepend that prefix to the method path (in the ITs, a path-rewriting `ClientInterceptor`; a real
+consumer would need the same). That is non-standard: a stock gRPC client cannot talk to the gateway
+without gateway-specific path surgery. Rejected in favour of the bare service path, which any
+conformant gRPC client reaches unmodified.
+
+*Consequence -- distinct service paths for a public + bearer split.* Two routes that share an
+identical `path_prefix` must be statically disjoint (route-ordering rule, `doc/configuration.adoc`).
+A public Echo route and a bearer route on the *same* `/{package}.Echo` path are not disjoint -- a
+public gRPC client carries no distinguishing host or header to separate them, and a lone header
+matcher on one side establishes nothing. The bearer route therefore rides its own service path
+(the ITs use a distinct `SecureEcho` service, defined in the proto but not implemented upstream --
+the bearer route rejects a tokenless call `UNAUTHENTICATED` before any dial, so it is never
+reached). Rejected alternatives: a shared-path header/host discriminator (either forces the public
+route to demand a magic header that vanilla clients do not send, or depends on a route-ordering tie
+break the gateway explicitly does not honour).
+
 === D3 -- Test upstreams
 
 Per Plan 01 D2 research: WebSocket ITs use go-httpbin's `/websocket/echo` (already in the
@@ -133,6 +197,15 @@ assertions.
   the `k6/websockets` module -- the old third-party `obvionaoe/ghz` Docker Hub image is
   stale, do not use it). Both wrappers emit the same `=== BENCHMARK METADATA ===` block so
   the existing post-processor and pages pipeline consume them unchanged.
++
+--
+NOTE: *Superseded by Clarification 1 (2026-07).* The `ghz`/`k6` split above is *not* delivered:
+following the wrk->k6 migration (link:04b-comparative-benchmark.adoc[Plan 04b]), *both* new
+benchmarks are k6 scripts under `benchmarks/src/main/resources/k6-scripts/`
+(`websocket_echo.js`, `grpc_unary.js`) driven through the k6 aspect harness, and the APISIX
+comparison matrix is extended via the `ASPECT_SCRIPTS` map in
+`benchmarks/scripts/run-comparison.sh`. `ghz` is not introduced.
+--
 . *Docs* -- variant-1 doc note that the protocol scope is complete; README sweep.
 
 == Execution Workflow

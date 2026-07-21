@@ -43,11 +43,13 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.api.config.model.OidcConfig;
+import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
 
@@ -124,7 +126,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors));
+            (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
+            (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors));
 
     private final List<ValidationRule> rules;
 
@@ -318,6 +321,18 @@ public final class ConfigValidator {
      * declared anchor's namespace; (4) every enabled route whose path lies inside
      * any anchor namespace declares exactly that anchor — an undeclared squatter
      * fails the boot (ADR-0007).
+     * <p>
+     * {@code protocol: grpc} routes are exempt from both containment rules. A gRPC
+     * method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
+     * service segment is a single opaque path segment (dots, no slashes), so it is
+     * structurally never nested under a gateway path namespace on a segment boundary
+     * — no non-root anchor {@code path_prefix} can contain it, and stock gRPC clients
+     * cannot be told to prepend a namespace prefix. Only the path-prefix containment
+     * geometry is skipped for gRPC routes: a gRPC route still declares an anchor for
+     * its ADR-0013 type/access classification and its ADR-0007 auth floor, and every
+     * other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
+     * non-weakenable auth floor, access→auth matrix) stays enforced for it unchanged.
+     * {@code websocket} and {@code http} routes keep full containment enforcement.
      */
     private static void validateAnchorNamespaceMembership(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
@@ -326,6 +341,11 @@ public final class ConfigValidator {
         }
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
+                if (route.protocol().orElse(Protocol.HTTP) == Protocol.GRPC) {
+                    // gRPC routes ride a service-rooted single-segment path that no gateway path
+                    // namespace can contain on a segment boundary — exempt from containment (rules 3 & 4).
+                    continue;
+                }
                 Optional<String> declaredName = declaredAnchorName(endpoint, route);
                 String routePrefix = route.match().pathPrefix();
                 checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
@@ -748,6 +768,62 @@ public final class ConfigValidator {
                                 .formatted(alias, basePath)));
             }
         }
+    }
+
+    /**
+     * Rule: the fail-closed WebSocket allowlist contract (ADR-0015). Each
+     * {@code protocol: websocket} route is validated by {@link #validateWebSocketRoute}
+     * (bearer allowlist, exact-match origins, positive idle timeout). A route that
+     * declares a {@code websocket} block while its protocol is <em>not</em>
+     * {@code websocket} is rejected here, since those settings would otherwise be
+     * silently ignored. Every violation collects into the shared list; the rule never
+     * fails fast.
+     */
+    private static void validateWebSocketConfig(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                if (route.protocol().orElse(Protocol.HTTP) == Protocol.WEBSOCKET) {
+                    validateWebSocketRoute(gateway, endpoint, route, errors);
+                } else if (route.websocket().isPresent()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' declares a websocket block but its protocol is not 'websocket'; the websocket settings would be silently ignored"
+                                    .formatted(route.id())));
+                }
+            }
+        }
+    }
+
+    /**
+     * Validates a single {@code protocol: websocket} route against the fail-closed
+     * WebSocket allowlist contract (ADR-0015): a bearer route needs a non-empty
+     * {@code allowed_origins}, no origin may contain a wildcard, and a declared
+     * {@code idle_timeout_seconds} must be positive. Every violation collects into the
+     * shared list; the rule never fails fast.
+     */
+    private static void validateWebSocketRoute(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route,
+            List<ConfigError> errors) {
+        Optional<WebSocketConfig> websocket = route.websocket();
+        List<String> origins = websocket.map(WebSocketConfig::allowedOrigins).orElseGet(List::of);
+        if (REQUIRE_BEARER.equals(effectiveRequire(gateway, endpoint, route)) && origins.isEmpty()) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "websocket route '%s' with effective auth 'bearer' must declare a non-empty allowed_origins allowlist (fail-closed)"
+                            .formatted(route.id())));
+        }
+        for (String origin : origins) {
+            if (origin.contains(WILDCARD_ORIGIN)) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        "websocket route '%s' allowed_origins entry '%s' must be an exact origin; wildcards are not permitted"
+                                .formatted(route.id(), origin)));
+            }
+        }
+        websocket.flatMap(WebSocketConfig::idleTimeoutSeconds).ifPresent(timeout -> {
+            if (timeout <= 0) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                        "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
+                                .formatted(route.id(), timeout)));
+            }
+        });
     }
 
     private static Map<String, String> passthroughSni(GatewayConfig gateway) {

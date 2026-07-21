@@ -36,6 +36,12 @@ This tree is seeded here and grows as contributor-facing material lands.
 | The rules around the authoritative, blocking SonarCloud gate -- zero new findings, never
   merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,
   and the fix-by-default / suppress-with-rationale escape hatch.
+
+| link:protocol-processors.adoc[Protocol Processors -- SPI and dispatch seam]
+| The `ProtocolProcessor` SPI, the boot-time registry that binds a protocol to its processor, and
+  the edge protocol-dispatch seam that routes WebSocket and gRPC down their specialised paths --
+  including where the handshake/relay and forced-h2/trailer code lives, and how to add a new
+  processor.
 |===
 
 == Scope of This Layer

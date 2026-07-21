@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# WebSocket test endpoint backing WebSocketProxyIT (deliverable 10). Every route relays to
+# the single go-httpbin WebSocket echo upstream (WS_UPSTREAM -> /websocket/echo): each route's
+# match prefix maps to the empty upstream remainder, so the opaque relay dials
+# ws://go-httpbin:8080/websocket/echo for every scenario. The 'ws' anchor is access: public
+# (ADR-0013); the bearer route below strengthens that floor with its own route-level auth block
+# (endpoint/route auth wins over anchor auth, ADR-0007), which is why the public anchor carries
+# no auth block yet a require: bearer route is legal here.
+endpoint:
+  id: websocket
+  enabled: true
+  base_url: WS_UPSTREAM
+  anchor: ws
+  # The 'ws' anchor is access: public and therefore carries no auth block (ADR-0013),
+  # so the endpoint declares the require: none posture itself — inherited by every public
+  # route (ws-echo, ws-idle). The bearer route below overrides it with a route-level auth
+  # block (route auth wins over endpoint/anchor auth in the resolution chain, ADR-0007).
+  auth:
+    require: none
+  routes:
+    # Public WebSocket relay with a populated Origin allowlist. Drives two scenarios:
+    #   * echo round-trip — a handshake carrying an allow-listed Origin upgrades and the opaque
+    #     relay round-trips a text frame through go-httpbin's echo;
+    #   * cross-site rejection (GW-09 / CSWSH) — a foreign or absent Origin is rejected 403 by the
+    #     fail-closed OriginValidationStage *before* the upstream is dialed.
+    - id: ws-echo
+      protocol: websocket
+      match:
+        path_prefix: /ws/echo
+      websocket:
+        allowed_origins: ["https://sheriff.test"]
+
+    # Bearer-protected WebSocket route (route-level auth strengthens the public anchor). A
+    # handshake with no token is rejected 401 at the offline bearer stage *before* the Origin
+    # gate and before any upstream contact — proving auth-before-dial. A non-empty allowed_origins
+    # is mandatory on a bearer WS route (ADR-0015 fail-closed), satisfied here.
+    - id: ws-bearer
+      protocol: websocket
+      auth:
+        require: bearer
+      match:
+        path_prefix: /ws/bearer
+      websocket:
+        allowed_origins: ["https://sheriff.test"]
+
+    # Public WebSocket relay with a short idle timeout and no Origin enforcement (empty allowlist
+    # only reaches boot on a non-bearer route). Drives the idle-reclaim-vs-heartbeat pair: an idle
+    # established relay is reclaimed with WebSocket close 1001 after idle_timeout_seconds, while a
+    # relay kept warm by periodic frames survives past that window.
+    - id: ws-idle
+      protocol: websocket
+      match:
+        path_prefix: /ws/idle
+      websocket:
+        idle_timeout_seconds: 2

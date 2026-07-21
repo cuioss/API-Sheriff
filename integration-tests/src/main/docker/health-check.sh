@@ -1,6 +1,13 @@
 #!/bin/bash
 # Internal health check script for API Gateway Integration Tests
 # Uses /dev/tcp for connection testing (Docker best practice)
+#
+# Scope: this probe reports the GATEWAY container's own readiness only. It deliberately
+# does NOT probe upstream availability (go-httpbin, asset-origin, grpc-echo): the gateway
+# dials upstreams per-request and stays ready independently of them, so gating gateway
+# readiness on an upstream would mask a legitimately-ready gateway. Upstream ordering is
+# enforced one layer up, in docker-compose.yml, where the gateway's `depends_on` waits on
+# `grpc-echo: condition: service_healthy` before it starts. Keep upstream readiness there.
 
 # Check if the application port is listening using /dev/tcp
 # This approach is preferred over /proc/net/tcp parsing

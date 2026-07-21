@@ -450,6 +450,64 @@
                                 </configuration>
                             </execution>
 
+                            <!-- Run k6 WebSocket echo benchmark (opaque relay round-trip through
+                                 the gateway to go-httpbin's /websocket/echo — not the static
+                                 fairness backend, which speaks no WebSocket; see README fairness). -->
+                            <execution>
+                                <id>run-k6-websocket-echo-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/websocket_echo.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- Run k6 gRPC unary echo benchmark (forced-h2 relay through the
+                                 gateway to the in-repo grpc-echo service — again not the static
+                                 fairness backend, which speaks no gRPC; see README fairness). -->
+                            <execution>
+                                <id>run-k6-grpc-unary-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/grpc_unary.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
                             <!-- Process k6 results and generate reports -->
                             <execution>
                                 <id>process-k6-results</id>

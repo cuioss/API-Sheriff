@@ -70,8 +70,63 @@ class ComparisonSummaryWriterTest {
                 """.formatted(rps, mbps, p50, p99));
     }
 
+    /**
+     * A protocol-relay aspect (ws / grpc) summary. These aspects ride protocol-appropriate backends
+     * rather than the static fairness backend, but emit the same generic summary shape as the HTTP
+     * request-rate aspects — {@code requests_per_second} is round-trips/second (ws) or calls/second
+     * (grpc) — so the writer renders them as ordinary RPS rows with no aspect-specific branch.
+     */
+    private static JsonObject protocolSummary(String benchmarkName, double rps, double p50, double p99) {
+        return parse("""
+                {
+                  "benchmark_name": "%s",
+                  "gateway_target": "api-sheriff",
+                  "requests_per_second": %s,
+                  "error_rate": 0.0,
+                  "latency_ms": { "avg": 6.0, "p50": %s, "p99": %s }
+                }
+                """.formatted(benchmarkName, rps, p50, p99));
+    }
+
     private static JsonObject parse(String json) {
         return JsonParser.parseString(json).getAsJsonObject();
+    }
+
+    @Test
+    void shouldRenderWebSocketAndGrpcAspectsAsRpsRows() {
+        // Arrange -- the two protocol-relay aspects, produced by both targets.
+        Map<String, JsonObject> sheriff = Map.of(
+                "websocketEcho", protocolSummary("websocketEcho", 4820.15, 3.90, 22.40),
+                "grpcUnary", protocolSummary("grpcUnary", 7315.60, 2.10, 15.75));
+        Map<String, JsonObject> apisix = Map.of(
+                "websocketEcho", protocolSummary("websocketEcho", 4110.00, 4.55, 30.10),
+                "grpcUnary", protocolSummary("grpcUnary", 6650.40, 2.60, 18.20));
+
+        // Act
+        String rendered = ComparisonSummaryWriter.render(SHERIFF, sheriff, APISIX, apisix);
+
+        // Assert -- both protocol aspects render as generic RPS rows (not MBps, not throughput-only),
+        // proving the data-driven writer covers ws/grpc with no aspect-specific handling.
+        assertTrue(rendered.contains("| websocketEcho | RPS | 4820.15 | 4110.00 | 3.90 / 22.40 | 4.55 / 30.10 |"),
+                "the ws aspect must render as an RPS row with both P50/P99 pairs:\n" + rendered);
+        assertTrue(rendered.contains("| grpcUnary | RPS | 7315.60 | 6650.40 | 2.10 / 15.75 | 2.60 / 18.20 |"),
+                "the grpc aspect must render as an RPS row with both P50/P99 pairs:\n" + rendered);
+        assertFalse(rendered.contains("| websocketEcho | MBps |"), "ws must not be reported on MBps");
+        assertFalse(rendered.contains("| grpcUnary | MBps |"), "grpc must not be reported on MBps");
+    }
+
+    @Test
+    void shouldRenderNotAvailableForAProtocolAspectOnlyOneTargetProduced() {
+        // Arrange -- a half-failed comparison run: APISIX produced no grpc summary (e.g. the grpc
+        // route or backend was unreachable on that side).
+        Map<String, JsonObject> sheriff = Map.of("grpcUnary", protocolSummary("grpcUnary", 7315.60, 2.10, 15.75));
+
+        // Act
+        String rendered = ComparisonSummaryWriter.render(SHERIFF, sheriff, APISIX, Map.of());
+
+        // Assert -- the row survives with n/a for the missing side, never a 0 that reads as a collapse.
+        assertTrue(rendered.contains("| grpcUnary | RPS | 7315.60 | n/a | 2.10 / 15.75 | n/a / n/a |"),
+                "a protocol aspect only one target produced must still render, with n/a for the other:\n" + rendered);
     }
 
     @Test

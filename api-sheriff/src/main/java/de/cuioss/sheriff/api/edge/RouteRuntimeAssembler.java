@@ -28,6 +28,7 @@ import java.util.Set;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.api.asset.AssetSource;
 import de.cuioss.sheriff.api.config.model.HttpMethod;
+import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedAsset;
 import de.cuioss.sheriff.api.config.model.ResolvedRoute;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
@@ -124,7 +125,9 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedPaths(route.effectiveSecurityFilter()
                             .map(SecurityFilterConfig::allowedPaths).orElse(List.of()))
                     .retryEnabled(route.retryEnabled())
-                    .notModifiedEnabled(route.notModifiedEnabled());
+                    .notModifiedEnabled(route.notModifiedEnabled())
+                    .effectiveAllowedOrigins(route.effectiveAllowedOrigins())
+                    .effectiveWebSocketIdleTimeoutSeconds(route.effectiveWebSocketIdleTimeoutSeconds());
 
             // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
             // live source and skips the Vert.x client / resilience-guard dedup entirely — its
@@ -136,7 +139,10 @@ public final class RouteRuntimeAssembler {
                 ResolvedUpstream resolvedUpstream = route.upstream().orElseThrow(() -> new GatewayException(
                         EventType.CONFIG_INVALID,
                         "Route '" + route.id() + "' resolves no terminal action (neither upstream nor asset)"));
-                UpstreamTarget target = UpstreamTarget.of(resolvedUpstream);
+                // gRPC requires HTTP/2 end-to-end, so the forced-h2 flag joins the client-sharing tuple:
+                // a gRPC route to host:port holds a distinct forced-h2 client from an HTTP/1.1 route to
+                // the same host:port.
+                UpstreamTarget target = UpstreamTarget.of(resolvedUpstream, route.protocol() == Protocol.GRPC);
                 HttpClient client = clientCache.computeIfAbsent(target, clientFactory::create);
                 ResilienceShape shape = new ResilienceShape(target, route.retryEnabled());
                 Guard guard = guardCache.computeIfAbsent(shape, guardFactory::create);
@@ -162,21 +168,24 @@ public final class RouteRuntimeAssembler {
     }
 
     /**
-     * The upstream-target tuple keying Vert.x client dedup: routes sharing (scheme, host, port)
-     * share one client instance.
+     * The upstream-target tuple keying Vert.x client dedup: routes sharing
+     * (scheme, host, port, forced-h2) share one client instance. The {@code forcedHttp2} dimension
+     * separates a gRPC route's forced-HTTP/2 client from an HTTP/1.1 client to the same host:port.
      *
-     * @param scheme the upstream scheme
-     * @param host   the upstream host
-     * @param port   the upstream port
+     * @param scheme       the upstream scheme
+     * @param host         the upstream host
+     * @param port         the upstream port
+     * @param forcedHttp2  whether the client is forced to HTTP/2 (a gRPC route)
      */
-    public record UpstreamTarget(String scheme, String host, int port) {
+    public record UpstreamTarget(String scheme, String host, int port, boolean forcedHttp2) {
 
         /**
-         * @param upstream the resolved upstream
+         * @param upstream     the resolved upstream
+         * @param forcedHttp2  whether the client is forced to HTTP/2 (a gRPC route)
          * @return the target tuple for {@code upstream}
          */
-        public static UpstreamTarget of(ResolvedUpstream upstream) {
-            return new UpstreamTarget(upstream.scheme(), upstream.host(), upstream.port());
+        public static UpstreamTarget of(ResolvedUpstream upstream, boolean forcedHttp2) {
+            return new UpstreamTarget(upstream.scheme(), upstream.host(), upstream.port(), forcedHttp2);
         }
     }
 

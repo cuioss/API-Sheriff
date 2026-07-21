@@ -19,9 +19,12 @@ import java.io.Serial;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.api.config.model.AccessLevel;
@@ -43,6 +46,7 @@ import de.cuioss.sheriff.api.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -54,8 +58,10 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code path_prefix} length (most specific first), and
  * materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, and the effective deny-by-default {@code forward}
- * allowlist into a {@link ResolvedRoute}. The inheritance chains
+ * / not-modified toggles, the effective deny-by-default {@code forward}
+ * allowlist, and the effective upstream base path (the route-level
+ * {@code upstream.path} replacing the alias-derived base path when declared)
+ * into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
  * step — ADR-0007) are resolved here, once, so the request pipeline never
  * re-implements them and never consults an anchor. The effective posture of each
@@ -77,6 +83,9 @@ public final class RouteTableBuilder {
     /** The {@link AuthConfig#require()} value meaning no authentication is required; also the
      * display fallback for an absent anchor name / security-filter profile in {@link #logPosture}. */
     private static final String NONE = "none";
+
+    /** The default {@code websocket.idle_timeout_seconds} applied when a WebSocket route omits it. */
+    private static final int DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS = 300;
 
     /**
      * Builds the route table from the enabled endpoints and the resolved topology.
@@ -160,9 +169,15 @@ public final class RouteTableBuilder {
                 .flatMap(UpstreamConfig.NotModified::enabled)
                 .orElse(defaults.notModifiedEnabled());
         ForwardConfig effectiveForward = route.forward().orElseGet(() -> ForwardConfig.builder().build());
+        Protocol protocol = route.protocol().orElse(Protocol.HTTP);
+        Set<String> allowedOrigins = effectiveAllowedOrigins(route);
+        Optional<Integer> idleTimeout = protocol == Protocol.WEBSOCKET
+                ? Optional.of(route.websocket().flatMap(WebSocketConfig::idleTimeoutSeconds)
+                .orElse(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS))
+                : Optional.empty();
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())
-                .protocol(route.protocol().orElse(Protocol.HTTP))
+                .protocol(protocol)
                 .anchor(anchor.map(AnchorConfig::name))
                 .match(route.match())
                 .effectiveAuth(auth)
@@ -171,7 +186,9 @@ public final class RouteTableBuilder {
                 .effectiveSecurityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
-                .effectiveForward(effectiveForward);
+                .effectiveForward(effectiveForward)
+                .effectiveAllowedOrigins(allowedOrigins)
+                .effectiveWebSocketIdleTimeoutSeconds(idleTimeout);
         // A route resolves to exactly one terminal action: an asset action (when the route
         // declares an asset block) is materialized here; otherwise the route proxies to its
         // endpoint upstream. ADR-0014: upstream XOR asset.
@@ -179,11 +196,38 @@ public final class RouteTableBuilder {
         if (asset.isPresent()) {
             builder.asset(Optional.of(resolveAsset(route, asset.get(), anchor, auth, topology)));
         } else {
-            builder.upstream(Optional.of(upstream));
+            builder.upstream(Optional.of(applyRouteUpstreamPath(upstream, route)));
         }
         ResolvedRoute resolved = builder.build();
         logPosture(resolved);
         return resolved;
+    }
+
+    /**
+     * Materializes the route-level {@code upstream.path} into the route's effective upstream base
+     * path. A route that declares a non-blank {@code upstream.path} <em>replaces</em> the
+     * alias-derived base path with it (the bare-service-path routing model): the forward URI is
+     * then reconstructed as {@code stripTrailingSlash(upstream.path) + remainder-after-prefix} by
+     * {@link de.cuioss.sheriff.api.edge.DispatchStage#upstreamRequestUri}, so a gRPC route's
+     * {@code /{package}.{Service}} segment (and a benchmark route's {@code /anything/<aspect>}
+     * rewrite) reaches the upstream instead of being stripped. The alias host / port / scheme are
+     * carried through unchanged, so the client- and guard-sharing tuple
+     * ({@link de.cuioss.sheriff.api.edge.RouteRuntimeAssembler.UpstreamTarget}, keyed on
+     * scheme/host/port) is unaffected. A route without {@code upstream.path} keeps the
+     * alias-derived base path unchanged — the default proxy behavior.
+     *
+     * @param aliasUpstream the endpoint's alias-resolved upstream (shared across the endpoint's
+     *                      routes)
+     * @param route         the route whose optional {@code upstream.path} overrides the base path
+     * @return the per-route upstream carrying the effective base path
+     */
+    private static ResolvedUpstream applyRouteUpstreamPath(ResolvedUpstream aliasUpstream, RouteConfig route) {
+        return route.upstream()
+                .flatMap(UpstreamConfig::path)
+                .filter(path -> !path.isBlank())
+                .map(path -> new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(),
+                        aliasUpstream.port(), path))
+                .orElse(aliasUpstream);
     }
 
     /**
@@ -278,6 +322,21 @@ public final class RouteTableBuilder {
             return List.copyOf(gateway.allowedMethods());
         }
         return STANDARD_ALLOWED_METHODS;
+    }
+
+    /**
+     * The materialized WebSocket {@code allowed_origins} allowlist, lower-cased once at
+     * assembly for case-insensitive host matching (scheme and port are already
+     * case-insensitive). Iteration order is not significant — origin acceptance is an
+     * exact-membership test, so the set may be defensively re-copied downstream without
+     * any ordering guarantee. Empty for a route that declares no {@code websocket} block.
+     */
+    private static Set<String> effectiveAllowedOrigins(RouteConfig route) {
+        Set<String> origins = new LinkedHashSet<>();
+        for (String origin : route.websocket().map(WebSocketConfig::allowedOrigins).orElseGet(List::of)) {
+            origins.add(origin.toLowerCase(Locale.ROOT));
+        }
+        return origins;
     }
 
     /**

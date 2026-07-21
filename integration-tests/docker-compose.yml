@@ -59,6 +59,28 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # In-repo Quarkus gRPC echo upstream backing the gRPC integration-test matrix.
+  # Exposes unary echo, server-streaming echo, and a deliberately-failing method
+  # (non-OK grpc-status) so GrpcProxyIT can assert echo, streaming, and trailer/status
+  # relay through the gateway. Reached by the gateway on the internal network as
+  # grpc-echo:9000 (separate gRPC server); no host port is published. Built from the
+  # integration-tests module via the grpc-echo Maven profile (repo-root build context).
+  grpc-echo:
+    build:
+      context: ..
+      dockerfile: integration-tests/src/main/docker/grpc-echo/Dockerfile
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    # /dev/tcp readiness probe on the gRPC port — the eclipse-temurin runtime image
+    # ships bash, so no extra probe binary is required.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo -n > /dev/tcp/127.0.0.1/9000'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
   api-sheriff:
     image: "api-sheriff:distroless"
     build:
@@ -90,10 +112,19 @@ services:
       # UPSTREAM topology alias resolves to the go-httpbin echo backend.
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
 
+    # Map form so grpc-echo can gate on service_healthy — the gateway must not start
+    # until the gRPC echo upstream is accepting connections, otherwise the first
+    # streaming IT can race the upstream's boot. The other upstreams retain the prior
+    # service_started semantics.
     depends_on:
-      - keycloak
-      - go-httpbin
-      - asset-origin
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
 
     volumes:
       # Read-only certificate mount (production pattern)
@@ -105,8 +136,11 @@ services:
       # `directory:` root in the asset endpoint config. A read-only mount into the
       # read_only container is fine — bind mounts are independent of the root fs.
       - ./src/main/docker/assets:/app/assets:ro
-      # Mount target directory for log files (defaults to ./target)
-      - ${LOG_TARGET_DIR:-./target}:/logs:rw
+      # Mount the dedicated log subdirectory (defaults to ./target/quarkus-logs).
+      # The start-integration-container.sh script exports LOG_TARGET_DIR to this subdir
+      # and world-writes only it (least privilege); this fallback keeps a standalone
+      # compose run mounting the same subdir rather than the whole target tree.
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
 
     # OWASP Security hardening (production-grade)
     security_opt:
