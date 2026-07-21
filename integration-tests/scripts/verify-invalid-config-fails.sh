@@ -119,12 +119,12 @@ metadata:
 anchors:
   api:
     path_prefix: /api
-    auth:
-      require: none
+    type: proxy
+    access: public
   apiv1:
     path_prefix: /api/v1
-    auth:
-      require: none
+    type: proxy
+    access: public
 YAML
 chmod 755 "${ANCHOR_INVALID_DIR}"
 chmod 644 "${ANCHOR_INVALID_DIR}/gateway.yaml"
