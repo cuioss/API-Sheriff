@@ -72,14 +72,16 @@ else
 fi
 
 
-# Set LOG_TARGET_DIR to project's target directory for Quarkus file logging.
+# Set LOG_TARGET_DIR to a dedicated log subdirectory for Quarkus file logging.
 # The api-sheriff native/distroless container runs as uid 1001, but this host
 # directory is created by the (differently-numbered) Maven user, so the bind-mounted
 # /logs is not writable by the container and the file log sink fails with
 # "FileNotFoundException: /logs/quarkus.log (Permission denied)". Grant world write on
-# the host target dir so uid 1001 can write quarkus.log there (ephemeral test output —
-# not a security boundary; the container keeps its no-new-privileges / cap_drop posture).
-export LOG_TARGET_DIR="${LOG_TARGET_DIR:-${PROJECT_DIR}/target}"
+# a dedicated 'quarkus-logs' subdirectory only — least privilege — so uid 1001 can write
+# quarkus.log there without making the entire build target tree world-writable (ephemeral
+# test output — the container keeps its no-new-privileges / cap_drop / read_only posture).
+LOG_TARGET_ROOT="${LOG_TARGET_DIR:-${PROJECT_DIR}/target}"
+export LOG_TARGET_DIR="${LOG_TARGET_ROOT}/quarkus-logs"
 mkdir -p "${LOG_TARGET_DIR}"
 chmod 0777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"

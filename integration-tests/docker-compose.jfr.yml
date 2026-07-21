@@ -9,5 +9,6 @@ services:
       dockerfile: src/main/docker/Dockerfile.native.jfr
     volumes:
       - ./src/main/docker/certificates:/app/certificates:ro
-      - ${LOG_TARGET_DIR:-./target}:/logs:rw
+      # Dedicated log subdirectory (least privilege); mirrors docker-compose.yml.
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
       - ./target/jfr-recordings:/tmp/jfr-output:rw

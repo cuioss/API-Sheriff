@@ -136,8 +136,11 @@ services:
       # `directory:` root in the asset endpoint config. A read-only mount into the
       # read_only container is fine — bind mounts are independent of the root fs.
       - ./src/main/docker/assets:/app/assets:ro
-      # Mount target directory for log files (defaults to ./target)
-      - ${LOG_TARGET_DIR:-./target}:/logs:rw
+      # Mount the dedicated log subdirectory (defaults to ./target/quarkus-logs).
+      # The start-integration-container.sh script exports LOG_TARGET_DIR to this subdir
+      # and world-writes only it (least privilege); this fallback keeps a standalone
+      # compose run mounting the same subdir rather than the whole target tree.
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
 
     # OWASP Security hardening (production-grade)
     security_opt:
