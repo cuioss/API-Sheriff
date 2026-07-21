@@ -108,6 +108,8 @@ As a security-focused API Gateway:
 
 ## Git Workflow
 
+**Scope**: the manual workflow below applies to ad-hoc (non-plan-marshall) changes only. Work executed through plan-marshall (`/plan-marshall` plans) is governed by the plan-marshall configuration (`.plan/marshal.json` and the per-plan execution manifest) — including merge behavior (`final_merge_without_asking`, merge queue), review-comment triage, and branch cleanup — and merges without a manual approval prompt when so configured.
+
 **Minimize the number of PRs.** Batch related changes into a single PR rather than splitting them; only open a second PR when a single one would exceed 150 changed files.
 
 All cuioss repositories have branch protection on `main`. Direct pushes to `main` are never allowed. Always use this workflow:
