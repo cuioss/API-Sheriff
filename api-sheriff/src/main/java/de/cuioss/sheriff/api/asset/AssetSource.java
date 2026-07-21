@@ -104,10 +104,10 @@ public sealed interface AssetSource permits DirectoryAssetSource, UpstreamAssetS
             if (this == other) {
                 return true;
             }
-            return other instanceof Served served
-                    && status == served.status
-                    && headers.equals(served.headers)
-                    && Arrays.equals(body, served.body);
+            return other instanceof Served(var otherStatus, var otherHeaders, var otherBody)
+                    && status == otherStatus
+                    && headers.equals(otherHeaders)
+                    && Arrays.equals(body, otherBody);
         }
 
         /**

@@ -246,8 +246,11 @@ class RouteTableBuilderTest {
             EndpointConfig endpoint = endpoint("orders", "MISSING")
                     .routes(List.of(route("r", HttpMethod.GET))).build();
 
+            GatewayConfig config = gateway().build();
+            ResolvedTopology topology = topologyWith("ORDERS");
+            List<EndpointConfig> endpoints = List.of(endpoint);
             assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")));
+                    () -> builder.build(config, endpoints, topology));
         }
 
         @Test
@@ -439,9 +442,10 @@ class RouteTableBuilderTest {
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("r", "/api/orders", HttpMethod.GET))).build();
             ResolvedTopology topology = topologyWith("ORDERS");
+            List<EndpointConfig> endpoints = List.of(endpoint);
 
             assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(config, List.of(endpoint), topology));
+                    () -> builder.build(config, endpoints, topology));
         }
 
         @Test
@@ -797,9 +801,10 @@ class RouteTableBuilderTest {
                     .anchor(Optional.of("assets")).auth(Optional.of(new AuthConfig("none", List.of())))
                     .routes(List.of(assetRoute("cdn", "/assets", "assets", asset))).build();
             ResolvedTopology topology = topologyWith("WEB");
+            List<EndpointConfig> endpoints = List.of(endpoint);
 
             assertThrows(RouteTableBuilder.RouteTableException.class,
-                    () -> builder.build(config, List.of(endpoint), topology));
+                    () -> builder.build(config, endpoints, topology));
         }
 
         @Test

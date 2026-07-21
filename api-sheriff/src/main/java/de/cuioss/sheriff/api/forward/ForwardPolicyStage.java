@@ -21,7 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
@@ -121,7 +121,7 @@ public final class ForwardPolicyStage {
 
     private void applyRegeneratedForwarding(PipelineRequest request, Map<String, String> headers) {
         boolean peerTrusted = peerGate.isTrustedPeer(request.peerAddress());
-        Function<String, String> lookup = name -> {
+        UnaryOperator<String> lookup = name -> {
             if (!peerTrusted && FORWARDING_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
                 return null;
             }

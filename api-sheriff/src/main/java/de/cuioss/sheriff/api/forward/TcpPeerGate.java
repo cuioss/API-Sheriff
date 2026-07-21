@@ -64,7 +64,7 @@ public final class TcpPeerGate {
         InetAddress peer;
         try {
             peer = InetAddress.ofLiteral(peerAddress.strip());
-        } catch (IllegalArgumentException notALiteral) {
+        } catch (IllegalArgumentException _) {
             return false;
         }
         for (Cidr range : trustedRanges) {

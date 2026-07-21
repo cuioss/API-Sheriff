@@ -165,7 +165,8 @@ class TcpPeerGateTest {
         @DisplayName("rejects a malformed trusted-proxy CIDR at construction")
         void rejectsMalformedCidr(String badCidr) {
             // Act + Assert
-            assertThrows(IllegalArgumentException.class, () -> new TcpPeerGate(List.of(badCidr)),
+            List<String> cidrs = List.of(badCidr);
+            assertThrows(IllegalArgumentException.class, () -> new TcpPeerGate(cidrs),
                     "malformed CIDR must fail loud at boot");
         }
 

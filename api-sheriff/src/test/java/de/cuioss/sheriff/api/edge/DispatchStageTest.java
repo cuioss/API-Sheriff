@@ -327,7 +327,7 @@ class DispatchStageTest {
         @DisplayName("serves an upstream asset, forcing no-store on an authenticated route through the envelope")
         void servesUpstreamAssetGoverned() {
             ResolvedUpstream upstream = new ResolvedUpstream("https", "cdn.internal", 443, "");
-            UpstreamAssetSource.UpstreamFetcher fetcher = target -> new UpstreamAssetSource.UpstreamFetcher.Fetched(
+            UpstreamAssetSource.UpstreamFetcher fetcher = _ -> new UpstreamAssetSource.UpstreamFetcher.Fetched(
                     200, Map.of("Content-Type", "text/plain", "Cache-Control", "public"),
                     "PNGDATA".getBytes(StandardCharsets.UTF_8));
             UpstreamAssetSource source = new UpstreamAssetSource(upstream, AccessLevel.AUTHENTICATED,

@@ -128,7 +128,7 @@ public final class DirectoryAssetSource implements AssetSource {
                     file.getFileName().toString(), access, Map.of());
             byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : Files.readAllBytes(file);
             return new Served(OK, headers, body);
-        } catch (IOException readFailure) {
+        } catch (IOException _) {
             return new Served(SERVER_ERROR, Map.of(), EMPTY_BODY);
         }
     }

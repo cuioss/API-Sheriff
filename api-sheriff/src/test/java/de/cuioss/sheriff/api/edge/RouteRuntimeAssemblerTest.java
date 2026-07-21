@@ -71,9 +71,9 @@ class RouteRuntimeAssemblerTest {
     void setUp() {
         vertx = Vertx.vertx();
         assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
-        securityConfigFactory = filter -> SecurityConfiguration.builder().build();
-        clientFactory = target -> vertx.createHttpClient();
-        guardFactory = shape -> new StoredOnlyGuard();
+        securityConfigFactory = _ -> SecurityConfiguration.builder().build();
+        clientFactory = _ -> vertx.createHttpClient();
+        guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(Path.of(asset.directory().orElse("/tmp")),
                 asset.access());
     }
@@ -154,15 +154,18 @@ class RouteRuntimeAssemblerTest {
     @Test
     @DisplayName("Should fail boot for session auth and unsupported protocols")
     void shouldFailBootForSessionAndUnsupportedProtocols() {
-        var session = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "session auth must fail boot");
-        var grpc = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "gRPC must fail boot");
-        var websocket = assertThrows(GatewayException.class, () -> assembler.assemble(
-                new RouteTable(List.of(route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example")))),
-                securityConfigFactory, clientFactory, guardFactory, assetSourceFactory), "WebSocket must fail boot");
+        RouteTable sessionTable = new RouteTable(List.of(route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example"))));
+        var session = assertThrows(GatewayException.class,
+                () -> assembler.assemble(sessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "session auth must fail boot");
+        RouteTable grpcTable = new RouteTable(List.of(route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example"))));
+        var grpc = assertThrows(GatewayException.class,
+                () -> assembler.assemble(grpcTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "gRPC must fail boot");
+        RouteTable webSocketTable = new RouteTable(List.of(route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example"))));
+        var websocket = assertThrows(GatewayException.class,
+                () -> assembler.assemble(webSocketTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "WebSocket must fail boot");
 
         assertEquals(EventType.CONFIG_INVALID, session.getEventType(), "session rejection is a config failure");
         assertEquals(EventType.CONFIG_INVALID, grpc.getEventType(), "gRPC rejection is a config failure");

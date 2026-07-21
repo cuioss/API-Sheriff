@@ -97,7 +97,8 @@ class ConfigLoaderTest {
     void reportsMissingEnvSecretWithPointer() throws Exception {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("client_secret")
@@ -109,7 +110,8 @@ class ConfigLoaderTest {
     void aggregatesSchemaErrorsWithPathAnnotation() throws Exception {
         copyFixtureAs("/config/invalid/unknown-key.yaml", "gateway.yaml");
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertFalse(exception.errors().isEmpty());
         assertTrue(exception.errors().stream().allMatch(error -> "gateway.yaml".equals(error.file())));
@@ -119,7 +121,8 @@ class ConfigLoaderTest {
 
     @Test
     void reportsMissingGatewayFile() {
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -245,7 +248,8 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         // Assert — the schema refuses it at boot rather than silently ignoring the widening
         assertTrue(exception.errors().stream()
@@ -316,7 +320,8 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         // Assert — refused at boot rather than silently ignored, which would leave the issuer on
         // default trust while the operator believes a profile is in force
@@ -334,7 +339,8 @@ class ConfigLoaderTest {
                   trust_scheme_host: true
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -401,7 +407,8 @@ class ConfigLoaderTest {
                     bogus_key: true
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file()) && error.pointer().contains("anchors")),
@@ -493,7 +500,8 @@ class ConfigLoaderTest {
                   redirect_uri: "https://gw.example.com/callback"
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("client_secret")
@@ -512,8 +520,8 @@ class ConfigLoaderTest {
                   redirect_uri: "https://gw.example.com/callback"
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class,
-                () -> loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load());
+        ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("client_secret")),
@@ -530,7 +538,8 @@ class ConfigLoaderTest {
                   base_url: ORDERS
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.file().contains("orders.yml")
@@ -550,8 +559,8 @@ class ConfigLoaderTest {
                   bogus_unknown_key: "trigger-an-error"
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class,
-                () -> loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t-topsecret-value")).load());
+        ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t-topsecret-value"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream()
                         .noneMatch(error -> error.message().contains("s3cr3t-topsecret-value")),
@@ -572,7 +581,8 @@ class ConfigLoaderTest {
         }
         writeConfig("gateway.yaml", yaml.toString());
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
                 "a YAML document exceeding the alias-expansion limit must fail the boot");
 
         assertTrue(exception.errors().stream()
@@ -600,7 +610,8 @@ class ConfigLoaderTest {
         }
         writeConfig("gateway.yaml", yaml.toString());
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load(),
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
                 "a nested/exponential alias bomb must fail the boot");
 
         assertTrue(exception.errors().stream()
@@ -620,7 +631,8 @@ class ConfigLoaderTest {
                 reuse: [*b, *b, *b]
                 """);
 
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader(Map.of()).load());
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
 
         assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
                 () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
