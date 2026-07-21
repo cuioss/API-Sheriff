@@ -26,6 +26,12 @@ layer.
   *dual role*: the operator-facing YAML reference and a design document (see the
   link:../README.adoc[design documentation index]). Operators read it as the configuration
   contract; it stays under `doc/` and is not relocated here.
+
+| link:protocol-routes.adoc[Protocol Routes -- WebSocket and gRPC]
+| A task-oriented guide for configuring `protocol: websocket` and `protocol: grpc` routes --
+  setting `allowed_origins`, tuning `websocket.idle_timeout_seconds`, and authoring a gRPC route.
+  Links to the Configuration Reference for the field contract and to the Architecture document
+  for the gRPC error mapping.
 |===
 
 == Scope of This Layer

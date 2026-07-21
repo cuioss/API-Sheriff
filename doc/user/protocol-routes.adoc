@@ -1,0 +1,109 @@
+= Protocol Routes -- WebSocket and gRPC
+:toc:
+:toclevels: 2
+:sectnums:
+
+A task-oriented guide for operators configuring `protocol: websocket` and `protocol: grpc`
+routes in `gateway.yaml`. It shows *how* to author these routes and tune their per-route knobs;
+the authoritative field reference is the
+link:../configuration.adoc[Configuration Reference], and the design rationale lives in the
+link:../architecture.adoc[Architecture] document and the
+link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] /
+link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] decision records. This
+guide never restates that rationale -- it points to it.
+
+Every route declares the protocol it serves via the `protocol` key -- `http` (the default),
+`graphql`, `grpc`, or `websocket`. The value selects handshake and streaming behaviour only; the
+security filter, authentication, and forward policy apply uniformly across protocols. See
+link:../configuration.adoc#_protocols[Configuration -- Protocols] for the key itself and
+link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] for what each
+protocol does and does not inspect.
+
+== Configuring a WebSocket route
+
+A `protocol: websocket` route proxies an HTTP upgrade handshake, then relays frames opaquely in
+both directions between the client and the upstream. Author it in an `endpoints/*.yaml` file:
+
+[source,yaml]
+----
+- id: live-updates
+  protocol: websocket
+  match: { path_prefix: /api/stream, host: api.example.com }
+  auth: { require: bearer }
+  allowed_origins:
+    - https://app.example.com
+  websocket:
+    idle_timeout_seconds: 300
+  upstream: { path: /stream }
+----
+
+=== Setting `allowed_origins` (cross-site WebSocket hijacking guard)
+
+On a WebSocket route whose *effective* auth is `require: bearer`, `allowed_origins` is a
+*mandatory, non-empty* list of the browser origins permitted to open a socket. The gateway
+checks the upgrade request's `Origin` header against this list *before dialling the upstream*; a
+foreign or absent `Origin` is rejected `403` and the upstream is never contacted.
+
+Author each permitted origin *in full* -- `scheme://host[:port]`:
+
+* The *host* is matched case-insensitively; the *scheme and port* are matched exactly.
+* There are *no wildcards*, no suffix forms, and no regular expressions.
+* An *absent or empty* `allowed_origins` on a bearer WebSocket route *fails the boot*
+  (deny-by-default). Declaring `allowed_origins` on a non-WebSocket route, or on a WebSocket
+  route whose effective auth is not `require: bearer`, is also a boot-time configuration error.
+
+For the full field contract see
+link:../configuration.adoc#_allowed_origins[Configuration -- `allowed_origins`].
+
+=== Tuning `websocket.idle_timeout_seconds`
+
+The optional `websocket` block tunes an *established* relay. Its only key,
+`idle_timeout_seconds`, bounds how long a relay may sit with *no frame in either direction*
+before the gateway closes it (WebSocket close code `1001`, "Going Away"). When omitted it
+defaults to `300` seconds; when declared it must be a *positive integer* and is valid *only* on a
+`protocol: websocket` route.
+
+Raise it for long-lived push channels that legitimately idle between messages; lower it to
+reclaim connection slots more aggressively. For the full field contract see
+link:../configuration.adoc#_websocket[Configuration -- `websocket`].
+
+== Configuring a gRPC route
+
+A `protocol: grpc` route proxies gRPC calls -- each an HTTP/2 `POST` to a service/method path.
+The gateway forces the *upstream* connection to HTTP/2 (gRPC requires HTTP/2 end-to-end), streams
+the request and response bodies as opaque length-prefixed frames (it never inspects the protobuf
+payload), and relays the upstream response *trailers* (`grpc-status`, `grpc-message`) back to the
+client untouched. Author it in an `endpoints/*.yaml` file:
+
+[source,yaml]
+----
+- id: orders-grpc
+  protocol: grpc
+  match: { path_prefix: /orders.OrderService, host: api.example.com }
+  auth: { require: bearer }
+  upstream: { host: orders-svc, port: 50051, path: "" }
+----
+
+A gRPC route carries no extra per-route fields beyond the standard `match`, `auth`, and
+`upstream` keys -- the forced-HTTP/2 upstream dial and the trailer relay are automatic. Point
+`upstream` at the gRPC service's `host:port`; the gateway holds a forced-h2 client for that
+target distinct from any HTTP/1.1 route to the same `host:port`.
+
+=== gRPC rejections are trailers-only
+
+Because a gRPC client cannot consume an `application/problem+json` body, a *gateway-generated*
+rejection on a `protocol: grpc` route is emitted as a *trailers-only* gRPC response -- an HTTP
+`200` whose `content-type` is `application/grpc` and whose `grpc-status` (and `grpc-message`)
+name the failure, with no message body. The gateway maps the same rejection it would render as an
+HTTP status on an HTTP route onto the canonical gRPC status; for example, a bearer gRPC route
+called without a token is rejected `UNAUTHENTICATED` (16). Operators do not configure this
+mapping -- it is fixed. The full mapping table is in
+link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)].
+
+== See also
+
+* link:../configuration.adoc[Configuration Reference] -- the authoritative `gateway.yaml` key reference.
+* link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] -- what each protocol inspects.
+* link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections] -- the trailers-only status mapping.
+* link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] -- WebSocket Origin fail-closed allowlist.
+* link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] -- gRPC trailers-only rejection mapping.
