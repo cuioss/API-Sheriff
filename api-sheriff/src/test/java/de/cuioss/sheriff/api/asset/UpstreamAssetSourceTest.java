@@ -233,7 +233,7 @@ class UpstreamAssetSourceTest {
     }
 
     @Test
-    @DisplayName("Should not touch the upstream for a URI it could not build")
+    @DisplayName("Should append the confined remainder to the resolved base path and fetch it")
     void shouldBuildResolvableUri() {
         // A normal remainder resolves cleanly against the fixed-topology target.
         UpstreamFetcher fetcher = target -> {

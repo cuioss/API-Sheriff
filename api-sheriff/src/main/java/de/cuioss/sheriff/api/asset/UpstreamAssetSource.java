@@ -280,6 +280,13 @@ public final class UpstreamAssetSource implements AssetSource {
 
         @Override
         public void onNext(List<ByteBuffer> items) {
+            // Late chunks may still be delivered after the cap-crossed branch below cancels the
+            // subscription and completes the result — cancellation is not instantaneous. Fast-return
+            // once the result is settled so the over-cap buffer is bounded at the first cap crossing
+            // rather than growing by whatever the publisher delivers during cancel propagation.
+            if (result.isDone()) {
+                return;
+            }
             for (ByteBuffer item : items) {
                 byte[] chunk = new byte[item.remaining()];
                 item.get(chunk);

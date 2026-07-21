@@ -102,6 +102,9 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
     }
 
     private static String problemType(String contentType) {
+        if (contentType == null) {
+            return "";
+        }
         int semicolon = contentType.indexOf(';');
         return (semicolon < 0 ? contentType : contentType.substring(0, semicolon)).trim();
     }
