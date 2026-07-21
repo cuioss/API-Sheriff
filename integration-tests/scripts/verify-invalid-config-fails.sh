@@ -130,4 +130,47 @@ chmod 755 "${ANCHOR_INVALID_DIR}"
 chmod 644 "${ANCHOR_INVALID_DIR}/gateway.yaml"
 assert_fails_to_boot "${ANCHOR_INVALID_DIR}" "an anchor-violation configuration" "pairwise disjoint"
 
+# Case 3: a fail-closed WebSocket violation (ADR-0015) — a bearer 'protocol: websocket'
+# route that declares no (empty/absent) allowed_origins allowlist. The running WebSocket
+# integration stack cannot host this route (it aborts boot fail-fast), so the fail-closed
+# contract WebSocketProxyIT documents is proven here end-to-end: the bound config trips the
+# ConfigValidator WS allowlist rule and the container exits non-zero. A complete, otherwise
+# valid config is assembled (gateway.yaml + topology.properties + endpoints/websocket.yaml) so
+# the ONLY violation is the missing allowlist on the bearer WS route.
+WS_FAILCLOSED_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${WS_FAILCLOSED_DIR}")
+mkdir -p "${WS_FAILCLOSED_DIR}/endpoints"
+cat > "${WS_FAILCLOSED_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "ws-fail-closed"
+anchors:
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+YAML
+cat > "${WS_FAILCLOSED_DIR}/topology.properties" <<'PROPS'
+WS_UPSTREAM=http://go-httpbin:8080/websocket/echo
+PROPS
+cat > "${WS_FAILCLOSED_DIR}/endpoints/websocket.yaml" <<'YAML'
+endpoint:
+  id: websocket
+  base_url: WS_UPSTREAM
+  anchor: ws
+  routes:
+    - id: ws-bearer-open
+      protocol: websocket
+      auth:
+        require: bearer
+      match:
+        path_prefix: /ws/bearer
+YAML
+chmod 755 "${WS_FAILCLOSED_DIR}" "${WS_FAILCLOSED_DIR}/endpoints"
+chmod 644 "${WS_FAILCLOSED_DIR}/gateway.yaml" "${WS_FAILCLOSED_DIR}/topology.properties" \
+    "${WS_FAILCLOSED_DIR}/endpoints/websocket.yaml"
+# Marker: the tail of the ConfigValidator fail-closed message. The route id is a config KEY
+# (safe to assert on), never a redacted scalar value.
+assert_fails_to_boot "${WS_FAILCLOSED_DIR}" "a fail-closed WebSocket configuration" "fail-closed"
+
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."

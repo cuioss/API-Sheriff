@@ -203,6 +203,22 @@
                   "requests_per_second": { "type": "integer" },
                   "burst": { "type": "integer" }
                 }
+              },
+              "websocket": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "The per-route WebSocket block, valid only on a protocol: websocket route (ADR-0015). allowed_origins is a fail-closed, deny-by-default allowlist of exact-match Origin strings (scheme + host + port, no wildcards); an absent or empty allowlist on a bearer WebSocket route rejects the upgrade at boot. idle_timeout_seconds bounds an established relay and defaults to 300 when absent. The bearer-route allowlist mandatoriness, wildcard rejection, and positive-timeout rules are enforced in code, not schema.",
+                "properties": {
+                  "allowed_origins": {
+                    "type": "array",
+                    "description": "Exact-match, case-insensitive-host Origin allowlist (scheme + host + port). No wildcards.",
+                    "items": { "type": "string" }
+                  },
+                  "idle_timeout_seconds": {
+                    "type": "integer",
+                    "description": "Per-route idle timeout in seconds; a positive integer. Defaults to 300 when omitted."
+                  }
+                }
               }
             }
           }
