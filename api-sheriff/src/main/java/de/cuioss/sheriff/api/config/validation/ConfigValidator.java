@@ -43,11 +43,13 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.api.config.model.OidcConfig;
+import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 import de.cuioss.sheriff.api.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
 
@@ -124,7 +126,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors));
+            (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
+            (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors));
 
     private final List<ValidationRule> rules;
 
@@ -746,6 +749,47 @@ public final class ConfigValidator {
                 errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
                         "passthrough_sni alias '%s' must resolve to an origin without a base path, but resolved to '%s'"
                                 .formatted(alias, basePath)));
+            }
+        }
+    }
+
+    /**
+     * Rule: the fail-closed WebSocket allowlist contract (ADR-0015). A
+     * {@code protocol: websocket} route whose effective auth resolves to {@code bearer}
+     * must declare a non-empty {@code allowed_origins} allowlist — an absent or empty
+     * allowlist rejects the upgrade at boot, with no "any origin" default. No
+     * {@code allowed_origins} entry may contain a wildcard: origins are exact-match
+     * (scheme + host + port). A declared {@code idle_timeout_seconds} must be a positive
+     * integer. Every violation collects into the shared list; the rule never fails fast.
+     */
+    private static void validateWebSocketConfig(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                if (route.protocol().orElse(Protocol.HTTP) != Protocol.WEBSOCKET) {
+                    continue;
+                }
+                Optional<WebSocketConfig> websocket = route.websocket();
+                List<String> origins = websocket.map(WebSocketConfig::allowedOrigins).orElseGet(List::of);
+                if (REQUIRE_BEARER.equals(effectiveRequire(gateway, endpoint, route)) && origins.isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "websocket route '%s' with effective auth 'bearer' must declare a non-empty allowed_origins allowlist (fail-closed)"
+                                    .formatted(route.id())));
+                }
+                for (String origin : origins) {
+                    if (origin.contains(WILDCARD_ORIGIN)) {
+                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                "websocket route '%s' allowed_origins entry '%s' must be an exact origin; wildcards are not permitted"
+                                        .formatted(route.id(), origin)));
+                    }
+                }
+                websocket.flatMap(WebSocketConfig::idleTimeoutSeconds).ifPresent(timeout -> {
+                    if (timeout <= 0) {
+                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
+                                        .formatted(route.id(), timeout)));
+                    }
+                });
             }
         }
     }

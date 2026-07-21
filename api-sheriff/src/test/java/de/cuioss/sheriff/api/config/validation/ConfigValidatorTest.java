@@ -40,6 +40,7 @@ import de.cuioss.sheriff.api.config.model.HttpMethod;
 import de.cuioss.sheriff.api.config.model.IssuerConfig;
 import de.cuioss.sheriff.api.config.model.MatchConfig;
 import de.cuioss.sheriff.api.config.model.OidcConfig;
+import de.cuioss.sheriff.api.config.model.Protocol;
 import de.cuioss.sheriff.api.config.model.ResolvedTopology;
 import de.cuioss.sheriff.api.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.api.config.model.RouteConfig;
@@ -47,6 +48,7 @@ import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -1107,6 +1109,118 @@ class ConfigValidatorTest {
                     () -> assertHasError(errors, "/version", "unsupported config version"),
                     () -> assertHasError(errors, "/endpoint/base_url", "unresolved topology alias: MISSING"),
                     () -> assertHasError(errors, "/endpoint/routes", "outside the effective allowed_methods"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Fail-closed WebSocket allowlist (ADR-0015)")
+    class WebSocketAllowlist {
+
+        private static GatewayConfig gatewayWithIssuer() {
+            return validGateway()
+                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .build();
+        }
+
+        private static EndpointConfig webSocketEndpoint(String alias, RouteConfig route) {
+            return EndpointConfig.builder()
+                    .id("ws-ep").enabled(true).baseUrl(alias)
+                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .routes(List.of(route))
+                    .build();
+        }
+
+        private static RouteConfig webSocketRoute(String id, Optional<WebSocketConfig> websocket,
+                Optional<AuthConfig> auth) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .protocol(Optional.of(Protocol.WEBSOCKET))
+                    .match(match("/" + id, HttpMethod.GET))
+                    .auth(auth)
+                    .websocket(websocket)
+                    .build();
+        }
+
+        private static Optional<AuthConfig> bearer() {
+            return Optional.of(new AuthConfig("bearer", List.of()));
+        }
+
+        @Test
+        @DisplayName("Should reject a bearer WebSocket route with no websocket block (fail-closed)")
+        void shouldRejectBearerWebSocketRouteWithAbsentAllowedOrigins() {
+            GatewayConfig gateway = gatewayWithIssuer();
+            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", Optional.empty(), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "must declare a non-empty allowed_origins allowlist");
+        }
+
+        @Test
+        @DisplayName("Should reject a bearer WebSocket route with an empty allowed_origins allowlist")
+        void shouldRejectBearerWebSocketRouteWithEmptyAllowedOrigins() {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of(), Optional.empty());
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "fail-closed");
+        }
+
+        @ParameterizedTest(name = "wildcard entry \"{0}\" is rejected")
+        @ValueSource(strings = {"*", "https://*.example.com"})
+        @DisplayName("Should reject wildcard entries in allowed_origins")
+        void shouldRejectWildcardAllowedOrigin(String wildcard) {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of(wildcard), Optional.empty());
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "wildcards are not permitted");
+        }
+
+        @ParameterizedTest(name = "idle_timeout_seconds = {0} is rejected")
+        @ValueSource(ints = {0, -1, -300})
+        @DisplayName("Should reject a non-positive idle_timeout_seconds")
+        void shouldRejectNonPositiveIdleTimeout(int timeout) {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(timeout));
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertHasError(errors, "/endpoint/routes", "idle_timeout_seconds must be a positive integer");
+        }
+
+        @Test
+        @DisplayName("Should accept a bearer WebSocket route with exact origins and a positive idle timeout")
+        void shouldAcceptBearerWebSocketRouteWithExactOrigins() {
+            GatewayConfig gateway = gatewayWithIssuer();
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(60));
+            EndpointConfig endpoint = webSocketEndpoint("WS",
+                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should not require allowed_origins for a non-bearer WebSocket route")
+        void shouldNotRequireAllowedOriginsForNonBearerWebSocketRoute() {
+            GatewayConfig gateway = validGateway().build();
+            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", Optional.empty(), Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
+
+            assertTrue(errors.isEmpty(),
+                    () -> "a non-bearer WebSocket route may omit allowed_origins; got: " + errors);
         }
     }
 }

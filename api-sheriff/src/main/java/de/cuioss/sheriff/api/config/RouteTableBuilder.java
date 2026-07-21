@@ -19,9 +19,12 @@ import java.io.Serial;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.api.config.model.AccessLevel;
@@ -43,6 +46,7 @@ import de.cuioss.sheriff.api.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.api.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -77,6 +81,9 @@ public final class RouteTableBuilder {
     /** The {@link AuthConfig#require()} value meaning no authentication is required; also the
      * display fallback for an absent anchor name / security-filter profile in {@link #logPosture}. */
     private static final String NONE = "none";
+
+    /** The default {@code websocket.idle_timeout_seconds} applied when a WebSocket route omits it. */
+    private static final int DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS = 300;
 
     /**
      * Builds the route table from the enabled endpoints and the resolved topology.
@@ -160,9 +167,15 @@ public final class RouteTableBuilder {
                 .flatMap(UpstreamConfig.NotModified::enabled)
                 .orElse(defaults.notModifiedEnabled());
         ForwardConfig effectiveForward = route.forward().orElseGet(() -> ForwardConfig.builder().build());
+        Protocol protocol = route.protocol().orElse(Protocol.HTTP);
+        Set<String> allowedOrigins = effectiveAllowedOrigins(route);
+        Optional<Integer> idleTimeout = protocol == Protocol.WEBSOCKET
+                ? Optional.of(route.websocket().flatMap(WebSocketConfig::idleTimeoutSeconds)
+                        .orElse(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS))
+                : Optional.empty();
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())
-                .protocol(route.protocol().orElse(Protocol.HTTP))
+                .protocol(protocol)
                 .anchor(anchor.map(AnchorConfig::name))
                 .match(route.match())
                 .effectiveAuth(auth)
@@ -171,7 +184,9 @@ public final class RouteTableBuilder {
                 .effectiveSecurityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
-                .effectiveForward(effectiveForward);
+                .effectiveForward(effectiveForward)
+                .effectiveAllowedOrigins(allowedOrigins)
+                .effectiveWebSocketIdleTimeoutSeconds(idleTimeout);
         // A route resolves to exactly one terminal action: an asset action (when the route
         // declares an asset block) is materialized here; otherwise the route proxies to its
         // endpoint upstream. ADR-0014: upstream XOR asset.
@@ -278,6 +293,20 @@ public final class RouteTableBuilder {
             return List.copyOf(gateway.allowedMethods());
         }
         return STANDARD_ALLOWED_METHODS;
+    }
+
+    /**
+     * The materialized WebSocket {@code allowed_origins} allowlist, lower-cased once at
+     * assembly for case-insensitive host matching (scheme and port are already
+     * case-insensitive), preserving declaration order. Empty for a route that declares
+     * no {@code websocket} block.
+     */
+    private static Set<String> effectiveAllowedOrigins(RouteConfig route) {
+        Set<String> origins = new LinkedHashSet<>();
+        for (String origin : route.websocket().map(WebSocketConfig::allowedOrigins).orElseGet(List::of)) {
+            origins.add(origin.toLowerCase(Locale.ROOT));
+        }
+        return origins;
     }
 
     /**

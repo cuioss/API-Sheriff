@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
@@ -175,7 +176,12 @@ class ConfigModelContractTest {
                         Map.of("X-Gateway", "api-sheriff"))))
                 .upstream(Optional.of(upstreamConfig()))
                 .rateLimit(Optional.of(new RateLimitConfig(Optional.of(100), Optional.of(200))))
+                .websocket(Optional.of(webSocketConfig()))
                 .build();
+    }
+
+    private static WebSocketConfig webSocketConfig() {
+        return new WebSocketConfig(List.of("https://app.example.com"), Optional.of(300));
     }
 
     private static ResolvedRoute resolvedRoute() {
@@ -337,6 +343,10 @@ class ConfigModelContractTest {
                             new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "sheriff")),
                             new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "sheriff")),
                             new ForwardConfig(List.of(), List.of(), Map.of())),
+                    voCase("WebSocketConfig",
+                            new WebSocketConfig(List.of("https://app.example.com"), Optional.of(300)),
+                            new WebSocketConfig(List.of("https://app.example.com"), Optional.of(300)),
+                            new WebSocketConfig(List.of("https://other.example.com"), Optional.of(60))),
                     voCase("UpstreamConfig", upstreamConfig(), upstreamConfig(), UpstreamConfig.builder().build()),
                     voCase("UpstreamConfig.Retry",
                             new UpstreamConfig.Retry(Optional.of(true), Optional.of(3), Optional.of(true)),
@@ -443,10 +453,11 @@ class ConfigModelContractTest {
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
-            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null);
+            RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null, null);
             assertTrue(cfg.anchor().isEmpty());
             assertTrue(cfg.auth().isEmpty());
             assertTrue(cfg.securityFilter().isEmpty());
+            assertTrue(cfg.websocket().isEmpty());
         }
 
         @Test
@@ -461,7 +472,7 @@ class ConfigModelContractTest {
         @Test
         void resolvedRouteNormalizesAbsentOptionals() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, Optional.of(resolvedUpstream()), Optional.empty(), null);
+                    true, Optional.of(resolvedUpstream()), Optional.empty(), null, null, null);
             assertTrue(cfg.anchor().isEmpty());
             assertTrue(cfg.effectiveSecurityFilter().isEmpty());
             assertTrue(cfg.effectiveSecurityHeaders().isEmpty());
@@ -471,6 +482,10 @@ class ConfigModelContractTest {
                     "an absent forward block normalizes to a deny-by-default empty allowlist");
             assertTrue(cfg.effectiveForward().queryAllow().isEmpty());
             assertTrue(cfg.effectiveForward().setHeaders().isEmpty());
+            assertTrue(cfg.effectiveAllowedOrigins().isEmpty(),
+                    "an absent WebSocket origin allowlist normalizes to an empty set");
+            assertTrue(cfg.effectiveWebSocketIdleTimeoutSeconds().isEmpty(),
+                    "an absent WebSocket idle timeout normalizes to Optional.empty()");
         }
 
         @Test
@@ -486,6 +501,14 @@ class ConfigModelContractTest {
                     .allowedPaths().isEmpty());
             assertTrue(new OidcConfig.Csrf(null).trustedOrigins().isEmpty());
             assertTrue(new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null).allowedMethods().isEmpty());
+            assertTrue(new WebSocketConfig(null, null).allowedOrigins().isEmpty());
+        }
+
+        @Test
+        void webSocketConfigNormalizesAbsentComponents() {
+            WebSocketConfig cfg = new WebSocketConfig(null, null);
+            assertTrue(cfg.allowedOrigins().isEmpty());
+            assertTrue(cfg.idleTimeoutSeconds().isEmpty());
         }
     }
 
@@ -529,6 +552,16 @@ class ConfigModelContractTest {
             source.put("X-Extra", "leak");
             assertEquals(Map.of("X-Gateway", "sheriff"), cfg.setHeaders());
             assertThrows(UnsupportedOperationException.class, () -> cfg.setHeaders().put("X-New", "v"));
+        }
+
+        @Test
+        void webSocketAllowedOriginsIsDecoupledAndUnmodifiable() {
+            List<String> source = new ArrayList<>(List.of("https://app.example.com"));
+            WebSocketConfig cfg = WebSocketConfig.builder().allowedOrigins(source).build();
+            source.add("https://leak.example.com");
+            assertEquals(List.of("https://app.example.com"), cfg.allowedOrigins(),
+                    "mutating the source list after construction must not affect the record");
+            assertThrows(UnsupportedOperationException.class, () -> cfg.allowedOrigins().add("https://new.example.com"));
         }
     }
 
@@ -612,31 +645,31 @@ class ConfigModelContractTest {
             MatchConfig match = matchConfig();
             assertThrows(NullPointerException.class, () -> new RouteConfig(null, Optional.empty(), Optional.empty(),
                     match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty()));
+                    Optional.empty(), Optional.empty()));
             assertThrows(NullPointerException.class, () -> new RouteConfig("id", Optional.empty(), Optional.empty(),
                     null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty()));
+                    Optional.empty(), Optional.empty()));
         }
 
         @Test
         void resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction() {
             assertThrows(NullPointerException.class, () -> new ResolvedRoute(null, Protocol.HTTP, Optional.empty(),
                     matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
-                    Optional.of(resolvedUpstream()), Optional.empty(), null));
+                    Optional.of(resolvedUpstream()), Optional.empty(), null, null, null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(), null,
                     auth(), List.of(), Optional.empty(), Optional.empty(), true, true, Optional.of(resolvedUpstream()),
-                    Optional.empty(), null));
+                    Optional.empty(), null, null, null));
             assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
                     matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true,
-                    Optional.of(resolvedUpstream()), Optional.empty(), null));
+                    Optional.of(resolvedUpstream()), Optional.empty(), null, null, null));
             assertThrows(IllegalArgumentException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
                             matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, Optional.empty(),
-                            Optional.empty(), null),
+                            Optional.empty(), null, null, null),
                     "a route with neither an upstream nor an asset terminal action is rejected (XOR)");
             assertThrows(IllegalArgumentException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
                             matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
                             Optional.of(resolvedUpstream()), Optional.of(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC)),
-                            null),
+                            null, null, null),
                     "a route with both an upstream and an asset terminal action is rejected (XOR)");
         }
     }
@@ -675,6 +708,37 @@ class ConfigModelContractTest {
         void routeConfigExposesAnchorOverride() {
             RouteConfig cfg = RouteConfig.builder().id("r").anchor(Optional.of("bff")).match(matchConfig()).build();
             assertEquals(Optional.of("bff"), cfg.anchor());
+        }
+
+        @Test
+        void routeConfigExposesWebSocketBlock() {
+            RouteConfig cfg = RouteConfig.builder().id("ws").protocol(Optional.of(Protocol.WEBSOCKET))
+                    .match(matchConfig()).websocket(Optional.of(webSocketConfig())).build();
+            assertEquals(Optional.of(webSocketConfig()), cfg.websocket());
+            assertEquals(List.of("https://app.example.com"),
+                    cfg.websocket().orElseThrow().allowedOrigins());
+            assertEquals(Optional.of(300), cfg.websocket().orElseThrow().idleTimeoutSeconds());
+        }
+
+        @Test
+        void routeConfigWebSocketDefaultsToEmpty() {
+            RouteConfig cfg = RouteConfig.builder().id("http").match(matchConfig()).build();
+            assertTrue(cfg.websocket().isEmpty(), "a non-WebSocket route carries no websocket block");
+        }
+
+        @Test
+        void resolvedRouteCarriesMaterializedWebSocketSettings() {
+            ResolvedRoute cfg = ResolvedRoute.builder()
+                    .id("ws")
+                    .protocol(Protocol.WEBSOCKET)
+                    .match(matchConfig())
+                    .effectiveAuth(auth())
+                    .upstream(Optional.of(resolvedUpstream()))
+                    .effectiveAllowedOrigins(Set.of("https://app.example.com"))
+                    .effectiveWebSocketIdleTimeoutSeconds(Optional.of(300))
+                    .build();
+            assertEquals(Set.of("https://app.example.com"), cfg.effectiveAllowedOrigins());
+            assertEquals(Optional.of(300), cfg.effectiveWebSocketIdleTimeoutSeconds());
         }
 
         @Test

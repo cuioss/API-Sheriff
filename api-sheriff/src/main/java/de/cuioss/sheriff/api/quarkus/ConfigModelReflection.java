@@ -39,6 +39,7 @@ import de.cuioss.sheriff.api.config.model.TlsConfig;
 import de.cuioss.sheriff.api.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamConfig;
 import de.cuioss.sheriff.api.config.model.UpstreamDefaultsConfig;
+import de.cuioss.sheriff.api.config.model.WebSocketConfig;
 
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
@@ -91,6 +92,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         AssetConfig.class,
         AssetConfig.Source.class,
         RateLimitConfig.class,
+        WebSocketConfig.class,
         HttpMethod.class,
         Protocol.class,
         AnchorType.class,

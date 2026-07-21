@@ -18,6 +18,7 @@ package de.cuioss.sheriff.api.config.model;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 import lombok.Builder;
 
@@ -64,6 +65,13 @@ import lombok.Builder;
  * @param effectiveForward       the materialized, deny-by-default {@code forward}
  *                               allowlist consumed by stage 5; an empty
  *                               {@link ForwardConfig} when the route declares none
+ * @param effectiveAllowedOrigins the materialized, lower-cased exact-match
+ *                               {@code Origin} allowlist for a WebSocket route,
+ *                               empty for a non-WebSocket route (meaningful only when
+ *                               {@code protocol} is {@link Protocol#WEBSOCKET})
+ * @param effectiveWebSocketIdleTimeoutSeconds the materialized idle timeout for a
+ *                               WebSocket route with the {@code 300}-second default
+ *                               applied, empty for a non-WebSocket route
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -72,15 +80,16 @@ public record ResolvedRoute(String id, Protocol protocol, Optional<String> ancho
 AuthConfig effectiveAuth, List<HttpMethod> effectiveAllowedMethods,
 Optional<SecurityFilterConfig> effectiveSecurityFilter, Optional<SecurityHeadersConfig> effectiveSecurityHeaders,
 boolean retryEnabled, boolean notModifiedEnabled, Optional<ResolvedUpstream> upstream, Optional<ResolvedAsset> asset,
-ForwardConfig effectiveForward) {
+ForwardConfig effectiveForward, Set<String> effectiveAllowedOrigins,
+Optional<Integer> effectiveWebSocketIdleTimeoutSeconds) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying
-     * {@code effectiveAllowedMethods}, normalizing absent optionals, defaulting an
-     * absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
-     * {@code effectiveForward} to a deny-by-default empty {@link ForwardConfig}, and
-     * enforcing the terminal-action invariant: exactly one of {@code upstream}
-     * (proxy) or {@code asset} resolves.
+     * {@code effectiveAllowedMethods} and {@code effectiveAllowedOrigins}, normalizing
+     * absent optionals, defaulting an absent {@code protocol} to {@link Protocol#HTTP},
+     * defaulting an absent {@code effectiveForward} to a deny-by-default empty
+     * {@link ForwardConfig}, and enforcing the terminal-action invariant: exactly one
+     * of {@code upstream} (proxy) or {@code asset} resolves.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");
@@ -98,6 +107,9 @@ ForwardConfig effectiveForward) {
                     "route '" + id + "' must resolve exactly one terminal action (upstream XOR asset)");
         }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
+        effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
+        effectiveWebSocketIdleTimeoutSeconds = Objects.requireNonNullElse(effectiveWebSocketIdleTimeoutSeconds,
+                Optional.empty());
     }
 
     /**
