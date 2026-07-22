@@ -43,18 +43,18 @@ import org.junit.jupiter.api.Test;
  */
 class FrameworkAgnosticArchTest {
 
-    private static final String BASE_PACKAGE = "de.cuioss.sheriff.api";
+    private static final String BASE_PACKAGE = "de.cuioss.sheriff.gateway";
 
     /**
      * The agnostic core packages the ADR-0005 gate protects. {@code routing} is intentionally
      * absent — see the class Javadoc.
      */
     private static final String[] AGNOSTIC_PACKAGES = {
-            "de.cuioss.sheriff.api.config.model..",
-            "de.cuioss.sheriff.api.config.validation..",
-            "de.cuioss.sheriff.api.events..",
-            "de.cuioss.sheriff.api.forward..",
-            "de.cuioss.sheriff.api.pipeline.."
+            "de.cuioss.sheriff.gateway.config.model..",
+            "de.cuioss.sheriff.gateway.config.validation..",
+            "de.cuioss.sheriff.gateway.events..",
+            "de.cuioss.sheriff.gateway.forward..",
+            "de.cuioss.sheriff.gateway.pipeline.."
     };
 
     /** Framework packages that an agnostic-core class must never depend on. */
@@ -88,7 +88,7 @@ class FrameworkAgnosticArchTest {
     @DisplayName("ADR-0005 gate detects a deliberate framework dependency (negative control)")
     void gateFailsOnFrameworkDependency() {
         ArchRule ruleAgainstFrameworkCoupledPackage = noClasses()
-                .that().resideInAPackage("de.cuioss.sheriff.api.quarkus..")
+                .that().resideInAPackage("de.cuioss.sheriff.gateway.quarkus..")
                 .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
                 .allowEmptyShould(true);
 

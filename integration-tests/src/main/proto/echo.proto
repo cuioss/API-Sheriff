@@ -4,10 +4,13 @@ syntax = "proto3";
 // dials the echo upstream on the compose network so the ITs can assert unary echo,
 // server-streaming echo, and grpc-status/trailer relay from a deliberately failing
 // method. Kept intentionally tiny — this is test scaffolding, not a product surface.
+// The wire `package` deliberately stays on de.cuioss.sheriff.api.* — it is the
+// wire-visible service-path root, and moving it would break the gRPC contract.
+// Only the generated-code package below follows the de.cuioss.sheriff.gateway move.
 package de.cuioss.sheriff.api.integration.grpc;
 
 option java_multiple_files = true;
-option java_package = "de.cuioss.sheriff.api.integration.grpc";
+option java_package = "de.cuioss.sheriff.gateway.integration.grpc";
 option java_outer_classname = "EchoProto";
 
 // Echo upstream exercised end-to-end through the gateway by GrpcProxyIT.

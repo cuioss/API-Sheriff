@@ -5,10 +5,13 @@ syntax = "proto3";
 // path. Source of truth: integration-tests/src/main/proto/echo.proto — the gateway relays this
 // service opaquely, so the two copies only need to agree on the package/service/method names and
 // the request/response shapes. Keep them in sync when the echo contract changes.
+// The wire `package` deliberately stays on de.cuioss.sheriff.api.* — it is the
+// wire-visible service-path root, and moving it would break the gRPC contract.
+// Only the generated-code package below follows the de.cuioss.sheriff.gateway move.
 package de.cuioss.sheriff.api.integration.grpc;
 
 option java_multiple_files = true;
-option java_package = "de.cuioss.sheriff.api.integration.grpc";
+option java_package = "de.cuioss.sheriff.gateway.integration.grpc";
 option java_outer_classname = "EchoProto";
 
 // Echo upstream relayed end-to-end through the gateway by the grpc matrix aspect. The grpc_unary.js
