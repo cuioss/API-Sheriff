@@ -250,7 +250,7 @@ catalogue ID and a testable assertion.
 
 === D4 -- Event system, metrics, logging (built here, low base package)
 
-* `de.cuioss.sheriff.api.events`: `EventCategory` (failure categories per architecture doc),
+* `de.cuioss.sheriff.gateway.events`: `EventCategory` (failure categories per architecture doc),
   `EventType` (each failure type carries its category and HTTP status; success events carry
   `null` category), `GatewayEventCounter` (`ConcurrentHashMap<EventType, AtomicLong>`,
   lock-free, micrometer-free), typed `GatewayException` carrying its `EventType`.

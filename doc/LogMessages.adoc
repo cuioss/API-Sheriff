@@ -65,7 +65,7 @@ diagnostics use the logger directly and are not catalogued.
 == Benchmark Harness Messages (`K6Benchmark`)
 
 These records are emitted by the k6 benchmark post-processor in the `benchmarks` module
-(`de.cuioss.sheriff.api.k6.benchmark.K6BenchmarkLogMessages`), not by the gateway runtime.
+(`de.cuioss.sheriff.gateway.k6.benchmark.K6BenchmarkLogMessages`), not by the gateway runtime.
 They follow the format `K6Benchmark-[identifier]: [message]` and the same identifier ranges.
 
 Toolchain-neutral messages (Prometheus collection, report availability) reuse the upstream

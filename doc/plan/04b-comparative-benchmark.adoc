@@ -183,7 +183,7 @@ project that adopts k6 would get it for free.
 *That upstreaming is a cross-repo follow-up and is deliberately NOT implemented here.* This
 plan touches no upstream artifact. Two consequences follow and are accepted:
 
-. The converter lives in `de.cuioss.sheriff.api.k6.benchmark` for now.
+. The converter lives in `de.cuioss.sheriff.gateway.k6.benchmark` for now.
 . `K6ResultPostProcessor` keeps calling the wrk-branded upstream API
   `PrometheusMetricsManager.collectMetricsForWrkBenchmark(...)`, because that is the only
   entry point `benchmarking-common` exposes for the Prometheus collection the old processor

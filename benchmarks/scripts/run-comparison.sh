@@ -165,5 +165,5 @@ if [[ "${DASHBOARD}" == "true" ]]; then
 fi
 echo "Render the side-by-side table with ComparisonSummaryWriter:"
 echo "  ./mvnw -pl benchmarks exec:java \\"
-echo "    -Dexec.mainClass=de.cuioss.sheriff.api.k6.benchmark.ComparisonSummaryWriter \\"
+echo "    -Dexec.mainClass=de.cuioss.sheriff.gateway.k6.benchmark.ComparisonSummaryWriter \\"
 echo "    -Dexec.args=\"${OUTPUT_DIR} api-sheriff apisix\""

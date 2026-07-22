@@ -13,7 +13,7 @@ image:https://github.com/cuioss/API-Sheriff/actions/workflows/integration-tests.
 
 image:https://img.shields.io/github/last-commit/cuioss/API-Sheriff/main[Last Build,link=https://github.com/cuioss/API-Sheriff/commits/main]
 image:http://img.shields.io/:license-apache-blue.svg[License,link=http://www.apache.org/licenses/LICENSE-2.0.html]
-image:https://img.shields.io/maven-central/v/de.cuioss.sheriff.api/api-sheriff-parent.svg?label=Maven%20Central["Maven Central", link="https://central.sonatype.com/artifact/de.cuioss.sheriff.api/api-sheriff-parent"]
+image:https://img.shields.io/maven-central/v/de.cuioss.sheriff.gateway/api-sheriff-parent.svg?label=Maven%20Central["Maven Central", link="https://central.sonatype.com/artifact/de.cuioss.sheriff.gateway/api-sheriff-parent"]
 
 image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sheriff&metric=alert_status[Quality Gate Status,link=https://sonarcloud.io/summary/new_code?id=cuioss_API-Sheriff]
 image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sheriff&metric=ncloc[Lines of Code,link=https://sonarcloud.io/summary/new_code?id=cuioss_API-Sheriff]
@@ -39,10 +39,26 @@ toc::[]
 [source,xml]
 ----
 <dependency>
-    <groupId>de.cuioss.sheriff.api</groupId>
+    <groupId>de.cuioss.sheriff.gateway</groupId>
     <artifactId>api-sheriff</artifactId>
 </dependency>
 ----
+
+[NOTE]
+====
+*Coordinate history.*
+On 2026-07-12 an automated trigger cut an unintended Maven Central release of
+`de.cuioss.sheriff.api:*:1.0.0` while the project was still in pre-1.0 development.
+Maven Central releases are immutable, so that `1.0.0` could not be withdrawn.
+
+The `de.cuioss.sheriff.api` coordinates are therefore *abandoned*. The project moved to
+`de.cuioss.sheriff.gateway` and restarted its version line at `0.1.0-SNAPSHOT`, which
+truthfully reflects its pre-1.0 maturity. Artifact IDs did not change.
+
+Anything still resolving `de.cuioss.sheriff.api` is redirected by relocation-only stubs
+published at `1.0.1`, which carry no code and point at the current coordinates.
+See link:doc/development/release-process.adoc[Release Process] for the full account.
+====
 
 == Modules
 
