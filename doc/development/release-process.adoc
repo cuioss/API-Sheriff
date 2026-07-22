@@ -1,0 +1,80 @@
+= Release Process -- dispatch-only
+:toc:
+:toclevels: 2
+:sectnums:
+
+How a release of API Sheriff is cut. Releases are *never* triggered by merging a pull request:
+the Release workflow runs only when a maintainer deliberately dispatches it. This page states the
+process and records *why* the automatic trigger was removed.
+
+== Cutting a release
+
+A release is a two-part act -- declare the version, then deliberately publish it:
+
+. *Declare the version.* Edit link:../../.github/project.yml[`.github/project.yml`], setting
+  `current-version` to the version being released and `next-version` to the following development
+  version. Open a pull request with that change and merge it in the normal way.
+. *Publish deliberately.* Once the version change is on `main`, dispatch the *Release* workflow by
+  hand (Actions -> Release -> Run workflow). This is the only way a release is cut.
+
+Merging the `project.yml` change publishes nothing on its own. The two steps are separate on
+purpose: the merge records *what* the next version is, and the dispatch is the explicit decision to
+*publish* it.
+
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] delegates to the
+cuioss-organization reusable Maven release workflow, pinned to a specific commit SHA. Neither the
+pin nor the `secrets:` block is part of the release decision -- they are build wiring.
+
+== Why the pull_request trigger was removed
+
+The workflow previously also carried a `pull_request` trigger scoped to `types: [closed]` and
+`paths: ['.github/project.yml']`, with the release job guarded by
+`github.event.pull_request.merged == true`. The intent was convenience: merging a version bump
+would publish it.
+
+On *2026-07-12* that trigger fired for real. A merged pull request that touched
+`.github/project.yml` cut a genuine Maven Central release, publishing
+`de.cuioss.sheriff.api:*:1.0.0` from a project that was still in pre-1.0 development. Maven Central
+releases are immutable -- a published GA coordinate cannot be withdrawn, only superseded.
+
+The consequences were structural and are still visible in the project today:
+
+* The `1.0.0` GA was *abandoned* -- it was never an intentional release and does not describe a
+  supported version of the gateway.
+* Relocation-only stubs were published at *`1.0.1`* under the abandoned coordinates, so any consumer
+  that resolved `de.cuioss.sheriff.api` is redirected to the current coordinates rather than left on
+  a dead line.
+* The project's Maven coordinates moved to *`de.cuioss.sheriff.gateway`*, leaving the accidentally
+  published groupId behind.
+* The version line was restarted at *`0.1.0-SNAPSHOT`*, restoring an honest pre-1.0 version that is
+  not shadowed by the accidental GA.
+
+Making the release deliberate is the fix that prevents a repeat: with `workflow_dispatch` as the
+sole trigger, no merge -- of any pull request, touching any path -- can publish anything.
+
+== Why the guard had to merge before anything else
+
+The removal of the `pull_request` trigger could not be bundled with the coordinate and version
+changes in a single pull request, and the reason is a property of GitHub Actions rather than a
+matter of taste.
+
+For a `pull_request` event -- including `types: [closed]` -- GitHub evaluates the workflow
+definition *from the base branch*, not from the pull request's head. A pull request that both
+removed the trigger *and* edited `.github/project.yml` would therefore still be evaluated against
+the *old* workflow definition living on `main` at merge time. The very merge that deleted the
+trigger would have fired it one last time, cutting another unintended release.
+
+The guard change was consequently landed *first*, as its own pull request. Only after it was merged
+to `main` -- so that `main` itself no longer carried the `pull_request` trigger -- was it safe for a
+later change to touch `.github/project.yml`.
+
+The general rule this leaves behind: *a change that removes or weakens an event-driven workflow
+trigger must merge on its own, before any change that would fire that trigger.* Verify the trigger
+is gone from `main` before relying on it being gone.
+
+== See also
+
+* link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] -- the dispatch-only
+  release workflow.
+* link:../../.github/project.yml[`.github/project.yml`] -- where the released version is declared.
+* link:README.adoc[Contributor Guide] -- the index for this documentation layer.

@@ -37,6 +37,12 @@ This tree is seeded here and grows as contributor-facing material lands.
   merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,
   and the fix-by-default / suppress-with-rationale escape hatch.
 
+| link:release-process.adoc[Release Process -- dispatch-only]
+| How a release is cut -- declare the version in `.github/project.yml`, then deliberately dispatch
+  the Release workflow -- and why the `pull_request` trigger was removed after the 2026-07-12
+  accidental release, including the base-branch workflow-evaluation rule that forced the guard to
+  merge first.
+
 | link:protocol-processors.adoc[Protocol Processors -- SPI and dispatch seam]
 | The `ProtocolProcessor` SPI, the boot-time registry that binds a protocol to its processor, and
   the edge protocol-dispatch seam that routes WebSocket and gRPC down their specialised paths --
