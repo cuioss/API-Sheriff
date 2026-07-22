@@ -44,11 +44,28 @@ Maven Central's `maven-metadata.xml` reports `latest=1.0.1` for each old GA:
 accident but are test-support modules that were never meant to be consumed, so they get no stub. As
 of the relocation they are also excluded from publication entirely.
 
-The aggregator `pom.xml` in this directory is a build container only and is never published. It
-suppresses publication with *two* switches — `maven.deploy.skip` and
-`central-publishing.skipPublishing` — because under `cui-java-parent` 1.5.4 the release profile
-publishes through `org.sonatype.central:central-publishing-maven-plugin`, not `maven-deploy-plugin`.
-Setting only `maven.deploy.skip` would leave the aggregator published.
+The aggregator `pom.xml` in this directory is a build container only and is not meant to be
+published. It suppresses publication with *two* switches — `maven.deploy.skip` and `skipPublishing`
+— because under `cui-java-parent` 1.5.4 the release profile publishes through
+`org.sonatype.central:central-publishing-maven-plugin`, not `maven-deploy-plugin`. Setting only
+`maven.deploy.skip` would leave the aggregator published.
+
+[WARNING]
+====
+The 1.0.1 publication run of 2026-07-22 **did** ship this aggregator to Maven Central as
+`de.cuioss.sheriff.api:api-sheriff-relocations:1.0.1`. The POM at the time used the prefixed
+property name `central-publishing.skipPublishing`, which no plugin parameter binds to, so the
+switch was inert. The property has since been corrected to the bare `skipPublishing`, but the
+published artifact is immutable and cannot be withdrawn. It is a harmless pom-only artifact under
+coordinates that are themselves abandoned.
+
+The pre-publication check that missed this was `help:evaluate -Dexpression=central-publishing.skipPublishing`,
+which returned `true` — but only because that property was declared in this very POM. It echoed a
+self-declared value and proved nothing about whether any plugin reads it. **Verify a suppression
+switch against the plugin's declared user property** (`help:describe -Dplugin=... -Dgoal=publish
+-Ddetail=true`) **or the effective plugin configuration — never with `help:evaluate` of a property
+you set yourself.**
+====
 
 === On the missing relocation version
 

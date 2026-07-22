@@ -33,9 +33,23 @@
              maven-deploy-plugin is not the publishing mechanism under cui-java-parent 1.5.4 —
              the release profile publishes through org.sonatype.central:central-publishing-maven-plugin,
              which honours its own skipPublishing parameter. Setting only maven.deploy.skip would
-             leave the aggregator published. -->
+             leave the aggregator published.
+
+             The property name must be exactly `skipPublishing`. Verified against the plugin, not
+             assumed: `help:describe -Dplugin=org.sonatype.central:central-publishing-maven-plugin:0.11.0
+             -Dgoal=publish -Ddetail=true` reports "skipPublishing (Default: false) User property:
+             skipPublishing". An earlier revision of this file used the prefixed name
+             `central-publishing.skipPublishing`, which no plugin parameter binds to; it was
+             therefore inert and the 1.0.1 publication run shipped this aggregator to Maven Central
+             as de.cuioss.sheriff.api:api-sheriff-relocations:1.0.1. That artifact is immutable and
+             cannot be withdrawn.
+
+             Do not verify a suppression switch with `help:evaluate -Dexpression=<name>` — that
+             merely echoes back a property declared in this same POM and proves nothing about
+             whether a plugin reads it. Verify against the plugin's declared user property
+             (help:describe) or the effective plugin configuration. -->
         <maven.deploy.skip>true</maven.deploy.skip>
-        <central-publishing.skipPublishing>true</central-publishing.skipPublishing>
+        <skipPublishing>true</skipPublishing>
     </properties>
 
     <modules>
