@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -149,7 +149,7 @@ class AssetResponseEnvelopeTest {
                     "app.js", AccessLevel.PUBLIC, sourceHeaders);
 
             assertAll(
-                    () -> assertFalse(governed.keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
+                    () -> assertFalse(governed.keySet().stream().anyMatch("Set-Cookie"::equalsIgnoreCase),
                             "an asset action must never establish a session"),
                     () -> assertEquals("kept", governed.get("X-Custom"),
                             "unrelated source headers pass through"));

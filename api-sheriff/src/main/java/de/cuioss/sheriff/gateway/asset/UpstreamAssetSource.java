@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,7 +76,6 @@ public final class UpstreamAssetSource implements AssetSource {
     /** The default upstream read timeout. */
     public static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(10);
 
-    private static final int OK = 200;
     private static final int NOT_FOUND = 404;
     private static final int METHOD_NOT_ALLOWED = 405;
     private static final int PAYLOAD_TOO_LARGE = 413;
@@ -160,7 +159,7 @@ public final class UpstreamAssetSource implements AssetSource {
         UpstreamFetcher.Fetched fetched;
         try {
             fetched = fetcher.fetch(target);
-        } catch (UpstreamFetcher.UpstreamTimeoutException timeout) {
+        } catch (UpstreamFetcher.UpstreamTimeoutException _) {
             return new Served(GATEWAY_TIMEOUT, Map.of(), EMPTY_BODY);
         } catch (IOException _) {
             return new Served(BAD_GATEWAY, Map.of(), EMPTY_BODY);

@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -530,7 +530,8 @@ class ConfigModelContractTest {
         @Test
         void listComponentIsUnmodifiable() {
             GatewayConfig cfg = GatewayConfig.builder().version(1).allowedMethods(List.of(HttpMethod.GET)).build();
-            assertThrows(UnsupportedOperationException.class, () -> cfg.allowedMethods().add(HttpMethod.PUT));
+            List<HttpMethod> methods = cfg.allowedMethods();
+            assertThrows(UnsupportedOperationException.class, () -> methods.add(HttpMethod.PUT));
         }
 
         @Test
@@ -541,7 +542,9 @@ class ConfigModelContractTest {
             source.put("bff", anchorConfig());
             assertEquals(Map.of("api", anchorConfig()), cfg.anchors(),
                     "mutating the source map after construction must not affect the record");
-            assertThrows(UnsupportedOperationException.class, () -> cfg.anchors().put("extra", anchorConfig()));
+            Map<String, AnchorConfig> anchors = cfg.anchors();
+            AnchorConfig extra = anchorConfig();
+            assertThrows(UnsupportedOperationException.class, () -> anchors.put("extra", extra));
         }
 
         @Test
@@ -551,7 +554,8 @@ class ConfigModelContractTest {
             ForwardConfig cfg = ForwardConfig.builder().setHeaders(source).build();
             source.put("X-Extra", "leak");
             assertEquals(Map.of("X-Gateway", "sheriff"), cfg.setHeaders());
-            assertThrows(UnsupportedOperationException.class, () -> cfg.setHeaders().put("X-New", "v"));
+            Map<String, String> headers = cfg.setHeaders();
+            assertThrows(UnsupportedOperationException.class, () -> headers.put("X-New", "v"));
         }
 
         @Test
@@ -574,12 +578,17 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigRequiresIdAndBaseUrl() {
-            assertThrows(NullPointerException.class,
-                    () -> new EndpointConfig(null, true, "url", Optional.empty(), Optional.of(auth()), List.of(),
-                            Optional.empty(), List.of()));
-            assertThrows(NullPointerException.class,
-                    () -> new EndpointConfig("id", true, null, Optional.empty(), Optional.of(auth()), List.of(),
-                            Optional.empty(), List.of()));
+            assertThrows(NullPointerException.class, () -> endpointConfigWith(null, "url"));
+            assertThrows(NullPointerException.class, () -> endpointConfigWith("id", null));
+        }
+
+        /**
+         * Builds an otherwise-valid {@link EndpointConfig} so a mandatory-field test can vary
+         * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
+         */
+        private EndpointConfig endpointConfigWith(String id, String baseUrl) {
+            return new EndpointConfig(id, true, baseUrl, Optional.empty(), Optional.of(auth()), List.of(),
+                    Optional.empty(), List.of());
         }
 
         @Test
@@ -644,34 +653,47 @@ class ConfigModelContractTest {
         @Test
         void routeConfigRequiresIdAndMatch() {
             MatchConfig match = matchConfig();
-            assertThrows(NullPointerException.class, () -> new RouteConfig(null, Optional.empty(), Optional.empty(),
-                    match, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty()));
-            assertThrows(NullPointerException.class, () -> new RouteConfig("id", Optional.empty(), Optional.empty(),
-                    null, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty()));
+            assertThrows(NullPointerException.class, () -> routeConfigWith(null, match));
+            assertThrows(NullPointerException.class, () -> routeConfigWith("id", null));
+        }
+
+        /**
+         * Builds an otherwise-valid {@link RouteConfig} so a mandatory-field test can vary
+         * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
+         */
+        private RouteConfig routeConfigWith(String id, MatchConfig match) {
+            return new RouteConfig(id, Optional.empty(), Optional.empty(), match, Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         }
 
         @Test
         void resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction() {
-            assertThrows(NullPointerException.class, () -> new ResolvedRoute(null, Protocol.HTTP, Optional.empty(),
-                    matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
-                    Optional.of(resolvedUpstream()), Optional.empty(), null, null, null));
-            assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(), null,
-                    auth(), List.of(), Optional.empty(), Optional.empty(), true, true, Optional.of(resolvedUpstream()),
-                    Optional.empty(), null, null, null));
-            assertThrows(NullPointerException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                    matchConfig(), null, List.of(), Optional.empty(), Optional.empty(), true, true,
-                    Optional.of(resolvedUpstream()), Optional.empty(), null, null, null));
-            assertThrows(IllegalArgumentException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                            matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true, Optional.empty(),
-                            Optional.empty(), null, null, null),
+            MatchConfig match = matchConfig();
+            AuthConfig auth = auth();
+            Optional<ResolvedUpstream> upstream = Optional.of(resolvedUpstream());
+            Optional<ResolvedUpstream> noUpstream = Optional.empty();
+            Optional<ResolvedAsset> noAsset = Optional.empty();
+            Optional<ResolvedAsset> asset = Optional.of(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC));
+
+            assertThrows(NullPointerException.class, () -> resolvedRouteWith(null, match, auth, upstream, noAsset));
+            assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", null, auth, upstream, noAsset));
+            assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", match, null, upstream, noAsset));
+            assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, noUpstream, noAsset),
                     "a route with neither an upstream nor an asset terminal action is rejected (XOR)");
-            assertThrows(IllegalArgumentException.class, () -> new ResolvedRoute("id", Protocol.HTTP, Optional.empty(),
-                            matchConfig(), auth(), List.of(), Optional.empty(), Optional.empty(), true, true,
-                            Optional.of(resolvedUpstream()), Optional.of(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC)),
-                            null, null, null),
+            assertThrows(IllegalArgumentException.class,
+                    () -> resolvedRouteWith("id", match, auth, upstream, asset),
                     "a route with both an upstream and an asset terminal action is rejected (XOR)");
+        }
+
+        /**
+         * Builds an otherwise-valid {@link ResolvedRoute} so a mandatory-field or XOR test can vary
+         * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
+         */
+        private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
+                Optional<ResolvedUpstream> upstream, Optional<ResolvedAsset> asset) {
+            return new ResolvedRoute(id, Protocol.HTTP, Optional.empty(), match, auth, List.of(), Optional.empty(),
+                    Optional.empty(), true, true, upstream, asset, null, null, null);
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,6 +64,12 @@ Optional<ResolvedUpstream> upstream) {
      * upstream, an {@link AssetConfig.Source#UPSTREAM} action carries a resolved
      * upstream and no directory.
      */
+    // NOSONAR java:S6916 - the rule suggests replacing each case's if with a `when` guard, but
+    // guards attach only to PATTERN labels; `case DIRECTORY when ...` on an enum CONSTANT label
+    // is a compile error (verified against javac --release 25). The suggested remedy is therefore
+    // inapplicable at this site, and the alternative (switching on a type pattern) would restructure
+    // the invariant check rather than address the finding.
+    @SuppressWarnings("java:S6916")
     public ResolvedAsset {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(access, "access");

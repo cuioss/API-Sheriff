@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -113,7 +113,7 @@ class UpstreamAssetSourceTest {
         AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertAll(
-                () -> assertFalse(served.headers().keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch("Set-Cookie"::equalsIgnoreCase),
                         "an upstream Set-Cookie must never reach the client"),
                 () -> assertEquals("yes", served.headers().get("X-Keep")));
     }
