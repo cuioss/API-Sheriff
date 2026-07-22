@@ -490,6 +490,18 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void keepsAnAllDigitSubstitutionTooLargeForALongAsText() throws Exception {
+        copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
+        String tooLargeForALong = "9".repeat(20);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", tooLargeForALong)).load();
+
+        assertEquals(Optional.of(tooLargeForALong), loaded.gateway().oidc().orElseThrow().clientSecret(),
+                "an all-digit substitution that overflows a long must fall back to a text node rather than "
+                        + "propagate the parse failure");
+    }
+
+    @Test
     void rejectsLiteralSecretValue() throws Exception {
         writeConfig("gateway.yaml", """
                 version: 1

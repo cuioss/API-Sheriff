@@ -542,6 +542,34 @@ class ConfigValidatorTest {
         }
 
         @Test
+        @DisplayName("Should reject a trusted_proxies CIDR whose prefix length is not numeric")
+        void shouldRejectNonNumericPrefixLength() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("10.0.0.0/abc")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: 10.0.0.0/abc");
+        }
+
+        @Test
+        @DisplayName("Should reject a trusted_proxies CIDR whose address part is not an IP literal")
+        void shouldRejectNonLiteralCidrAddress() {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(Optional.of(ForwardedConfig.builder()
+                            .trustedProxies(List.of("not-an-ip/24")).build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: not-an-ip/24");
+        }
+
+        @Test
         @DisplayName("Should boot-WARN a very broad but not total CIDR without failing the boot")
         void shouldWarnBroadButNotTotalCidr() {
             GatewayConfig gateway = validGateway()

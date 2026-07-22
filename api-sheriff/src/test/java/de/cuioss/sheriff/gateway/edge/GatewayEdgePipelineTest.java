@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
@@ -178,6 +179,19 @@ class GatewayEdgePipelineTest {
         // Assert
         assertEquals(405, response.status());
         assertNotNull(response.headers().get("Allow"), "a 405 names the permitted verbs in the Allow header");
+    }
+
+    @Test
+    @DisplayName("rejects a verb outside the gateway's method model 405 before any stage runs")
+    void rejectsUnmodelledVerb() throws Exception {
+        // Act — TRACE is a valid HTTP verb the gateway deliberately does not model, so it is refused at
+        // the pipeline entry, before route selection ever runs
+        Response response = send(io.vertx.core.http.HttpMethod.TRACE, "/echo/orders", Map.of(), null);
+
+        // Assert
+        assertEquals(405, response.status());
+        assertNull(response.headers().get("X-Upstream-Echo"),
+                "an unmodelled verb must never reach the upstream");
     }
 
     @Test
