@@ -1,0 +1,11 @@
+{
+  "kind": "orchestrator",
+  "title": "Lessons handling 26-07-22",
+  "phase": "orchestrating",
+  "workstreams": [],
+  "plans": [],
+  "resume_anchor": "Corpus finalized 2026-07-22: 17 lessons ORCHESTRATOR-OWNED at .plan/local/orchestrator/lessons-handling-26-07-22-01/lessons/ (operator-designated lessons home, inside this epic tree; tombstones + plugin-path symlink removed; self-contained for transport). Standing rules: (1) the plugin recreates .plan/local/lessons-learned/ at the next plan's phase-6 lessons-capture \u2014 SWEEP it into this dir each lessons run; (2) future dated lessons-handling epics use THIS dir as the corpus home. Epic ready to close.",
+  "metadata": {},
+  "created": "2026-07-22T13:28:09Z",
+  "updated": "2026-07-22T15:23:44Z"
+}
