@@ -157,6 +157,6 @@ indistinguishable, from the outside, from having no limit at all.
   YAML anchor/alias expansion this ADR governs.
 * `link:../configuration.adoc[configuration.adoc]` — Configuration Subsystem: the
   refuse-to-start boot contract this guard participates in.
-* `api-sheriff` config loader (`de.cuioss.sheriff.api.config.load.ConfigLoader`) — the
+* `api-sheriff` config loader (`de.cuioss.sheriff.gateway.config.load.ConfigLoader`) — the
   `withinExpansionLimits` compose-only pre-pass and the hardened bind factory realise this
   decision.

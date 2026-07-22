@@ -14,7 +14,7 @@ link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016].
 
 == The `ProtocolProcessor` SPI
 
-`de.cuioss.sheriff.api.routing.ProtocolProcessor` is the small seam that carries the *verb
+`de.cuioss.sheriff.gateway.routing.ProtocolProcessor` is the small seam that carries the *verb
 semantics* of a protocol -- which HTTP methods a route of that protocol may serve. It is
 deliberately narrow:
 
@@ -22,7 +22,7 @@ deliberately narrow:
 * `standardMethods()` -- the set of methods the protocol serves by default.
 * `supports(HttpMethod)` -- whether a given verb is in scope for the protocol.
 
-The three implementations live alongside it in `de.cuioss.sheriff.api.routing`:
+The three implementations live alongside it in `de.cuioss.sheriff.gateway.routing`:
 
 [cols="1,3"]
 |===
@@ -76,7 +76,7 @@ if (route.getProtocol() == Protocol.WEBSOCKET) {
 }
 ----
 
-Each arm lives in `de.cuioss.sheriff.api.edge`:
+Each arm lives in `de.cuioss.sheriff.gateway.edge`:
 
 === WebSocket -- handshake and opaque relay
 
@@ -120,7 +120,7 @@ upstream response with `ResponseStage.relay`. GraphQL uses this path unchanged.
 
 To add a future protocol:
 
-. *Implement the SPI.* Add a `ProtocolProcessor` in `de.cuioss.sheriff.api.routing` declaring the
+. *Implement the SPI.* Add a `ProtocolProcessor` in `de.cuioss.sheriff.gateway.routing` declaring the
   protocol's `id()` and its served verbs. Mirror `GrpcProtocolProcessor` /
   `WebSocketProtocolProcessor` for a single-verb protocol.
 . *Register it.* Add the `Protocol` -> processor mapping in `ProtocolProcessorRegistry`. Registry

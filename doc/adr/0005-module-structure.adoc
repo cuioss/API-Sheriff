@@ -46,7 +46,7 @@ Concretely:
   already separate upstream modules.
 * *Keep the seam clean by package layout.* Framework-agnostic code lives in packages that
   *must not* import Quarkus, CDI (`jakarta.enterprise.*`, `jakarta.inject.*`),
-  MicroProfile Config, Vert.x, or Micrometer -- e.g. `de.cuioss.sheriff.api.config.model`,
+  MicroProfile Config, Vert.x, or Micrometer -- e.g. `de.cuioss.sheriff.gateway.config.model`,
   `...config.validation`, `...events`, `...routing`, `...forward`, `...pipeline`. These types
   take their collaborators through *constructor parameters*, never field/CDI injection, and are
   assembled once at boot (see link:../plan/04-request-pipeline.adoc[Plan 04]'s `RouteRuntime`).

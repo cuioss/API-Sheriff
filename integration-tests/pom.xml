@@ -4,9 +4,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>de.cuioss.sheriff.api</groupId>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
         <artifactId>api-sheriff-parent</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>0.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -16,7 +16,17 @@
     <description>Integration test coordinator for API Sheriff — builds native containers and runs IT suites</description>
 
     <properties>
-        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api.integration.tests</maven.jar.plugin.automatic.module.name>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.gateway.integration.tests</maven.jar.plugin.automatic.module.name>
+
+        <!-- Never publish this module to Maven Central: it is an IT coordinator, not a
+             consumable artifact. The switch must be skipPublishing, NOT maven.deploy.skip:
+             cui-java-parent's release profiles publish through
+             org.sonatype.central:central-publishing-maven-plugin (extensions=true, an
+             injected 'publish' execution bound to the deploy phase), and the parent already
+             sets maven-deploy-plugin <skip>true</skip> for every module — so the
+             maven-deploy-plugin property cannot be what suppresses publication.
+             skipPublishing is the publishing plugin's own user property. -->
+        <skipPublishing>true</skipPublishing>
         <!-- Configure test execution - failsafe disabled by default -->
         <skipITs>true</skipITs>
 
@@ -41,7 +51,7 @@
              echo application must not drag in and boot the gateway. No integration-test
              source imports api-sheriff classes, so provided scope is sufficient. -->
         <dependency>
-            <groupId>de.cuioss.sheriff.api</groupId>
+            <groupId>de.cuioss.sheriff.gateway</groupId>
             <artifactId>api-sheriff</artifactId>
             <scope>provided</scope>
         </dependency>

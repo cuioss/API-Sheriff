@@ -6,7 +6,7 @@ FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:0278fd70d9627df83629557
 
 LABEL org.opencontainers.image.title="API Sheriff"
 LABEL org.opencontainers.image.description="Security-focused API Gateway — Quarkus native executable"
-LABEL org.opencontainers.image.version="1.0.0-SNAPSHOT"
+LABEL org.opencontainers.image.version="0.1.0-SNAPSHOT"
 LABEL org.opencontainers.image.vendor="CUIoss"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"

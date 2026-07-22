@@ -329,7 +329,7 @@ Render the side-by-side table:
 [source,bash]
 ----
 ./mvnw -pl benchmarks exec:java \
-  -Dexec.mainClass=de.cuioss.sheriff.api.k6.benchmark.ComparisonSummaryWriter \
+  -Dexec.mainClass=de.cuioss.sheriff.gateway.k6.benchmark.ComparisonSummaryWriter \
   -Dexec.args="target/comparison-results api-sheriff apisix"
 ----
 

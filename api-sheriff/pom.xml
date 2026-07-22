@@ -4,9 +4,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>de.cuioss.sheriff.api</groupId>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
         <artifactId>api-sheriff-parent</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>0.1.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -16,7 +16,7 @@
     <description>Unified Quarkus application module for API Sheriff gateway with security features</description>
 
     <properties>
-        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.api</maven.jar.plugin.automatic.module.name>
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.gateway</maven.jar.plugin.automatic.module.name>
     </properties>
 
     <dependencies>

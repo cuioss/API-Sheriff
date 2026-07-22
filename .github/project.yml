@@ -2,8 +2,8 @@ name: api-sheriff
 description: An API-Gateway focused on Security and a lightweight approach
 
 release:
-  current-version: 1.0.0
-  next-version: 1.1.0-SNAPSHOT
+  current-version: 0.1.0
+  next-version: 0.2.0-SNAPSHOT
   create-github-release: true
 
 maven-build:
