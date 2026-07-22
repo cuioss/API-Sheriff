@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -120,7 +120,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateTerminalAction(gateway, endpoints, topology, errors),
+            ConfigValidator::validateTerminalAction,
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
@@ -553,6 +553,11 @@ public final class ConfigValidator {
      * action requires a {@code directory} root; a {@code source: upstream} action requires an
      * {@code upstream} topology alias that resolves.
      */
+    // NOSONAR java:S6916 - the rule suggests replacing each case's if with a `when` guard, but
+    // guards attach only to PATTERN labels; `case DIRECTORY when ...` on an enum CONSTANT label
+    // is a compile error (verified against javac --release 25). Restructuring further would move
+    // alias-resolvability error reporting out of this method, which ADR-9 forbids.
+    @SuppressWarnings("java:S6916")
     private static void validateAssetSource(EndpointConfig endpoint, RouteConfig route, AssetConfig asset,
             ResolvedTopology topology, List<ConfigError> errors) {
         switch (asset.source()) {
@@ -675,13 +680,13 @@ public final class ConfigValidator {
         int prefixLength;
         try {
             prefixLength = Integer.parseInt(cidr.substring(slash + 1));
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException _) {
             return Optional.empty();
         }
         byte[] bytes;
         try {
             bytes = InetAddress.ofLiteral(cidr.substring(0, slash)).getAddress();
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException _) {
             return Optional.empty();
         }
         int bits = bytes.length * 8;

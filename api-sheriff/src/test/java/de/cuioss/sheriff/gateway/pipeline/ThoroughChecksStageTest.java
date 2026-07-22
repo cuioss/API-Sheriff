@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -135,8 +135,9 @@ class ThoroughChecksStageTest {
         PipelineRequest request = requestFor("/api/other", routeWithConfig(Optional.empty()));
 
         // Act
+        List<String> allowedPaths = List.of("/api/orders");
         GatewayException thrown = assertThrows(GatewayException.class,
-                () -> stage.process(request, List.of("/api/orders")));
+                () -> stage.process(request, allowedPaths));
 
         // Assert
         assertEquals(EventType.PATH_NOT_ALLOWED, thrown.getEventType());
@@ -159,8 +160,9 @@ class ThoroughChecksStageTest {
         PipelineRequest request = requestFor("/api/42", routeWithConfig(Optional.empty()));
 
         // Act
+        List<String> allowedPaths = List.of("/api/{id}/detail");
         GatewayException thrown = assertThrows(GatewayException.class,
-                () -> stage.process(request, List.of("/api/{id}/detail")));
+                () -> stage.process(request, allowedPaths));
 
         // Assert
         assertEquals(EventType.PATH_NOT_ALLOWED, thrown.getEventType());

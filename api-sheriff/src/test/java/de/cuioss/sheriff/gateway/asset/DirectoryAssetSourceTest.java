@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,14 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -124,6 +126,56 @@ class DirectoryAssetSourceTest {
                         "a symlink resolving outside the root must be denied even though it lexically "
                                 + "sits inside root"),
                 () -> assertEquals(0, served.body().length, "no byte of the symlink target is served"));
+    }
+
+    @Test
+    @DisplayName("Should deny an in-root entry whose real path cannot be resolved (fails closed)")
+    void shouldDenyUnresolvableRealPath() throws Exception {
+        Path procFd = Path.of("/proc/self/fd");
+        assumeTrue(Files.isDirectory(procFd), "requires the Linux /proc filesystem to stage the entry");
+        Path vanishing = Files.write(tempDir.resolve("vanishing.bin"), INDEX_BODY);
+        try (var _ = Files.newInputStream(vanishing)) {
+            // A held descriptor of a deleted file still stats as a regular file through its /proc magic
+            // link, but its real path no longer resolves — the deterministic stand-in for the TOCTOU
+            // removal the real-path check must survive.
+            Files.delete(vanishing);
+            Path magicLink = deletedDescriptorLink(procFd, vanishing);
+            assumeTrue(magicLink != null, "no /proc/self/fd entry resolved to the deleted file");
+            Path link = root.resolve("unresolvable.html");
+            try {
+                Files.createSymbolicLink(link, magicLink);
+            } catch (IOException | UnsupportedOperationException unsupported) {
+                assumeTrue(false, "symbolic links are not supported/permitted in this environment: "
+                        + unsupported.getMessage());
+            }
+            assumeTrue(Files.isRegularFile(link), "the staged entry must still stat as a regular file");
+            assertThrows(IOException.class, link::toRealPath,
+                    "the staged entry must fail real-path resolution for this test to exercise the "
+                            + "fail-closed branch");
+
+            AssetSource.Served served = publicSource().serve(HttpMethod.GET, "unresolvable.html");
+
+            assertAll(
+                    () -> assertEquals(NOT_FOUND, served.status(),
+                            "an entry whose real path cannot be resolved must be denied"),
+                    () -> assertEquals(0, served.body().length, "no byte is served for an unresolvable entry"));
+        }
+    }
+
+    /**
+     * Locates the {@code /proc/self/fd} magic link that still refers to the just-deleted
+     * {@code deleted} file (the kernel renders such a target as {@code <path> (deleted)}).
+     */
+    private static Path deletedDescriptorLink(Path procFd, Path deleted) throws IOException {
+        try (Stream<Path> entries = Files.list(procFd)) {
+            return entries.filter(entry -> {
+                try {
+                    return Files.readSymbolicLink(entry).toString().startsWith(deleted.toString());
+                } catch (IOException | UnsupportedOperationException _) {
+                    return false;
+                }
+            }).findFirst().orElse(null);
+        }
     }
 
     @Test

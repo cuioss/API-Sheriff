@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -682,7 +682,7 @@ public class GatewayEdgeRoute {
     private static Optional<HttpMethod> parseMethod(String name) {
         try {
             return Optional.of(HttpMethod.valueOf(name));
-        } catch (IllegalArgumentException unsupported) {
+        } catch (IllegalArgumentException _) {
             return Optional.empty();
         }
     }

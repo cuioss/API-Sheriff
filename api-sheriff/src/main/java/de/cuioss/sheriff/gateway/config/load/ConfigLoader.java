@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -374,7 +374,7 @@ public final class ConfigLoader {
                     return IntNode.valueOf((int) parsed);
                 }
                 return LongNode.valueOf(parsed);
-            } catch (NumberFormatException e) {
+            } catch (NumberFormatException _) {
                 return TextNode.valueOf(value);
             }
         }

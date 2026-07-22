@@ -111,7 +111,7 @@ See `doc/development/sonar-quality-gate.adoc` for the complete compliance policy
 
 ## Dependency Management
 
-- **Parent POM**: `de.cuioss:cui-java-parent:1.5.1`
+- **Parent POM**: `de.cuioss:cui-java-parent:1.5.4`
 - **CRITICAL**: Never add dependencies without explicit user approval
 
 ## Git Workflow

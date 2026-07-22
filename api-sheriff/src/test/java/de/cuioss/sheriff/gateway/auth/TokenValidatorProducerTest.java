@@ -1,5 +1,5 @@
 /*
- * Copyright © 2022 CUI-OpenSource-Software (info@cuioss.de)
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,8 @@ import de.cuioss.sheriff.token.validation.TokenValidator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("TokenValidatorProducer — builds the shared gateway validator from token_validation")
 class TokenValidatorProducerTest {
@@ -112,48 +114,20 @@ class TokenValidatorProducerTest {
         assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
     }
 
-    @Test
-    @DisplayName("fails config-invalid when an http jwks source declares no url")
-    void failsWhenHttpJwksHasNoUrl() {
+    /**
+     * Covers the three unusable jwks-source shapes that must all fail config-invalid:
+     * an {@code http} source without a url, a {@code file} source without a file path,
+     * and a source that is not supported at all.
+     */
+    @ParameterizedTest(name = "jwks source ''{0}''")
+    @ValueSource(strings = {"http", "file", "ldap"})
+    @DisplayName("fails config-invalid when a jwks source is incomplete or unsupported")
+    void failsForUnusableJwksSource(String source) {
         // Arrange
         TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                 .name("primary")
                 .issuer(ISSUER)
-                .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").build()))
-                .build());
-
-        // Act
-        GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
-
-        // Assert
-        assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
-    }
-
-    @Test
-    @DisplayName("fails config-invalid when a file jwks source declares no file path")
-    void failsWhenFileJwksHasNoFile() {
-        // Arrange
-        TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
-                .name("primary")
-                .issuer(ISSUER)
-                .jwks(Optional.of(IssuerConfig.Jwks.builder().source("file").build()))
-                .build());
-
-        // Act
-        GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
-
-        // Assert
-        assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
-    }
-
-    @Test
-    @DisplayName("fails config-invalid for an unsupported jwks source")
-    void failsForUnsupportedJwksSource() {
-        // Arrange
-        TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
-                .name("primary")
-                .issuer(ISSUER)
-                .jwks(Optional.of(IssuerConfig.Jwks.builder().source("ldap").build()))
+                .jwks(Optional.of(IssuerConfig.Jwks.builder().source(source).build()))
                 .build());
 
         // Act
@@ -371,8 +345,8 @@ class TokenValidatorProducerTest {
                     .build());
 
             // Act
-            GatewayException thrown = assertThrows(GatewayException.class,
-                    () -> producerFor(issuer, TestTlsConfigurationRegistry.empty()).gatewayTokenValidator());
+            TokenValidatorProducer producer = producerFor(issuer, TestTlsConfigurationRegistry.empty());
+            GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
 
             // Assert — the failure surfaces at validator assembly, which boot forces, so the
             // gateway refuses to start instead of silently validating against default trust
