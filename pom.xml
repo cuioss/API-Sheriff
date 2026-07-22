@@ -41,6 +41,15 @@
     </issueManagement>
 
     <properties>
+        <!-- Project-owned pin, not an override: the resolved parent chain
+             (de.cuioss:cui-java-parent:1.5.4 -> de.cuioss:cui-java-bom:1.5.4) declares no
+             Quarkus version at all, so this property is the single source of truth for the
+             Quarkus platform. It feeds the io.quarkus:quarkus-bom import below and the
+             Quarkus build tooling, which is why the value has to be maintained here.
+             Changing it is a platform migration, never a routine version bump: the
+             quarkus-bom import is deliberately declared first so it wins the smallrye-config
+             convergence (see the token-sheriff-bom comment below), and cui-java-bom aligns
+             its JUnit Jupiter version to whatever the Quarkus BOM ships. -->
         <version.quarkus>3.37.3</version.quarkus>
         <version.token-sheriff>0.9.2</version.token-sheriff>
         <version.json-schema-validator>1.5.9</version.json-schema-validator>
