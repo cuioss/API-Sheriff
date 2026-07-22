@@ -20,11 +20,3 @@ benchmarking/doc/templates/data/
 .plan/*
 !.plan/marshal.json
 !.plan/project-architecture/
-# TEMPORARY (2026-07-22): transport of the orchestrator store to another machine.
-# The three lines below re-include ONLY .plan/local/orchestrator/ through the
-# excluded parent (.plan/* excludes .plan/local, so a lone negation would be dead —
-# git never descends into an excluded directory). REMOVE this block after the
-# transfer lands on the target machine.
-!.plan/local/
-.plan/local/*
-!.plan/local/orchestrator/
