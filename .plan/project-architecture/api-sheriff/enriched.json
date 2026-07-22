@@ -1,7 +1,8 @@
 {
   "best_practices": [
     "Placeholder-substitution coercion in ConfigLoader.coerce() is schema-agnostic (accepted limitation, recurring review finding): a whole-value placeholder resolving to an all-digit or true/false string is coerced regardless of the target field's schema type. When touching the substitution path, prefer threading the expected schema type through substitute()/coerce() (destination-type-aware coercion) rather than adding value-shape heuristics.",
-    "Asset-serving hot path is deliberately virtual-thread-blocking (pipeline dispatched via virtualThreadExecutor; event-loop hop only for the write) and security guards re-resolve per request (root toRealPath TOCTOU check in DirectoryAssetSource) \u2014 decline review-bot suggestions to wrap in vertx.executeBlocking or to cache the resolved root, both recur and both are by-design."
+    "Asset-serving hot path is deliberately virtual-thread-blocking (pipeline dispatched via virtualThreadExecutor; event-loop hop only for the write) and security guards re-resolve per request (root toRealPath TOCTOU check in DirectoryAssetSource) \u2014 decline review-bot suggestions to wrap in vertx.executeBlocking or to cache the resolved root, both recur and both are by-design.",
+    "Verify review-bot claims that a Vert.x API does not exist against the green build before acting: gemini-code-assist repeatedly asserted compilation errors for real Vert.x methods (e.g. HttpServerResponse.ended()) on edge-relay code, and the project consistently accepts these as false positives when the whole-tree build and native ITs are green."
   ],
   "insights": [],
   "internal_dependencies": [],

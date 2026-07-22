@@ -1,7 +1,8 @@
 {
   "best_practices": [],
   "insights": [
-    "CI aggregation gates (build/conclusion, integration-tests/conclusion) fail only as derivatives of their upstream jobs, and a red build/sonar-build with successful scanner auth means a genuine server-side SonarCloud new-code quality-gate verdict (fetchable without credentials via the public sonarcloud.io API) \u2014 triage the upstream cause, never the aggregation gate."
+    "CI aggregation gates (build/conclusion, integration-tests/conclusion) fail only as derivatives of their upstream jobs, and a red build/sonar-build with successful scanner auth means a genuine server-side SonarCloud new-code quality-gate verdict (fetchable without credentials via the public sonarcloud.io API) \u2014 triage the upstream cause, never the aggregation gate.",
+    "CI rollup 'conclusion' gate jobs (build / conclusion, integration-tests / conclusion) fail solely as mirrors of their failing child job; the project treats them as carrying no independent root cause and dispositions them taken_into_account, triaging only the child job's failure."
   ],
   "internal_dependencies": [
     "api-sheriff",
