@@ -1,0 +1,87 @@
+= Maven Central relocation stubs
+:toc:
+:toclevels: 2
+:sectnums:
+
+Relocation-only POMs published under the abandoned `de.cuioss.sheriff.api` coordinates, so that
+anything still resolving them is redirected to `de.cuioss.sheriff.gateway`.
+
+== Why this exists
+
+On 2026-07-12 a merged pull request that touched `.github/project.yml` only to adjust the CI
+java-versions matrix accidentally fired the release workflow, which at the time triggered on any
+merged PR touching that file. It published the template-inherited `current-version` **1.0.0** of all
+four modules to Maven Central and then failed at the repository push, so no tag or version bump was
+ever created.
+
+Maven Central is immutable — 1.0.0 cannot be withdrawn. The coordinates were therefore abandoned:
+
+* the groupId moved from `de.cuioss.sheriff.api` to `de.cuioss.sheriff.gateway`
+* artifact IDs are unchanged
+* the version line restarted at `0.1.0-SNAPSHOT`
+
+These stubs are the redirect for the abandoned coordinates. The trigger that caused the incident was
+removed first, in a separate change; see
+link:../doc/development/release-process.adoc[the release process document].
+
+== What is published
+
+Two packaging-`pom` artifacts at version **1.0.1**, one version above the accidental release so that
+Maven Central's `maven-metadata.xml` reports `latest=1.0.1` for each old GA:
+
+[cols="2,3", options="header"]
+|===
+|Old coordinate |Relocates to
+
+|`de.cuioss.sheriff.api:api-sheriff-parent:1.0.1`
+|`de.cuioss.sheriff.gateway:api-sheriff-parent`
+
+|`de.cuioss.sheriff.api:api-sheriff:1.0.1`
+|`de.cuioss.sheriff.gateway:api-sheriff`
+|===
+
+`benchmarks` and `integration-tests` are deliberately **dead-ended**. They were published by the
+accident but are test-support modules that were never meant to be consumed, so they get no stub. As
+of the relocation they are also excluded from publication entirely.
+
+The aggregator `pom.xml` in this directory is a build container only and is never published. It
+suppresses publication with *two* switches — `maven.deploy.skip` and
+`central-publishing.skipPublishing` — because under `cui-java-parent` 1.5.4 the release profile
+publishes through `org.sonatype.central:central-publishing-maven-plugin`, not `maven-deploy-plugin`.
+Setting only `maven.deploy.skip` would leave the aggregator published.
+
+=== On the missing relocation version
+
+Neither `<relocation>` block names a `<version>`. There is no correct value to give: the
+`de.cuioss.sheriff.gateway` coordinates have no Maven Central release yet, and the project restarted
+at `0.1.0-SNAPSHOT`. A consumer following the redirect therefore gets the relocation warning and
+then a resolution failure, which is the accurate outcome — there is nothing to resolve to. The
+`<message>` carries the actual migration instruction.
+
+If a `0.1.0` release later lands on Central, a future stub could name it explicitly.
+
+== This branch is never merged
+
+This project lives only on the `release/relocation-stubs` branch and is deliberately outside the
+main reactor — the root `pom.xml` `<modules>` list is not extended. Merging it into `main` would put
+the abandoned coordinates back into the normal build.
+
+== Publishing
+
+Publication is one-shot, deliberate, and manual. It is never automated — an event-driven release
+trigger is what caused the incident in the first place.
+
+. Ensure this branch carries the stubs and is pushed.
+. Dispatch the *Release Relocation Stubs (one-shot)* workflow from the default branch
+  (`.github/workflows/release-relocation-stubs.yml`). It checks out `release/relocation-stubs`
+  explicitly and runs `mvnw -Prelease -f relocation-stubs/pom.xml deploy` with the organisation
+  Central credentials and GPG signing key.
+. Verify on Maven Central that each old GA reports `latest=1.0.1` and that the 1.0.1 POM carries the
+  `<relocation>` element:
++
+[source,bash]
+----
+curl -s https://repo1.maven.org/maven2/de/cuioss/sheriff/api/api-sheriff/maven-metadata.xml
+curl -s https://repo1.maven.org/maven2/de/cuioss/sheriff/api/api-sheriff/1.0.1/api-sheriff-1.0.1.pom
+----
+. Delete the one-shot workflow from `main` once publication is confirmed.

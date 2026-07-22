@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.cuioss</groupId>
+        <artifactId>cui-java-parent</artifactId>
+        <version>1.5.4</version>
+        <relativePath />
+    </parent>
+
+    <groupId>de.cuioss.sheriff.api</groupId>
+    <artifactId>api-sheriff</artifactId>
+    <version>1.0.1</version>
+    <packaging>pom</packaging>
+
+    <name>API Sheriff (relocated to de.cuioss.sheriff.gateway)</name>
+    <description>Relocation stub. The groupId de.cuioss.sheriff.api was abandoned after an
+        accidental release on 2026-07-12 and replaced by de.cuioss.sheriff.gateway. The artifactId
+        is unchanged. This POM carries no code and exists only so resolvers redirect and emit a
+        relocation warning.
+    </description>
+    <url>https://github.com/cuioss/api-sheriff/</url>
+
+    <scm>
+        <connection>scm:git:https://github.com/cuioss/api-sheriff.git</connection>
+        <developerConnection>scm:git:https://github.com/cuioss/api-sheriff.git</developerConnection>
+        <url>https://github.com/cuioss/api-sheriff/</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <distributionManagement>
+        <relocation>
+            <groupId>de.cuioss.sheriff.gateway</groupId>
+            <artifactId>api-sheriff</artifactId>
+            <!-- No <version> deliberately — see the sibling api-sheriff-parent stub. -->
+            <message>The groupId de.cuioss.sheriff.api is abandoned. Its only release, 1.0.0, was
+                published accidentally on 2026-07-12 from a project still in pre-1.0 development and
+                was never intended for use. The project now publishes under
+                de.cuioss.sheriff.gateway and has restarted its version line at 0.1.0-SNAPSHOT;
+                there is no 1.x release under the new coordinates. Update the groupId to
+                de.cuioss.sheriff.gateway and select a version once one is released. Java packages
+                moved from de.cuioss.sheriff.api.. to de.cuioss.sheriff.gateway.. as well; the gRPC
+                wire service paths are unchanged. See
+                https://github.com/cuioss/api-sheriff/blob/main/doc/development/release-process.adoc
+            </message>
+        </relocation>
+    </distributionManagement>
+</project>

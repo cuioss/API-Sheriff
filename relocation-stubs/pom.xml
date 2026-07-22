@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.cuioss</groupId>
+        <artifactId>cui-java-parent</artifactId>
+        <version>1.5.4</version>
+        <relativePath />
+    </parent>
+
+    <!-- Build/deploy aggregator for the de.cuioss.sheriff.api -> de.cuioss.sheriff.gateway
+         Maven Central relocation stubs. Deliberately NOT part of the main reactor: the root
+         pom.xml modules list is not extended, and this project lives only on the
+         release/relocation-stubs branch, which is never merged. The aggregator itself is
+         never published. -->
+    <groupId>de.cuioss.sheriff.api</groupId>
+    <artifactId>api-sheriff-relocations</artifactId>
+    <version>1.0.1</version>
+    <packaging>pom</packaging>
+
+    <name>API Sheriff relocation stubs (aggregator)</name>
+    <description>Aggregator that builds and deploys the relocation POMs published under the
+        abandoned de.cuioss.sheriff.api coordinates so existing consumer builds are redirected to
+        the renamed de.cuioss.sheriff.gateway artifacts. This aggregator is itself not published.
+    </description>
+    <url>https://github.com/cuioss/api-sheriff/</url>
+
+    <properties>
+        <!-- The aggregator carries no artifact of its own. Two switches are required, not one:
+             maven-deploy-plugin is not the publishing mechanism under cui-java-parent 1.5.4 —
+             the release profile publishes through org.sonatype.central:central-publishing-maven-plugin,
+             which honours its own skipPublishing parameter. Setting only maven.deploy.skip would
+             leave the aggregator published. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <central-publishing.skipPublishing>true</central-publishing.skipPublishing>
+    </properties>
+
+    <modules>
+        <module>api-sheriff-parent</module>
+        <module>api-sheriff</module>
+    </modules>
+</project>
