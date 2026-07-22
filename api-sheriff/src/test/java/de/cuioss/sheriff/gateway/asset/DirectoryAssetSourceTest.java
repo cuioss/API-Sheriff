@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -135,7 +134,7 @@ class DirectoryAssetSourceTest {
         Path procFd = Path.of("/proc/self/fd");
         assumeTrue(Files.isDirectory(procFd), "requires the Linux /proc filesystem to stage the entry");
         Path vanishing = Files.write(tempDir.resolve("vanishing.bin"), INDEX_BODY);
-        try (InputStream _ = Files.newInputStream(vanishing)) {
+        try (var _ = Files.newInputStream(vanishing)) {
             // A held descriptor of a deleted file still stats as a regular file through its /proc magic
             // link, but its real path no longer resolves — the deterministic stand-in for the TOCTOU
             // removal the real-path check must survive.

@@ -513,60 +513,24 @@ class ConfigValidatorTest {
             assertHasError(errors, "/forwarded/trusted_proxies", expectedDetail);
         }
 
-        @Test
+        /**
+         * Each entry fails CIDR parsing at a different point: no slash at all, a numeric prefix
+         * length outside the address width, a prefix length that is not a number, and an address
+         * part that is not an IP literal. All four must be reported identically.
+         */
+        @ParameterizedTest(name = "trusted_proxies entry \"{0}\" is rejected as malformed")
+        @ValueSource(strings = {"not-a-cidr", "10.0.0.0/33", "10.0.0.0/abc", "not-an-ip/24"})
         @DisplayName("Should reject a malformed trusted_proxies CIDR entry with file/pointer context")
-        void shouldRejectMalformedCidr() {
+        void shouldRejectMalformedCidr(String malformedCidr) {
             GatewayConfig gateway = validGateway()
                     .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("not-a-cidr")).build()))
+                            .trustedProxies(List.of(malformedCidr)).build()))
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: not-a-cidr");
-        }
-
-        @Test
-        @DisplayName("Should reject a trusted_proxies CIDR whose prefix length is out of range")
-        void shouldRejectOutOfRangePrefixLength() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.0.0.0/33")).build()))
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: 10.0.0.0/33");
-        }
-
-        @Test
-        @DisplayName("Should reject a trusted_proxies CIDR whose prefix length is not numeric")
-        void shouldRejectNonNumericPrefixLength() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.0.0.0/abc")).build()))
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: 10.0.0.0/abc");
-        }
-
-        @Test
-        @DisplayName("Should reject a trusted_proxies CIDR whose address part is not an IP literal")
-        void shouldRejectNonLiteralCidrAddress() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("not-an-ip/24")).build()))
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: not-an-ip/24");
+            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: " + malformedCidr);
         }
 
         @Test
