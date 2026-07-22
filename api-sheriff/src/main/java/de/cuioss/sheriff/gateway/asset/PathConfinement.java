@@ -99,7 +99,7 @@ public final class PathConfinement {
         try {
             String asAbsolute = "/" + stripLeadingSlashes(requestSubPath);
             canonical = pathValidator.validate(asAbsolute).orElse("/");
-        } catch (UrlSecurityException rejected) {
+        } catch (UrlSecurityException _) {
             return Optional.empty();
         }
         String relative = stripLeadingSlashes(canonical);

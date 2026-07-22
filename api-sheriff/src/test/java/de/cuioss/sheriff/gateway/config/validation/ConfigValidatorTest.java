@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -61,7 +62,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -485,58 +488,29 @@ class ConfigValidatorTest {
                     () -> "expected no violations for a millisecond-precision timeout, got: " + errors);
         }
 
-        @Test
-        @DisplayName("Should reject a single full-space IPv4 CIDR in forwarded.trusted_proxies")
-        void shouldRejectTrustAllCidr() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder().trustedProxies(List.of("0.0.0.0/0")).build()))
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv4 address space");
+        static Stream<Arguments> fullAddressSpaceTrustedProxies() {
+            return Stream.of(
+                    Arguments.of("a single full-space IPv4 CIDR", List.of("0.0.0.0/0"), "entire IPv4 address space"),
+                    Arguments.of("a single full-space IPv6 CIDR", List.of("::/0"), "entire IPv6 address space"),
+                    Arguments.of("a complementary /1 IPv4 pair", List.of("0.0.0.0/1", "128.0.0.0/1"),
+                            "entire IPv4 address space"),
+                    Arguments.of("a complementary /1 IPv6 pair", List.of("::/1", "8000::/1"),
+                            "entire IPv6 address space"));
         }
 
-        @Test
-        @DisplayName("Should reject a single full-space IPv6 CIDR in forwarded.trusted_proxies")
-        void shouldRejectTrustAllIpv6Cidr() {
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("fullAddressSpaceTrustedProxies")
+        @DisplayName("Should reject forwarded.trusted_proxies entries that cover the whole address space")
+        void shouldRejectFullAddressSpaceTrustedProxies(String label, List<String> trustedProxies,
+                String expectedDetail) {
             GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder().trustedProxies(List.of("::/0")).build()))
+                    .forwarded(Optional.of(ForwardedConfig.builder().trustedProxies(trustedProxies).build()))
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv6 address space");
-        }
-
-        @Test
-        @DisplayName("Should reject a complementary /1 IPv4 pair that together cover the whole address space")
-        void shouldRejectComplementaryIpv4HalfPair() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("0.0.0.0/1", "128.0.0.0/1")).build()))
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv4 address space");
-        }
-
-        @Test
-        @DisplayName("Should reject a complementary /1 IPv6 pair that together cover the whole address space")
-        void shouldRejectComplementaryIpv6HalfPair() {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("::/1", "8000::/1")).build()))
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "entire IPv6 address space");
+            assertHasError(errors, "/forwarded/trusted_proxies", expectedDetail);
         }
 
         @Test
@@ -1071,50 +1045,26 @@ class ConfigValidatorTest {
             assertHasError(errors, "/anchors/open", "is access: public and must not declare an auth block");
         }
 
-        @Test
-        @DisplayName("Rule authenticated→floor: Should reject an access: authenticated anchor declaring no auth floor at all")
-        void shouldRejectAuthenticatedAnchorWithNoAuthBlock() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null)));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertHasError(errors, "/anchors/secure", "declares no non-'none' auth floor");
+        static Stream<Arguments> authenticatedAnchorsWithoutBackedFloor() {
+            return Stream.of(
+                    Arguments.of("no auth floor at all", null, "declares no non-'none' auth floor"),
+                    Arguments.of("an explicit 'none' floor", "none", "declares no non-'none' auth floor"),
+                    Arguments.of("a bearer floor with no token_validation issuer", "bearer",
+                            "access: authenticated bearer floor requires token_validation with at least one issuer"),
+                    Arguments.of("a session floor with no oidc block", "session",
+                            "access: authenticated session floor requires an oidc block"));
         }
 
-        @Test
-        @DisplayName("Rule authenticated→floor: Should reject an access: authenticated anchor whose floor is 'none'")
-        void shouldRejectAuthenticatedAnchorWithNoneFloor() {
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("authenticatedAnchorsWithoutBackedFloor")
+        @DisplayName("Rules authenticated→floor and authenticated backing: Should reject an access: authenticated anchor without a backed auth floor")
+        void shouldRejectAuthenticatedAnchorWithoutBackedFloor(String label, String require, String expectedDetail) {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, "none")));
+                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, require)));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
-            assertHasError(errors, "/anchors/secure", "declares no non-'none' auth floor");
-        }
-
-        @Test
-        @DisplayName("Rule authenticated backing: Should reject an authenticated bearer floor with no token_validation issuer")
-        void shouldRejectAuthenticatedBearerFloorWithoutIssuer() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, "bearer")));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertHasError(errors, "/anchors/secure",
-                    "access: authenticated bearer floor requires token_validation with at least one issuer");
-        }
-
-        @Test
-        @DisplayName("Rule authenticated backing: Should reject an authenticated session floor with no oidc block")
-        void shouldRejectAuthenticatedSessionFloorWithoutOidc() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, "session")));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
-
-            assertHasError(errors, "/anchors/secure",
-                    "access: authenticated session floor requires an oidc block");
+            assertHasError(errors, "/anchors/secure", expectedDetail);
         }
 
         @Test

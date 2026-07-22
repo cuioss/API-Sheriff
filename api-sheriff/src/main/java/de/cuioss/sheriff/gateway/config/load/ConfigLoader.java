@@ -374,7 +374,7 @@ public final class ConfigLoader {
                     return IntNode.valueOf((int) parsed);
                 }
                 return LongNode.valueOf(parsed);
-            } catch (NumberFormatException e) {
+            } catch (NumberFormatException _) {
                 return TextNode.valueOf(value);
             }
         }

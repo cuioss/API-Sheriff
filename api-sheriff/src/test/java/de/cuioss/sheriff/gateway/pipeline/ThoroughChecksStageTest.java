@@ -135,8 +135,9 @@ class ThoroughChecksStageTest {
         PipelineRequest request = requestFor("/api/other", routeWithConfig(Optional.empty()));
 
         // Act
+        List<String> allowedPaths = List.of("/api/orders");
         GatewayException thrown = assertThrows(GatewayException.class,
-                () -> stage.process(request, List.of("/api/orders")));
+                () -> stage.process(request, allowedPaths));
 
         // Assert
         assertEquals(EventType.PATH_NOT_ALLOWED, thrown.getEventType());
@@ -159,8 +160,9 @@ class ThoroughChecksStageTest {
         PipelineRequest request = requestFor("/api/42", routeWithConfig(Optional.empty()));
 
         // Act
+        List<String> allowedPaths = List.of("/api/{id}/detail");
         GatewayException thrown = assertThrows(GatewayException.class,
-                () -> stage.process(request, List.of("/api/{id}/detail")));
+                () -> stage.process(request, allowedPaths));
 
         // Assert
         assertEquals(EventType.PATH_NOT_ALLOWED, thrown.getEventType());

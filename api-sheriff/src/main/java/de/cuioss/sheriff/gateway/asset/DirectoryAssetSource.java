@@ -150,7 +150,7 @@ public final class DirectoryAssetSource implements AssetSource {
     private boolean realPathWithinRoot(Path file) {
         try {
             return file.toRealPath().startsWith(root.toRealPath());
-        } catch (IOException unresolvable) {
+        } catch (IOException _) {
             return false;
         }
     }

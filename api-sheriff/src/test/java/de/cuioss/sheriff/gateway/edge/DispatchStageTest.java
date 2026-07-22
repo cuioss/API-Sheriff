@@ -197,8 +197,9 @@ class DispatchStageTest {
             };
 
             // Act — the stream is never subscribed (failure before send), so retry is allowed
+            var guard = retryGuard();
             GatewayException raised = assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.GET, bytesSent::get, () -> false,
+                    () -> stage.guardedDispatch(guard, gate, HttpMethod.GET, bytesSent::get, () -> false,
                             failing));
 
             // Assert — the safe idempotent+bodyless request was retried the full budget
@@ -221,8 +222,9 @@ class DispatchStageTest {
             };
 
             // Act
+            var guard = retryGuard();
             assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.POST, bytesSent::get, () -> false,
+                    () -> stage.guardedDispatch(guard, gate, HttpMethod.POST, bytesSent::get, () -> false,
                             failing));
 
             // Assert — a POST must never be re-sent, so the upstream is called exactly once
@@ -245,8 +247,9 @@ class DispatchStageTest {
             };
 
             // Act
+            var guard = retryGuard();
             assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.PUT, bytesSent::get, () -> false,
+                    () -> stage.guardedDispatch(guard, gate, HttpMethod.PUT, bytesSent::get, () -> false,
                             failing));
 
             // Assert — a streamed request cannot be replayed once a body byte has been sent
@@ -271,8 +274,9 @@ class DispatchStageTest {
             };
 
             // Act — idempotent GET, zero bytes sent, but the body stream is already subscribed
+            var guard = retryGuard();
             assertThrows(GatewayException.class,
-                    () -> stage.guardedDispatch(retryGuard(), gate, HttpMethod.GET, bytesSent::get, () -> true,
+                    () -> stage.guardedDispatch(guard, gate, HttpMethod.GET, bytesSent::get, () -> true,
                             failing));
 
             // Assert — reusing an already-subscribed one-shot body stream is refused, no re-send

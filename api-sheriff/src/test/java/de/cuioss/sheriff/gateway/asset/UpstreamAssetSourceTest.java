@@ -113,7 +113,7 @@ class UpstreamAssetSourceTest {
         AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
         assertAll(
-                () -> assertFalse(served.headers().keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch("Set-Cookie"::equalsIgnoreCase),
                         "an upstream Set-Cookie must never reach the client"),
                 () -> assertEquals("yes", served.headers().get("X-Keep")));
     }

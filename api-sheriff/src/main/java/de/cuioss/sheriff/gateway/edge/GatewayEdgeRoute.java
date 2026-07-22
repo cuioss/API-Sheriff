@@ -682,7 +682,7 @@ public class GatewayEdgeRoute {
     private static Optional<HttpMethod> parseMethod(String name) {
         try {
             return Optional.of(HttpMethod.valueOf(name));
-        } catch (IllegalArgumentException unsupported) {
+        } catch (IllegalArgumentException _) {
             return Optional.empty();
         }
     }

@@ -149,7 +149,7 @@ class AssetResponseEnvelopeTest {
                     "app.js", AccessLevel.PUBLIC, sourceHeaders);
 
             assertAll(
-                    () -> assertFalse(governed.keySet().stream().anyMatch(k -> "Set-Cookie".equalsIgnoreCase(k)),
+                    () -> assertFalse(governed.keySet().stream().anyMatch("Set-Cookie"::equalsIgnoreCase),
                             "an asset action must never establish a session"),
                     () -> assertEquals("kept", governed.get("X-Custom"),
                             "unrelated source headers pass through"));
