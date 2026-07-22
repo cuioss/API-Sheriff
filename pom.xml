@@ -145,6 +145,25 @@
                     </configuration>
                 </plugin>
                 <plugin>
+                    <!--
+                        cui-java-parent pins the javadoc plugin to <release>21</release>. This
+                        project compiles at 25 (ADR-0001), so any Java 22+ construct in main
+                        sources fails the javadoc tool with "unnamed variables are not supported
+                        in -source 21" while javac itself is perfectly happy — the two tools were
+                        being given different language levels.
+
+                        Pinning javadoc to the same release as the compiler is the fix. This is
+                        the same class of parent-assumes-Java-21 override as the pre-commit
+                        profile's UpgradeToJava21 -> UpgradeToJava25 replacement below; keep the
+                        two in sync with the compiler release.
+                    -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <configuration>
+                        <release>25</release>
+                    </configuration>
+                </plugin>
+                <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
@@ -337,6 +356,46 @@
             <id>pre-commit</id>
             <build>
                 <plugins>
+                    <plugin>
+                        <!--
+                            Second half of the Java-25 baseline fix (the first is the
+                            maven-javadoc-plugin pluginManagement entry above).
+
+                            The parent's pre-commit profile declares maven-javadoc-plugin in
+                            build/plugins with <release>21</release> set at EXECUTION level, which
+                            takes precedence over any plugin-level pluginManagement configuration.
+                            The pluginManagement override alone is therefore shadowed here and the
+                            javadoc tool still runs at -source 21, failing on Java 22+ constructs
+                            such as unnamed variables (`catch (IOException _)`).
+
+                            Overriding requires re-declaring both execution ids the parent binds
+                            and pinning each to release 25. Executions merge by id, so this only
+                            changes the language level and leaves every other inherited setting
+                            (sourcepath, doclint, failOnError, ...) intact.
+                        -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <!-- Plugin level: covers any javadoc goal invoked outside the two bound
+                             executions (e.g. a direct `mvn javadoc:javadoc` under this profile),
+                             which would otherwise still inherit the parent's release 21. -->
+                        <configuration>
+                            <release>25</release>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <configuration>
+                                    <release>25</release>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>check-javadocs-pre-commit</id>
+                                <configuration>
+                                    <release>25</release>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.openrewrite.maven</groupId>
                         <artifactId>rewrite-maven-plugin</artifactId>
