@@ -1,0 +1,159 @@
+{
+  "kind": "orchestrator",
+  "title": "API Sheriff Implementation Roadmap (Plans 02b-09)",
+  "phase": "orchestrating",
+  "workstreams": [
+    {
+      "id": "WS-01",
+      "slug": "correction-sweep",
+      "title": "Correction Sweep"
+    },
+    {
+      "id": "WS-02",
+      "slug": "data-plane",
+      "title": "Data Plane"
+    },
+    {
+      "id": "WS-03",
+      "slug": "bff",
+      "title": "BFF Track"
+    },
+    {
+      "id": "WS-04",
+      "slug": "release",
+      "title": "Release Readiness"
+    }
+  ],
+  "plans": [
+    {
+      "id": "PLAN-01",
+      "slug": "reconciliation",
+      "workstream": "WS-01",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-02b-reconciliation",
+      "pr": "#72",
+      "landing": "landings/PLAN-01.md"
+    },
+    {
+      "id": "PLAN-02",
+      "slug": "endpoint-anchors",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-03-endpoint-anchors",
+      "pr": "#74",
+      "landing": "landings/PLAN-02.md"
+    },
+    {
+      "id": "PLAN-03",
+      "slug": "request-pipeline",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-04-request-pipeline",
+      "pr": "#76",
+      "landing": "landings/PLAN-03.md"
+    },
+    {
+      "id": "PLAN-09",
+      "slug": "comparative-benchmark",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "plan-04b-comparative-benchmark",
+      "pr": "#82",
+      "landing": "landings/PLAN-09.md"
+    },
+    {
+      "id": "PLAN-10",
+      "slug": "anchor-types-assets",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "anchor-types-assets",
+      "pr": "#84",
+      "landing": "landings/PLAN-10.md"
+    },
+    {
+      "id": "PLAN-12",
+      "slug": "sonar-hardening",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "sonar-zero-findings",
+      "pr": "#89",
+      "landing": "landings/PLAN-12.md"
+    },
+    {
+      "id": "PLAN-04",
+      "slug": "protocol-processors",
+      "workstream": "WS-02",
+      "status": "shipped",
+      "plan_marshall_plan_id": "protocol-processors-ws-grpc",
+      "pr": "#88",
+      "landing": "landings/PLAN-04.md"
+    },
+    {
+      "id": "PLAN-14",
+      "slug": "coordinates-relocation",
+      "workstream": "WS-04",
+      "status": "shipped",
+      "plan_marshall_plan_id": "groupid-relocation-release-guard",
+      "pr": "#91 #92 #94",
+      "landing": "landings/PLAN-14.md"
+    },
+    {
+      "id": "PLAN-13",
+      "slug": "sonar-residual",
+      "workstream": "WS-02",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-05",
+      "slug": "tls-edge",
+      "workstream": "WS-02",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-06",
+      "slug": "bff-server-session",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-07",
+      "slug": "bff-cookie",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-11",
+      "slug": "demo-client-e2e",
+      "workstream": "WS-03",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    },
+    {
+      "id": "PLAN-08",
+      "slug": "release-readiness",
+      "workstream": "WS-04",
+      "status": "staged",
+      "plan_marshall_plan_id": "",
+      "pr": "",
+      "landing": ""
+    }
+  ],
+  "resume_anchor": "PLAN-14 SHIPPED 2026-07-22 (PRs #91+#92+#94 \u2192 36541f6; landing landings/PLAN-14.md, every claim independently verified): gateway@0.1.0-SNAPSHOT live, guard dispatch-only, relocations 1.0.1 on repo1, deploy-skips working. DEPLOY-SNAPSHOT RESOLVED (root cause: test-module upload payload; fixed by the deploy-skip; org escalation retired). Residuals: stray immutable api-sheriff-relocations:1.0.1 (accepted); relocation-stubs branch NEVER merge (watch); 3 stale enriched.json old-GA refs (cleared by pending enrichment). NO plan in flight. NEXT: launch PLAN-13 (REFRESHED command in plans/PLAN-13-sonar-residual.md \u2014 A verify/close, B rebase #70 over rename first, C pin rationale only, D fresh Sonar query, old 34 baseline stale after 168-package rename). After PLAN-13: emit PLAN-05 \u2014 decide deferred-ADR fold + ADR-0010/0012 re-check. OPERATOR ACTIONS: (1) architecture enrichment \u2014 now fixes BOTH documentation.implementation AND stale enriched.json; (2) upstream verify-on-version: two daemon defects (false-green build verdicts, ci-pr-merge false-merged destructive) reportedly fixed in 0.1.1182 (landed #90) \u2014 verify at next build/plan contact, keep .plan/temp/plan-marshall-daemon-false-green.md until confirmed; credentials-key-prefix + lessons -002/-003 filings still open. LESSONS CORPUS lives at .plan/local/orchestrator/lessons-handling-26-07-22-01/lessons/ (17, orchestrator-owned, operator-designated home; plugin recreates .plan/local/lessons-learned at next phase-6 \u2014 sweep it each lessons run). STANDING SONAR POLICY + three-layer docs + decisions-in-plan-file stand. Open for PLAN-08: boot-TOCTOU, placeholder-coercion, PLAN-10 controls re-verify, PLAN-09 anti-patterns, readiness-disclosure; release cut = de.cuioss.sheriff.gateway 0.1.0 via manual dispatch. Queue: PLAN-13(re-emitted) -> PLAN-05 -> PLAN-06 -> PLAN-07 -> PLAN-11 -> PLAN-08.",
+  "metadata": {},
+  "created": "2026-07-17T21:17:18Z",
+  "updated": "2026-07-22T15:24:03Z"
+}

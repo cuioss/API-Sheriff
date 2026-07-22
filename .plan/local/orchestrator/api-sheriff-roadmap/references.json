@@ -1,0 +1,15 @@
+{
+  "repo": "cuioss/API-Sheriff",
+  "source_documents": [
+    "doc/plan/README.adoc",
+    "doc/plan/02b-reconciliation.adoc",
+    "doc/plan/03-endpoint-anchors.adoc",
+    "doc/plan/04-request-pipeline.adoc",
+    "doc/plan/05-protocol-processors.adoc",
+    "doc/plan/06-tls-edge.adoc",
+    "doc/plan/07-bff-server-session.adoc",
+    "doc/plan/08-bff-cookie.adoc",
+    "doc/plan/09-release-readiness.adoc"
+  ],
+  "notes": "Design docs under doc/ govern; the plan docs sequence the work. Plans 01 and 02 delivered before this epic existed."
+}
