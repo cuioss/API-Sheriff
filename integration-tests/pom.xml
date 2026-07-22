@@ -17,6 +17,16 @@
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.gateway.integration.tests</maven.jar.plugin.automatic.module.name>
+
+        <!-- Never publish this module to Maven Central: it is an IT coordinator, not a
+             consumable artifact. The switch must be skipPublishing, NOT maven.deploy.skip:
+             cui-java-parent's release profiles publish through
+             org.sonatype.central:central-publishing-maven-plugin (extensions=true, an
+             injected 'publish' execution bound to the deploy phase), and the parent already
+             sets maven-deploy-plugin <skip>true</skip> for every module — so the
+             maven-deploy-plugin property cannot be what suppresses publication.
+             skipPublishing is the publishing plugin's own user property. -->
+        <skipPublishing>true</skipPublishing>
         <!-- Configure test execution - failsafe disabled by default -->
         <skipITs>true</skipITs>
 
