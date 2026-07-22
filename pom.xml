@@ -52,7 +52,7 @@
              its JUnit Jupiter version to whatever the Quarkus BOM ships. -->
         <version.quarkus>3.37.3</version.quarkus>
         <version.token-sheriff>0.9.2</version.token-sheriff>
-        <version.json-schema-validator>1.5.9</version.json-schema-validator>
+        <version.json-schema-validator>3.0.6</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
         <argLine />
     </properties>
