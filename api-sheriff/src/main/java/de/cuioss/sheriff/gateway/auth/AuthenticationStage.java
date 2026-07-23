@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -31,6 +32,7 @@ import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 
 import jakarta.inject.Provider;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 4 — offline bearer-token validation, run after the per-route thorough checks.
@@ -45,10 +47,19 @@ import jakarta.inject.Provider;
  *       invalid / expired / tampered token is 401 {@link EventType#TOKEN_INVALID}; both carry
  *       {@code WWW-Authenticate: Bearer}. A valid token lacking a required scope is 403
  *       {@link EventType#SCOPE_MISSING};</li>
- *   <li>{@code require: session} — never reaches here; the boot-time {@code RouteRuntimeAssembler}
- *       already rejected such routes (session auth is not yet implemented).</li>
+ *   <li>{@code require: session} — dispatched to the {@link SessionAuthenticationStage} stage-4
+ *       runtime (D4): the opaque session cookie is resolved to a live session, the mediated token is
+ *       injected as the upstream {@code Authorization: Bearer}, {@code required_scopes} are enforced
+ *       against the mediated token (403 {@link EventType#SCOPE_MISSING}), and an unauthenticated
+ *       request is redirected into the auth-code flow (navigation) or challenged 401
+ *       {@code application/problem+json} (everything else). Bearer and session stay separate
+ *       mechanisms — the bearer-validation logic above is untouched.</li>
  * </ul>
  * The upstream is never contacted on any authentication or authorization rejection.
+ * <p>
+ * The session runtime is an optional collaborator: it is wired only when the gateway serves a BFF
+ * variant. A {@code require: session} route reaching this stage without a wired session runtime is a
+ * boot-configuration error surfaced as an {@link IllegalStateException} rather than served.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -57,11 +68,16 @@ public final class AuthenticationStage {
 
     private static final String REQUIRE_NONE = "none";
     private static final String REQUIRE_BEARER = "bearer";
+    private static final String REQUIRE_SESSION = "session";
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final Provider<TokenValidator> tokenValidator;
+    private final @Nullable SessionAuthenticationStage sessionStage;
 
     /**
+     * Assembles the stage for a gateway serving no BFF variant — {@code require: session} is
+     * unsupported (a session route reaching this stage is a boot-configuration error).
+     *
      * @param tokenValidator a lazy provider of the single shared validator built from the
      *                       {@code token_validation} config. The validator is resolved via
      *                       {@link Provider#get()} only at the first actual bearer validation, so a
@@ -71,6 +87,19 @@ public final class AuthenticationStage {
      */
     public AuthenticationStage(Provider<TokenValidator> tokenValidator) {
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
+        this.sessionStage = null;
+    }
+
+    /**
+     * Assembles the stage with the {@code require: session} stage-4 runtime (D4) wired for a gateway
+     * serving a BFF variant.
+     *
+     * @param tokenValidator the lazy bearer-validator provider (see the single-argument constructor)
+     * @param sessionStage   the session runtime a {@code require: session} route is dispatched to
+     */
+    public AuthenticationStage(Provider<TokenValidator> tokenValidator, SessionAuthenticationStage sessionStage) {
+        this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
+        this.sessionStage = Objects.requireNonNull(sessionStage, "sessionStage");
     }
 
     /**
@@ -91,8 +120,20 @@ public final class AuthenticationStage {
             validateBearer(request, auth, route);
             return;
         }
+        if (REQUIRE_SESSION.equals(require)) {
+            requireSessionStage(route).process(request);
+            return;
+        }
         throw new IllegalStateException(
                 "Route " + route.getId() + " reached authentication with unsupported require '" + require + "'");
+    }
+
+    private SessionAuthenticationStage requireSessionStage(RouteRuntime route) {
+        if (sessionStage == null) {
+            throw new IllegalStateException("Route " + route.getId()
+                    + " requires session authentication but no session runtime is wired");
+        }
+        return sessionStage;
     }
 
     private void validateBearer(PipelineRequest request, AuthConfig auth, RouteRuntime route) {

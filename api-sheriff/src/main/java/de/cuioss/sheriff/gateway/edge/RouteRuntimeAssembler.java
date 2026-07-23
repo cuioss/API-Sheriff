@@ -56,16 +56,16 @@ import io.vertx.core.http.HttpClient;
  *       resilience shape}.</li>
  * </ul>
  * The heavy objects are produced by the injected factories (so tests supply fakes and the
- * production wiring supplies the real Vert.x / SmallRye instances). A route requesting
- * {@code session} auth, or a {@code GRPC} / {@code WEBSOCKET} protocol, fails boot with a
- * {@link GatewayException} carrying {@link EventType#CONFIG_INVALID}.
+ * production wiring supplies the real Vert.x / SmallRye instances). An unsupported protocol fails
+ * boot through the {@link ProtocolProcessorRegistry}. {@code require: session} routes are compiled
+ * like any other route — their stage-4 runtime is the
+ * {@code de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage} (D4), which replaces the
+ * boot-time rejection this assembler used to raise.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 public final class RouteRuntimeAssembler {
-
-    private static final String SESSION_REQUIRE = "session";
 
     private final ProtocolProcessorRegistry protocolRegistry;
 
@@ -88,7 +88,7 @@ public final class RouteRuntimeAssembler {
      * @param assetSourceFactory    builds the live {@link AssetSource} for an asset route's
      *                              terminal action
      * @return the assembled runtimes, in the table's longest-prefix-first order
-     * @throws GatewayException when a route requests {@code session} auth or an unsupported protocol
+     * @throws GatewayException when a route declares an unsupported protocol
      */
     public List<RouteRuntime> assemble(RouteTable table, SecurityConfigurationFactory securityConfigFactory,
             UpstreamClientFactory clientFactory, ResilienceGuardFactory guardFactory,
@@ -105,7 +105,6 @@ public final class RouteRuntimeAssembler {
         List<RouteRuntime> runtimes = new ArrayList<>();
 
         for (ResolvedRoute route : table.routes()) {
-            rejectUnsupportedAuth(route);
             ProtocolProcessor processor = protocolRegistry.require(route.protocol(), route.id());
 
             Optional<SecurityConfiguration> securityConfiguration = route.effectiveSecurityFilter()
@@ -154,13 +153,6 @@ public final class RouteRuntimeAssembler {
             runtimes.add(runtime.build());
         }
         return List.copyOf(runtimes);
-    }
-
-    private static void rejectUnsupportedAuth(ResolvedRoute route) {
-        if (SESSION_REQUIRE.equals(route.effectiveAuth().require())) {
-            throw new GatewayException(EventType.CONFIG_INVALID,
-                    "Route '" + route.id() + "' requires session authentication which is not yet implemented");
-        }
     }
 
     private static Set<HttpMethod> toMethodSet(List<HttpMethod> methods) {

@@ -19,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -44,8 +43,6 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
-import de.cuioss.sheriff.gateway.events.EventType;
-import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 
@@ -152,25 +149,28 @@ class RouteRuntimeAssemblerTest {
     }
 
     @Test
-    @DisplayName("Should fail boot for session auth and a session-auth WebSocket; gRPC and WebSocket assemble")
-    void shouldFailBootForSessionAndAssembleProtocolRoutes() {
+    @DisplayName("Should assemble a require:session route now the boot-time rejection is removed (D4)")
+    void shouldAssembleSessionRoutes() {
+        // A require:session route now assembles like any other route — its stage-4 runtime is the
+        // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection.
         RouteTable sessionTable = new RouteTable(List.of(
                 route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example"))));
-        var session = assertThrows(GatewayException.class,
+        List<RouteRuntime> sessionRuntimes = assertDoesNotThrow(
                 () -> assembler.assemble(sessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
-                "session auth must fail boot");
-        RouteTable webSocketTable = new RouteTable(List.of(
+                "a require:session route assembles now the boot-time rejection is removed");
+        assertEquals("session", sessionRuntimes.getFirst().getEffectiveAuth().require(),
+                "the assembled route keeps its require:session posture for the stage-4 runtime to dispatch on");
+
+        // A session-auth WebSocket route likewise assembles — session auth no longer gates boot, so
+        // it is treated exactly like any other WebSocket route.
+        RouteTable webSocketSessionTable = new RouteTable(List.of(
                 route("sw", Protocol.WEBSOCKET, "session", Optional.empty(), upstream("a.example"))));
-        var sessionWebSocket = assertThrows(GatewayException.class,
-                () -> assembler.assemble(webSocketTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
-                "session-auth WebSocket must fail boot");
+        assertDoesNotThrow(
+                () -> assembler.assemble(webSocketSessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
+                "a session-auth WebSocket route assembles — session auth no longer fails boot");
 
-        assertEquals(EventType.CONFIG_INVALID, session.getEventType(), "session rejection is a config failure");
-        assertEquals(EventType.CONFIG_INVALID, sessionWebSocket.getEventType(),
-                "session-auth WebSocket rejection is a config failure");
-
-        // A gRPC route now assembles cleanly (its boot rejection was removed when the gRPC processor
-        // was registered) — the forced-h2 upstream client is built by the injected client factory.
+        // A gRPC route with non-session auth assembles cleanly — the forced-h2 upstream client is
+        // built by the injected client factory.
         RouteTable grpcTable = new RouteTable(List.of(
                 route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example"))));
         assertDoesNotThrow(
