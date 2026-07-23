@@ -70,6 +70,13 @@ built* and *how the parts fit together*.
 | Trust boundaries and STRIDE, plus a failure catalogue where every class that produced a
   real CVE in a comparable gateway/proxy or OAuth/OIDC stack is mapped to an API Sheriff
   control, a status, and a testable assertion. Doubles as the 1.0 security release gate.
+
+| TLS Edge (three-layer topic)
+| The accept-time SNI split and mTLS edge, documented across all three layers: the
+  link:configuration.adoc#_tls[`tls` configuration reference], the link:user/tls-edge.adoc[operator
+  guide] (configuring passthrough SNI / mTLS and the trust-root-replacement blast radius), and the
+  link:development/tls-edge.adoc[developer topic] (front-listener architecture, the L4/L7 split, and
+  the fail-closed GW-06 rationale).
 |===
 
 == Deployment Variants
