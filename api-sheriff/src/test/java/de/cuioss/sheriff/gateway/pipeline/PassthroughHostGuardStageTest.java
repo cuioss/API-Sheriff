@@ -140,6 +140,37 @@ class PassthroughHostGuardStageTest {
             // Act + Assert
             assertDoesNotThrow(() -> guardedStage.process(request));
         }
+
+        @Test
+        @DisplayName("does not strip a non-numeric :suffix, so the Host no longer matches the SNI")
+        void passesHostWithNonNumericPort() {
+            // Arrange — only a purely-numeric :port is stripped; "notaport" is kept, so the normalized
+            // Host retains the colon suffix and can no longer match the reserved SNI.
+            PipelineRequest request = requestWithHost(PASSTHROUGH_SNI + ":notaport");
+
+            // Act + Assert
+            assertDoesNotThrow(() -> guardedStage.process(request));
+        }
+
+        @Test
+        @DisplayName("does not strip an empty :suffix, so the Host no longer matches the SNI")
+        void passesHostWithEmptyPort() {
+            // Arrange — a trailing colon with no port digits is not a strippable :port suffix.
+            PipelineRequest request = requestWithHost(PASSTHROUGH_SNI + ":");
+
+            // Act + Assert
+            assertDoesNotThrow(() -> guardedStage.process(request));
+        }
+
+        @Test
+        @DisplayName("does not strip a multi-colon suffix, so the Host no longer matches the SNI")
+        void passesHostWithMultipleColons() {
+            // Arrange — the :port strip only fires for a single colon; two colons leave the Host intact.
+            PipelineRequest request = requestWithHost(PASSTHROUGH_SNI + ":80:80");
+
+            // Act + Assert
+            assertDoesNotThrow(() -> guardedStage.process(request));
+        }
     }
 
     @Nested

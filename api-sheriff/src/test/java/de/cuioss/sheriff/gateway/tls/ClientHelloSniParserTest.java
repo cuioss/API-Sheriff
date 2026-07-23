@@ -189,6 +189,112 @@ class ClientHelloSniParserTest {
         }
     }
 
+    @Nested
+    @DisplayName("extension-walk and name-entry edge cases")
+    class ExtensionWalk {
+
+        @Test
+        @DisplayName("skips a preceding non-SNI extension and still extracts the SNI host_name")
+        void skipsPrecedingExtension() {
+            // Arrange — a benign supported_groups-shaped extension precedes the server_name extension,
+            // so the walk must seek past it before reaching the SNI.
+            byte[] preceding = ClientHelloFixture.rawExtension(0x000A, new byte[]{0x00, 0x02, 0x00, 0x17});
+            byte[] sni = ClientHelloFixture.serverNameExtension("host.after.example");
+            byte[] hello = ClientHelloFixture.withRawExtensions(ClientHelloFixture.concat(preceding, sni));
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(hello);
+
+            // Assert
+            assertTrue(result.complete());
+            assertEquals(Optional.of("host.after.example"), result.serverName(),
+                    "the walk seeks past a leading non-SNI extension");
+        }
+
+        @Test
+        @DisplayName("skips a non-host_name server_name entry and returns a following host_name")
+        void skipsNonHostNameEntry() {
+            // Arrange — the server_name list carries a non-host_name entry (name_type 0x01) ahead of
+            // the real host_name entry.
+            byte[] entries = ClientHelloFixture.concat(
+                    ClientHelloFixture.nameEntry(0x01, "ignored".getBytes(StandardCharsets.US_ASCII)),
+                    ClientHelloFixture.nameEntry(0x00, "host.example".getBytes(StandardCharsets.US_ASCII)));
+            byte[] hello = ClientHelloFixture.withRawExtensions(
+                    ClientHelloFixture.serverNameExtensionFromEntries(entries));
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(hello);
+
+            // Assert
+            assertEquals(Optional.of("host.example"), result.serverName(),
+                    "a non-host_name entry is skipped, the host_name entry wins");
+        }
+
+        @Test
+        @DisplayName("fails closed on a server_name extension body shorter than its list-length prefix")
+        void truncatedServerNameExtension() {
+            // Arrange — a server_name extension whose body is a single byte cannot hold the 2-byte
+            // list-length prefix.
+            byte[] sni = ClientHelloFixture.rawExtension(0x0000, new byte[]{0x00});
+            byte[] hello = ClientHelloFixture.withRawExtensions(sni);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(hello);
+
+            // Assert
+            assertTrue(result.complete());
+            assertTrue(result.serverName().isEmpty(), "a body too short for the list prefix fails closed");
+        }
+
+        @Test
+        @DisplayName("fails closed when the server_name list length overruns the extension body")
+        void overlongServerNameList() {
+            // Arrange — the extension declares a 2-byte body carrying a list length (0x007F) that runs
+            // well past the extension end.
+            byte[] sni = ClientHelloFixture.rawExtension(0x0000, new byte[]{0x00, 0x7F});
+            byte[] hello = ClientHelloFixture.withRawExtensions(sni);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(hello);
+
+            // Assert
+            assertTrue(result.complete());
+            assertTrue(result.serverName().isEmpty(), "a list length past the extension body fails closed");
+        }
+
+        @Test
+        @DisplayName("fails closed when a name entry declares a length past the list end")
+        void nameEntryLengthPastList() {
+            // Arrange — the single name entry declares a 0x007F-byte name but carries no name bytes.
+            byte[] entry = new byte[]{0x00, 0x00, 0x7F};
+            byte[] hello = ClientHelloFixture.withRawExtensions(
+                    ClientHelloFixture.serverNameExtensionFromEntries(entry));
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(hello);
+
+            // Assert
+            assertTrue(result.complete());
+            assertTrue(result.serverName().isEmpty(), "a name length past the list end fails closed");
+        }
+    }
+
+    @Nested
+    @DisplayName("Result verdict factory")
+    class ResultVerdict {
+
+        @Test
+        @DisplayName("normalizes a null server name to an empty Optional")
+        void normalizesNullServerName() {
+            // Act — the canonical constructor must defend against a null Optional argument.
+            ClientHelloSniParser.Result result = new ClientHelloSniParser.Result(true, null);
+
+            // Assert
+            assertTrue(result.complete());
+            assertTrue(result.serverName().isEmpty(), "a null server name normalizes to empty");
+        }
+    }
+
     /**
      * Builds real TLS ClientHello byte layouts for the parser tests. Kept package-visible and static
      * so both this test and {@code SniFrontListenerTest} / {@code PassthroughRelayTest} can craft the
@@ -198,6 +304,7 @@ class ClientHelloSniParserTest {
 
         private static final byte RECORD_HANDSHAKE = 0x16;
         private static final byte HANDSHAKE_CLIENT_HELLO = 0x01;
+        private static final int EXTENSION_TYPE_SERVER_NAME = 0x0000;
 
         private ClientHelloFixture() {
         }
@@ -237,6 +344,50 @@ class ClientHelloSniParserTest {
                 }
             }
             return hello;
+        }
+
+        /** A complete single-record ClientHello whose extensions block is exactly the given bytes. */
+        static byte[] withRawExtensions(byte[] extensionsBlock) {
+            return handshakeRecord(HANDSHAKE_CLIENT_HELLO, clientHelloBodyRaw(extensionsBlock));
+        }
+
+        /** A raw TLS extension: {@code type(2) + length(2) + body}. */
+        static byte[] rawExtension(int type, byte[] body) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write((type >> 8) & 0xFF);
+            out.write(type & 0xFF);
+            out.write((body.length >> 8) & 0xFF);
+            out.write(body.length & 0xFF);
+            out.writeBytes(body);
+            return out.toByteArray();
+        }
+
+        /** A server_name extension whose {@code server_name_list} is exactly the given entry bytes. */
+        static byte[] serverNameExtensionFromEntries(byte[] entries) {
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            body.write((entries.length >> 8) & 0xFF);
+            body.write(entries.length & 0xFF);
+            body.writeBytes(entries);
+            return rawExtension(EXTENSION_TYPE_SERVER_NAME, body.toByteArray());
+        }
+
+        /** A single {@code server_name} list entry: {@code name_type(1) + length(2) + name}. */
+        static byte[] nameEntry(int nameType, byte[] name) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(nameType);
+            out.write((name.length >> 8) & 0xFF);
+            out.write(name.length & 0xFF);
+            out.writeBytes(name);
+            return out.toByteArray();
+        }
+
+        /** Concatenates the given byte arrays in order. */
+        static byte[] concat(byte[]... arrays) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            for (byte[] array : arrays) {
+                out.writeBytes(array);
+            }
+            return out.toByteArray();
         }
 
         /** A record header declaring a length beyond the parser's reassembly bound. */
@@ -287,6 +438,24 @@ class ClientHelloSniParserTest {
             out.write(0x01);                       // compression_methods length 1
             out.write(0x00);                       // null compression
             byte[] extensions = sni == null ? new byte[0] : serverNameExtension(sni);
+            out.write((extensions.length >> 8) & 0xFF);
+            out.write(extensions.length & 0xFF);
+            out.writeBytes(extensions);
+            return out.toByteArray();
+        }
+
+        private static byte[] clientHelloBodyRaw(byte[] extensions) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(0x03);
+            out.write(0x03);                       // legacy_version TLS 1.2
+            out.writeBytes(new byte[32]);          // random
+            out.write(0x00);                       // session_id length 0
+            out.write(0x00);
+            out.write(0x02);                       // cipher_suites length 2
+            out.write(0x13);
+            out.write(0x01);                       // TLS_AES_128_GCM_SHA256
+            out.write(0x01);                       // compression_methods length 1
+            out.write(0x00);                       // null compression
             out.write((extensions.length >> 8) & 0xFF);
             out.write(extensions.length & 0xFF);
             out.writeBytes(extensions);

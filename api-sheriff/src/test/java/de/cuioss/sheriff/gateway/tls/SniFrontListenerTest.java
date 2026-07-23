@@ -113,6 +113,17 @@ class SniFrontListenerTest {
     }
 
     @Test
+    @DisplayName("normalizeSni lower-cases, strips whitespace, and removes a single trailing FQDN dot")
+    void normalizeSniLowersAndStripsTrailingDot() {
+        // Act + Assert — a trailing FQDN dot and case/whitespace are normalized away so lookup and
+        // insertion agree; a host without a trailing dot is only lower-cased.
+        assertEquals("api.example.com", SniFrontListener.normalizeSni("  API.Example.COM.  "),
+                "trailing FQDN dot, case, and surrounding whitespace are normalized");
+        assertEquals("api.example.com", SniFrontListener.normalizeSni("API.EXAMPLE.COM"),
+                "a host without a trailing dot is only lower-cased");
+    }
+
+    @Test
     @DisplayName("routes every connection to the terminated path when no SNI is mapped")
     void emptyPassthroughMapRelaysEverythingToTerminated() throws Exception {
         byte[] hello = ClientHelloFixture.withSni(MAPPED_SNI);
