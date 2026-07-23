@@ -1275,4 +1275,123 @@ class ConfigValidatorTest {
                     "declares a websocket block but its protocol is not 'websocket'");
         }
     }
+
+    @Nested
+    @DisplayName("The BFF OIDC/session fold rules (D1)")
+    class BffOidcFoldRules {
+
+        private static GatewayConfig gatewayWithOidc(OidcConfig oidc) {
+            return validGateway().oidc(Optional.of(oidc)).build();
+        }
+
+        @Test
+        @DisplayName("Should accept a user_info block whose default_view claims all lie within the allowlist")
+        void shouldAcceptUserInfoWithDefaultViewWithinAllowlist() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(Optional.of(OidcConfig.UserInfo.builder()
+                            .path(Optional.of("/session/userinfo"))
+                            .allowedClaims(List.of("sub", "name", "roles"))
+                            .defaultView(List.of("sub", "name"))
+                            .build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept a user_info block with an empty allowlist as the secure closed default")
+        void shouldAcceptUserInfoWithEmptyAllowlistSecureDefault() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(Optional.of(OidcConfig.UserInfo.builder()
+                            .path(Optional.of("/session/userinfo"))
+                            .build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(),
+                    () -> "an empty allowlist is the secure closed default and must not be an error, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject a default_view claim that lies outside the operator allowlist")
+        void shouldRejectDefaultViewClaimOutsideAllowlist() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(Optional.of(OidcConfig.UserInfo.builder()
+                            .path(Optional.of("/session/userinfo"))
+                            .allowedClaims(List.of("sub", "name"))
+                            .defaultView(List.of("sub", "email"))
+                            .build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/oidc/user_info/default_view", "not in allowed_claims");
+        }
+
+        @ParameterizedTest(name = "user_info path \"{0}\" is rejected as non-absolute")
+        @ValueSource(strings = {"session/userinfo", "//evil.example.com", "https://evil.example.com"})
+        @DisplayName("Should reject a malformed user_info path that is not an absolute gateway path")
+        void shouldRejectNonAbsoluteUserInfoPath(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .userInfo(Optional.of(OidcConfig.UserInfo.builder().path(Optional.of(path)).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/oidc/user_info/path", "must be an absolute gateway path");
+        }
+
+        @ParameterizedTest(name = "off-path login value \"{0}\" is rejected")
+        @ValueSource(strings = {"login", "//evil.example.com", "https://evil.example.com"})
+        @DisplayName("Should reject an off-path login value")
+        void shouldRejectOffPathLoginValue(String path) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(Optional.of(OidcConfig.Login.builder().path(Optional.of(path)).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/oidc/login/path", "must be an absolute gateway path");
+        }
+
+        @Test
+        @DisplayName("Should accept an absolute login path")
+        void shouldAcceptAbsoluteLoginPath() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .login(Optional.of(OidcConfig.Login.builder().path(Optional.of("/session/login")).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "max_sessions = {0} is rejected")
+        @ValueSource(ints = {0, -1, -1000})
+        @DisplayName("Should reject a non-positive session max_sessions bound")
+        void shouldRejectNonPositiveMaxSessions(int maxSessions) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(Optional.of(OidcConfig.Session.builder().maxSessions(Optional.of(maxSessions)).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, "/oidc/session/max_sessions", "must be a positive integer");
+        }
+
+        @Test
+        @DisplayName("Should accept a positive session max_sessions bound")
+        void shouldAcceptPositiveMaxSessions() {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(Optional.of(OidcConfig.Session.builder().maxSessions(Optional.of(10000)).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+    }
 }

@@ -146,8 +146,19 @@ class ConfigModelContractTest {
                         .csrf(Optional.of(new OidcConfig.Csrf(List.of("https://app.example.com"))))
                         .refresh(Optional.of(new OidcConfig.Refresh(Optional.of(true), Optional.of(60),
                                 Optional.of("reauthenticate"))))
+                        .maxSessions(Optional.of(10000))
                         .build()))
                 .stepUp(Optional.of(new OidcConfig.StepUp(Optional.of(true), Optional.of(false))))
+                .userInfo(Optional.of(userInfo()))
+                .login(Optional.of(new OidcConfig.Login(Optional.of("/session/login"))))
+                .build();
+    }
+
+    private static OidcConfig.UserInfo userInfo() {
+        return OidcConfig.UserInfo.builder()
+                .path(Optional.of("/session/userinfo"))
+                .allowedClaims(List.of("sub", "name", "roles"))
+                .defaultView(List.of("sub", "name"))
                 .build();
     }
 
@@ -321,6 +332,11 @@ class ConfigModelContractTest {
                     voCase("OidcConfig.StepUp", new OidcConfig.StepUp(Optional.of(true), Optional.of(false)),
                             new OidcConfig.StepUp(Optional.of(true), Optional.of(false)),
                             new OidcConfig.StepUp(Optional.of(false), Optional.of(true))),
+                    voCase("OidcConfig.UserInfo", userInfo(), userInfo(),
+                            new OidcConfig.UserInfo(Optional.of("/other"), List.of("sub"), List.of())),
+                    voCase("OidcConfig.Login", new OidcConfig.Login(Optional.of("/session/login")),
+                            new OidcConfig.Login(Optional.of("/session/login")),
+                            new OidcConfig.Login(Optional.of("/other-login"))),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
@@ -838,6 +854,92 @@ class ConfigModelContractTest {
             assertTrue(defaults.retryEnabled());
             assertTrue(defaults.notModifiedEnabled());
             assertEquals(new UpstreamDefaultsConfig(true, true), defaults);
+        }
+    }
+
+    // --- BFF OIDC/session fold records (D1) --------------------------------
+
+    @Nested
+    @DisplayName("BFF OIDC/session fold records (D1)")
+    class BffFoldRecords {
+
+        @Test
+        void userInfoExposesPathAllowlistAndDefaultView() {
+            OidcConfig.UserInfo cfg = userInfo();
+            assertEquals(Optional.of("/session/userinfo"), cfg.path());
+            assertEquals(List.of("sub", "name", "roles"), cfg.allowedClaims());
+            assertEquals(List.of("sub", "name"), cfg.defaultView());
+        }
+
+        @Test
+        void userInfoBuilderMatchesConstructor() {
+            OidcConfig.UserInfo viaCtor = new OidcConfig.UserInfo(Optional.of("/u"), List.of("sub"), List.of("sub"));
+            OidcConfig.UserInfo viaBuilder = OidcConfig.UserInfo.builder()
+                    .path(Optional.of("/u")).allowedClaims(List.of("sub")).defaultView(List.of("sub")).build();
+            assertEquals(viaCtor, viaBuilder);
+        }
+
+        @Test
+        void userInfoNormalizesAbsentComponents() {
+            OidcConfig.UserInfo cfg = new OidcConfig.UserInfo(null, null, null);
+            assertTrue(cfg.path().isEmpty());
+            assertTrue(cfg.allowedClaims().isEmpty(), "an absent allowlist is the secure closed default (empty)");
+            assertTrue(cfg.defaultView().isEmpty());
+        }
+
+        @Test
+        void userInfoClaimListsAreDefensivelyCopiedAndUnmodifiable() {
+            List<String> allowedSource = new ArrayList<>(List.of("sub"));
+            List<String> viewSource = new ArrayList<>(List.of("sub"));
+            OidcConfig.UserInfo cfg = OidcConfig.UserInfo.builder()
+                    .path(Optional.of("/u")).allowedClaims(allowedSource).defaultView(viewSource).build();
+            allowedSource.add("email");
+            viewSource.add("email");
+            assertEquals(List.of("sub"), cfg.allowedClaims(),
+                    "mutating the source list after construction must not affect the record");
+            assertEquals(List.of("sub"), cfg.defaultView());
+            List<String> allowed = cfg.allowedClaims();
+            List<String> view = cfg.defaultView();
+            assertThrows(UnsupportedOperationException.class, () -> allowed.add("roles"));
+            assertThrows(UnsupportedOperationException.class, () -> view.add("roles"));
+        }
+
+        @Test
+        void loginExposesPathAndNormalizesAbsent() {
+            assertEquals(Optional.of("/session/login"), new OidcConfig.Login(Optional.of("/session/login")).path());
+            assertTrue(new OidcConfig.Login(null).path().isEmpty());
+        }
+
+        @Test
+        void loginBuilderMatchesConstructor() {
+            OidcConfig.Login viaCtor = new OidcConfig.Login(Optional.of("/login"));
+            OidcConfig.Login viaBuilder = OidcConfig.Login.builder().path(Optional.of("/login")).build();
+            assertEquals(viaCtor, viaBuilder);
+        }
+
+        @Test
+        void sessionExposesAndNormalizesMaxSessions() {
+            OidcConfig.Session withBound = OidcConfig.Session.builder().maxSessions(Optional.of(500)).build();
+            assertEquals(Optional.of(500), withBound.maxSessions());
+            OidcConfig.Session withoutBound = OidcConfig.Session.builder().build();
+            assertTrue(withoutBound.maxSessions().isEmpty(), "an absent max_sessions normalizes to Optional.empty()");
+        }
+
+        @Test
+        void oidcToStringCarriesTheFoldFieldsAndStillRedactsTheSecret() {
+            String rendered = oidcConfig().toString();
+            assertTrue(rendered.contains("userInfo="), "toString must surface the userInfo block");
+            assertTrue(rendered.contains("login="), "toString must surface the login block");
+            assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted");
+            assertFalse(rendered.contains("${OIDC_SECRET}"), "the raw client-secret reference must never appear");
+        }
+
+        @Test
+        void sessionToStringCarriesMaxSessionsAndStillRedactsKeys() {
+            String rendered = oidcConfig().session().orElseThrow().toString();
+            assertTrue(rendered.contains("maxSessions="), "Session toString must surface the max_sessions bound");
+            assertTrue(rendered.contains("***REDACTED***"), "the encryption key must stay redacted");
+            assertFalse(rendered.contains("${SESSION_KEY}"), "the raw encryption-key reference must never appear");
         }
     }
 }
