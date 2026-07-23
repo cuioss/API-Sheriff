@@ -21,7 +21,7 @@ Never hard-code Maven build tool commands (`mvn`, `./mvnw`) — always invoke Ma
 
 `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "<any maven goals & options>" [--project-dir <path>]`
 
-- `--command-args` accepts **any** Maven goals and options — profiles, `-pl`, `-Dtest=…`, system properties. Anything you would pass to `mvn` goes here.
+- `--command-args` accepts **any** Maven goals and options — profiles, `-pl`, `-Dtest=…`, system properties. Pass the goals/options **only**, never the `mvn`/`./mvnw` binary itself (the executor supplies the wrapper).
 - `--project-dir <path>` is the escape hatch to build a checkout **outside** the main tree — e.g. an ad-hoc worktree under `.plan/local/worktrees/` or in the scratchpad. It defaults to the project root; use it instead of `cd`-ing into a worktree and running `./mvnw` there.
 
 The entries below are common **examples, not a closed set** — any Maven invocation goes through this same `run --command-args`:
@@ -35,13 +35,13 @@ The entries below are common **examples, not a closed set** — any Maven invoca
 - Module tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl integration-tests -am"` — only on integration-tests
 - Integration tests (integration-tests): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pintegration-tests -pl integration-tests -am"` — only on integration-tests
 - Benchmark (benchmarks): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "verify -Pbenchmark -pl benchmarks -am"` — only on benchmarks
-- Targeted test (single test / pattern): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -Dtest='ConfigLoaderTest'"`
-- Targeted test in an ad-hoc worktree: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -Dtest='ConfigLoaderTest'" --project-dir /path/to/worktree`
+- Targeted test (single test / pattern): `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -Dtest=ConfigLoaderTest"`
+- Targeted test in an ad-hoc worktree: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "test -pl api-sheriff -Dtest=ConfigLoaderTest" --project-dir /path/to/worktree`
 - Native executable: `python3 .plan/execute-script.py plan-marshall:build-maven:maven run --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests"`
 - Use a 10-minute Bash timeout (600000ms) for build invocations
 - Analyze each build's TOON result: `status`, `errors[N]{file,line,message,category}`, `log_file`
 
-The production Docker image build is **not** a Maven invocation, so it does not go through the executor:
+The executor rule covers **Maven builds only**. Genuinely non-Maven tooling runs directly — the sole case here is the production Docker image build:
 
 ```bash
 docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:latest api-sheriff/
