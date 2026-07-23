@@ -36,7 +36,6 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 
 import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
@@ -107,8 +106,6 @@ public final class ConfigLoader {
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key", "/oidc/session/previous_key");
-    /** Plain JSON writer used only to bridge a parsed Jackson 2 tree to the schema validator's string API. */
-    private static final ObjectMapper JSON_WRITER = new ObjectMapper();
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;
@@ -321,16 +318,10 @@ public final class ConfigLoader {
 
     private static void validate(Schema schema, JsonNode node, String file, List<ConfigError> errors) {
         // json-schema-validator 3.x exposes its node API on Jackson 3 (tools.jackson); this loader is
-        // built on Jackson 2 (com.fasterxml.jackson). Bridge the already-parsed Jackson 2 tree through a
-        // JSON string so the validator re-parses it with its own mapper — Jackson 3 never enters this code.
-        String json;
-        try {
-            json = JSON_WRITER.writeValueAsString(node);
-        } catch (JsonProcessingException e) {
-            errors.add(new ConfigError(file, "", "cannot serialise configuration for schema validation: " + e.getMessage()));
-            return;
-        }
-        for (Error message : schema.validate(json, InputFormat.JSON)) {
+        // built on Jackson 2 (com.fasterxml.jackson). Bridge the already-parsed Jackson 2 tree through its
+        // own JSON rendering (JsonNode.toString() is total — no checked exception) so the validator
+        // re-parses it with its own mapper; Jackson 3 never enters this code.
+        for (Error message : schema.validate(node.toString(), InputFormat.JSON)) {
             errors.add(new ConfigError(file, message.getInstanceLocation().toString(), message.getMessage()));
         }
     }
