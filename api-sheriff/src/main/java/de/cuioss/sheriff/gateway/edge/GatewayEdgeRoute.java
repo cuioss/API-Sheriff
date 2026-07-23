@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
@@ -62,6 +63,7 @@ import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
 import de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard;
 import de.cuioss.sheriff.gateway.pipeline.FramingGate;
 import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
+import de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
@@ -160,6 +162,7 @@ public class GatewayEdgeRoute {
     private final BasicChecksStage basicChecksStage;
     private final CanonicalPathGuard canonicalPathGuard;
     private final FramingGate framingGate;
+    private final PassthroughHostGuardStage passthroughHostGuardStage;
     private final RouteSelectionStage routeSelectionStage;
     private final VerbGateStage verbGateStage;
     private final ThoroughChecksStage thoroughChecksStage;
@@ -230,6 +233,8 @@ public class GatewayEdgeRoute {
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter);
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
+        this.passthroughHostGuardStage = new PassthroughHostGuardStage(
+                gatewayConfig.tls().map(TlsConfig::passthroughSni).map(Map::keySet).orElse(Set.of()));
         this.routeSelectionStage = new RouteSelectionStage(routes);
         this.verbGateStage = new VerbGateStage();
         this.thoroughChecksStage = new ThoroughChecksStage(defaultConfiguration, securityEventCounter);
@@ -382,6 +387,7 @@ public class GatewayEdgeRoute {
                 writeShortCircuit(ctx, request);
                 return;
             }
+            passthroughHostGuardStage.process(request);
             routeSelectionStage.process(request);
             verbGateStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
@@ -409,6 +415,10 @@ public class GatewayEdgeRoute {
                 // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
                 // rejected.getMessage() already carries a sanitized description (see GatewayException).
                 LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
+            } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
+                // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
+                // message is a fixed disposition (never the raw Host value).
+                LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
             }
             recordError(ctx, rejected.getEventType());
             renderRejection(ctx, request, rejected.getEventType());

@@ -74,6 +74,7 @@ class EventTypeTest {
                 "PATH_NOT_ALLOWED,          400, INPUT_VALIDATION",
                 "PARAMETER_LIMIT_EXCEEDED,  400, INPUT_VALIDATION",
                 "NO_ROUTE_MATCHED,          404, INPUT_VALIDATION",
+                "PASSTHROUGH_HOST_SMUGGLED, 404, INPUT_VALIDATION",
                 "METHOD_NOT_ALLOWED,        405, INPUT_VALIDATION",
                 "TOKEN_MISSING,             401, AUTHENTICATION",
                 "TOKEN_INVALID,             401, AUTHENTICATION",

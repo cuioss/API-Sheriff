@@ -28,7 +28,7 @@ import lombok.experimental.UtilityClass;
  * assertable. This catalogue's identifier ranges are disjoint from
  * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}'s (the boot-time configuration
  * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1} / {@code 4} /
- * {@code 6-7} / {@code 100} / {@code 103-107} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
+ * {@code 6-7} / {@code 100} / {@code 103-108} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
  * there — never renumber one catalogue without checking the other for a collision.
  * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
  * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
@@ -134,6 +134,17 @@ public final class ApiSheriffLogMessages {
                 .prefix(PREFIX)
                 .identifier(107)
                 .template("TLS ClientHello failed closed to terminated path: %s")
+                .build();
+
+        /**
+         * A terminated request's {@code Host} header named a reserved passthrough SNI (Host-vs-SNI
+         * smuggle), rejected 404 before route selection. Records a fixed disposition only — never the
+         * raw {@code Host} value.
+         */
+        public static final LogRecord PASSTHROUGH_HOST_SMUGGLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(108)
+                .template("Host-vs-SNI smuggle rejected before route selection: %s")
                 .build();
     }
 }

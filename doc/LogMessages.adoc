@@ -54,6 +54,7 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-104 |EDGE |Circuit breaker closed for upstream '%s' |Logged when a route's circuit breaker transitions back to CLOSED after recovery
 |ApiSheriff-105 |EDGE |WebSocket upgrade rejected on route '%s': Origin '%s' is not in the allowed_origins allowlist |Logged when a bearer WebSocket handshake presents an Origin that does not exactly match the route's allowed_origins allowlist; the upgrade is refused before any upstream dial (fail-closed CSWSH defence, GW-09 / ADR-0015)
 |ApiSheriff-107 |EDGE |TLS ClientHello failed closed to terminated path: %s |Logged when an accept-time TLS ClientHello is failed closed to the terminated-strict path (GW-06) because it carried no usable SNI, was malformed, or exceeded the reassembly bound; records the disposition only — never the raw ClientHello bytes
+|ApiSheriff-108 |EDGE |Host-vs-SNI smuggle rejected before route selection: %s |Logged when a terminated request's Host header names a reserved passthrough SNI hostname and is rejected 404 before route selection; records a fixed disposition only — never the raw Host value
 |===
 
 == ERROR Level (200-299)

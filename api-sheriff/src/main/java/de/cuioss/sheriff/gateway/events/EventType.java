@@ -60,6 +60,13 @@ public enum EventType {
     PARAMETER_LIMIT_EXCEEDED(EventCategory.INPUT_VALIDATION, 400),
     /** No route matched the canonical path (deny-by-default routing). */
     NO_ROUTE_MATCHED(EventCategory.INPUT_VALIDATION, 404),
+    /**
+     * A terminated request's {@code Host} header names a {@code passthrough_sni} hostname reserved
+     * for the accept-time L4 split (Host-vs-SNI smuggle); rejected {@code 404} before route
+     * selection so the passthrough backend identity cannot be reached through the terminated
+     * listener.
+     */
+    PASSTHROUGH_HOST_SMUGGLED(EventCategory.INPUT_VALIDATION, 404),
     /** The request method is outside the route's effective {@code allowed_methods}. */
     METHOD_NOT_ALLOWED(EventCategory.INPUT_VALIDATION, 405),
 
