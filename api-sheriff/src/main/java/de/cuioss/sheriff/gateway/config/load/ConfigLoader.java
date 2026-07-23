@@ -26,7 +26,6 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -37,6 +36,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
@@ -55,10 +55,11 @@ import com.fasterxml.jackson.databind.node.TextNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
-import com.networknt.schema.JsonSchema;
-import com.networknt.schema.JsonSchemaFactory;
-import com.networknt.schema.SpecVersion;
-import com.networknt.schema.ValidationMessage;
+import com.networknt.schema.Error;
+import com.networknt.schema.InputFormat;
+import com.networknt.schema.Schema;
+import com.networknt.schema.SchemaRegistry;
+import com.networknt.schema.SpecificationVersion;
 import org.jspecify.annotations.Nullable;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
@@ -106,12 +107,14 @@ public final class ConfigLoader {
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key", "/oidc/session/previous_key");
+    /** Plain JSON writer used only to bridge a parsed Jackson 2 tree to the schema validator's string API. */
+    private static final ObjectMapper JSON_WRITER = new ObjectMapper();
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;
     private final ObjectMapper mapper;
-    private final JsonSchema gatewaySchema;
-    private final JsonSchema endpointSchema;
+    private final Schema gatewaySchema;
+    private final Schema endpointSchema;
 
     /**
      * Creates a loader for the given configuration directory.
@@ -125,9 +128,9 @@ public final class ConfigLoader {
         this.configDir = Objects.requireNonNull(configDir, "configDir");
         this.secretResolver = Objects.requireNonNull(secretResolver, "secretResolver");
         this.mapper = buildMapper();
-        JsonSchemaFactory factory = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012);
-        this.gatewaySchema = loadSchema(factory, "/schema/gateway.schema.json");
-        this.endpointSchema = loadSchema(factory, "/schema/endpoint.schema.json");
+        SchemaRegistry registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
+        this.gatewaySchema = loadSchema(registry, "/schema/gateway.schema.json");
+        this.endpointSchema = loadSchema(registry, "/schema/endpoint.schema.json");
     }
 
     /**
@@ -316,9 +319,18 @@ public final class ConfigLoader {
         }
     }
 
-    private static void validate(JsonSchema schema, JsonNode node, String file, List<ConfigError> errors) {
-        Set<ValidationMessage> messages = schema.validate(node);
-        for (ValidationMessage message : messages) {
+    private static void validate(Schema schema, JsonNode node, String file, List<ConfigError> errors) {
+        // json-schema-validator 3.x exposes its node API on Jackson 3 (tools.jackson); this loader is
+        // built on Jackson 2 (com.fasterxml.jackson). Bridge the already-parsed Jackson 2 tree through a
+        // JSON string so the validator re-parses it with its own mapper — Jackson 3 never enters this code.
+        String json;
+        try {
+            json = JSON_WRITER.writeValueAsString(node);
+        } catch (JsonProcessingException e) {
+            errors.add(new ConfigError(file, "", "cannot serialise configuration for schema validation: " + e.getMessage()));
+            return;
+        }
+        for (Error message : schema.validate(json, InputFormat.JSON)) {
             errors.add(new ConfigError(file, message.getInstanceLocation().toString(), message.getMessage()));
         }
     }
@@ -464,12 +476,12 @@ public final class ConfigLoader {
                 .build();
     }
 
-    private static JsonSchema loadSchema(JsonSchemaFactory factory, String resource) {
+    private static Schema loadSchema(SchemaRegistry registry, String resource) {
         try (InputStream stream = ConfigLoader.class.getResourceAsStream(resource)) {
             if (stream == null) {
                 throw new IllegalStateException("Missing bundled schema resource: " + resource);
             }
-            return factory.getSchema(stream);
+            return registry.getSchema(stream);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read bundled schema resource: " + resource, e);
         }
