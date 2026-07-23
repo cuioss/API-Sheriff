@@ -18,9 +18,12 @@ package de.cuioss.sheriff.gateway.tls;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+
 
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
@@ -69,7 +72,7 @@ class PassthroughRelayTest {
         // Arrange
         RelayTarget backend = startEchoBackend();
         int frontPort = startRelayHarness(backend, Buffer.buffer("PREFIX"));
-        byte[] expected = "PREFIXDATA".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] expected = "PREFIXDATA".getBytes(StandardCharsets.US_ASCII);
         CompletableFuture<Buffer> echoed = new CompletableFuture<>();
 
         // Act
@@ -158,7 +161,7 @@ class PassthroughRelayTest {
         return new RelayTarget(HOST, port);
     }
 
-    private RelayTarget startSignalBackend(java.util.function.Consumer<NetSocket> wiring) throws Exception {
+    private RelayTarget startSignalBackend(Consumer<NetSocket> wiring) throws Exception {
         NetServer server = vertx.createNetServer();
         server.connectHandler(wiring::accept);
         int port = await(server.listen(0)).actualPort();

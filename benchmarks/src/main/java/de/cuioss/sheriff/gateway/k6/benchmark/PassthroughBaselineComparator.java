@@ -89,7 +89,7 @@ public final class PassthroughBaselineComparator {
 
     /** One metric's candidate-vs-baseline comparison. */
     record MetricComparison(String label, String unit, Optional<Double> candidate,
-            Optional<Double> baseline, Verdict verdict) {
+    Optional<Double> baseline, Verdict verdict) {
     }
 
     /** The full comparison across the throughput and latency metrics. */

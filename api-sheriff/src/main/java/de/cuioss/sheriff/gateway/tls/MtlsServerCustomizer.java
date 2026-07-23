@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.tls;
 import java.util.Objects;
 import java.util.Optional;
 
+
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.tools.logging.CuiLogger;

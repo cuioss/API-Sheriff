@@ -242,7 +242,7 @@ class ClientHelloSniParserTest {
         /** A record header declaring a length beyond the parser's reassembly bound. */
         static byte[] oversizeRecordHeader() {
             int declared = ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES + 1;
-            return new byte[] {
+            return new byte[]{
                     RECORD_HANDSHAKE, 0x03, 0x01,
                     (byte) ((declared >> 8) & 0xFF), (byte) (declared & 0xFF)
             };

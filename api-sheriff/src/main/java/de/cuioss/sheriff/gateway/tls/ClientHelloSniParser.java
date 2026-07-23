@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Serial;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 
@@ -275,7 +276,7 @@ public final class ClientHelloSniParser {
     /** Raised internally when a declared length runs past the reassembled handshake buffer. */
     private static final class MalformedHelloException extends RuntimeException {
 
-        @java.io.Serial
+        @Serial
         private static final long serialVersionUID = 1L;
 
         MalformedHelloException() {
