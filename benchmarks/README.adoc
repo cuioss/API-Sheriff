@@ -24,9 +24,10 @@ The two lanes run deliberately different sets, so a number is always attributabl
 |Lane |Executions |Contents
 
 |CI baseline (`-Pbenchmark`)
-|10
-|The eight matrix aspects *plus* the two retained non-matrix benchmarks `healthLiveCheck` and
- `gatewayHealth`.
+|12
+|The eight cross-gateway matrix aspects, the two retained non-matrix benchmarks `healthLiveCheck`
+ and `gatewayHealth`, *plus* the two API-Sheriff-only passthrough-relay executions (`mapped` relay
+ throughput and the `empty`-mode no-regression run).
 
 |On-demand comparison (`run-comparison.sh`)
 |8
@@ -41,9 +42,12 @@ closes its aspect list to the eight comparable aspects so that is unreachable.
 
 == The aspect matrix
 
-These eight aspects exist route-for-route on both gateways and are the comparable set. The first
-six ride the single static fairness backend and measure pure gateway overhead; the last two (`ws`,
-`grpc`) ride protocol-appropriate backends instead — see the fairness caveat below the table.
+The first eight aspects exist route-for-route on both gateways and are the *comparable set*: the
+first six ride the single static fairness backend and measure pure gateway overhead, and the next
+two (`ws`, `grpc`) ride protocol-appropriate backends instead — see the fairness caveat below the
+table. The final `passthrough` aspect is *API-Sheriff-only* — the opaque L4 relay has no APISIX
+route in this lane — so it runs in the CI baseline lane but never in the on-demand cross-gateway
+comparison; see the passthrough methodology note under _Methodology_.
 
 [cols="1,1,3", options="header"]
 |===
@@ -90,6 +94,14 @@ six ride the single static fairness backend and measure pure gateway overhead; t
 |A unary gRPC call over the forced-HTTP/2 relay on the bare service path, against the in-repo
  `grpc-echo` service. Reports calls/second and call latency. (Per Clarification 1 this k6 gRPC
  benchmark supersedes the plan doc's `ghz` proposal, keeping the whole matrix on one load generator.)
+
+|`passthrough`
+|`passthrough_relay.js`
+|The opaque L4 TCP relay path (`mapped` mode): `k6 -> gateway public TLS port with a mapped SNI ->
+ L4 relay -> TLS-enabled backend`, measuring relay throughput/latency through the active passthrough
+ path. Its `empty` mode re-measures the same proxied static route with `passthrough_sni` empty (D1's
+ zero-overhead default) for a no-regression check against the `unauth` baseline. *API-Sheriff-only*;
+ like `ws`/`grpc` it rides a real backend — see the passthrough methodology note.
 |===
 
 [NOTE]
@@ -196,6 +208,23 @@ HTTP backend speaks WebSocket or gRPC. Each rides a protocol backend shared by *
 go-httpbin's `/websocket/echo` for `ws`, the in-repo `grpc-echo` service for `grpc` — so the two
 sides stay symmetric even though these rows are not backend-free. See the fairness caveat under
 _The aspect matrix_ for how to read the two rows.
+
+Passthrough relay, two modes (API-Sheriff-only)::
+The `passthrough` aspect drives the opaque L4 TCP relay and — unlike the six pure-overhead HTTP
+aspects, and exactly like `ws` and `grpc` — rides a *TLS-enabled backend* that completes the
+handshake and presents its own certificate. It therefore folds a real backend's cost into the
+number and is a *protocol-relay measurement*, not a backend-free gateway-overhead figure: read it as
+relay overhead versus the terminated baseline within one run, never as an absolute throughput claim.
+It runs in two modes selected by `PASSTHROUGH_SNI`. In `mapped` mode the ClientHello names a
+`tls.passthrough_sni` host, so the gateway relays the still-encrypted byte stream at L4 without
+terminating and the run measures throughput/latency through the active relay path. In `empty` mode
+`passthrough_sni` is empty — D1's zero-overhead default, where the accept-time front listener is
+never created and the single terminated Quarkus HTTPS listener owns the public port directly — so
+the run re-measures exactly the same proxied static route as the PLAN-04 `unauth` (`proxiedStatic`)
+baseline. `PassthroughBaselineComparator` reads the empty-mode summary against that stored baseline
+and fails the run if throughput dropped, or either latency percentile rose, beyond a fixed
+percentile-band noise tolerance (k6 omits `latency_ms.stdev`, so a standard-deviation gate is not
+available — see _Known fidelity limit_). A metric a run did not measure renders `n/a`, never `0`.
 
 Readiness, not warm-up discard::
 `pre-benchmark-health-check.sh` gates every run on the stack actually serving, so no run starts
