@@ -44,6 +44,7 @@ import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -157,6 +158,7 @@ public class GatewayEdgeRoute {
     private final GatewayEventCounter gatewayEventCounter;
     private final UpstreamFailureMapper upstreamFailureMapper;
     private final SheriffMetrics sheriffMetrics;
+    private final ReservedPathRegistry reservedPathRegistry;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -249,6 +251,12 @@ public class GatewayEdgeRoute {
         // security-filter counts surface as sheriff_security_events_total, completing the fixed
         // five-meter contract alongside the request/duration/error/upstream meters recorded above.
         sheriffMetrics.bindSecurityEventCounter(securityEventCounter);
+
+        // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
+        // consulted in process() ahead of route selection, so a proxy route such as
+        // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
+        // global oidc block declares a redirect_uri.
+        this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
     }
 
     /**
@@ -388,6 +396,15 @@ public class GatewayEdgeRoute {
                 return;
             }
             passthroughHostGuardStage.process(request);
+            // Reserved-path carve-out (D2): a reserved OIDC endpoint is resolved here, ahead of the
+            // route table, so a proxy route such as path_prefix: /auth can never swallow the exact
+            // /auth/callback. The reserved-endpoint handlers are wired by the session runtime; until
+            // then a matched reserved path is carved out of proxy dispatch (never proxied to an upstream).
+            if (reservedPathRegistry.isReserved(request.host(), requireCanonicalPath(request))) {
+                LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s", requireCanonicalPath(request));
+                renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
+                return;
+            }
             routeSelectionStage.process(request);
             verbGateStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
