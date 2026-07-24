@@ -279,22 +279,6 @@ class ClientHelloSniParserTest {
         }
     }
 
-    @Nested
-    @DisplayName("Result verdict factory")
-    class ResultVerdict {
-
-        @Test
-        @DisplayName("normalizes a null server name to an empty Optional")
-        void normalizesNullServerName() {
-            // Act — the canonical constructor must defend against a null Optional argument.
-            ClientHelloSniParser.Result result = new ClientHelloSniParser.Result(true, null);
-
-            // Assert
-            assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty(), "a null server name normalizes to empty");
-        }
-    }
-
     /**
      * Builds real TLS ClientHello byte layouts for the parser tests. Kept package-visible and static
      * so both this test and {@code SniFrontListenerTest} / {@code PassthroughRelayTest} can craft the

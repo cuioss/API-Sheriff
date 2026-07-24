@@ -296,11 +296,6 @@ public final class ClientHelloSniParser {
      */
     public record Result(boolean complete, Optional<String> serverName) {
 
-        /** Canonical constructor normalizing an absent {@code serverName} to {@link Optional#empty()}. */
-        public Result {
-            serverName = serverName == null ? Optional.empty() : serverName;
-        }
-
         /**
          * The "keep buffering" verdict: the ClientHello is not yet complete.
          *
