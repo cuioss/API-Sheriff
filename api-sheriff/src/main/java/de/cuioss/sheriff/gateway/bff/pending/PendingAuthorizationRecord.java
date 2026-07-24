@@ -22,11 +22,11 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The gateway-side transaction record for a browser's in-flight auth-code login (D2b).
@@ -56,7 +56,7 @@ import lombok.Builder;
  */
 @Builder
 public record PendingAuthorizationRecord(String id, FlowContext flowContext, String returnUrl, Instant createdAt,
-        Duration ttl) {
+Duration ttl) {
 
     /**
      * The short fixed lifetime a pending-authorization record lives before it expires. Fixed

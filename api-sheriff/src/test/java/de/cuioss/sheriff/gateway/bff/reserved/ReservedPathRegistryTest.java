@@ -22,14 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Optional;
 
+
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-
-import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
-import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 
 /**
  * Tests for {@link ReservedPathRegistry}: the exact-match, OIDC-host-only carve-out (D2) that

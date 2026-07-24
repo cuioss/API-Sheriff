@@ -15,11 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.bff.csrf;
 
+import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -64,7 +66,7 @@ public final class CsrfDefence {
     private static final String ORIGIN_HEADER = "Origin";
     private static final String SEC_FETCH_SITE_HEADER = "Sec-Fetch-Site";
     private static final String SAME_ORIGIN = "same-origin";
-    private static final Set<HttpMethod> SAFE_METHODS = Set.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS);
+    private static final Set<HttpMethod> SAFE_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS);
 
     private static final String DISPOSITION_UNTRUSTED_ORIGIN = "untrusted-origin";
     private static final String DISPOSITION_NO_ORIGIN_PROOF = "no-origin-proof";

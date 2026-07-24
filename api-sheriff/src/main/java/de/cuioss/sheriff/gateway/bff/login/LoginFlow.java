@@ -19,13 +19,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * The confidential-client login initiation (D1/D2/D2b) — the browser-facing start of the OIDC

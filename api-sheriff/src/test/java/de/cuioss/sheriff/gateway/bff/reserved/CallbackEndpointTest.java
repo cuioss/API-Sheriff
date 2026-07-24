@@ -26,10 +26,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -46,6 +42,11 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link CallbackEndpoint}: the OIDC auth-code callback orchestration — the BFF-13
@@ -98,11 +99,11 @@ class CallbackEndpointTest {
         accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
         AccessTokenContent access = new AccessTokenContent(accessClaims, RAW_ACCESS_TOKEN);
 
-        Map<String, ClaimValue> idClaims = new HashMap<>();
-        idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
-        idClaims.put("sid", ClaimValue.forPlainString(IDP_SID));
-        idClaims.put("acr", ClaimValue.forPlainString("urn:mace:incommon:iap:silver"));
-        idClaims.put("auth_time", ClaimValue.forPlainString("1721730000"));
+        Map<String, ClaimValue> idClaims = new HashMap<>(Map.of(
+                ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT),
+                "sid", ClaimValue.forPlainString(IDP_SID),
+                "acr", ClaimValue.forPlainString("urn:mace:incommon:iap:silver"),
+                "auth_time", ClaimValue.forPlainString("1721730000")));
         IdTokenContent id = new IdTokenContent(idClaims, RAW_ID_TOKEN);
 
         AuthorizationCodeFlow.AuthenticationResult result = new AuthorizationCodeFlow.AuthenticationResult(access, id);
@@ -226,7 +227,7 @@ class CallbackEndpointTest {
             assertEquals(Optional.of(RETURN_URL), outcome.location());
             assertEquals(2, outcome.setCookieHeaders().size(), "one session cookie + one binding-clearing cookie");
 
-            String sessionSetCookie = outcome.setCookieHeaders().get(0);
+            String sessionSetCookie = outcome.setCookieHeaders().getFirst();
             assertTrue(sessionSetCookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "="), sessionSetCookie);
             String bindingClear = outcome.setCookieHeaders().get(1);
             assertTrue(bindingClear.contains(BindingCookieCodec.COOKIE_NAME + "="), bindingClear);
@@ -238,7 +239,7 @@ class CallbackEndpointTest {
         void shouldStoreSession() {
             CallbackOutcome outcome = endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
 
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().get(0)).orElseThrow();
+            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
             Optional<SessionRecord> session = sessionStore.resolve(sessionId, T0);
 
             assertTrue(session.isPresent(), "the session was created under the opaque id from the cookie");

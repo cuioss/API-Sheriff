@@ -21,9 +21,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * The exact-match registry of the gateway's reserved OIDC endpoints (D2).

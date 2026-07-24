@@ -26,13 +26,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
+
+import de.cuioss.sheriff.token.client.flow.FlowContext;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-
-import de.cuioss.sheriff.token.client.flow.FlowContext;
 
 /**
  * Tests for the D2b pending-authorization primitives: the bounded single-use

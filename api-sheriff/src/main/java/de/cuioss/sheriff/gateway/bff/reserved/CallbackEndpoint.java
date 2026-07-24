@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -40,6 +39,8 @@ import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * The OIDC auth-code callback endpoint ({@code oidc.redirect_uri}) — the browser-facing landing

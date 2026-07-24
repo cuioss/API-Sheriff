@@ -51,7 +51,7 @@ import lombok.Builder;
  */
 @Builder
 public record SessionRecord(String sessionId, String accessToken, Optional<String> refreshToken, String idToken,
-        String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optional<Instant> authTime) {
+String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optional<Instant> authTime) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();

@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -147,7 +148,7 @@ class CsrfDefenceTest {
         assertRejected(closed, request(HttpMethod.POST, Map.of(ORIGIN_HEADER, List.of(TRUSTED_ORIGIN))),
                 "with no trusted origins configured, every Origin is untrusted");
         assertDoesNotThrow(() -> closed.enforce(request(HttpMethod.POST,
-                Map.of(SEC_FETCH_SITE_HEADER, List.of("same-origin")))),
+                        Map.of(SEC_FETCH_SITE_HEADER, List.of("same-origin")))),
                 "a same-origin fetch still passes with an empty trusted set");
     }
 
