@@ -21,6 +21,7 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
@@ -50,6 +51,17 @@ import org.eclipse.microprofile.health.Readiness;
  *       resolution failure ({@link GatewayException}) marks the probe {@code DOWN} with the cause.
  *       A gateway with no {@code token_validation} block needs no bearer validation, so JWKS is
  *       reported {@code not-applicable} and does not gate readiness.</li>
+ *   <li><strong>Issuer reachability (mode: server)</strong> — when the gateway runs a BFF
+ *       {@code oidc.session.mode: server} deployment, the OIDC issuer must be reachable for the
+ *       gateway to mediate and validate the confidential-client tokens. This reuses the same
+ *       JWKS-backed validation health check above (resolving the {@link GatewayValidator}
+ *       {@link TokenValidator} reaches every configured issuer's JWKS): a server-mode probe adds
+ *       an {@code oidc=server} datum and reports the issuer as {@code reachable} /
+ *       {@code unreachable} alongside the JWKS status, so a server-mode probe surfaces issuer
+ *       reachability explicitly. A server-mode deployment that configures no
+ *       {@code token_validation} block has no validation health check to reuse, so issuer
+ *       reachability is reported {@code unverified} — the confidential-client engine reaches the
+ *       issuer lazily on the first login and does not gate boot readiness.</li>
  * </ul>
  * The validator is resolved lazily through an {@link Instance} so a misconfigured JWKS source
  * yields a clean {@code DOWN} response rather than failing this probe's own construction.
@@ -67,6 +79,13 @@ public class GatewayReadinessCheck implements HealthCheck {
     private static final String DATA_JWKS = "jwks";
     private static final String DATA_ISSUERS = "issuers";
     private static final String DATA_ERROR = "error";
+    private static final String DATA_OIDC = "oidc";
+    private static final String DATA_ISSUER_REACHABILITY = "issuer_reachability";
+
+    private static final String MODE_SERVER = "server";
+    private static final String ISSUER_REACHABLE = "reachable";
+    private static final String ISSUER_UNREACHABLE = "unreachable";
+    private static final String ISSUER_UNVERIFIED = "unverified";
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> gatewayValidator;
@@ -95,8 +114,20 @@ public class GatewayReadinessCheck implements HealthCheck {
         gatewayConfig.metadata().flatMap(Metadata::configVersion)
                 .ifPresent(version -> builder.withData(DATA_CONFIG_VERSION, version));
 
+        boolean serverMode = isServerSessionMode();
+        if (serverMode) {
+            builder.withData(DATA_OIDC, MODE_SERVER);
+        }
+
         Optional<TokenValidationConfig> tokenValidation = gatewayConfig.tokenValidation();
         if (tokenValidation.isEmpty()) {
+            // No bearer validation configured, so there is no JWKS-backed validation health check to
+            // reuse. A server-mode deployment reaches its issuer lazily through the confidential-client
+            // engine on the first login, which does not gate boot readiness — so issuer reachability is
+            // reported unverified rather than gating the probe DOWN.
+            if (serverMode) {
+                builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNVERIFIED);
+            }
             return builder.withData(DATA_JWKS, "not-applicable").up().build();
         }
 
@@ -104,11 +135,30 @@ public class GatewayReadinessCheck implements HealthCheck {
         builder.withData(DATA_ISSUERS, issuerCount);
         try {
             gatewayValidator.get();
-            return builder.withData(DATA_JWKS, "ready").up().build();
+            builder.withData(DATA_JWKS, "ready");
+            if (serverMode) {
+                builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_REACHABLE);
+            }
+            return builder.up().build();
         } catch (GatewayException | CreationException failure) {
-            return builder.withData(DATA_JWKS, "unavailable")
-                    .withData(DATA_ERROR, String.valueOf(failure.getMessage()))
-                    .down().build();
+            builder.withData(DATA_JWKS, "unavailable")
+                    .withData(DATA_ERROR, String.valueOf(failure.getMessage()));
+            if (serverMode) {
+                builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNREACHABLE);
+            }
+            return builder.down().build();
         }
+    }
+
+    /**
+     * @return {@code true} when the gateway runs a BFF {@code oidc.session.mode: server} deployment,
+     *         so issuer reachability is reported as part of readiness
+     */
+    private boolean isServerSessionMode() {
+        return gatewayConfig.oidc()
+                .flatMap(OidcConfig::session)
+                .flatMap(OidcConfig.Session::mode)
+                .filter(MODE_SERVER::equalsIgnoreCase)
+                .isPresent();
     }
 }

@@ -36,7 +36,8 @@ class EventTypeTest {
     class SuccessEvents {
 
         @ParameterizedTest
-        @EnumSource(names = {"REQUEST_FORWARDED", "TOKEN_REFRESHED", "CONFIG_LOADED"})
+        @EnumSource(names = {"REQUEST_FORWARDED", "TOKEN_REFRESHED", "CONFIG_LOADED",
+                "SESSION_CREATED", "SESSION_DESTROYED", "SESSION_REFRESH_FAILED", "BACKCHANNEL_LOGOUT"})
         @DisplayName("Should carry no category and no HTTP mapping")
         void shouldCarryNoCategoryAndNoHttpMapping(EventType eventType) {
             assertAll("success event " + eventType,
@@ -80,6 +81,7 @@ class EventTypeTest {
                 "TOKEN_INVALID,             401, AUTHENTICATION",
                 "SCOPE_MISSING,             403, AUTHORIZATION",
                 "CSRF_REJECTED,             403, AUTHORIZATION",
+                "LOGOUT_TOKEN_INVALID,      400, AUTHENTICATION",
                 "UPSTREAM_ERROR,            502, UPSTREAM",
                 "UPSTREAM_CIRCUIT_OPEN,     503, UPSTREAM",
                 "UPSTREAM_TIMEOUT,          504, UPSTREAM"
