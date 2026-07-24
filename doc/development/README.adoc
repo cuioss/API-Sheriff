@@ -48,6 +48,11 @@ This tree is seeded here and grows as contributor-facing material lands.
   the edge protocol-dispatch seam that routes WebSocket and gRPC down their specialised paths --
   including where the handshake/relay and forced-h2/trailer code lives, and how to add a new
   processor.
+
+| link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split]
+| The Vert.x `NetServer` front architecture, the accept-time L4/L7 split, the internal-handoff
+  loopback relay and public/internal port ownership, the runtime Host-vs-SNI smuggle guard, and the
+  fail-closed (GW-06) rationale with the Traefik / KrakenD CVEs it answers.
 |===
 
 == Scope of This Layer

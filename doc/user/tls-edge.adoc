@@ -1,0 +1,78 @@
+= API Sheriff -- TLS Edge: Passthrough SNI and mTLS
+:toc:
+:toclevels: 2
+:sectnums:
+
+An operator guide to the two TLS-edge features: *SNI passthrough* (relay selected hostnames at L4
+without terminating) and *mTLS* (require and verify a client certificate on terminated
+connections). This topic describes how to *configure and operate* these keys; the authoritative
+field contract lives in the link:../configuration.adoc#_tls[Configuration Reference `tls` section],
+and the design rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic].
+
+== Passthrough SNI
+
+A passthrough entry maps an *SNI hostname* to a *topology alias*; every connection whose TLS
+ClientHello carries that SNI is relayed, undecrypted, to the alias's `host:port`. The gateway does
+not terminate it, sees no L7 detail, and the *backend* presents its own certificate to the client.
+
+[source,yaml]
+----
+tls:
+  passthrough_sni:
+    backend.example.com: PASSTHROUGH_BACKEND   # SNI -> topology alias
+----
+
+The alias resolves via `topology.properties` / `TOPOLOGY_PASSTHROUGH_BACKEND`, exactly like a
+route's `base_url`, so a passthrough target is relocated per environment by changing only the
+topology.
+
+Operating rules to keep in mind:
+
+* *Exact match, case-insensitive, no wildcards.* Each hostname is listed literally;
+  `*.example.com` is not supported. List every host you intend to pass through.
+* *No base path on the alias.* An L4 relay has no notion of a path -- the resolved URL must be a
+  bare `host:port`. A base-path'd alias fails the boot.
+* *Declared here, per SNI -- never on a route.* Passthrough is a listener-level concern, not a
+  route property.
+* *Terminated and passthrough coexist* on the same public port. Any SNI you do not list is
+  terminated and runs the full L7 pipeline.
+* *A terminated request whose `Host` names a passthrough SNI is rejected `404`* before routing --
+  this is the runtime Host-smuggle guard; it is automatic and needs no configuration.
+
+== mTLS (client-certificate verification)
+
+Enabling `mtls` makes the *terminated* listener require and verify a client certificate against a
+configured CA trust anchor. Passthrough connections are unaffected -- the gateway never participates
+in that handshake.
+
+[source,yaml]
+----
+tls:
+  mtls:
+    enabled: true
+    client_ca: /etc/sheriff/client-ca.pem   # the trust anchor client certs must chain to
+----
+
+A connection presenting no certificate, or one that does not chain to `client_ca`, is rejected at
+the *TLS handshake* -- before any HTTP is exchanged. There is no application-level fallback and no
+"optional/want" mode: mTLS is require-and-verify or off.
+
+== Operator Consideration: Emergency Trust-Root Replacement
+
+`client_ca` is a *single global trust anchor* for the whole terminated listener. Replacing it has a
+*global blast radius* that every operator must understand before relying on mTLS:
+
+* *Swapping `client_ca` invalidates the entire old trust root at once.* Every client certificate
+  that chained to the old CA stops being accepted the moment the new `client_ca` takes effect --
+  there is no gradual cutover and no per-client exemption.
+* *There is no per-certificate revocation.* You cannot revoke one compromised client certificate
+  in isolation; the only lever is replacing the trust root, which rejects *all* certificates under
+  the old root.
+* *No CRL or OCSP initially.* Certificate-revocation-list and OCSP checking are *not* performed.
+  Revocation is therefore an all-or-nothing trust-root rotation, not a targeted per-certificate
+  action.
+
+Plan trust-root rotation as a coordinated event: stage the new client certificates to every client
+*before* switching `client_ca`, because the switch is atomic and unforgiving. For a single
+compromised client where you cannot rotate the whole fleet immediately, the compensating control is
+network-level (drop the client at the perimeter), not certificate-level.

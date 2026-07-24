@@ -80,6 +80,20 @@ public final class K6BenchmarkLogMessages {
                 .identifier(4)
                 .template("Wrote comparison summary covering %s aspect(s) to %s")
                 .build();
+
+        /** Logged once when the empty-passthrough_sni no-regression comparison starts. */
+        public static final LogRecord PASSTHROUGH_BASELINE_START = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(5)
+                .template("Comparing empty-passthrough_sni run '%s' against PLAN-04 baseline '%s'")
+                .build();
+
+        /** Logged once when the empty-passthrough_sni run stays within the no-regression noise band. */
+        public static final LogRecord PASSTHROUGH_BASELINE_OK = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(6)
+                .template("Passthrough empty-mode no-regression check passed within the %s noise band")
+                .build();
     }
 
     /**
@@ -145,6 +159,27 @@ public final class K6BenchmarkLogMessages {
                 .prefix(PREFIX)
                 .identifier(207)
                 .template("No results directory for target '%s' under %s")
+                .build();
+
+        /** Logged when the passthrough baseline comparator is invoked without the results directory. */
+        public static final LogRecord PASSTHROUGH_BASELINE_USAGE_ERROR = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(208)
+                .template("Usage: PassthroughBaselineComparator <k6-results-dir>")
+                .build();
+
+        /** Logged when a summary the passthrough baseline comparison needs is absent. */
+        public static final LogRecord PASSTHROUGH_BASELINE_SUMMARY_MISSING = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(209)
+                .template("Missing k6 summary '%s' under %s — cannot run the passthrough baseline comparison")
+                .build();
+
+        /** Logged when the empty-passthrough_sni run regressed beyond the no-regression noise band. */
+        public static final LogRecord PASSTHROUGH_BASELINE_REGRESSION = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(210)
+                .template("Passthrough empty-mode regressed beyond the %s noise band vs the PLAN-04 baseline: %s")
                 .build();
     }
 }

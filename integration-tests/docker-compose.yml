@@ -33,6 +33,72 @@ services:
     networks:
       - api-sheriff
 
+  # Toxiproxy sits in front of the TLS passthrough backend so PassthroughFaultIT can inject a
+  # mid-stream reset and prove the opaque L4 relay surfaces the fault as a connection abort rather
+  # than a hang (GW passthrough resilience). Pinned image with a healthcheck; the admin API (8474)
+  # is published to the host so the Failsafe-side IT creates the proxy and adds the reset_peer toxic
+  # at test time — no static proxy config file is mounted. Added beside keycloak as a purely
+  # additive service; the existing services are untouched.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "8474:8474"  # Toxiproxy admin/control API, driven by PassthroughFaultIT from the host
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # TLS-enabled passthrough target backing the accept-time SNI split's opaque L4 relay. It serves
+  # HTTPS on 8443 with its OWN self-signed certificate (CN=passthrough-backend), so TlsPassthroughIT
+  # can assert the peer certificate identity it observes through the relay is the backend's — proof
+  # the gateway relayed the encrypted stream opaquely and never terminated it. Reached by the gateway
+  # on the internal network as passthrough-backend:8443 (direct path), or via toxiproxy for the
+  # mid-stream fault test. No host port is published — it is reached only inside the compose network.
+  # The cert is generated at container start (least infrastructure: no pre-provisioned key material),
+  # mirroring the self-signed convention the certificates/ scripts use for the terminated listener.
+  passthrough-backend:
+    image: nginx:1.27-alpine
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache openssl >/dev/null 2>&1
+        openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
+          -keyout /etc/nginx/passthrough-backend.key \
+          -out /etc/nginx/passthrough-backend.crt \
+          -subj "/CN=passthrough-backend/OU=Integration Testing/O=API-Sheriff/L=Berlin/ST=Berlin/C=DE" \
+          -addext "subjectAltName=DNS:passthrough-backend,DNS:passthrough.test.example,IP:127.0.0.1"
+        cat > /etc/nginx/conf.d/default.conf <<'NGINX'
+        server {
+          listen 8443 ssl;
+          server_name passthrough-backend;
+          ssl_certificate     /etc/nginx/passthrough-backend.crt;
+          ssl_certificate_key /etc/nginx/passthrough-backend.key;
+          location / {
+            add_header Content-Type text/plain always;
+            return 200 "passthrough-backend\n";
+          }
+        }
+        NGINX
+        exec nginx -g 'daemon off;'
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    healthcheck:
+      # /dev/tcp readiness probe on the TLS port; nginx:alpine ships /bin/sh but the ssl handshake
+      # is not exercised here — a TCP accept is sufficient to gate dependents on listener readiness.
+      test: ["CMD-SHELL", "test -f /etc/nginx/passthrough-backend.crt && nginx -t"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
   # Routable upstream backend for the proxy: /anything/* echoes the complete
   # received request as JSON, so integration tests can assert exactly what the
   # gateway forwarded. Reached by the gateway on the internal network as

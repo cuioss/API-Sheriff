@@ -32,6 +32,12 @@ layer.
   setting `allowed_origins`, tuning `websocket.idle_timeout_seconds`, and authoring a gRPC route.
   Links to the Configuration Reference for the field contract and to the Architecture document
   for the gRPC error mapping.
+
+| link:tls-edge.adoc[TLS Edge -- Passthrough SNI and mTLS]
+| Configuring `tls.passthrough_sni` (relay selected hostnames at L4 without terminating) and
+  `tls.mtls` (require-and-verify a client certificate on terminated connections), plus the
+  emergency trust-root-replacement blast radius every operator must understand before relying on
+  mTLS. Links to the Configuration Reference for the field contract.
 |===
 
 == Scope of This Layer

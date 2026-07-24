@@ -28,7 +28,7 @@ import lombok.experimental.UtilityClass;
  * assertable. This catalogue's identifier ranges are disjoint from
  * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}'s (the boot-time configuration
  * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1} / {@code 4} /
- * {@code 100} / {@code 103-106} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
+ * {@code 6-7} / {@code 100} / {@code 103-108} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
  * there — never renumber one catalogue without checking the other for a collision.
  * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
  * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
@@ -60,6 +60,20 @@ public final class ApiSheriffLogMessages {
                 .prefix(PREFIX)
                 .identifier(4)
                 .template("WebSocket relay established for route '%s'")
+                .build();
+
+        /** An opaque L4 passthrough relay to the resolved backend was established for a mapped SNI. */
+        public static final LogRecord PASSTHROUGH_RELAY_ESTABLISHED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(6)
+                .template("Passthrough relay established for SNI '%s' to upstream '%s'")
+                .build();
+
+        /** The accept-time SNI front listener bound the public TLS port at boot. */
+        public static final LogRecord SNI_FRONT_LISTENER_STARTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(7)
+                .template("Accept-time SNI front listener started on port %s (%s passthrough SNI mapping(s))")
                 .build();
     }
 
@@ -109,6 +123,28 @@ public final class ApiSheriffLogMessages {
                 .prefix(PREFIX)
                 .identifier(106)
                 .template("WebSocket relay on route '%s' reclaimed after idle timeout of %s seconds")
+                .build();
+
+        /**
+         * A TLS ClientHello was failed closed to the terminated-strict path (GW-06): it carried no
+         * usable SNI, was malformed, or exceeded the reassembly bound. Records the disposition only —
+         * never the raw ClientHello bytes.
+         */
+        public static final LogRecord CLIENT_HELLO_FAIL_CLOSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(107)
+                .template("TLS ClientHello failed closed to terminated path: %s")
+                .build();
+
+        /**
+         * A terminated request's {@code Host} header named a reserved passthrough SNI (Host-vs-SNI
+         * smuggle), rejected 404 before route selection. Records a fixed disposition only — never the
+         * raw {@code Host} value.
+         */
+        public static final LogRecord PASSTHROUGH_HOST_SMUGGLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(108)
+                .template("Host-vs-SNI smuggle rejected before route selection: %s")
                 .build();
     }
 }

@@ -765,6 +765,20 @@ so an ECH client would treat the handshake as ECH rejection (it authenticates th
 `public_name`, refuses to send the real request, and retries or aborts). Listing an *inner*
 hostname in `passthrough_sni` does nothing -- it never appears in the outer SNI.
 
+[[_tls_active]]
+*Status -- active.* The `tls.passthrough_sni` and `tls.mtls` blocks are *enforced at runtime*, not
+merely parsed: an accept-time front listener reads the SNI from the reassembled ClientHello and
+splits each connection at L4 (passthrough) or L7 (terminated); terminated connections apply
+`mtls` client-certificate verification; and the runtime Host-vs-SNI smuggle guard rejects a
+terminated request whose `Host` names a passthrough SNI with `404` before route selection. Three
+constraints an operator must keep in mind, all stated above and restated here because they are the
+common configuration mistakes: SNI matching is *exact* -- *no wildcard* entries; a passthrough
+alias URL carries *no base path*; and `mtls` applies to *terminated connections only* (the gateway
+never participates in a passthrough handshake). Operating these keys -- including the emergency
+trust-root-replacement blast radius -- is covered in the link:user/tls-edge.adoc[operator TLS-edge
+topic]; the front-listener architecture and the fail-closed (GW-06) rationale are covered in the
+link:development/tls-edge.adoc[developer TLS-edge topic].
+
 [[_protocols]]
 === `protocol`
 
