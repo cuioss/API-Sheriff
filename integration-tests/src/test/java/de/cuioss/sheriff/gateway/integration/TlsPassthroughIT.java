@@ -29,7 +29,8 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+
+import de.cuioss.sheriff.gateway.integration.MtlsHandshakeIT.TrustAllManager;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -105,28 +106,6 @@ class TlsPassthroughIT extends BaseIntegrationTest {
             Certificate[] chain = socket.getSession().getPeerCertificates();
             assertTrue(chain.length > 0, "the handshake must yield a peer certificate chain");
             return (X509Certificate) chain[0];
-        }
-    }
-
-    /**
-     * A trust-all {@link X509TrustManager} scoped strictly to this black-box IT — it inspects the
-     * negotiated identity itself, so it must accept whatever certificate the peer presents.
-     */
-    private static final class TrustAllManager implements X509TrustManager {
-
-        @Override
-        public void checkClientTrusted(X509Certificate[] chain, String authType) {
-            // Trust-all test manager: the local stack's self-signed certificates are intentionally accepted.
-        }
-
-        @Override
-        public void checkServerTrusted(X509Certificate[] chain, String authType) {
-            // Trust-all test manager: the negotiated identity is asserted by the test body, not rejected here.
-        }
-
-        @Override
-        public X509Certificate[] getAcceptedIssuers() {
-            return new X509Certificate[0];
         }
     }
 }

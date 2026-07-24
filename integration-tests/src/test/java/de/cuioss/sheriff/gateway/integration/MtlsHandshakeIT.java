@@ -127,11 +127,12 @@ class MtlsHandshakeIT extends BaseIntegrationTest {
     }
 
     /**
-     * A trust-all {@link X509TrustManager} for the stack's self-signed server certificate. Scoped
-     * strictly to this black-box IT — never a production trust decision. Only the client-auth outcome
-     * is under test here.
+     * A trust-all {@link X509TrustManager} for a stack's self-signed server certificate. Scoped
+     * strictly to black-box ITs — never a production trust decision. Package-visible and shared with
+     * {@code PassthroughFaultIT} and {@code TlsPassthroughIT} so the three TLS-edge ITs do not each
+     * carry their own copy.
      */
-    private static final class TrustAllManager implements X509TrustManager {
+    static final class TrustAllManager implements X509TrustManager {
 
         @Override
         public void checkClientTrusted(X509Certificate[] chain, String authType) {

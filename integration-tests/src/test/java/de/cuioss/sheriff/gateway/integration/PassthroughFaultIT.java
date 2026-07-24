@@ -25,7 +25,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.List;
 import javax.net.ssl.SNIHostName;
@@ -34,7 +33,8 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+
+import de.cuioss.sheriff.gateway.integration.MtlsHandshakeIT.TrustAllManager;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -166,28 +166,6 @@ class PassthroughFaultIT extends BaseIntegrationTest {
             }
             // Best-effort teardown: a missing proxy (404) or transient control-plane error must not
             // fail the test body — the assertion under test is the relay abort, not proxy bookkeeping.
-        }
-    }
-
-    /**
-     * A trust-all {@link X509TrustManager} for the relayed self-signed backend certificate. Scoped
-     * strictly to this black-box IT — never a production trust decision.
-     */
-    private static final class TrustAllManager implements X509TrustManager {
-
-        @Override
-        public void checkClientTrusted(X509Certificate[] chain, String authType) {
-            // Trust-all test manager: not exercised on the client side.
-        }
-
-        @Override
-        public void checkServerTrusted(X509Certificate[] chain, String authType) {
-            // Trust-all test manager: the relayed backend's self-signed certificate is intentionally accepted.
-        }
-
-        @Override
-        public X509Certificate[] getAcceptedIssuers() {
-            return new X509Certificate[0];
         }
     }
 }
