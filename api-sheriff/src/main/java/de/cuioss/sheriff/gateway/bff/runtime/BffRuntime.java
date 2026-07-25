@@ -255,12 +255,12 @@ public final class BffRuntime {
      * @since 1.0
      */
     public record ReservedHttpRequest(String rawQuery, @Nullable
-        String cookieHeader, @Nullable
-        String claimsParam,
+            String cookieHeader, @Nullable
+            String claimsParam,
     @Nullable
     String returnUrlParam, @Nullable
-        String stateParam, @Nullable
-        String rawFormBody) {
+            String stateParam, @Nullable
+            String rawFormBody) {
 
         /**
          * Canonical constructor normalizing an absent raw query to the empty string.
@@ -286,8 +286,8 @@ public final class BffRuntime {
      * @since 1.0
      */
     public record ReservedHttpResponse(int status, @Nullable
-        String location, @Nullable
-        String jsonBody,
+            String location, @Nullable
+            String jsonBody,
     Map<String, String> headers, List<String> setCookieHeaders) {
 
         /**

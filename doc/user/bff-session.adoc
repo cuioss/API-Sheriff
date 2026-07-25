@@ -1,0 +1,130 @@
+= Server-Session BFF -- Operator Setup
+:toc:
+:toclevels: 3
+:sectnums:
+
+A task-oriented guide for operators standing up the *server-session BFF* (Variant 2): API Sheriff
+as an OIDC confidential client that holds tokens server-side and hands the browser only an opaque
+session-id cookie. It tells you *how* to configure and run the variant; the field-by-field contract
+lives in the link:../configuration.adoc#_oidc[Configuration Reference (`oidc`)] and the design
+rationale in link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based].
+
+== When to choose this variant
+
+Choose the server-session BFF when server-side-only token custody is a hard requirement: the token
+never leaves the gateway, not even encrypted. It is *stateful* -- it keeps an in-memory session
+store -- so it fits single-node or sticky-session deployments. A multi-node non-sticky deployment,
+or one that must avoid server-side session state, is the
+link:../variants/03-bff-cookie.adoc[cookie-based variant]'s job instead.
+
+== Prerequisites
+
+* An OIDC provider (IdP) where you can register a *confidential client* and obtain a
+  `client_id` / `client_secret`.
+* A registered *redirect URI* pointing at the gateway's own callback path (`oidc.redirect_uri`),
+  matched exactly at the IdP.
+* The client secret and any session-related secrets available as environment variables (never
+  written inline -- `client_secret` must be an `${ENV_VAR}` reference).
+
+== Configure the confidential client
+
+Add an `oidc` block to `gateway.yaml` and set at least one route's effective auth to
+`require: session`. A minimal server-session configuration:
+
+[source,yaml]
+----
+# gateway.yaml
+oidc:
+  issuer: https://idp.example.com/realms/main
+  client_id: api-sheriff
+  client_secret: ${SHERIFF_CLIENT_SECRET}     # must be an ${ENV_VAR} reference
+  redirect_uri: https://gw.example.com/auth/callback   # registered exactly at the IdP
+  scopes: [openid, profile, orders.read]      # include every scope a route requires
+  login:
+    path: /auth/login                         # optional: gateway-owned login-start URL
+  user_info:
+    path: /auth/userinfo                      # optional: curated identity view for the SPA
+    allowed_claims: [sub, name, email]        # disclosure ceiling; empty discloses nothing
+    default_view: [sub, name]                 # subset of allowed_claims
+  session:
+    mode: server                              # server-side token store (this variant)
+    store: memory                             # REQUIRED for server mode; only initial option
+    max_sessions: 10000                       # DoS guard on the in-memory store
+    cookie_name: __Host-sheriff
+    ttl_seconds: 3600                         # absolute lifetime from login
+    csrf:
+      trusted_origins: [https://app.example.com]   # SPA origins allowed on unsafe methods
+    refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
+----
+
+The gateway ignores the `oidc` block entirely unless a route's effective auth is `require: session`,
+so a bearer-only deployment is unaffected by its presence.
+
+== Protect a route with a session
+
+Mark the endpoint (or an anchor) `require: session`; the mediated `Authorization: Bearer` is then
+injected automatically from the stored token, and any inbound `Authorization` from the browser is
+stripped:
+
+[source,yaml]
+----
+# endpoints/app1.yaml
+endpoint:
+  id: app1
+  base_url: APP1
+  auth: { require: session, required_scopes: [orders.read] }
+  routes:
+    - id: orders-api
+      match: { path_prefix: /api/orders }
+      upstream: { path: /orders }
+----
+
+== Gateway-owned reserved paths
+
+On the OIDC host (the host of `oidc.redirect_uri`) the gateway carves out its own exact paths
+*before* the proxy route table, so a proxy prefix can never swallow them. Configure them so they do
+not collide with a proxied namespace you need:
+
+[cols="1,2"]
+|===
+| Path | Purpose
+
+| `oidc.redirect_uri` (path) | Auth-code callback that lands a login.
+| `oidc.login.path` | Login-initiation entry point that starts a login (optional).
+| `oidc.user_info.path` | Curated identity view served to the SPA (optional).
+| `oidc.logout.path` | RP-initiated logout.
+| `oidc.logout.post_logout_redirect_uri` (path) | Logout-return verification leg.
+| `oidc.logout.backchannel_path` | Back-channel logout receiver (server mode only).
+|===
+
+== Serve a curated identity view to the SPA
+
+If the SPA needs profile fields, expose `oidc.user_info.path` rather than forwarding raw tokens.
+Disclosure is *closed by default*: list exactly the claims you are willing to reveal in
+`allowed_claims`, and set `default_view` (a subset) for the no-claims-requested case. A claim
+absent from `allowed_claims` is never returned.
+
+== CSRF for a cross-origin SPA
+
+Every `require: session` route enforces origin verification on unsafe methods (non-GET/HEAD/OPTIONS)
+-- this is fixed, not a knob. If your SPA is served from a different origin than the gateway, list
+its origin in `oidc.session.csrf.trusted_origins` *and* enable `security_headers.cors` with
+`allow_credentials: true`. This works only for *same-site* origins (same registrable domain); a
+truly cross-site SPA never gets the `SameSite=Lax` cookie attached -- host it under the gateway's
+site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
+
+== Operate
+
+* *Sessions are in-memory.* A gateway restart drops all sessions and users re-authenticate. Size
+  `max_sessions` for expected concurrency; it caps memory against a login flood.
+* *Absolute TTL.* `ttl_seconds` is counted from login and is not extended by refresh; on expiry the
+  user re-authenticates.
+* *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
+  without the IdP -- but logins fail until the issuer is reachable. Confirm egress to the issuer
+  (and its JWKS) is permitted.
+
+== See also
+
+* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract.
+* link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] -- design and flow rationale.
+* link:../development/bff-session.adoc[Contributor guide -- server-session BFF] -- building and extending it.

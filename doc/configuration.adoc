@@ -242,6 +242,13 @@ oidc:                              # only used by the BFF variants (2 and 3)
   client_secret: ${SHERIFF_CLIENT_SECRET}
   scopes: [openid, profile]
   redirect_uri: https://gw.example.com/auth/callback
+  login:
+    path: /auth/login              # gateway-owned login-initiation entry point (reserved path)
+  user_info:
+    path: /auth/userinfo           # gateway-served curated identity view (reserved path)
+    allowed_claims: [sub, name, email]   # operator allowlist; empty (default) discloses nothing
+    default_view: [sub, name]      # returned when the caller requests no explicit claims;
+                                   #   every entry must lie within allowed_claims
   logout:
     path: /logout                  # gateway-served; triggers RP-initiated logout at the IdP
     post_logout_redirect_uri: https://gw.example.com/logout/done   # gateway-owned return leg,
@@ -252,6 +259,8 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   server-mode-only, the encryption keys cookie-mode-only
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
     store: memory                  # REQUIRED for server mode; memory is the only initial option
+    max_sessions: 10000            # server mode only: upper bound on concurrently stored
+                                   #   sessions -- a DoS guard on the in-memory store
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM)
     previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation
@@ -518,13 +527,23 @@ live in two endpoint files and are disjoint by host.
 
 A request that matches no route is rejected with `404`.
 
-*Reserved gateway paths.* The gateway's own OIDC endpoints -- the `oidc.redirect_uri` path,
-`oidc.logout.path`, its return path, and `oidc.logout.backchannel_path` -- are matched
-*exactly, before the route table*, but only on the *OIDC host* (the host of
-`oidc.redirect_uri`). A proxy route such as `path_prefix: /auth` therefore never swallows the
-`/auth/callback` callback, while other virtual hosts (e.g. machine-to-machine API hosts with
-`bearer` routes) keep their full path namespace. Routes remain free to use neighbouring
-prefixes; only the exact reserved paths on that one host are carved out.
+*Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
+route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). Up to *six* paths
+are carved out:
+
+. the `oidc.redirect_uri` path -- the auth-code *callback*;
+. `oidc.logout.path` -- RP-initiated *logout*;
+. its return path (`oidc.logout.post_logout_redirect_uri`) -- the *logout-return* leg;
+. `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
+. `oidc.user_info.path` -- the session/*user-info* endpoint serving the curated identity view;
+. `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login.
+
+Each is registered only when its configuration key is present, so a deployment that omits
+`oidc.user_info` or `oidc.login` carves out fewer than six. A proxy route such as
+`path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while other virtual
+hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path namespace.
+Routes remain free to use neighbouring prefixes; only the exact reserved paths on that one host
+are carved out.
 
 === Defaults for omitted blocks
 
@@ -1086,6 +1105,30 @@ ignored when no route's effective auth is `require: session`.
 | The OIDC confidential-client identity. `client_secret` must be an `${ENV_VAR}` reference.
   `redirect_uri` is the gateway's own callback route, registered exactly at the IdP.
 
+| `login.path`
+| Gateway-owned *login-initiation* entry point -- the reserved path a browser navigates to in
+  order to *start* a login (the mirror of the `redirect_uri` callback that *lands* it). A caller
+  that already holds a live session is redirected straight to the same-origin-validated return
+  URL (no fresh auth-code flow); an unauthenticated caller is driven into the authorization-code
+  flow. Optional -- omit it and the deployment simply has no gateway-owned login-start URL.
+  Registered as a reserved gateway path when present.
+
+| `user_info.path`
+| Gateway-served *user-info* endpoint returning the curated identity view assembled from the
+  session's tokens -- never a passthrough of the raw ID/userinfo claims. Registered as a
+  reserved gateway path when present; omit it and no user-info endpoint is exposed.
+
+| `user_info.allowed_claims`
+| The operator claim *allowlist* bounding what `user_info.path` may ever disclose. The secure
+  default is *closed*: an empty (or omitted) allowlist discloses *nothing*, so the operator --
+  never the browser client -- widens disclosure. A claim absent from this list is never returned,
+  regardless of what the caller requests.
+
+| `user_info.default_view`
+| The claim selector returned when the caller requests no explicit claims. Every entry *must* lie
+  within `user_info.allowed_claims` (a default-view claim outside the allowlist fails the boot),
+  so the curated default can never exceed the disclosure ceiling.
+
 | `logout.path`
 | Gateway-served logout endpoint (default `/logout`): revokes the held tokens (RFC 7009),
   destroys the local session/cookie, and redirects to the IdP `end_session_endpoint` with
@@ -1135,6 +1178,12 @@ ignored when no route's effective auth is `require: session`.
   value; a shared external store is deliberately unsupported for now (see the trade-off in
   link:variants/02-bff-session.adoc[Variant 2]). There is no implicit default -- server mode must
   name its store explicitly.
+
+| `session.max_sessions`
+| *Server mode only.* Upper bound on the number of concurrently stored sessions -- a
+  denial-of-service guard on the in-memory store, so an unbounded stream of logins cannot exhaust
+  node memory. Unused in `cookie` mode (there is no server-side store to bound). Optional; omit it
+  to leave the store unbounded.
 
 | `session.cookie_name`
 | Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default

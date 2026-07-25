@@ -1,0 +1,112 @@
+= Server-Session BFF -- Contributor Guide
+:toc:
+:toclevels: 3
+:sectnums:
+
+A contributor-facing guide to the *server-session BFF* implementation (Variant 2): where its code
+lives, how to build and test it, and the one architectural rule that keeps it correct. It describes
+how to *work in* the code; the design rationale is in
+link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] and the canonical seam
+statement in link:../architecture.adoc#_bff_session_runtime[Architecture -- Server-session BFF runtime].
+
+== The engine boundary rule (read first)
+
+*The gateway re-implements no OAuth leg.* The confidential-client *engine* (`token-sheriff-client`)
+owns retrieval and flow -- auth-code + PKCE, `state`/`nonce`/exact `redirect_uri`, mix-up defence,
+refresh-with-rotation, RP-initiated logout, RFC 9470 step-up -- and the server-side token lifecycle.
+The *BFF* (this code) owns only the browser-facing part: the binding/session cookies, CSRF, request
+proxying, the curated user-info view, logout receivers, and RFC 9457 rendering for gateway-raised
+errors.
+
+When you add or change a reserved handler, drive an engine seam -- never hand-roll an OAuth request,
+a token exchange, or a JWKS fetch inside the gateway. If a capability seems to need a new OAuth leg,
+that leg belongs upstream in the engine, not here. This boundary is enforced by review and by the
+framework-agnostic package seam (below); keep it intact.
+
+== Where the code lives
+
+All BFF code is in the `api-sheriff` module under `de.cuioss.sheriff.gateway`:
+
+[cols="1,2"]
+|===
+| Package | Responsibility
+
+| `bff.session`
+| The session-resolution seam: `SessionRecord`, `SessionStore` (`InMemorySessionStore`), and
+  `SessionCookieCodec` (the opaque `__Host-` session cookie).
+
+| `bff.pending`
+| The pre-session transaction: `PendingAuthorizationRecord`/`Store` and `BindingCookieCodec` -- the
+  browser-binding cookie that ties an in-flight login to one browser until the callback lands.
+
+| `bff.login`
+| `LoginFlow` -- auth-code initiation over the engine's authorization seam.
+
+| `bff.reserved`
+| The reserved-endpoint handlers and the `ReservedPathRegistry`: `CallbackEndpoint`,
+  `LoginInitiationEndpoint`, `UserInfoEndpoint` (+ `ClaimAllowlistFilter`), `LogoutEndpoint`,
+  `BackchannelLogoutEndpoint`.
+
+| `bff.csrf` / `bff.refresh` / `bff.logout`
+| `CsrfDefence`; the `TokenRefreshCoordinator` / `StepUpCoordinator`; the logout token validator and
+  RP-initiated / back-channel logout logic.
+
+| `bff.runtime`
+| `BffRuntime` (the single edge-facing collaborator) and `SessionAuthenticationStage`.
+
+| `quarkus.BffRuntimeProducer`
+| The CDI producer that assembles the active runtime and binds the engine seams -- the only
+  framework-coupled BFF class.
+|===
+
+Every `bff.*` type is *framework-agnostic* (raw request pieces in, a rendered response out -- no
+JAX-RS/Vert.x coupling), so it is unit-testable without a container. The framework wiring is confined
+to `BffRuntimeProducer` and the edge (`gateway.edge`), which consults the `ReservedPathRegistry`
+before the proxy route table and dispatches a matched reserved path through `BffRuntime.dispatch(...)`.
+Keep new logic on the framework-agnostic side of that seam.
+
+== Build and test
+
+The canonical build commands are the ones in the repository `CLAUDE.md` (invoked through the build
+executor, never a raw `mvn`). For BFF work:
+
+* *Unit and module tests* -- run the `api-sheriff` module tests; the `bff.*` suites cover each
+  handler and codec directly, without a container, following the project AAA + CUI-generator
+  conventions.
+* *Quality gate + full verify* -- both must pass with zero findings before a commit (the
+  link:../development/README.adoc[contributor guide] and `CLAUDE.md` state the pre-commit process).
+
+Because the runtime is assembled by `BffRuntimeProducer` only when a global `oidc` block with
+`session.mode=server` and a `redirect_uri` is configured, a bearer-only test fixture gets the
+*inert* runtime and never touches the engine -- add a server-mode `oidc` fixture when a test needs
+the active path.
+
+== Entry points for integration and benchmarks
+
+* *Integration tests* live in the `integration-tests` module and run against the native image on the
+  Docker compose stack (Keycloak + upstream), under the integration-tests Maven profile. The BFF ITs
+  exercise the full login -> mediated call -> logout round-trip through a real IdP; a
+  `require: session` route is declared in the sheriff-config the IT container consumes.
+
+* *Benchmark* -- `benchmarks/src/main/resources/k6-scripts/session_mediated.js` measures the
+  steady-state mediation hot path (a pre-established session cookie replayed against a
+  `require: session` route: cookie -> store lookup -> bearer injection -> upstream), the
+  session-mediation peer of the `bearer` and plain-proxy baselines. `K6BenchmarkConverter` parses
+  its result alongside those baselines so mediation overhead is comparable, and leads the report
+  overview with the mediation figure when present. The login handshake is deliberately *not*
+  benchmarked -- it is IdP-bound, not a gateway hot path.
+
+== How to extend
+
+* *A new reserved endpoint* -- add its kind to `ReservedPathRegistry.ReservedEndpoint`, register its
+  path in `ReservedPathRegistry.from(...)`, write a framework-agnostic handler in `bff.reserved`,
+  wire it in `BffRuntimeProducer`, and route its kind in `BffRuntime.dispatch(...)`. Document the new
+  key in link:../configuration.adoc#_oidc[Configuration -- `oidc`] and grow the reserved-path list.
+* *A new session-runtime capability* -- keep it on the framework-agnostic side; drive any OAuth
+  interaction through an engine seam per the boundary rule above.
+
+== See also
+
+* link:../architecture.adoc#_bff_session_runtime[Architecture -- Server-session BFF runtime] -- the seam.
+* link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] -- the design.
+* link:../user/bff-session.adoc[Operator setup -- server-session BFF] -- how it is configured and run.
