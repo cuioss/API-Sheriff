@@ -1,0 +1,115 @@
+= ADR-0017: Accept-time SNI split at a dedicated front listener; passthrough relays opaquely at L4, everything else terminates internally
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A dedicated raw-TCP front listener owns the public TLS port, reassembles the ClientHello, and by SNI either opaquely L4-relays a passthrough match to its resolved backend or hands the still-encrypted connection to an internal terminating HTTPS listener that solely owns TLS termination and mTLS.
+// tags: tls, sni, edge, passthrough, mtls, fail-closed, listener-topology, framework-seam
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+A security gateway must serve two mutually-exclusive dispositions for an inbound TLS
+connection arriving on the same public port. Some hostnames must be relayed opaquely at
+L4 -- the gateway never sees plaintext and the backend presents its own certificate
+end-to-end. Every other hostname must be TLS-terminated at the gateway, with optional
+client-certificate (mTLS) verification.
+
+The disposition is knowable only from the Server Name Indication carried in the TLS
+ClientHello, which arrives before any handshake completes. A framework whose HTTPS
+listener exposes SNI only at its own handshake layer has, by the time SNI is visible,
+already committed to terminating the connection -- it offers no seam to divert a raw,
+still-encrypted TCP stream by SNI before termination. The architecture must decide where
+the accept-time SNI decision lives, how the two dispositions co-exist on one public port,
+and how the fail-closed posture is preserved: an ambiguous, empty, or SNI-less hello must
+never fall through to the more permissive path.
+
+== Decision
+
+* *A dedicated front listener owns the public TLS port.* It is a raw-TCP, non-terminating
+  listener that buffers bytes until the full ClientHello is reassembled, reads the SNI,
+  and routes on it:
+** SNI matches a configured passthrough entry -> opaque L4 relay to the topology-resolved
+   backend. The gateway never handshakes, so the backend's own certificate reaches the
+   client end-to-end.
+** SNI empty, unresolved, or non-matching -> the still-encrypted stream is handed to an
+   internal terminating HTTPS listener, which solely owns TLS termination and mTLS
+   client-certificate verification.
+* *Port ownership is split.* The public port belongs to the front listener; the
+  terminating listener moves to an internal port. Termination and mTLS are exclusively the
+  terminating listener's responsibility -- the passthrough path never participates in a
+  handshake.
+* *Fail-closed SNI.* The disposition is decided only after the full ClientHello is
+  reassembled. An empty or unresolved SNI takes the terminated-strict path -- never a
+  passthrough, never a no-client-cert default.
+* *Zero-overhead default.* When no passthrough hostnames are configured, the front listener
+  is not started and the single-terminating-listener topology is unchanged.
+
+== Consequences
+
+=== Positive
+
+* One public port serves both the opaque-relay and terminated dispositions, with the
+  disposition decided at the earliest possible point -- accept time, before any handshake.
+* End-to-end certificate identity is preserved for passthrough targets because the gateway
+  never terminates them.
+* The fail-closed rule is structural: an ambiguous hello cannot reach the permissive path,
+  independent of any per-request check.
+
+=== Negative
+
+* The listener topology is now two-tier (front plus internal), a permanent increase in
+  moving parts and a port-ownership contract that deployments must respect.
+* The gateway hand-rolls ClientHello reassembly and SNI extraction because the framework
+  exposes no pre-termination seam; that parser is a security-relevant surface the project
+  now owns and must test at handshake level, not by config assertion.
+
+=== Risks
+
+* A malformed or maximally-fragmented ClientHello is handled by failing closed to the
+  terminated-strict path. A passthrough client that emits a pathological hello loses
+  passthrough rather than risking a wrong disposition -- an accepted trade of availability
+  for a guaranteed-safe disposition.
+
+== Alternatives Considered
+
+* *Framework listener-level SNI seam.* Let the framework's own HTTPS listener read SNI
+  during its handshake and branch there. Rejected because the framework exposes SNI only
+  after it has committed to terminating the connection; there is no clean seam to divert a
+  raw, still-encrypted TCP stream by SNI before termination. Reading SNI at that layer
+  cannot yield an opaque L4 passthrough in which the backend presents its own certificate,
+  because the connection is already being terminated by the time SNI is visible.
+* *Single terminating listener that re-originates TLS to passthrough backends.* Terminate
+  every connection at the gateway and open a fresh TLS connection to the backend for
+  passthrough hostnames. Rejected because it breaks end-to-end certificate identity -- the
+  client sees the gateway's certificate, not the backend's -- and places the gateway on the
+  plaintext path for traffic that is explicitly meant to remain opaque, enlarging the trust
+  boundary rather than preserving it.
+
+Both alternatives place the SNI decision at or after the framework's termination
+commitment. The failure they share is that termination has already begun before the
+disposition is known, which is incompatible with opaque L4 passthrough and with a
+fail-closed, pre-handshake decision.
+
+== References
+
+* link:0005-module-structure.adoc[ADR-0005] -- the edge/core boundary the front listener respects
+* link:0008-data-plane-transport.adoc[ADR-0008] -- the upstream Vert.x streaming leg this ingress feeds
+* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] -- the resolved passthrough-alias map the front listener consumes
+* `doc/development/tls-edge.adoc` -- developer topic: front-listener architecture, the L4/L7 split, port ownership, and the GW-06 fail-closed rationale
+* `doc/security-threat-model.adoc` -- GW-06 fail-closed SNI
