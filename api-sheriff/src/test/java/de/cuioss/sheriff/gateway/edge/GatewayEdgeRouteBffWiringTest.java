@@ -23,6 +23,7 @@ import java.lang.annotation.Annotation;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -65,9 +66,15 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
+import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
+import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
+import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 
@@ -199,7 +206,7 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("CALLBACK with a stateless query yields 400 from the callback handler")
         void shouldDispatchCallback() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"), now);
             assertEquals(400, response.status());
         }
 
@@ -223,7 +230,7 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("BACKCHANNEL_LOGOUT with no form body yields 400 and is uncacheable")
         void shouldDispatchBackchannel() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null), now);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "POST"), now);
             assertEquals(400, response.status());
             assertEquals("no-store", response.headers().get("Cache-Control"));
         }
@@ -236,13 +243,113 @@ class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(now.plus(Duration.ofHours(1))).build());
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
-                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null), now);
+                    new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
             assertEquals(302, response.status());
             assertTrue(response.locationOptional().isPresent());
         }
 
         private BffRuntime.ReservedHttpRequest request(String cookie, String claims) {
-            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null);
+            return new BffRuntime.ReservedHttpRequest("", cookie, claims, null, null, null, "GET");
+        }
+    }
+
+    @Nested
+    @DisplayName("form_post callback dispatch (POST /auth/callback, body-parsed code/state)")
+    class FormPostCallbackDispatch {
+
+        private static final String RETURN_URL = "/dashboard";
+        private static final String RAW_ACCESS_TOKEN = "raw-access-token";
+        private static final String RAW_ID_TOKEN = "raw-id-token";
+        private static final String SUBJECT = "user-sub-1";
+        private final Instant now = Instant.parse("2026-07-25T10:00:00Z");
+
+        private PendingAuthorizationStore.InMemory pendingStore;
+        private BindingCookieCodec bindingCodec;
+        private SessionStore sessionStore;
+        private SessionCookieCodec codec;
+        private BffRuntime runtime;
+        private String state;
+        private String bindingCookieHeader;
+
+        @BeforeEach
+        void setUp() {
+            pendingStore = new PendingAuthorizationStore.InMemory(16);
+            bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
+            sessionStore = new InMemorySessionStore(16);
+            codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
+
+            FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
+            state = flow.state();
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, now);
+            pendingStore.store(pending);
+            bindingCookieHeader = bindingCodec.toSetCookieHeader(pending.id()).split(";", 2)[0];
+
+            runtime = formPostRuntime();
+        }
+
+        @Test
+        @DisplayName("POST body with code+state resolves the pending record and creates the session (302 + session cookie)")
+        void shouldCompleteFormPostLogin() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null,
+                            "code=auth-code&state=" + state, "POST"), now);
+
+            assertEquals(302, response.status(), "form_post code exchange completes the login");
+            assertEquals(Optional.of(RETURN_URL), response.locationOptional());
+            assertTrue(response.setCookieHeaders().stream()
+                    .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
+                    "the session cookie is set from the form_post callback");
+        }
+
+        @Test
+        @DisplayName("A duplicate code in the POST body is still rejected 400 (BFF-13 raw-parse defence)")
+        void shouldRejectDuplicateCodeInFormBody() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null,
+                            "code=first&code=second&state=" + state, "POST"), now);
+
+            assertEquals(400, response.status(), "a duplicated code in the form body is rejected by parse()");
+            assertTrue(pendingStore.consume(bindingCodec.readRecordId(bindingCookieHeader).orElseThrow(), now)
+                    .isPresent(), "the record is untouched — parse fails before binding resolution");
+        }
+
+        private BffRuntime formPostRuntime() {
+            CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
+                Map<String, ClaimValue> accessClaims = new HashMap<>();
+                accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+                AccessTokenContent access = new AccessTokenContent(accessClaims, RAW_ACCESS_TOKEN);
+                Map<String, ClaimValue> idClaims = new HashMap<>();
+                idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+                IdTokenContent id = new IdTokenContent(idClaims, RAW_ID_TOKEN);
+                return new AuthorizationCodeFlow.AuthenticationResult(access, id);
+            }, pendingStore, bindingCodec, sessionStore, codec, Duration.ofHours(1));
+
+            SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionStore, codec,
+                    (session, instant) -> session,
+                    (token, scopes) -> true,
+                    (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
+                    Clock.systemUTC());
+            StepUpCoordinator stepUp = new StepUpCoordinator(
+                    (session, challenge, instant) -> Optional.empty(),
+                    challenge -> {
+                        throw new AssertionError("engine step-up must not be reached");
+                    },
+                    pendingStore, bindingCodec, ORIGIN);
+            LoginFlow loginFlow = new LoginFlow(() -> {
+                throw new AssertionError("engine authorize must not be reached");
+            }, pendingStore, bindingCodec, ORIGIN);
+            BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
+                    rawToken -> {
+                        throw new AssertionError("engine verify must not be reached");
+                    },
+                    new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionStore));
+            UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionStore, codec,
+                    new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
+                    session -> Map.of("sub", session.sub()));
+            LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, sessionStore, codec, ORIGIN);
+
+            return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
+                    () -> logoutEndpoint(sessionStore, codec), backchannel, userInfo, login);
         }
     }
 

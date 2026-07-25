@@ -86,7 +86,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should wire the user-info fold reachably — no session yields 401")
         void shouldWireUserInfo() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.USER_INFO,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null),
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"),
                     Instant.parse("2026-07-25T10:00:00Z"));
             assertEquals(401, response.status());
         }
@@ -129,7 +129,7 @@ class BffRuntimeProducerTest {
         void shouldRejectUseOfInert() {
             BffRuntime runtime = BffRuntime.inert();
             BffRuntime.ReservedHttpRequest request =
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null);
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET");
             Instant now = Instant.now();
             assertThrows(IllegalStateException.class, runtime::sessionStage);
             assertThrows(IllegalStateException.class,

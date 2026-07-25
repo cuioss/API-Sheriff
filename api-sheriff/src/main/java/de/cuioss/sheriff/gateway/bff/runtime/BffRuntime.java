@@ -197,7 +197,8 @@ public final class BffRuntime {
             throw new IllegalStateException("inert BFF runtime cannot dispatch a reserved path");
         }
         return switch (kind) {
-            case CALLBACK -> render(requireNonNull(callbackEndpoint).handle(req.rawQuery(), req.cookieHeader(), now));
+            case CALLBACK ->
+                render(requireNonNull(callbackEndpoint).handle(callbackParameters(req), req.cookieHeader(), now));
             case LOGOUT -> render(requireNonNull(logoutEndpoint).get().logout(req.cookieHeader(), now));
             case LOGOUT_RETURN ->
                 render(requireNonNull(logoutEndpoint).get().completeReturn(req.stateParam(), req.cookieHeader()));
@@ -207,6 +208,23 @@ public final class BffRuntime {
             case LOGIN ->
                 render(requireNonNull(loginInitiationEndpoint).initiate(req.returnUrlParam(), req.cookieHeader(), now));
         };
+    }
+
+    /**
+     * Selects the raw parameter string the callback parses. Keycloak drives the OIDC auth-code
+     * callback with {@code response_mode=form_post}: after a successful login it returns a 200
+     * auto-submit form whose {@code code}/{@code state} are POSTed to the {@code redirect_uri} as an
+     * {@code application/x-www-form-urlencoded} body — never a 302 with the code in the query. A POST
+     * callback therefore parses the raw form body; a GET callback parses the raw query. Both are the
+     * same urlencoded parameter shape, so the single {@code CallbackParameters.parse} the callback
+     * uses handles either source and preserves the BFF-13 duplicate-parameter rejection (the collapsed
+     * {@code of(Map)} form is never taken).
+     */
+    private static String callbackParameters(ReservedHttpRequest req) {
+        if (req.isFormPost()) {
+            return Objects.requireNonNullElse(req.rawFormBody(), "");
+        }
+        return req.rawQuery();
     }
 
     private static ReservedHttpResponse render(CallbackEndpoint.CallbackOutcome outcome) {
@@ -245,30 +263,42 @@ public final class BffRuntime {
      * reads {@link #rawFormBody}, the user-info fold reads {@link #claimsParam}, and so on).
      *
      * @param rawQuery       the raw query string (without the leading {@code ?}), never map-collapsed
-     *                       — the callback re-parses it to re-detect a duplicated {@code code}/{@code
+     *                       — a GET callback re-parses it to re-detect a duplicated {@code code}/{@code
      *                       state} (BFF-13)
      * @param cookieHeader   the raw request {@code Cookie} header value, may be absent
      * @param claimsParam    the raw {@code claims} selector for the user-info fold, may be absent
      * @param returnUrlParam the raw post-login {@code return_to} target for the login fold, may be absent
      * @param stateParam     the {@code state} the IdP returned on a logout-return leg, may be absent
-     * @param rawFormBody    the raw {@code application/x-www-form-urlencoded} body for back-channel
-     *                       logout, may be absent
+     * @param rawFormBody    the raw {@code application/x-www-form-urlencoded} body — carried for
+     *                       back-channel logout and for a {@code response_mode=form_post} callback POST
+     *                       (the {@code code}/{@code state} arrive here, not in {@link #rawQuery}), may
+     *                       be absent
+     * @param httpMethod     the request HTTP method; a {@code POST} to the callback is a
+     *                       {@code response_mode=form_post} submission. Absent normalizes to
+     *                       {@code GET} (the CSRF-safe default)
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record ReservedHttpRequest(String rawQuery, @Nullable
-            String cookieHeader, @Nullable
-            String claimsParam,
-    @Nullable
-    String returnUrlParam, @Nullable
-            String stateParam, @Nullable
-            String rawFormBody) {
+    public record ReservedHttpRequest(String rawQuery, @Nullable String cookieHeader,
+            @Nullable String claimsParam, @Nullable String returnUrlParam, @Nullable String stateParam,
+            @Nullable String rawFormBody, String httpMethod) {
 
         /**
-         * Canonical constructor normalizing an absent raw query to the empty string.
+         * Canonical constructor normalizing an absent raw query to the empty string and an absent HTTP
+         * method to {@code GET} (the CSRF-safe default).
          */
         public ReservedHttpRequest {
             rawQuery = Objects.requireNonNullElse(rawQuery, "");
+            httpMethod = Objects.requireNonNullElse(httpMethod, "GET");
+        }
+
+        /**
+         * @return {@code true} when this is a {@code POST} — an OIDC {@code response_mode=form_post}
+         *         callback, whose {@code code}/{@code state} arrive in {@link #rawFormBody} rather than
+         *         {@link #rawQuery}
+         */
+        public boolean isFormPost() {
+            return "POST".equalsIgnoreCase(httpMethod);
         }
     }
 

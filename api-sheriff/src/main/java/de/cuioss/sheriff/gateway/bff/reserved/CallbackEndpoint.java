@@ -44,14 +44,22 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The OIDC auth-code callback endpoint ({@code oidc.redirect_uri}) — the browser-facing landing
- * of the code flow (D2/D2b/D2c). Framework-agnostic by construction (it consumes a raw query
+ * of the code flow (D2/D2b/D2c). Framework-agnostic by construction (it consumes a raw parameter
  * string and a raw {@code Cookie} header and returns a {@link CallbackOutcome} the edge renders),
  * so it carries no JAX-RS/Vert.x coupling and is unit-testable without a container.
  * <p>
- * <strong>Callback HPP defence (BFF-13).</strong> The endpoint parses the <em>raw</em> query with
- * {@link CallbackParameters#parse(String)} — never {@link CallbackParameters#of(java.util.Map)}:
+ * <strong>form_post callback.</strong> The engine drives the authorization request with
+ * {@code response_mode=form_post}, so after a successful login Keycloak returns a 200 auto-submit
+ * form that POSTs the {@code code}/{@code state} to the {@code redirect_uri} as an
+ * {@code application/x-www-form-urlencoded} body — not a 302 with the code in the query. The edge
+ * therefore hands this endpoint the raw form body for a POST callback and the raw query for a GET
+ * callback; both are the same urlencoded parameter shape, so a single {@code parse} handles either.
+ * <p>
+ * <strong>Callback HPP defence (BFF-13).</strong> The endpoint parses the <em>raw</em> parameter
+ * string with {@link CallbackParameters#parse(String)} — never {@link CallbackParameters#of(java.util.Map)}:
  * only the raw parse lets the engine re-detect a duplicated {@code code}/{@code state} (the
- * Keycloak CVE-2026-9689 class), which a collapsed map cannot.
+ * Keycloak CVE-2026-9689 class), which a collapsed map cannot. A form_post body is parsed by the
+ * same {@code parse}, so the duplicate-parameter defence holds identically for the POST body.
  * <p>
  * <strong>Browser binding (D2b).</strong> The pending-authorization record is resolved by the
  * unguessable id carried in the {@link BindingCookieCodec browser-binding cookie}, not by the
@@ -118,18 +126,20 @@ public final class CallbackEndpoint {
      * Handles one OIDC callback: validates the binding, drives the engine exchange, creates the
      * session, and returns the browser response.
      *
-     * @param rawQuery    the raw callback query string (never map-collapsed — BFF-13)
+     * @param rawParameters the raw callback parameter string — the query for a GET callback or the
+     *                      {@code application/x-www-form-urlencoded} body for a {@code response_mode=form_post}
+     *                      POST callback (never map-collapsed — BFF-13)
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now         the reference instant (TTL anchor for pending resolution and session expiry)
      * @return the redirect outcome on success, or a {@code 400}/{@code 403} error outcome
      */
-    public CallbackOutcome handle(String rawQuery, @Nullable String cookieHeader, Instant now) {
-        Objects.requireNonNull(rawQuery, "rawQuery");
+    public CallbackOutcome handle(String rawParameters, @Nullable String cookieHeader, Instant now) {
+        Objects.requireNonNull(rawParameters, "rawParameters");
         Objects.requireNonNull(now, "now");
 
         CallbackParameters params;
         try {
-            params = CallbackParameters.parse(rawQuery);
+            params = CallbackParameters.parse(rawParameters);
         } catch (IllegalArgumentException duplicateInjection) {
             // BFF-13: parse() rejects a duplicated code/state (RFC 9700 §4.7.3 parameter injection —
             // the Keycloak CVE-2026-9689 class). Only the raw parse can detect this; of(Map) cannot.

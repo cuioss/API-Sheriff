@@ -528,10 +528,16 @@ public class GatewayEdgeRoute {
      */
     private void dispatchReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind) {
         String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
-        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? readFormBody(ctx) : null;
+        String method = ctx.request().method().name();
+        // The reserved form body is read for two POST reserved paths: back-channel logout, and an OIDC
+        // response_mode=form_post callback (Keycloak POSTs the code/state to redirect_uri as an
+        // urlencoded body rather than returning a 302 with the code in the query). Both reuse the same
+        // bounded read; every other reserved path (and a GET callback) carries no body.
+        boolean callbackFormPost = kind == ReservedEndpoint.CALLBACK && "POST".equalsIgnoreCase(method);
+        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT || callbackFormPost ? readFormBody(ctx) : null;
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
                 ctx.request().query(), cookieHeader, firstQueryParam(request, CLAIMS_PARAM),
-                firstQueryParam(request, RETURN_TO_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody);
+                firstQueryParam(request, RETURN_TO_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody, method);
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
         renderReserved(ctx, request, response);
     }
