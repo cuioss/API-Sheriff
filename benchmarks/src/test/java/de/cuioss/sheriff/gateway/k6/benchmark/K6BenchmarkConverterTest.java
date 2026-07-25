@@ -369,6 +369,90 @@ class K6BenchmarkConverterTest {
                         "throughput score (formatted from requests_per_second: 1500.0)"));
     }
 
+    @Test
+    void sessionMediationOverheadIsMeasuredAgainstBearerAndPlainProxyBaselines() throws Exception {
+        // Arrange — the three comparison-cohort aspects measured in one run at distinct throughputs
+        // so a mix-up between them is visible: plain proxy fastest, session mediation slowest.
+        writeSummary("proxiedStatic", 9000.0);
+        writeSummary("bearerProxied", 7000.0);
+        writeSummary(K6BenchmarkConverter.SESSION_MEDIATED_BENCHMARK, 5000.0);
+
+        // Act
+        JsonObject json = processAndReadJson();
+
+        // Assert — all three cohort aspects survive into the same report so the session-mediation
+        // overhead is directly comparable against the bearer and plain-proxy baselines, each carrying
+        // its own measured throughput.
+        assertEquals(3, json.getAsJsonArray("benchmarks").size(), "all three cohort aspects present");
+        assertAll("comparison cohort",
+                () -> assertEquals("9.0K ops/s", benchmarkNamed(json, "proxiedStatic").get("score").getAsString(),
+                        "plain-proxy baseline throughput"),
+                () -> assertEquals("7.0K ops/s", benchmarkNamed(json, "bearerProxied").get("score").getAsString(),
+                        "bearer baseline throughput"),
+                () -> assertEquals("5.0K ops/s", benchmarkNamed(json, "sessionMediated").get("score").getAsString(),
+                        "session-mediation throughput, comparable against both baselines"));
+    }
+
+    @Test
+    void sessionMediatedAspectHeadlinesTheOverviewWhenPresent() throws Exception {
+        // Arrange — bearerProxied sorts before sessionMediated alphabetically, so the pre-change
+        // getFirst() headline would be the bearer baseline; the mediation aspect must win instead.
+        writeSummary("proxiedStatic", 9000.0);
+        writeSummary("bearerProxied", 7000.0);
+        writeSummary(K6BenchmarkConverter.SESSION_MEDIATED_BENCHMARK, 5000.0);
+
+        // Act
+        JsonObject json = processAndReadJson();
+
+        // Assert — the report leads with the mediation hot path, not the alphabetically-first aspect.
+        JsonObject overview = json.getAsJsonObject("overview");
+        assertAll("mediation headline",
+                () -> assertEquals("sessionMediated", overview.get("throughputBenchmarkName").getAsString(),
+                        "the session-mediation aspect headlines the overview when present"),
+                () -> assertEquals(5000.0, overview.get("throughputOpsPerSec").getAsDouble(), 0.001,
+                        "the headline throughput is the mediation aspect's, not the bearer baseline's"));
+    }
+
+    @Test
+    void overviewFallsBackToFirstAspectWithoutTheMediationBenchmark() throws Exception {
+        // Arrange — a non-BFF run with no mediation aspect keeps the prior getFirst() headline so
+        // existing reports are unchanged. bearerProxied sorts before proxiedStatic.
+        writeSummary("proxiedStatic", 9000.0);
+        writeSummary("bearerProxied", 7000.0);
+
+        // Act
+        JsonObject json = processAndReadJson();
+
+        // Assert
+        JsonObject overview = json.getAsJsonObject("overview");
+        assertEquals("bearerProxied", overview.get("throughputBenchmarkName").getAsString(),
+                "without the mediation aspect the overview leads with the first parsed benchmark");
+    }
+
+    /**
+     * Writes one k6 summary fixture into the temp {@code k6} directory, carrying the mandatory
+     * name/window/throughput fields the post-processor requires.
+     *
+     * @param benchmarkName      the benchmark name (also the summary file stem)
+     * @param requestsPerSecond  the measured throughput to record
+     * @throws IOException when the fixture cannot be written
+     */
+    private void writeSummary(String benchmarkName, double requestsPerSecond) throws IOException {
+        Path k6Dir = tempDir.resolve(K6ResultPostProcessor.K6_RESULTS_SUBDIRECTORY);
+        Files.createDirectories(k6Dir);
+        Files.writeString(k6Dir.resolve(benchmarkName + "-summary.json"), """
+                {
+                  "benchmark_name": "%s",
+                  "gateway_target": "api-sheriff",
+                  "start_time": "2026-07-19T10:00:00Z",
+                  "end_time": "2026-07-19T10:01:00Z",
+                  "requests_per_second": %s,
+                  "error_rate": 0.0,
+                  "latency_ms": {"avg": 2.5, "p50": 2.0, "p75": 3.0, "p90": 5.0, "p99": 9.0}
+                }
+                """.formatted(benchmarkName, requestsPerSecond));
+    }
+
     /**
      * Verify that k6 generates the same comprehensive structure the wrk toolchain produced.
      */
