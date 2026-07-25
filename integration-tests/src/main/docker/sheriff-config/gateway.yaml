@@ -192,7 +192,7 @@ token_validation:
 oidc:
   issuer: https://keycloak:8443/realms/integration
   client_id: integration-client
-  client_secret: integration-secret
+  client_secret: ${OIDC_CLIENT_SECRET}
   scopes: ["openid", "profile", "email"]
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
   # reserved path binds to; its origin ('https://localhost:10443') is the gateway

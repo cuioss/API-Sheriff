@@ -183,6 +183,9 @@ services:
       # sources its routes and upstreams from the assembled RouteTable, and the
       # UPSTREAM topology alias resolves to the go-httpbin echo backend.
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in
+      # gateway.yaml (oidc.client_secret) resolves to via EnvSecretResolver.
+      - OIDC_CLIENT_SECRET=integration-secret
 
     # Map form so grpc-echo can gate on service_healthy — the gateway must not start
     # until the gRPC echo upstream is accepting connections, otherwise the first
