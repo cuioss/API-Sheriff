@@ -314,25 +314,33 @@ class ClientHelloSniParserTest {
             return out.toByteArray();
         }
 
-        /** A ClientHello whose SNI extension declares a length running past the buffer. */
+        /**
+         * A ClientHello carrying a well-formed {@code server_name} extension whose declared
+         * extensions-block length is inflated past the actual bytes, so the extensions region
+         * overruns the reassembled handshake buffer. The {@code session_id} and {@code cipher_suites}
+         * length fields stay intact, so the parser reaches the extension walk and fails closed on the
+         * {@code extensionsEnd > handshake.length} bound check.
+         */
         static byte[] withCorruptExtensionLength() {
-            byte[] hello = withSni("corrupt.example.com");
-            // The extension length is the two bytes immediately after the server_name extension type
-            // (0x00 0x00). Locate the first 0x00 0x00 pair inside the extensions area and inflate the
-            // following length so it overruns the buffer.
-            for (int i = 5 + 4 + 34; i < hello.length - 4; i++) {
-                if (hello[i] == 0x00 && hello[i + 1] == 0x00) {
-                    hello[i + 2] = (byte) 0x7F;
-                    hello[i + 3] = (byte) 0xFF;
-                    break;
-                }
-            }
-            return hello;
+            byte[] extensions = serverNameExtension("corrupt.example.com");
+            return withRawExtensionsDeclaring(extensions, extensions.length + 0x0100);
         }
 
         /** A complete single-record ClientHello whose extensions block is exactly the given bytes. */
         static byte[] withRawExtensions(byte[] extensionsBlock) {
-            return handshakeRecord(HANDSHAKE_CLIENT_HELLO, clientHelloBodyRaw(extensionsBlock));
+            return handshakeRecord(HANDSHAKE_CLIENT_HELLO,
+                    clientHelloBodyRaw(extensionsBlock, extensionsBlock.length));
+        }
+
+        /**
+         * A complete single-record ClientHello whose extensions block is {@code extensionsBlock} but
+         * whose declared extensions-block length is {@code declaredLength}. Passing a
+         * {@code declaredLength} larger than {@code extensionsBlock.length} inflates the extensions
+         * region past the buffer to exercise the parser's extensions-length overrun (fail-closed) path.
+         */
+        static byte[] withRawExtensionsDeclaring(byte[] extensionsBlock, int declaredLength) {
+            return handshakeRecord(HANDSHAKE_CLIENT_HELLO,
+                    clientHelloBodyRaw(extensionsBlock, declaredLength));
         }
 
         /** A raw TLS extension: {@code type(2) + length(2) + body}. */
@@ -428,7 +436,7 @@ class ClientHelloSniParserTest {
             return out.toByteArray();
         }
 
-        private static byte[] clientHelloBodyRaw(byte[] extensions) {
+        private static byte[] clientHelloBodyRaw(byte[] extensions, int declaredExtensionsLength) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             out.write(0x03);
             out.write(0x03);                       // legacy_version TLS 1.2
@@ -440,8 +448,8 @@ class ClientHelloSniParserTest {
             out.write(0x01);                       // TLS_AES_128_GCM_SHA256
             out.write(0x01);                       // compression_methods length 1
             out.write(0x00);                       // null compression
-            out.write((extensions.length >> 8) & 0xFF);
-            out.write(extensions.length & 0xFF);
+            out.write((declaredExtensionsLength >> 8) & 0xFF);
+            out.write(declaredExtensionsLength & 0xFF);
             out.writeBytes(extensions);
             return out.toByteArray();
         }

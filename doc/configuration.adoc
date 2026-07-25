@@ -770,7 +770,11 @@ hostname in `passthrough_sni` does nothing -- it never appears in the outer SNI.
 merely parsed: an accept-time front listener reads the SNI from the reassembled ClientHello and
 splits each connection at L4 (passthrough) or L7 (terminated); terminated connections apply
 `mtls` client-certificate verification; and the runtime Host-vs-SNI smuggle guard rejects a
-terminated request whose `Host` names a passthrough SNI with `404` before route selection. Three
+terminated request whose `Host` names a passthrough SNI with `404` before route selection. Before
+each match the runtime normalizes both sides: the SNI is lower-cased and one trailing FQDN dot is
+removed, and the terminated request's `Host` additionally has a single `:port` suffix stripped -- so
+`Backend.Example.Com.`, `backend.example.com`, and `backend.example.com:8443` all resolve to the same
+passthrough key. Three
 constraints an operator must keep in mind, all stated above and restated here because they are the
 common configuration mistakes: SNI matching is *exact* -- *no wildcard* entries; a passthrough
 alias URL carries *no base path*; and `mtls` applies to *terminated connections only* (the gateway

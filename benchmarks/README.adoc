@@ -210,11 +210,13 @@ sides stay symmetric even though these rows are not backend-free. See the fairne
 _The aspect matrix_ for how to read the two rows.
 
 Passthrough relay, two modes (API-Sheriff-only)::
-The `passthrough` aspect drives the opaque L4 TCP relay and — unlike the six pure-overhead HTTP
-aspects, and exactly like `ws` and `grpc` — rides a *TLS-enabled backend* that completes the
-handshake and presents its own certificate. It therefore folds a real backend's cost into the
-number and is a *protocol-relay measurement*, not a backend-free gateway-overhead figure: read it as
-relay overhead versus the terminated baseline within one run, never as an absolute throughput claim.
+The `passthrough` aspect drives the opaque L4 TCP relay. Like `ws` and `grpc`, it folds a real
+backend's cost into the number rather than being backend-free — so it is a *protocol-relay
+measurement*, not a pure gateway-overhead figure. It is *distinct* from `ws` and `grpc` in one way:
+for those the gateway still owns TLS termination, whereas passthrough's backend is *TLS-enabled* and
+terminates its own TLS — completing the handshake and presenting its own certificate — while the
+gateway relays the still-encrypted stream at L4. Read it as relay overhead versus the terminated
+baseline within one run, never as an absolute throughput claim.
 It runs in two modes selected by `PASSTHROUGH_SNI`. In `mapped` mode the ClientHello names a
 `tls.passthrough_sni` host, so the gateway relays the still-encrypted byte stream at L4 without
 terminating and the run measures throughput/latency through the active relay path. In `empty` mode

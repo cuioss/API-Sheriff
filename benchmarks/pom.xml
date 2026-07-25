@@ -613,23 +613,6 @@
                                 </configuration>
                             </execution>
 
-                            <!-- Assert the empty-passthrough_sni run did not regress beyond the noise
-                                 band against the PLAN-04 plain-proxy baseline. Additive, beside
-                                 process-k6-results; reads the two k6 summaries produced in this lane. -->
-                            <execution>
-                                <id>compare-passthrough-baseline</id>
-                                <phase>post-integration-test</phase>
-                                <goals>
-                                    <goal>java</goal>
-                                </goals>
-                                <configuration>
-                                    <mainClass>de.cuioss.sheriff.gateway.k6.benchmark.PassthroughBaselineComparator</mainClass>
-                                    <arguments>
-                                        <argument>${k6.output.dir}</argument>
-                                    </arguments>
-                                </configuration>
-                            </execution>
-
                             <!-- Dump Keycloak container logs before stopping containers -->
                             <execution>
                                 <id>dump-keycloak-logs</id>
@@ -662,6 +645,24 @@
                                         <successCode>0</successCode>
                                         <successCode>1</successCode>
                                     </successCodes>
+                                </configuration>
+                            </execution>
+
+                            <!-- Assert the empty-passthrough_sni run did not regress beyond the noise
+                                 band against the PLAN-04 plain-proxy baseline. Runs AFTER container
+                                 teardown so a regression (IllegalStateException) never orphans
+                                 containers; reads only local k6 summaries under ${k6.output.dir}. -->
+                            <execution>
+                                <id>compare-passthrough-baseline</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>java</goal>
+                                </goals>
+                                <configuration>
+                                    <mainClass>de.cuioss.sheriff.gateway.k6.benchmark.PassthroughBaselineComparator</mainClass>
+                                    <arguments>
+                                        <argument>${k6.output.dir}</argument>
+                                    </arguments>
                                 </configuration>
                             </execution>
 
