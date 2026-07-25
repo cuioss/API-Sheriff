@@ -277,6 +277,11 @@ services:
       # not the listener's control and would leave TLS 1.3 offered.
       - QUARKUS_HTTP_SSL_PROTOCOLS=TLSv1.2
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid
+      # mtls gateway.yaml (oidc.client_secret) resolves to via EnvSecretResolver — kept
+      # in lockstep with the primary api-sheriff service, whose gateway.yaml has the same
+      # oidc block through the shared bff-session endpoint.
+      - OIDC_CLIENT_SECRET=integration-secret
     depends_on:
       keycloak:
         condition: service_started
