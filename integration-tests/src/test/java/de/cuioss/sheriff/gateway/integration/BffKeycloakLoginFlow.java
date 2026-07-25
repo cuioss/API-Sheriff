@@ -173,10 +173,12 @@ final class BffKeycloakLoginFlow {
      * @return the configured request specification
      */
     static RequestSpecification gateway(Map<String, String> cookies) {
-        // urlEncodingEnabled(false): the callback/return URLs replayed here are already correctly
-        // percent-encoded (they come from the IdP form_post action / the gateway's own redirects), so
-        // REST Assured MUST NOT re-encode them — re-encoding a literal '+' to %2B corrupts them.
-        return given().relaxedHTTPSValidation().urlEncodingEnabled(false).baseUri(GATEWAY_ORIGIN).cookies(cookies);
+        // Default URL encoding stays ON here: the gateway spec only issues a plain require:session GET
+        // (Step 1, no query) and the callback POST (Step 4). The callback carries the authorization
+        // code/state/iss as x-www-form-urlencoded body params whose raw values (e.g. the issuer URL's
+        // ':' and '/') MUST be percent-encoded by REST Assured — disabling encoding here corrupts the
+        // body and the gateway rejects it with 400. Only keycloak() replays a pre-encoded URL.
+        return given().relaxedHTTPSValidation().baseUri(GATEWAY_ORIGIN).cookies(cookies);
     }
 
     /**
