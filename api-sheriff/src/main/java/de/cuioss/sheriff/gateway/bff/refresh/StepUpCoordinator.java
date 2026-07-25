@@ -145,12 +145,13 @@ public final class StepUpCoordinator {
         }
 
         StepUpHandler.StepUpRequest request = stepUpInitiation.initiate(challenge);
-        String returnUrl = PendingAuthorizationRecord.sameOrigin(replayUrl, gatewayOrigin)
+        String returnUrl = replayUrl != null
+                && PendingAuthorizationRecord.sameOrigin(replayUrl, gatewayOrigin)
                 ? replayUrl : DEFAULT_RETURN_URL;
-        PendingAuthorizationRecord record = PendingAuthorizationRecord.create(request.context(), returnUrl, now);
-        pendingStore.store(record);
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(request.context(), returnUrl, now);
+        pendingStore.store(pending);
         LOGGER.debug("Step-up challenge requires re-authentication — re-driving the auth-code flow");
-        List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(record.id()));
+        List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));
         return StepUpOutcome.reDrive(request.authorizationUrl(), setCookies);
     }
 

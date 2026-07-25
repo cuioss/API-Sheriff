@@ -260,8 +260,10 @@ class TokenRefreshCoordinatorTest {
                 Future<RefreshOutcome> leader = pool.submit(() -> coordinator.refresh(live, NOW));
                 assertTrue(entered.await(2, TimeUnit.SECONDS), "the leader entered the engine refresh");
                 Future<RefreshOutcome> follower = pool.submit(() -> coordinator.refresh(live, NOW));
-                // Let the follower reach the in-flight join before the leader is released.
-                Thread.sleep(100);
+                // Let the follower reach the in-flight join before the leader is released. There is no
+                // observable hook for a thread reaching CompletableFuture#join, so this best-effort
+                // ordering sleep cannot be made deterministic without an added dependency.
+                Thread.sleep(100); // NOSONAR java:S2925 - no observable hook for the follower reaching the in-flight join
                 proceed.countDown();
 
                 RefreshOutcome leaderOutcome = leader.get(2, TimeUnit.SECONDS);
@@ -279,7 +281,7 @@ class TokenRefreshCoordinatorTest {
         private static void awaitUninterruptibly(CountDownLatch latch) {
             try {
                 latch.await(2, TimeUnit.SECONDS);
-            } catch (InterruptedException interrupted) {
+            } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
             }
         }
@@ -294,8 +296,9 @@ class TokenRefreshCoordinatorTest {
         void shouldRejectNullArguments() {
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
 
+            var session = session(CURRENT_REFRESH);
             assertThrows(NullPointerException.class, () -> coordinator.refresh(null, NOW));
-            assertThrows(NullPointerException.class, () -> coordinator.refresh(session(CURRENT_REFRESH), null));
+            assertThrows(NullPointerException.class, () -> coordinator.refresh(session, null));
         }
 
         @Test

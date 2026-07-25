@@ -62,9 +62,9 @@ class JsonWriterTest {
 
         assertEquals("{\"finite\":1,\"broken\":null}", JsonWriter.toJson(object));
 
-        List<Object> array = new ArrayList<>();
-        array.add(1);
-        array.add(Double.POSITIVE_INFINITY);
+        List<Object> array = new ArrayList<>(List.of(
+                1,
+                Double.POSITIVE_INFINITY));
         assertEquals("[1,null]", JsonWriter.toJson(array));
     }
 }

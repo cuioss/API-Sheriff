@@ -90,12 +90,13 @@ public final class LoginFlow {
     public LoginRedirect initiate(@Nullable String requestedReturnUrl, Instant now) {
         Objects.requireNonNull(now, "now");
         AuthorizationCodeFlow.AuthorizationRedirect redirect = authorization.authorize();
-        String returnUrl = PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
+        String returnUrl = requestedReturnUrl != null
+                && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
                 ? requestedReturnUrl : DEFAULT_RETURN_URL;
-        PendingAuthorizationRecord record = PendingAuthorizationRecord.create(redirect.context(), returnUrl, now);
-        pendingStore.store(record);
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(redirect.context(), returnUrl, now);
+        pendingStore.store(pending);
         LOGGER.debug("Initiated OIDC login; pending record persisted, redirecting to the IdP");
-        List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(record.id()));
+        List<String> setCookies = List.of(bindingCookieCodec.toSetCookieHeader(pending.id()));
         return new LoginRedirect(redirect.authorizationUrl(), setCookies);
     }
 

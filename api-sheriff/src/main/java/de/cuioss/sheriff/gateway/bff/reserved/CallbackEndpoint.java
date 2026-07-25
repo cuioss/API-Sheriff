@@ -156,16 +156,16 @@ public final class CallbackEndpoint {
             LOGGER.debug("OIDC callback binding cookie resolved no live pending record — rejected");
             return CallbackOutcome.error(FORBIDDEN);
         }
-        PendingAuthorizationRecord record = resolved.get();
+        PendingAuthorizationRecord pending = resolved.get();
 
-        if (!constantTimeEquals(record.flowContext().state(), params.state())) {
+        if (!constantTimeEquals(pending.flowContext().state(), params.state())) {
             LOGGER.debug("OIDC callback state did not match the bound pending record — rejected");
             return CallbackOutcome.error(FORBIDDEN);
         }
 
         try {
-            AuthorizationCodeFlow.AuthenticationResult result = codeExchange.exchange(record.flowContext(), params);
-            return completeLogin(result, record, now);
+            AuthorizationCodeFlow.AuthenticationResult result = codeExchange.exchange(pending.flowContext(), params);
+            return completeLogin(result, pending, now);
         } catch (TokenSheriffException engineFailure) {
             LOGGER.debug(engineFailure, "OIDC callback code exchange / token validation failed");
             return CallbackOutcome.error(BAD_REQUEST);
@@ -173,7 +173,7 @@ public final class CallbackEndpoint {
     }
 
     private CallbackOutcome completeLogin(AuthorizationCodeFlow.AuthenticationResult result,
-            PendingAuthorizationRecord record, Instant now) {
+            PendingAuthorizationRecord pending, Instant now) {
         AccessTokenContent accessToken = result.accessToken();
         IdTokenContent idToken = result.idToken();
         Optional<String> subject = idToken.getSubject().or(accessToken::getSubject);
@@ -199,7 +199,7 @@ public final class CallbackEndpoint {
         List<String> setCookies = List.of(
                 sessionCookieCodec.toSetCookieHeader(sessionId),
                 bindingCookieCodec.toClearingSetCookieHeader());
-        return CallbackOutcome.redirect(record.returnUrl(), setCookies);
+        return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 
     private static Optional<String> claim(TokenContent token, String name) {
@@ -215,7 +215,7 @@ public final class CallbackEndpoint {
         return claim(token, name).flatMap(raw -> {
             try {
                 return Optional.of(Instant.ofEpochSecond(Long.parseLong(raw.trim())));
-            } catch (NumberFormatException notNumeric) {
+            } catch (NumberFormatException _) {
                 return Optional.empty();
             }
         });
@@ -225,7 +225,10 @@ public final class CallbackEndpoint {
         return value == null || value.isBlank();
     }
 
-    private static boolean constantTimeEquals(String expected, String actual) {
+    private static boolean constantTimeEquals(@Nullable String expected, @Nullable String actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
         return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), actual.getBytes(StandardCharsets.UTF_8));
     }
 

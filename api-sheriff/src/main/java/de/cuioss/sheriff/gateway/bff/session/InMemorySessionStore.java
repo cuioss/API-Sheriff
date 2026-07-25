@@ -64,29 +64,29 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     @Override
-    public synchronized void create(SessionRecord record) {
-        Objects.requireNonNull(record, "record");
+    public synchronized void create(SessionRecord session) {
+        Objects.requireNonNull(session, "session");
         if (byId.size() >= maxSessions) {
             throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
         }
-        byId.put(record.sessionId(), record);
-        index(bySub, record.sub(), record.sessionId());
-        record.sid().ifPresent(sid -> index(bySid, sid, record.sessionId()));
+        byId.put(session.sessionId(), session);
+        index(bySub, session.sub(), session.sessionId());
+        session.sid().ifPresent(sid -> index(bySid, sid, session.sessionId()));
     }
 
     @Override
     public synchronized Optional<SessionRecord> resolve(String sessionId, Instant now) {
         Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(now, "now");
-        SessionRecord record = byId.get(sessionId);
-        if (record == null) {
+        SessionRecord session = byId.get(sessionId);
+        if (session == null) {
             return Optional.empty();
         }
-        if (record.isExpired(now)) {
+        if (session.isExpired(now)) {
             removeInternal(sessionId);
             return Optional.empty();
         }
-        return Optional.of(record);
+        return Optional.of(session);
     }
 
     @Override
@@ -127,6 +127,9 @@ public final class InMemorySessionStore implements SessionStore {
         return byId.size();
     }
 
+    // java:S2589 — bySub/bySid.get() returns null for an unknown sub/sid, so the null guard is
+    // load-bearing (removeAll is called with the raw Map.get result); the analyzer misjudges it.
+    @SuppressWarnings("java:S2589")
     private int removeAll(Set<String> sessionIds) {
         if (sessionIds == null || sessionIds.isEmpty()) {
             return 0;
@@ -137,12 +140,12 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     private void removeInternal(String sessionId) {
-        SessionRecord record = byId.remove(sessionId);
-        if (record == null) {
+        SessionRecord session = byId.remove(sessionId);
+        if (session == null) {
             return;
         }
-        deindex(bySub, record.sub(), sessionId);
-        record.sid().ifPresent(sid -> deindex(bySid, sid, sessionId));
+        deindex(bySub, session.sub(), sessionId);
+        session.sid().ifPresent(sid -> deindex(bySid, sid, sessionId));
     }
 
     private static void index(Map<String, Set<String>> map, String key, String sessionId) {

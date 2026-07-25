@@ -106,8 +106,12 @@ public final class ConfigValidator {
     private static final String REQUIRE_NONE = "none";
     private static final String REQUIRE_BEARER = "bearer";
     private static final String REQUIRE_SESSION = "session";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
     private static final String OIDC_USER_INFO_DEFAULT_VIEW_POINTER = "/oidc/user_info/default_view";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
 

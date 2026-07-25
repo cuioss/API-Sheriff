@@ -36,10 +36,10 @@ public interface SessionStore {
     /**
      * Stores a freshly created session.
      *
-     * @param record the session to store
+     * @param session the session to store
      * @throws IllegalStateException when the store is at its max-session capacity bound
      */
-    void create(SessionRecord record);
+    void create(SessionRecord session);
 
     /**
      * Resolves a live session by its opaque id, enforcing the absolute TTL lazily: an expired

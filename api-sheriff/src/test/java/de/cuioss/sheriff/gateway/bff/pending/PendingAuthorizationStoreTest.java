@@ -51,7 +51,7 @@ class PendingAuthorizationStoreTest {
         return FlowContext.create(GATEWAY_ORIGIN + "/callback");
     }
 
-    private static PendingAuthorizationRecord record(String returnUrl, Instant createdAt) {
+    private static PendingAuthorizationRecord pendingRecord(String returnUrl, Instant createdAt) {
         return PendingAuthorizationRecord.create(flow(), returnUrl, createdAt);
     }
 
@@ -63,7 +63,7 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should resolve a stored record exactly once (single-use consumption)")
         void shouldConsumeStoredRecordExactlyOnce() {
             PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(16);
-            PendingAuthorizationRecord stored = record("/app", T0);
+            PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
             Optional<PendingAuthorizationRecord> first = store.consume(stored.id(), T0);
@@ -78,7 +78,7 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should refuse a record consumed after its TTL has elapsed")
         void shouldRefuseExpiredRecord() {
             PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(16);
-            PendingAuthorizationRecord stored = record("/app", T0);
+            PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
             Instant afterTtl = T0.plus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
@@ -89,7 +89,7 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should resolve a record consumed within its TTL")
         void shouldResolveRecordWithinTtl() {
             PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(16);
-            PendingAuthorizationRecord stored = record("/app", T0);
+            PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
             assertTrue(store.consume(stored.id(), T0.plusSeconds(1)).isPresent());
@@ -99,9 +99,9 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should evict the oldest record once the capacity bound is exceeded")
         void shouldEvictOldestBeyondCapacity() {
             PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(2);
-            PendingAuthorizationRecord first = record("/a", T0);
-            PendingAuthorizationRecord second = record("/b", T0);
-            PendingAuthorizationRecord third = record("/c", T0);
+            PendingAuthorizationRecord first = pendingRecord("/a", T0);
+            PendingAuthorizationRecord second = pendingRecord("/b", T0);
+            PendingAuthorizationRecord third = pendingRecord("/c", T0);
             store.store(first);
             store.store(second);
             store.store(third);
@@ -136,7 +136,7 @@ class PendingAuthorizationStoreTest {
         void shouldRefuseCallbackWithoutBindingCookie() {
             PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(8);
             BindingCookieCodec codec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-            PendingAuthorizationRecord stored = record("/app", T0);
+            PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
             // A different browser presents a valid 'state' but carries no binding cookie.
@@ -153,7 +153,7 @@ class PendingAuthorizationStoreTest {
         void shouldResolveForOriginatingBrowser() {
             PendingAuthorizationStore.InMemory store = new PendingAuthorizationStore.InMemory(8);
             BindingCookieCodec codec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-            PendingAuthorizationRecord stored = record("/app", T0);
+            PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored);
 
             String cookieHeader = codec.toSetCookieHeader(stored.id()).split(";", 2)[0];
@@ -180,21 +180,21 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should wrap the engine FlowContext and expose the gateway fields")
         void shouldWrapFlowContextAndGatewayFields() {
             FlowContext flow = flow();
-            PendingAuthorizationRecord record = PendingAuthorizationRecord.create(flow, "/dashboard", T0);
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, "/dashboard", T0);
 
-            assertSame(flow, record.flowContext(), "the record wraps the engine DTO, never re-invents it");
-            assertEquals("/dashboard", record.returnUrl());
-            assertEquals(T0, record.createdAt());
-            assertEquals(PendingAuthorizationRecord.FIXED_TTL, record.ttl());
-            assertEquals(T0.plus(PendingAuthorizationRecord.FIXED_TTL), record.expiresAt());
+            assertSame(flow, pending.flowContext(), "the record wraps the engine DTO, never re-invents it");
+            assertEquals("/dashboard", pending.returnUrl());
+            assertEquals(T0, pending.createdAt());
+            assertEquals(PendingAuthorizationRecord.FIXED_TTL, pending.ttl());
+            assertEquals(T0.plus(PendingAuthorizationRecord.FIXED_TTL), pending.expiresAt());
         }
 
         @Test
         @DisplayName("Should treat the TTL boundary as expired (inclusive)")
         void shouldTreatTtlBoundaryAsExpired() {
-            PendingAuthorizationRecord record = PendingAuthorizationRecord.create(flow(), "/app", T0);
-            assertFalse(record.isExpired(record.expiresAt().minusNanos(1)));
-            assertTrue(record.isExpired(record.expiresAt()), "expiry is inclusive of the boundary");
+            PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow(), "/app", T0);
+            assertFalse(pending.isExpired(pending.expiresAt().minusNanos(1)));
+            assertTrue(pending.isExpired(pending.expiresAt()), "expiry is inclusive of the boundary");
         }
 
         @Test

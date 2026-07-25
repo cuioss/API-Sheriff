@@ -97,13 +97,14 @@ public final class LogoutEndpoint {
     public LogoutOutcome logout(@Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(now, "now");
 
-        Optional<String> sessionId = sessionCookieCodec.readSessionId(cookieHeader);
-        Optional<SessionRecord> session = sessionId.flatMap(id -> sessionStore.resolve(id, now));
-        if (session.isEmpty()) {
+        Optional<String> sessionIdOpt = sessionCookieCodec.readSessionId(cookieHeader);
+        Optional<SessionRecord> session = sessionIdOpt.flatMap(id -> sessionStore.resolve(id, now));
+        if (sessionIdOpt.isEmpty() || session.isEmpty()) {
             LOGGER.debug("RP-initiated logout without a live session — already logged out, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
                     List.of(sessionCookieCodec.toClearingSetCookieHeader()));
         }
+        String sessionId = sessionIdOpt.get();
 
         RpInitiatedLogout.LogoutRedirect redirect;
         // Local logout is the authoritative, immediately-effective step and must ALWAYS succeed: if the
@@ -114,13 +115,13 @@ public final class LogoutEndpoint {
         try {
             redirect = rpInitiatedLogout.initiate(session.get());
         } catch (RuntimeException initiationFailure) {
-            sessionStore.destroyById(sessionId.get());
+            sessionStore.destroyById(sessionId);
             LOGGER.debug(initiationFailure,
                     "RP-initiated logout — end-session redirect construction failed; local session destroyed, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
                     List.of(sessionCookieCodec.toClearingSetCookieHeader()));
         }
-        sessionStore.destroyById(sessionId.get());
+        sessionStore.destroyById(sessionId);
         List<String> setCookies = new ArrayList<>(redirect.setCookieHeaders());
         setCookies.add(sessionCookieCodec.toClearingSetCookieHeader());
         LOGGER.debug("RP-initiated logout — session destroyed, redirecting to the IdP end_session_endpoint");

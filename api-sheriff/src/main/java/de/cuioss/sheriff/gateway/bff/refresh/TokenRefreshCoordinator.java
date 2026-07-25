@@ -138,11 +138,12 @@ public final class TokenRefreshCoordinator {
             return RefreshOutcome.failed();
         }
         SessionRecord latest = resolved.get();
-        if (latest.refreshToken().isEmpty() || !nearExpiry(latest, now)) {
+        Optional<String> refreshToken = latest.refreshToken();
+        if (refreshToken.isEmpty() || !nearExpiry(latest, now)) {
             // A coalesced leader already rotated this session — share the current token, no engine call.
             return RefreshOutcome.current(latest);
         }
-        String presentedRefreshToken = latest.refreshToken().get();
+        String presentedRefreshToken = refreshToken.get();
         try {
             RotationResult rotation = refreshExchange.exchange(presentedRefreshToken);
             SessionRecord rotated = rotate(latest, rotation);

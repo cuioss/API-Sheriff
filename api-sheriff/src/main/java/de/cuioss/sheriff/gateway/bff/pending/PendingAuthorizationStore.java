@@ -44,9 +44,9 @@ public interface PendingAuthorizationStore {
     /**
      * Persists a pending-authorization record under its {@link PendingAuthorizationRecord#id()}.
      *
-     * @param record the record to store
+     * @param pending the record to store
      */
-    void store(PendingAuthorizationRecord record);
+    void store(PendingAuthorizationRecord pending);
 
     /**
      * Atomically resolves and removes the record for {@code recordId} (single-use). Returns
@@ -88,9 +88,9 @@ public interface PendingAuthorizationStore {
         }
 
         @Override
-        public synchronized void store(PendingAuthorizationRecord record) {
-            Objects.requireNonNull(record, "record");
-            records.put(record.id(), record);
+        public synchronized void store(PendingAuthorizationRecord pending) {
+            Objects.requireNonNull(pending, "pending");
+            records.put(pending.id(), pending);
             evictOldestBeyondCapacity();
         }
 
@@ -98,11 +98,11 @@ public interface PendingAuthorizationStore {
         public synchronized Optional<PendingAuthorizationRecord> consume(String recordId, Instant now) {
             Objects.requireNonNull(recordId, "recordId");
             Objects.requireNonNull(now, "now");
-            PendingAuthorizationRecord record = records.remove(recordId);
-            if (record == null || record.isExpired(now)) {
+            PendingAuthorizationRecord pending = records.remove(recordId);
+            if (pending == null || pending.isExpired(now)) {
                 return Optional.empty();
             }
-            return Optional.of(record);
+            return Optional.of(pending);
         }
 
         /**

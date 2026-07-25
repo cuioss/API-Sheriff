@@ -95,10 +95,10 @@ class LoginFlowTest {
         void shouldPersistPendingRecord() {
             LoginRedirect result = loginFlow.initiate("/dashboard", T0);
 
-            PendingAuthorizationRecord record = consumeBoundRecord(result);
-            assertSame(flowContext, record.flowContext(), "the record wraps the engine context, never re-invents it");
-            assertEquals("/dashboard", record.returnUrl());
-            assertEquals(T0, record.createdAt());
+            PendingAuthorizationRecord pending = consumeBoundRecord(result);
+            assertSame(flowContext, pending.flowContext(), "the record wraps the engine context, never re-invents it");
+            assertEquals("/dashboard", pending.returnUrl());
+            assertEquals(T0, pending.createdAt());
         }
     }
 

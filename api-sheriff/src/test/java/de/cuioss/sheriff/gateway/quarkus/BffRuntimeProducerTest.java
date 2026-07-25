@@ -128,9 +128,12 @@ class BffRuntimeProducerTest {
         @DisplayName("Should reject reserved dispatch and session-stage access on the inert runtime")
         void shouldRejectUseOfInert() {
             BffRuntime runtime = BffRuntime.inert();
-            assertThrows(IllegalStateException.class, () -> runtime.sessionStage());
-            assertThrows(IllegalStateException.class, () -> runtime.dispatch(ReservedEndpoint.USER_INFO,
-                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null), Instant.now()));
+            BffRuntime.ReservedHttpRequest request =
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null);
+            Instant now = Instant.now();
+            assertThrows(IllegalStateException.class, runtime::sessionStage);
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.dispatch(ReservedEndpoint.USER_INFO, request, now));
         }
     }
 

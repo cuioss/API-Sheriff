@@ -281,7 +281,7 @@ class GatewayEdgeRouteBffWiringTest {
         }, pendingStore, bindingCodec, ORIGIN);
 
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(store, codec,
-                (record, instant) -> record,
+                (session, instant) -> session,
                 (token, scopes) -> true,
                 (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                 Clock.systemUTC());
@@ -289,7 +289,7 @@ class GatewayEdgeRouteBffWiringTest {
         CsrfDefence csrf = new CsrfDefence(Set.of(ORIGIN));
 
         StepUpCoordinator stepUp = new StepUpCoordinator(
-                (record, challenge, instant) -> Optional.empty(),
+                (session, challenge, instant) -> Optional.empty(),
                 challenge -> {
                     throw new AssertionError("engine step-up must not be reached");
                 },

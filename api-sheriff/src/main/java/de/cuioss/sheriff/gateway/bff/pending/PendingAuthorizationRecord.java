@@ -147,7 +147,7 @@ Duration ttl) {
         }
         try {
             return sameOriginAbsolute(URI.create(returnUrl), URI.create(gatewayOrigin));
-        } catch (IllegalArgumentException unparseable) {
+        } catch (IllegalArgumentException _) {
             return false;
         }
     }

@@ -42,6 +42,10 @@ import java.util.Set;
  * @author API Sheriff Team
  * @since 1.0
  */
+// java:S6206 — not a transparent data carrier: the constructor performs security-critical
+// normalization (defensive Set.copyOf, defaultView capped to the allowlist) and the class exposes
+// behavior (isAllowed/isEmpty/filter), so a record's transparent component contract does not fit.
+@SuppressWarnings("java:S6206")
 public final class ClaimAllowlistFilter {
 
     private final Set<String> allowedClaims;

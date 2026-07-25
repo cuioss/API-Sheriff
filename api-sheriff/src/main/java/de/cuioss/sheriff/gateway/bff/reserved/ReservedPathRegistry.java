@@ -161,7 +161,7 @@ public final class ReservedPathRegistry {
      * relative, or unparseable value contributes nothing.
      */
     private static Optional<String> toPath(String value) {
-        if (value == null || value.isBlank()) {
+        if (value.isBlank()) {
             return Optional.empty();
         }
         if (value.contains("://")) {
@@ -173,7 +173,7 @@ public final class ReservedPathRegistry {
     private static Optional<URI> parseUri(String value) {
         try {
             return Optional.of(URI.create(value.trim()));
-        } catch (IllegalArgumentException unparseable) {
+        } catch (IllegalArgumentException _) {
             return Optional.empty();
         }
     }

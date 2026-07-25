@@ -212,7 +212,7 @@ public class BffRuntimeProducer {
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionStore, sessionCookieCodec,
-                (record, now) -> refreshCoordinator.refresh(record, now).session().orElse(record),
+                (sessionRecord, now) -> refreshCoordinator.refresh(sessionRecord, now).session().orElse(sessionRecord),
                 (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
                         .providesScopes(requiredScopes),
                 (returnUrl, now) -> {
@@ -226,7 +226,7 @@ public class BffRuntimeProducer {
         // edge integration is exercised by the Keycloak integration tests.
         StepUpHandler stepUpHandler = new StepUpHandler();
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
-                (record, challenge, now) -> Optional.empty(),
+                (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),
                 pendingStore, bindingCookieCodec, gatewayOrigin);
 

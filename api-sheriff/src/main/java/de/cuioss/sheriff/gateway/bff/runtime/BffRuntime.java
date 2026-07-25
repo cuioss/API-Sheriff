@@ -80,6 +80,7 @@ public final class BffRuntime {
     private final @Nullable UserInfoEndpoint userInfoEndpoint;
     private final @Nullable LoginInitiationEndpoint loginInitiationEndpoint;
 
+    @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     private BffRuntime(boolean active, @Nullable SessionAuthenticationStage sessionStage,
             @Nullable CsrfDefence csrfDefence, @Nullable StepUpCoordinator stepUpCoordinator,
             @Nullable CallbackEndpoint callbackEndpoint,
@@ -111,6 +112,7 @@ public final class BffRuntime {
      * @param userInfoEndpoint          the session/user-info fold handler (D11)
      * @param loginInitiationEndpoint   the login-initiation fold handler (D12)
      */
+    @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
             StepUpCoordinator stepUpCoordinator, CallbackEndpoint callbackEndpoint,
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,

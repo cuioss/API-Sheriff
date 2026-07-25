@@ -122,7 +122,7 @@ public final class SessionAuthenticationStage {
         }
 
         SessionRecord session = tokenRefresh.refreshIfNeeded(resolved.get(), now);
-        enforceScopes(request, route, session);
+        enforceScopes(route, session);
         request.mediatedBearer(session.accessToken());
     }
 
@@ -131,7 +131,7 @@ public final class SessionAuthenticationStage {
                 .flatMap(sessionId -> sessionStore.resolve(sessionId, now));
     }
 
-    private void enforceScopes(PipelineRequest request, RouteRuntime route, SessionRecord session) {
+    private void enforceScopes(RouteRuntime route, SessionRecord session) {
         List<String> requiredScopes = route.getEffectiveAuth().requiredScopes();
         if (!requiredScopes.isEmpty() && !grantedScopes.provides(session.accessToken(), requiredScopes)) {
             throw new GatewayException(EventType.SCOPE_MISSING,

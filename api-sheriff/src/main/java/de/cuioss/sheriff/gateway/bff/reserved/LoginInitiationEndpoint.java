@@ -115,7 +115,8 @@ public final class LoginInitiationEndpoint {
         Optional<SessionRecord> session = sessionCookieCodec.readSessionId(cookieHeader)
                 .flatMap(sessionId -> sessionStore.resolve(sessionId, now));
         if (session.isPresent()) {
-            String returnUrl = PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
+            String returnUrl = requestedReturnUrl != null
+                    && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)
                     ? requestedReturnUrl : LoginFlow.DEFAULT_RETURN_URL;
             LOGGER.debug("Login initiation with a live session — short-circuiting to the validated "
                     + "return URL, no fresh auth-code flow");

@@ -215,7 +215,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should redact the session id and every token in toString, keeping sub visible")
         void shouldRedactCredentialsInToString() {
-            SessionRecord record = SessionRecord.builder()
+            SessionRecord session = SessionRecord.builder()
                     .sessionId("SID-SECRET")
                     .accessToken("AT-SECRET")
                     .refreshToken(Optional.of("RT-SECRET"))
@@ -225,7 +225,7 @@ class InMemorySessionStoreTest {
                     .expiresAt(FUTURE)
                     .build();
 
-            String rendered = record.toString();
+            String rendered = session.toString();
 
             assertFalse(rendered.contains("SID-SECRET"), "the bearer session id must be redacted");
             assertFalse(rendered.contains("AT-SECRET"), "the access token must be redacted");

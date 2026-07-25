@@ -174,8 +174,8 @@ class StepUpCoordinatorTest {
 
             StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(), REPLAY_URL, NOW);
 
-            PendingAuthorizationRecord record = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
-            assertEquals(REPLAY_URL, record.returnUrl(), "the validated replay URL is recorded as the return target");
+            PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
+            assertEquals(REPLAY_URL, pending.returnUrl(), "the validated replay URL is recorded as the return target");
         }
 
         @Test
@@ -186,8 +186,8 @@ class StepUpCoordinatorTest {
             StepUpOutcome outcome = coordinator.coordinate(session("urn:example:silver"), challenge(),
                     "https://evil.example.com/steal", NOW);
 
-            PendingAuthorizationRecord record = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
-            assertEquals(StepUpCoordinator.DEFAULT_RETURN_URL, record.returnUrl(),
+            PendingAuthorizationRecord pending = pendingStore.consume(recordIdFrom(outcome), NOW).orElseThrow();
+            assertEquals(StepUpCoordinator.DEFAULT_RETURN_URL, pending.returnUrl(),
                     "an off-origin replay target is never an open redirect");
         }
     }
@@ -200,12 +200,15 @@ class StepUpCoordinatorTest {
         @DisplayName("Should reject null session, challenge, and instant")
         void shouldRejectNullArguments() {
             StepUpCoordinator coordinator = reDrivingCoordinator();
+            var validSession = session(ACR);
+            var validChallenge = challenge();
 
-            assertThrows(NullPointerException.class, () -> coordinator.coordinate(null, challenge(), REPLAY_URL, NOW));
             assertThrows(NullPointerException.class,
-                    () -> coordinator.coordinate(session(ACR), null, REPLAY_URL, NOW));
+                    () -> coordinator.coordinate(null, validChallenge, REPLAY_URL, NOW));
             assertThrows(NullPointerException.class,
-                    () -> coordinator.coordinate(session(ACR), challenge(), REPLAY_URL, null));
+                    () -> coordinator.coordinate(validSession, null, REPLAY_URL, NOW));
+            assertThrows(NullPointerException.class,
+                    () -> coordinator.coordinate(validSession, validChallenge, REPLAY_URL, null));
         }
 
         @Test

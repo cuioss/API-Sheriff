@@ -425,21 +425,7 @@ public class GatewayEdgeRoute {
                 return;
             }
             passthroughHostGuardStage.process(request);
-            // Reserved-path carve-out (D2/D16): a reserved OIDC endpoint is resolved here, ahead of the
-            // route table, so a proxy route such as path_prefix: /auth can never swallow the exact
-            // /auth/callback. When the server-mode BFF runtime is wired the matched path is DISPATCHED
-            // to its handler; a bearer-only / cookie-mode gateway carves it out of proxy dispatch and
-            // renders NO_ROUTE_MATCHED (the empty reserved registry never matches there anyway).
-            Optional<ReservedEndpoint> reserved =
-                    reservedPathRegistry.match(request.host(), requireCanonicalPath(request));
-            if (reserved.isPresent()) {
-                if (bffRuntime.isActive()) {
-                    dispatchReserved(ctx, request, reserved.get());
-                } else {
-                    LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s",
-                            requireCanonicalPath(request));
-                    renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
-                }
+            if (handleReservedPath(ctx, request)) {
                 return;
             }
             routeSelectionStage.process(request);
@@ -477,25 +463,61 @@ public class GatewayEdgeRoute {
                 dispatchAndRelay(ctx, request, route, forward);
             }
         } catch (GatewayException rejected) {
-            // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
-            if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
-                gatewayEventCounter.increment(rejected.getEventType());
-            }
-            if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
-                // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
-                // rejected.getMessage() already carries a sanitized description (see GatewayException).
-                LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
-            } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
-                // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
-                // message is a fixed disposition (never the raw Host value).
-                LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
-            }
-            recordError(ctx, rejected.getEventType());
-            renderRejection(ctx, request, rejected.getEventType());
+            handleGatewayRejection(ctx, request, rejected);
         } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             renderProblem(ctx, request, null);
         }
+    }
+
+    /**
+     * Resolves and dispatches a reserved OIDC carve-out (D2/D16): a reserved endpoint is matched here,
+     * ahead of the route table, so a proxy route such as {@code path_prefix: /auth} can never swallow
+     * the exact {@code /auth/callback}. When the server-mode BFF runtime is wired the matched path is
+     * DISPATCHED to its handler; a bearer-only / cookie-mode gateway carves it out of proxy dispatch
+     * and renders {@code NO_ROUTE_MATCHED} (the empty reserved registry never matches there anyway).
+     *
+     * @return {@code true} when the request was a reserved path and has been handled (the caller must
+     *         stop processing); {@code false} when no reserved path matched and normal routing continues
+     */
+    private boolean handleReservedPath(RoutingContext ctx, PipelineRequest request) {
+        Optional<ReservedEndpoint> reserved =
+                reservedPathRegistry.match(request.host(), requireCanonicalPath(request));
+        if (reserved.isEmpty()) {
+            return false;
+        }
+        if (bffRuntime.isActive()) {
+            dispatchReserved(ctx, request, reserved.get());
+        } else {
+            LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s",
+                    requireCanonicalPath(request));
+            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
+        }
+        return true;
+    }
+
+    /**
+     * Meters and renders a categorized {@link GatewayException} rejection: increments the event counter
+     * (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits the
+     * security-relevant WARN for filter violations and smuggled passthrough hosts, records the error
+     * metric, and renders the rejection.
+     */
+    private void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
+        // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
+        if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
+            gatewayEventCounter.increment(rejected.getEventType());
+        }
+        if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+            // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
+            // rejected.getMessage() already carries a sanitized description (see GatewayException).
+            LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
+        } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
+            // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
+            // message is a fixed disposition (never the raw Host value).
+            LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
+        }
+        recordError(ctx, rejected.getEventType());
+        renderRejection(ctx, request, rejected.getEventType());
     }
 
     /**
@@ -550,7 +572,7 @@ public class GatewayEdgeRoute {
             Buffer body = ctx.request().body().toCompletionStage().toCompletableFuture()
                     .get(BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return body == null ? null : body.toString(StandardCharsets.UTF_8);
-        } catch (InterruptedException interrupted) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             return null;
         } catch (ExecutionException failure) {

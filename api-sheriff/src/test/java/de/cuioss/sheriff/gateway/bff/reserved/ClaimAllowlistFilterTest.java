@@ -138,13 +138,15 @@ class ClaimAllowlistFilterTest {
         @Test
         @DisplayName("allowedClaims is immutable")
         void shouldExposeImmutableAllowedClaims() {
-            assertThrows(UnsupportedOperationException.class, () -> filter.allowedClaims().add("email"));
+            var allowedClaims = filter.allowedClaims();
+            assertThrows(UnsupportedOperationException.class, () -> allowedClaims.add("email"));
         }
 
         @Test
         @DisplayName("defaultView is immutable")
         void shouldExposeImmutableDefaultView() {
-            assertThrows(UnsupportedOperationException.class, () -> filter.defaultView().add("email"));
+            var defaultView = filter.defaultView();
+            assertThrows(UnsupportedOperationException.class, () -> defaultView.add("email"));
         }
 
         @Test

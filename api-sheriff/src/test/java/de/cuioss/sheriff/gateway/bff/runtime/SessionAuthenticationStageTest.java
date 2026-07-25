@@ -280,9 +280,9 @@ class SessionAuthenticationStageTest {
         return new InMemorySessionStore(16);
     }
 
-    private static SessionStore storeWith(SessionRecord record) {
+    private static SessionStore storeWith(SessionRecord session) {
         InMemorySessionStore store = new InMemorySessionStore(16);
-        store.create(record);
+        store.create(session);
         return store;
     }
 

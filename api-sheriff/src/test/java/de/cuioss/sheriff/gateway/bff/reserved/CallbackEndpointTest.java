@@ -88,9 +88,9 @@ class CallbackEndpointTest {
 
         FlowContext flow = FlowContext.create("https://gw.example.com/auth/callback");
         state = flow.state();
-        PendingAuthorizationRecord record = PendingAuthorizationRecord.create(flow, RETURN_URL, T0);
-        pendingStore.store(record);
-        recordId = record.id();
+        PendingAuthorizationRecord pending = PendingAuthorizationRecord.create(flow, RETURN_URL, T0);
+        pendingStore.store(pending);
+        recordId = pending.id();
         bindingCookieHeader = bindingCodec.toSetCookieHeader(recordId).split(";", 2)[0];
     }
 
@@ -243,12 +243,12 @@ class CallbackEndpointTest {
             Optional<SessionRecord> session = sessionStore.resolve(sessionId, T0);
 
             assertTrue(session.isPresent(), "the session was created under the opaque id from the cookie");
-            SessionRecord record = session.get();
-            assertEquals(RAW_ACCESS_TOKEN, record.accessToken());
-            assertEquals(RAW_ID_TOKEN, record.idToken());
-            assertEquals(SUBJECT, record.sub());
-            assertEquals(Optional.of(IDP_SID), record.sid());
-            assertEquals(T0.plus(SESSION_TTL), record.expiresAt(), "the session TTL is absolute from login");
+            SessionRecord sessionRecord = session.get();
+            assertEquals(RAW_ACCESS_TOKEN, sessionRecord.accessToken());
+            assertEquals(RAW_ID_TOKEN, sessionRecord.idToken());
+            assertEquals(SUBJECT, sessionRecord.sub());
+            assertEquals(Optional.of(IDP_SID), sessionRecord.sid());
+            assertEquals(T0.plus(SESSION_TTL), sessionRecord.expiresAt(), "the session TTL is absolute from login");
         }
 
         @Test

@@ -64,7 +64,7 @@ class LogoutTokenValidatorTest {
     private final LogoutTokenValidator validator = new LogoutTokenValidator(ISSUER, AUDIENCE, FRESHNESS);
 
     private static Map<String, ClaimValue> validClaims() {
-        Map<String, ClaimValue> claims = new HashMap<>(Map.of(
+        return new HashMap<>(Map.of(
                 "iss", ClaimValue.forPlainString(ISSUER),
                 "aud", ClaimValue.forList("aud", List.of(AUDIENCE)),
                 "iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
@@ -72,7 +72,6 @@ class LogoutTokenValidatorTest {
                         "{\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\":{}}"),
                 "sub", ClaimValue.forPlainString(SUB),
                 "sid", ClaimValue.forPlainString(SID)));
-        return claims;
     }
 
     private static TokenContent token(Map<String, ClaimValue> claims) {
@@ -291,7 +290,8 @@ class LogoutTokenValidatorTest {
         @Test
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
-            assertThrows(NullPointerException.class, () -> validator.validate(token(validClaims()), null));
+            TokenContent token = token(validClaims());
+            assertThrows(NullPointerException.class, () -> validator.validate(token, null));
         }
 
         @Test

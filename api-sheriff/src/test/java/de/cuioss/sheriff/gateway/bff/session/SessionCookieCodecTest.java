@@ -107,8 +107,9 @@ class SessionCookieCodecTest {
         @Test
         @DisplayName("Should reject a null or blank cookie name")
         void shouldRejectBlankName() {
-            assertThrows(NullPointerException.class, () -> new SessionCookieCodec(null, Duration.ofHours(1)));
-            assertThrows(IllegalArgumentException.class, () -> new SessionCookieCodec("  ", Duration.ofHours(1)));
+            Duration ttl = Duration.ofHours(1);
+            assertThrows(NullPointerException.class, () -> new SessionCookieCodec(null, ttl));
+            assertThrows(IllegalArgumentException.class, () -> new SessionCookieCodec("  ", ttl));
         }
     }
 }
