@@ -23,6 +23,20 @@ tls:
   # HTTP/2 at the edge instead of silently falling back to HTTP/1.1 — a fallback
   # would report an h2 number that was never measured over h2.
   alpn: ["h2", "http/1.1"]
+  # Accept-time SNI passthrough split (GW-06 / D1). Declaring a non-empty passthrough_sni
+  # is what STARTS the Vert.x SNI front listener (tls/SniFrontListener via tls/TlsEdgeProducer)
+  # on the public TLS port; the terminated Quarkus HTTPS listener is moved to the internal
+  # loopback port (QUARKUS_HTTP_SSL_PORT=8444, set on the api-sheriff service in
+  # docker-compose.yml) so the front owns 8443 without a bind conflict. Each SNI maps to a
+  # topology alias resolved (base-path-free) through topology.properties:
+  #   - passthrough.test.example -> the TLS passthrough-backend (CN=passthrough-backend), so
+  #     TlsPassthroughIT observes the BACKEND's certificate through the opaque L4 relay, and
+  #     HostSmuggleGuardIT's runtime Host-vs-SNI guard has a reserved hostname to reject.
+  #   - fault.test.example       -> the same backend fronted by Toxiproxy, so PassthroughFaultIT
+  #     can inject a mid-stream reset and prove the relay surfaces it as an abort, not a hang.
+  passthrough_sni:
+    passthrough.test.example: PASSTHROUGH_BACKEND
+    fault.test.example: PASSTHROUGH_FAULT
 anchors:
   api:
     path_prefix: /proxy

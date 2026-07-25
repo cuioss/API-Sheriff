@@ -168,6 +168,12 @@ services:
       - QUARKUS_PROFILE=it
       # File logging to mounted target directory
       - LOG_FILE_PATH=/logs/quarkus.log
+      # Accept-time SNI passthrough split: gateway.yaml declares tls.passthrough_sni, so the Vert.x
+      # SNI front listener owns the public TLS port (sheriff.tls.public-port=8443) and the terminated
+      # Quarkus HTTPS listener must move to the internal loopback port to avoid a bind conflict. This
+      # override moves it to sheriff.tls.internal-https-port (8444); the front L4-relays a matched
+      # passthrough SNI to the resolved backend and hands every other connection to localhost:8444.
+      - QUARKUS_HTTP_SSL_PORT=8444
       # Certificate paths (runtime override)
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -238,6 +244,72 @@ services:
       - api-sheriff
 
     # Production restart policy
+    restart: unless-stopped
+
+  # Dedicated mTLS-terminated gateway instance backing MtlsHandshakeIT (GW-06 / D2). mTLS is a
+  # property of the single terminated Quarkus HTTPS listener, so it cannot coexist on the primary
+  # instance (10443) whose terminated path serves the rest of the suite without a client cert. This
+  # instance reuses the SAME native image, overlays an mTLS-enabled gateway.yaml (require-and-verify
+  # against mtls-client-ca.crt, no passthrough → Quarkus terminates directly on the public port),
+  # and is published on 10444. TLS is pinned to 1.2 here so the JDK black-box client observes the
+  # client-auth rejection synchronously at startHandshake() — under TLS 1.3 JSSE surfaces a
+  # client-auth failure only on the first read, which MtlsHandshakeIT's read-less handshake would
+  # miss; the mutual-auth security check itself is identical on 1.2 and 1.3.
+  api-sheriff-mtls:
+    image: "api-sheriff:distroless"
+    ports:
+      - "10444:8443"  # External test port for MtlsHandshakeIT (test.mtls.port)
+      - "19001:9000"  # Management interface (health/metrics, plain HTTP)
+    environment:
+      - QUARKUS_PROFILE=it
+      - LOG_FILE_PATH=/logs/quarkus-mtls.log
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      # Pin the terminated HTTPS listener to TLS 1.2 so the require-client-cert rejection is
+      # observable synchronously at startHandshake() (see the service comment). The controlling key
+      # is quarkus.http.ssl.protocols (the HTTPS listener's protocol list); quarkus.tls.protocols is
+      # not the listener's control and would leave TLS 1.3 offered.
+      - QUARKUS_HTTP_SSL_PROTOCOLS=TLSv1.2
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the mTLS-enabled variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-mtls/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
+    # gated host-side by start-integration-container.sh probing the published management port 19001,
+    # exactly as the primary instance is gated on 19000.
+    networks:
+      - api-sheriff
     restart: unless-stopped
 
   prometheus:

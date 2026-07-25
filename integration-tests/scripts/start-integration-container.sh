@@ -168,6 +168,29 @@ for i in {1..30}; do
     sleep 1
 done
 
+# Wait for the dedicated mTLS gateway instance (api-sheriff-mtls) to be ready. It reuses the same
+# native image and reaches readiness offline (static-file JWKS), published on management port 19001.
+# MtlsHandshakeIT connects to its TLS port 10444, so it must be up before the IT phase.
+echo "⏳ Waiting for the mTLS gateway instance to be ready..."
+for i in {1..30}; do
+    if curl -sf http://localhost:19001/q/health/live > /dev/null 2>&1; then
+        echo "✅ mTLS gateway instance is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "❌ mTLS gateway instance failed to start within 30 seconds"
+        DIAG_DIR="target/failsafe-reports"
+        mkdir -p "$DIAG_DIR"
+        echo "----- $COMPOSE_BASE logs api-sheriff-mtls -----"
+        $COMPOSE_BASE logs --no-color api-sheriff-mtls 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-app.log"
+        curl -s http://localhost:19001/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-health.json"
+        echo ""
+        exit 1
+    fi
+    echo "⏳ Waiting for mTLS gateway... (attempt $i/30)"
+    sleep 1
+done
+
 # Extract native startup time from logs
 NATIVE_STARTUP=$($COMPOSE_BASE logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
 if [ ! -z "$NATIVE_STARTUP" ]; then
