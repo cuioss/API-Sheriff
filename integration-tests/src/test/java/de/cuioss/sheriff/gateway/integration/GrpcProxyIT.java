@@ -19,17 +19,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-
-
-import de.cuioss.sheriff.gateway.integration.grpc.EchoGrpc;
-import de.cuioss.sheriff.gateway.integration.grpc.EchoRequest;
-import de.cuioss.sheriff.gateway.integration.grpc.EchoResponse;
-import de.cuioss.sheriff.gateway.integration.grpc.SecureEchoGrpc;
-
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -39,6 +28,15 @@ import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.MetadataUtils;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import de.cuioss.sheriff.gateway.integration.grpc.EchoGrpc;
+import de.cuioss.sheriff.gateway.integration.grpc.EchoRequest;
+import de.cuioss.sheriff.gateway.integration.grpc.EchoResponse;
+import de.cuioss.sheriff.gateway.integration.grpc.SecureEchoGrpc;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;

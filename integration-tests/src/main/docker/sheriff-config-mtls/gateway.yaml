@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the DEDICATED mTLS integration-test instance (api-sheriff-mtls in
+# docker-compose.yml). It is overlay-mounted on top of the shared sheriff-config directory so it
+# replaces ONLY gateway.yaml — the endpoints/ subdirectory and topology.properties are shared with
+# the primary instance, keeping the two documents in lockstep except for their tls block.
+#
+# This instance exists because mTLS is a property of the single terminated Quarkus HTTPS listener:
+# switching it to require-and-verify would break every existing terminated IT on the primary
+# instance (they make plain HTTPS calls with no client cert). So the require-client-cert behaviour
+# (GW-06 / D2) is proven on this separate listener, published on host port 10444, while the primary
+# instance (10443) stays terminated-without-mtls for the rest of the suite.
+#
+# The anchors and token_validation block are a faithful copy of the primary gateway.yaml so the
+# shared endpoints/ resolve identically and the offline it-static JWKS issuer reaches readiness
+# without Keycloak. The ONLY intentional difference is the tls block: no passthrough_sni here (the
+# SNI front never starts, so Quarkus terminates directly on the public port), and tls.mtls enabled.
+version: 1
+metadata:
+  config_version: "integration-test-mtls"
+allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+tls:
+  alpn: ["h2", "http/1.1"]
+  # Require-and-verify client certificates on the terminated listener (tls/MtlsServerCustomizer).
+  # client_ca is the PEM trust anchor the client certificate must chain to; it is mounted read-only
+  # into the container at /app/certificates/mtls-client-ca.crt (see the certificates volume). A
+  # client presenting no certificate, or one signed by a CA this anchor does not trust, is rejected
+  # at the TLS handshake — never as an HTTP status. The anchor deliberately trusts ONLY the
+  # mtls-client CA, so MtlsHandshakeIT's wrong-CA identity (mtls-wrong.p12) is rejected.
+  mtls:
+    enabled: true
+    client_ca: /app/certificates/mtls-client-ca.crt
+anchors:
+  api:
+    path_prefix: /proxy
+    type: proxy
+    access: public
+  bff:
+    path_prefix: /bff
+    type: proxy
+    access: public
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+  graphql:
+    path_prefix: /graphql
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+    security_filter:
+      max_body_bytes: 67108864
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+  grpc:
+    path_prefix: /grpc
+    type: proxy
+    access: public
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp

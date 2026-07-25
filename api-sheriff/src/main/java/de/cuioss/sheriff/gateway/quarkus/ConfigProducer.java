@@ -76,6 +76,7 @@ public class ConfigProducer {
 
     private GatewayConfig gateway;
     private RouteTable routeTable;
+    private ResolvedTopology resolvedTopology;
     private boolean built;
 
     /**
@@ -122,6 +123,26 @@ public class ConfigProducer {
         return routeTable;
     }
 
+    /**
+     * Produces the immutable, fully-resolved topology assembled at boot: every topology alias
+     * referenced by an enabled endpoint or a {@code tls.passthrough_sni} target, decomposed into its
+     * upstream endpoint. Published (rather than recomputed) so {@code tls.TlsEdgeProducer} can build
+     * the accept-time SNI relay map from the same resolved data the validator already accepted.
+     * <p>
+     * {@link Singleton} (a pseudo-scope, no client proxy) because {@link ResolvedTopology} is a
+     * {@code record}: ArC cannot subclass a final type to build the proxy a normal scope such as
+     * {@code @ApplicationScoped} would require. The bean is immutable and assembled once at boot, so
+     * a single instance is exact.
+     *
+     * @return the immutable {@link ResolvedTopology}
+     */
+    @Produces
+    @Singleton
+    public ResolvedTopology resolvedTopology() {
+        buildOnce();
+        return resolvedTopology;
+    }
+
     private synchronized void buildOnce() {
         if (built) {
             return;
@@ -138,6 +159,7 @@ public class ConfigProducer {
                 abort(violations);
             }
             this.gateway = loaded.gateway();
+            this.resolvedTopology = topology;
             this.routeTable = new RouteTableBuilder().build(loaded.gateway(), enabled, topology);
             this.built = true;
             LOGGER.info(ConfigLogMessages.INFO.CONFIG_LOADED, configVersion(gateway));

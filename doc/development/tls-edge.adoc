@@ -1,0 +1,146 @@
+= API Sheriff -- TLS Edge: Front Listener and the Accept-Time SNI Split
+:toc:
+:toclevels: 2
+:sectnums:
+
+The *contributor* view of the TLS edge: how the accept-time SNI split is built, which component
+owns which port, and why selection is *fail-closed*. Operators configuring these keys want the
+link:../user/tls-edge.adoc[operator TLS-edge topic]; the field contract is the
+link:../configuration.adoc#_tls[Configuration Reference `tls` section]; the threat this design
+closes is link:../security-threat-model.adoc#gw-06[GW-06] in the threat model.
+
+The whole edge lives under `de.cuioss.sheriff.gateway.tls` plus one pipeline stage
+(`de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage`). It is framework-agnostic at the
+seam (link:../adr/0005-module-structure.adoc[ADR-0005]) apart from `TlsEdgeProducer`, which is the
+single CDI-bound boot component.
+
+== Front Listener (Vert.x `NetServer`)
+
+The leftmost component is `SniFrontListener` -- a *plain-TCP* Vert.x `NetServer` that binds the
+public TLS port. It is plain TCP on purpose: the TLS ClientHello is sent in cleartext at the record
+layer, so the Server Name Indication (RFC 6066) can be read *without any decryption or private key*.
+The front never holds the gateway's certificate; it only reads the SNI and forwards bytes.
+
+On each accepted connection an `Incoming` reassembles the ClientHello:
+
+* bytes are appended to a per-connection buffer as they arrive, and handed to
+  `ClientHelloSniParser` after every chunk;
+* the parser returns `complete() == false` until the full ClientHello record is present -- the
+  listener *never routes on a partial record* (a fragmented-ClientHello defence, see
+  <<_fail_closed_gw_06>>);
+* once the parser reports a complete ClientHello the socket is *paused* (`socket.pause()`),
+  `decided` latches true, and the connection is routed exactly once.
+
+All callbacks run on the connection's Vert.x event loop, so the reassembly buffer and the `decided`
+latch are single-threaded and need no synchronization.
+
+The front listener is *conditional*: `TlsEdgeProducer` constructs and starts it only when
+`tls.passthrough_sni` is non-empty. When passthrough is unconfigured the front is never created, the
+terminated Quarkus HTTPS listener owns the public port directly, and the edge adds *zero* runtime
+overhead -- the default single-listener topology is unchanged.
+
+== The Accept-Time L4/L7 Split
+
+`SniFrontListener.route(...)` makes a single decision per connection, keyed on the normalized SNI:
+
+* *SNI present in the passthrough map* -> the connection, *buffered ClientHello included*, is handed
+  to `PassthroughRelay` as an *opaque L4 TCP relay* (`RelayKind.PASSTHROUGH`). The intact,
+  still-encrypted byte stream is spliced to the resolved backend; the backend completes the
+  handshake and presents *its own* certificate. The gateway never terminates and sees no L7 detail.
+* *any other SNI* -> the same still-encrypted stream is relayed (`RelayKind.TERMINATED`) to the
+  *internal* terminated Quarkus HTTPS listener, which completes the handshake with the gateway's own
+  certificate -- enforcing `min_version`, `alpn`, and `mtls` client-certificate verification -- and
+  runs the full fixed L7 pipeline.
+* *missing / malformed SNI* -> the terminated-strict path, plus an audited `WARN`
+  (`CLIENT_HELLO_FAIL_CLOSED`) that records the disposition only, never raw bytes. This is the
+  fail-closed branch (<<_fail_closed_gw_06>>).
+
+SNI matching is *exact, case-insensitive, and root-dot-insensitive*. `normalizeSni(...)` lowers the
+host in the root locale, strips it, and removes a single trailing FQDN dot; `TlsEdgeProducer` builds
+the relay-map keys through the same routine so insertion and lookup always agree. There is *no
+wildcard* matching -- every passthrough host is listed literally.
+
+== Internal-Handoff Mechanics and Port Ownership
+
+There are two ports, wired by `TlsEdgeProducer`:
+
+[cols="1,2,3"]
+|===
+| Port | Config property (default) | Owner
+
+| Public TLS port
+| `sheriff.tls.public-port` (`8443`)
+| The `SniFrontListener` `NetServer` when passthrough is active; otherwise the terminated Quarkus
+  HTTPS listener directly.
+
+| Internal HTTPS port
+| `sheriff.tls.internal-https-port` (`8444`)
+| The terminated Quarkus HTTPS listener, bound to `localhost` only. Every non-passthrough connection
+  is relayed here for termination.
+|===
+
+The internal handoff is a *loopback relay*, not an in-process call: terminated connections are
+spliced from the front listener to `localhost:8444`, where the ordinary Quarkus HTTPS listener does
+the TLS termination and L7 processing it would do anyway. This keeps the terminated pipeline
+identical whether or not the front listener is present -- the split is purely an accept-time
+prefix, and the terminated listener is unaware it sits behind a relay.
+
+`TlsEdgeProducer` builds the immutable SNI -> `RelayTarget` map from `GatewayConfig.tls()` and the
+resolved topology. Per link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009] an
+unresolved passthrough alias means the `ConfigValidator` already failed the boot, so a present entry
+that unexpectedly fails to resolve is skipped defensively rather than aborting a second time. Boot is
+*fail-fast*: the front listener's port bind is awaited (15 s timeout) and a bind failure aborts
+startup, so the gateway never serves on a half-open TLS edge.
+
+== Runtime Host-vs-SNI Smuggle Guard
+
+The L4 split routes on the *outer SNI*, but a terminated request also carries an L7 `Host` header,
+and the two can disagree. `PassthroughHostGuardStage` is the runtime half of the guard: a *pre-check
+before stage-2 route selection* that rejects a terminated request whose `Host` names a
+`passthrough_sni` hostname with `404` (`EventType.PASSTHROUGH_HOST_SMUGGLED`).
+
+A passthrough hostname is meant to be split off at L4 and never terminated. A terminated request
+carrying that hostname in its `Host` header is therefore attempting to reach the passthrough
+backend's reserved identity *through* the terminated listener -- a host-confusion / request-smuggling
+vector. The guard's `Host` normalization mirrors the front listener's SNI normalization (lower-cased,
+trailing FQDN dot removed) and additionally strips a single `:port` suffix, so the two matchers agree
+on what "the same host" means.
+
+This runtime guard is distinct from its two boot-time and framing siblings:
+
+* the *boot-time collision rule* (`ConfigValidator.validatePassthroughHostCollision`) fails startup
+  when a route's `match.host` equals a passthrough SNI; and
+* the framing / anti-smuggling `FramingGate`, which is orthogonal request-framing hygiene.
+
+The stage is inert when `passthrough_sni` is empty and consumes only the agnostic `PipelineRequest`,
+so it stays framework-agnostic (link:../adr/0005-module-structure.adoc[ADR-0005]).
+
+[#_fail_closed_gw_06]
+== Fail-Closed Selection (GW-06)
+
+Selection is *fail-closed*: anything not *positively matched* as a passthrough SNI is terminated
+under the strict policy, never relayed and never dropped to a permissive default. Two rules make
+this concrete, and both are direct responses to real gateway CVEs catalogued under
+link:../security-threat-model.adoc#gw-06[GW-06]:
+
+* *Full-ClientHello reassembly before routing.* The listener buffers until `ClientHelloSniParser`
+  reports a complete record and only then decides. This defeats the *fragmented-ClientHello* class:
+  *Traefik CVE-2026-32305*, where a fragmented ClientHello yielded an empty SNI that fell through to
+  a *permissive* default TLS config and bypassed mTLS. A partial record here yields no decision at
+  all -- the front waits for the rest.
+* *Empty/unresolved SNI takes the strict path, never a permissive default.* A missing or malformed
+  SNI is routed to the terminated-strict listener (which still enforces `mtls`), not to a
+  passthrough or a no-client-cert fallback. This is the corrective for the *silent verify-inversion*
+  class -- *Traefik CVE-2025-66491*, where `proxy-ssl-verify: on` was mapped to Go's
+  `InsecureSkipVerify: true`, leaving verification *off* for months. The edge never expresses "verify
+  off" as a fallback; the strict listener is the only non-passthrough destination.
+
+Host-name normalization for the security decision is spec-conformant and tested, closing the
+*normalization-bypass* class -- *KrakenD CVE-2026-39821*, where a punycode host (`xn--example-.com`)
+normalized to `example.com` and bypassed a host-based rule. The passthrough collision rule and the
+runtime `Host` guard share the same normalization routine, so a punycode host that normalizes onto a
+passthrough SNI is caught by the same match rather than slipping between two disagreeing normalizers.
+
+The discipline the CVEs teach is *assert behaviour, not the flag*: the integration suites verify a
+real no-cert handshake *fails* when mTLS is enabled and a fragmented/empty-SNI ClientHello never
+reaches a passthrough or a no-client-cert default -- not merely that a boolean parsed.

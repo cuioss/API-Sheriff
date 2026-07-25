@@ -33,6 +33,28 @@ The authentication stage is where the three variants differ: offline bearer vali
 (link:variants/02-bff-session.adoc[Variant 2]), or OIDC encrypted-cookie mediation
 (link:variants/03-bff-cookie.adoc[Variant 3]). Everything else in the pipeline is shared.
 
+=== TLS Edge (Accept-Time SNI Split)
+
+The leftmost component is a Vert.x `NetServer` *front listener* that owns the public TLS port. It
+reassembles the full TLS ClientHello, reads the Server Name Indication (RFC 6066) in cleartext, and
+splits each connection at accept time:
+
+* *SNI listed in `tls.passthrough_sni`* -> an *opaque L4 TCP relay*: the intact byte stream
+  (ClientHello included) is forwarded, undecrypted, to the topology-resolved backend, which
+  completes the handshake and presents *its own* certificate. The gateway never terminates and sees
+  no L7 detail.
+* *any other SNI, or none* -> an *internal handoff to the terminated L7 listener*, which completes
+  the handshake with the gateway's own certificate (enforcing `min_version`, `alpn`, and `mtls`
+  client-certificate verification) and runs the full fixed pipeline.
+
+Two guards keep the split unambiguous: a boot-time check fails startup when a route's `match.host`
+equals a passthrough SNI, and a runtime *Host-vs-SNI smuggle guard* rejects a terminated request
+whose `Host` header names a passthrough SNI with `404` (`PASSTHROUGH_HOST_SMUGGLED`) *before route
+selection* -- so the passthrough backend's reserved identity can never be reached through the
+terminated listener. Selection is *fail-closed* (GW-06): anything not positively matched as
+passthrough is terminated, never relayed. The front-listener internals and the fail-closed rationale
+are documented in the link:development/tls-edge.adoc[developer TLS-edge topic].
+
 === Configuration Subsystem
 
 Configuration is loaded once at startup from static files (see link:configuration.adoc[Configuration Model]),
