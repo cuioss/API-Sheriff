@@ -221,10 +221,11 @@ public final class BffRuntime {
      * {@code of(Map)} form is never taken).
      */
     private static String callbackParameters(ReservedHttpRequest req) {
-        if (req.isFormPost()) {
-            return Objects.requireNonNullElse(req.rawFormBody(), "");
+        final String raw = req.isFormPost() ? req.rawFormBody() : req.rawQuery();
+        if (raw == null) {
+            return "";
         }
-        return Objects.requireNonNullElse(req.rawQuery(), "");
+        return raw;
     }
 
     private static ReservedHttpResponse render(CallbackEndpoint.CallbackOutcome outcome) {

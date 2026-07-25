@@ -173,7 +173,10 @@ final class BffKeycloakLoginFlow {
      * @return the configured request specification
      */
     static RequestSpecification gateway(Map<String, String> cookies) {
-        return given().relaxedHTTPSValidation().baseUri(GATEWAY_ORIGIN).cookies(cookies);
+        // urlEncodingEnabled(false): the callback/return URLs replayed here are already correctly
+        // percent-encoded (they come from the IdP form_post action / the gateway's own redirects), so
+        // REST Assured MUST NOT re-encode them — re-encoding a literal '+' to %2B corrupts them.
+        return given().relaxedHTTPSValidation().urlEncodingEnabled(false).baseUri(GATEWAY_ORIGIN).cookies(cookies);
     }
 
     /**
@@ -184,7 +187,11 @@ final class BffKeycloakLoginFlow {
      * @return the configured request specification
      */
     static RequestSpecification keycloak(Map<String, String> cookies) {
-        return given().relaxedHTTPSValidation().cookies(cookies);
+        // urlEncodingEnabled(false): the authorization URL (and the login-form action) are already
+        // percent-encoded by the gateway/Keycloak. REST Assured's default re-encoding rewrites the
+        // scope separator '+' to %2B, which Keycloak reads as a single literal scope
+        // "openid+profile+email" -> invalid_scope. Disabling it sends the URL verbatim.
+        return given().relaxedHTTPSValidation().urlEncodingEnabled(false).cookies(cookies);
     }
 
     /**
