@@ -122,7 +122,8 @@ Duration ttl) {
     /**
      * Whether {@code returnUrl} is safe to redirect a browser to after login: a gateway-relative
      * path ({@code /...}), or an absolute URL whose origin (scheme + host + port) matches
-     * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a cross-origin absolute
+     * {@code gatewayOrigin}. A schema-relative ({@code //host}) value, a backslash-authority
+     * ({@code /\host}, which browsers normalize to {@code //host}) value, a cross-origin absolute
      * URL, a blank value, or an unparseable value is rejected — the post-login redirect is never
      * an open redirect.
      *
@@ -132,6 +133,13 @@ Duration ttl) {
      */
     public static boolean sameOrigin(@Nullable String returnUrl, String gatewayOrigin) {
         if (returnUrl == null || returnUrl.isBlank() || returnUrl.startsWith("//")) {
+            return false;
+        }
+        // Browsers normalize a backslash to a forward slash, so /\evil.com or \\evil.com can be
+        // coerced into a protocol-relative //evil.com open redirect. A legitimate return URL — a
+        // gateway-relative path or an absolute gateway URL — never carries a raw backslash, so any
+        // backslash is rejected outright (closes /\evil.com, /\/evil.com, \evil.com).
+        if (returnUrl.indexOf('\\') >= 0) {
             return false;
         }
         if (returnUrl.startsWith("/")) {

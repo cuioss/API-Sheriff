@@ -146,7 +146,9 @@ public final class TokenRefreshCoordinator {
         try {
             RotationResult rotation = refreshExchange.exchange(presentedRefreshToken);
             SessionRecord rotated = rotate(latest, rotation);
-            sessionStore.destroyById(sessionId);
+            // create() upserts by session id (SessionStore contract; InMemorySessionStore is a keyed
+            // map put), so no pre-create destroy is needed on the success path. Destroying first would
+            // open a window where a concurrent resolve() misses the rotating session.
             sessionStore.create(rotated);
             LOGGER.debug("Refreshed the mediated tokens for a require:session route (single-flight)");
             return RefreshOutcome.refreshed(rotated);

@@ -134,6 +134,42 @@ class BffRuntimeProducerTest {
         }
     }
 
+    @Nested
+    @DisplayName("Gateway-origin derivation (default-port normalization)")
+    class OriginDerivation {
+
+        @Test
+        @DisplayName("Should drop the default https port 443 so the origin matches a browser Origin header")
+        void shouldNormalizeHttpsDefaultPort() {
+            assertEquals("https://gw.example.com",
+                    BffRuntimeProducer.originOf("https://gw.example.com:443/auth/callback"));
+        }
+
+        @Test
+        @DisplayName("Should drop the default http port 80 so the origin matches a browser Origin header")
+        void shouldNormalizeHttpDefaultPort() {
+            assertEquals("http://gw.example.com",
+                    BffRuntimeProducer.originOf("http://gw.example.com:80/auth/callback"));
+        }
+
+        @Test
+        @DisplayName("Should preserve a non-default explicit port and a portless URL")
+        void shouldPreserveNonDefaultPort() {
+            assertEquals("https://gw.example.com:8443",
+                    BffRuntimeProducer.originOf("https://gw.example.com:8443/auth/callback"));
+            assertEquals("https://gw.example.com",
+                    BffRuntimeProducer.originOf("https://gw.example.com/auth/callback"));
+            assertEquals("http://gw.example.com:8080",
+                    BffRuntimeProducer.originOf("http://gw.example.com:8080/auth/callback"));
+        }
+
+        @Test
+        @DisplayName("Should reject a redirect_uri that is not an absolute URI")
+        void shouldRejectRelativeRedirectUri() {
+            assertThrows(IllegalStateException.class, () -> BffRuntimeProducer.originOf("/auth/callback"));
+        }
+    }
+
     private BffRuntimeProducer producer(Optional<OidcConfig> oidc) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).build();
         return new BffRuntimeProducer(gatewayConfig, new SingletonInstance<>(tokenValidator));

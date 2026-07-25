@@ -105,7 +105,21 @@ public final class LogoutEndpoint {
                     List.of(sessionCookieCodec.toClearingSetCookieHeader()));
         }
 
-        RpInitiatedLogout.LogoutRedirect redirect = rpInitiatedLogout.initiate(session.get());
+        RpInitiatedLogout.LogoutRedirect redirect;
+        // Local logout is the authoritative, immediately-effective step and must ALWAYS succeed: if the
+        // IdP end-session redirect cannot be built, still destroy the server-side session and clear the
+        // session cookie, then land the browser on final_redirect. The catch is deliberately broad so no
+        // redirect-construction failure can leave the local session usable.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            redirect = rpInitiatedLogout.initiate(session.get());
+        } catch (RuntimeException initiationFailure) {
+            sessionStore.destroyById(sessionId.get());
+            LOGGER.debug(initiationFailure,
+                    "RP-initiated logout — end-session redirect construction failed; local session destroyed, landing on final_redirect");
+            return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
+                    List.of(sessionCookieCodec.toClearingSetCookieHeader()));
+        }
         sessionStore.destroyById(sessionId.get());
         List<String> setCookies = new ArrayList<>(redirect.setCookieHeaders());
         setCookies.add(sessionCookieCodec.toClearingSetCookieHeader());

@@ -30,7 +30,9 @@ const BENCHMARK_NAME = 'sessionMediated';
 
 // The protected upstream route guarded by `require: session`: a request without a resolvable
 // session cookie is redirected to login, so a 200 here proves the mediation path ran end to end.
-const TARGET_URL = __ENV.TARGET_URL || targetUrl('/secure/get');
+// It targets the session-gated `/bff-session` anchor (NOT `/secure`, which is `require: bearer` and
+// would reject a replayed session cookie with a 401).
+const TARGET_URL = __ENV.TARGET_URL || targetUrl('/bff-session/get');
 
 // The gateway-owned login-initiation reserved path (oidc.login.path). Hitting it drives the
 // auth-code flow that ends with the gateway setting the opaque session cookie.
@@ -40,11 +42,12 @@ const LOGIN_URL = __ENV.LOGIN_URL || targetUrl('/auth/login');
 // replayed; no token material ever leaves the gateway. Matches SessionCookieCodec.DEFAULT_COOKIE_NAME.
 const SESSION_COOKIE_NAME = __ENV.SESSION_COOKIE_NAME || '__Host-sheriff-session';
 
-// Keycloak is reached by service name on the shared api-sheriff network, exactly as the bearer
-// aspect reaches it: the benchmark realm import pins frontendUrl to https://keycloak:8443 so the
-// gateway's benchmark-realm issuer validation matches.
-const KEYCLOAK_USERNAME = __ENV.KEYCLOAK_USERNAME || 'benchmark-user';
-const KEYCLOAK_PASSWORD = __ENV.KEYCLOAK_PASSWORD || 'benchmark-password';
+// Keycloak is reached by service name on the shared api-sheriff network. Server-mode BFF session
+// mediation is wired (the gateway's oidc block) to the `integration` realm and the `integration-client`
+// confidential client, so the session login must authenticate an integration-realm user — NOT the
+// bearer aspect's benchmark-realm benchmark-user, whose realm the session route does not mediate.
+const KEYCLOAK_USERNAME = __ENV.KEYCLOAK_USERNAME || 'integration-user';
+const KEYCLOAK_PASSWORD = __ENV.KEYCLOAK_PASSWORD || 'integration-password';
 
 export const options = {
     vus: vus(50),

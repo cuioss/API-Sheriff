@@ -108,8 +108,8 @@ public final class LogoutTokenValidator {
             LOGGER.debug("Back-channel logout token rejected — iat missing or outside the freshness window");
             return Optional.empty();
         }
-        if (claim(logoutToken, CLAIM_EVENTS).filter(events -> events.contains(BACKCHANNEL_LOGOUT_EVENT)).isEmpty()) {
-            LOGGER.debug("Back-channel logout token rejected — events claim missing the back-channel-logout event");
+        if (claim(logoutToken, CLAIM_EVENTS).filter(LogoutTokenValidator::hasBackchannelLogoutEventMember).isEmpty()) {
+            LOGGER.debug("Back-channel logout token rejected — events is not a JSON object carrying the back-channel-logout member");
             return Optional.empty();
         }
         if (claim(logoutToken, CLAIM_NONCE).isPresent()) {
@@ -144,6 +144,39 @@ public final class LogoutTokenValidator {
         }
         Instant issuedAt = iat.getDateTime().toInstant();
         return !issuedAt.isBefore(now.minus(freshnessWindow)) && !issuedAt.isAfter(now.plus(freshnessWindow));
+    }
+
+    /**
+     * Whether the (string-extracted) {@code events} claim is a JSON <em>object</em> that carries the
+     * {@value #BACKCHANNEL_LOGOUT_EVENT} URI as a member <em>key</em>, per
+     * <a href="https://openid.net/specs/openid-connect-backchannel-1_0.html">OpenID Connect
+     * Back-Channel Logout</a> §2.4. The engine surfaces a JSON-object claim as its serialized text, so
+     * the structural check here rejects a scalar or array {@code events} value that merely
+     * <em>contains</em> the event URI — a malformed or same-name scalar claim must never destroy a
+     * session. The URI must appear as a quoted key immediately followed (modulo whitespace) by the
+     * {@code :} name-separator; a value-position occurrence ({@code "x":"…backchannel-logout"}) is not
+     * followed by {@code :} and is therefore rejected.
+     *
+     * @param events the events claim's original string (the object's serialized JSON text)
+     * @return {@code true} only when {@code events} is a JSON object with the back-channel-logout key
+     */
+    private static boolean hasBackchannelLogoutEventMember(String events) {
+        String trimmed = events.strip();
+        // events MUST be a JSON object; a scalar string or a JSON array is rejected outright.
+        if (trimmed.length() < 2 || trimmed.charAt(0) != '{' || trimmed.charAt(trimmed.length() - 1) != '}') {
+            return false;
+        }
+        String quotedKey = '"' + BACKCHANNEL_LOGOUT_EVENT + '"';
+        for (int at = trimmed.indexOf(quotedKey); at >= 0; at = trimmed.indexOf(quotedKey, at + 1)) {
+            int cursor = at + quotedKey.length();
+            while (cursor < trimmed.length() && Character.isWhitespace(trimmed.charAt(cursor))) {
+                cursor++;
+            }
+            if (cursor < trimmed.length() && trimmed.charAt(cursor) == ':') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Optional<String> claim(TokenContent token, String name) {

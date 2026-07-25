@@ -297,7 +297,7 @@ public class BffRuntimeProducer {
      * {@code redirect_uri}, used to same-origin-validate post-login return URLs and as the default
      * CSRF trusted origin.
      */
-    private static String originOf(String redirectUri) {
+    static String originOf(String redirectUri) {
         URI uri = URI.create(redirectUri);
         String scheme = uri.getScheme();
         String host = uri.getHost();
@@ -306,10 +306,24 @@ public class BffRuntimeProducer {
         }
         int port = uri.getPort();
         StringBuilder origin = new StringBuilder(scheme).append("://").append(host);
-        if (port != -1) {
+        // Browsers send the Origin without the scheme's default port, so https://gw:443 and
+        // http://gw:80 must reduce to https://gw / http://gw. Emitting the default port here would make
+        // the derived origin (same-origin return-URL check AND the default CSRF trusted-origins entry)
+        // reject a genuine same-origin unsafe request whose Origin omits the default port.
+        if (port != -1 && port != defaultPortFor(scheme)) {
             origin.append(':').append(port);
         }
         return origin.toString();
+    }
+
+    private static int defaultPortFor(String scheme) {
+        if ("https".equalsIgnoreCase(scheme)) {
+            return 443;
+        }
+        if ("http".equalsIgnoreCase(scheme)) {
+            return 80;
+        }
+        return -1;
     }
 
     /**

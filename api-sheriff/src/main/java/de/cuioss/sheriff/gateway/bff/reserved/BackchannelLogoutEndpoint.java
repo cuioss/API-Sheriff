@@ -104,16 +104,24 @@ public final class BackchannelLogoutEndpoint {
             if (equals <= 0) {
                 continue;
             }
-            if (LOGOUT_TOKEN_PARAM.equals(decode(pair.substring(0, equals)))) {
-                String value = decode(pair.substring(equals + 1));
-                return value.isBlank() ? Optional.empty() : Optional.of(value);
+            Optional<String> name = decode(pair.substring(0, equals));
+            if (name.isEmpty() || !LOGOUT_TOKEN_PARAM.equals(name.get())) {
+                continue;
             }
+            return decode(pair.substring(equals + 1)).filter(value -> !value.isBlank());
         }
         return Optional.empty();
     }
 
-    private static String decode(String value) {
-        return URLDecoder.decode(value, StandardCharsets.UTF_8);
+    private static Optional<String> decode(String value) {
+        // Malformed percent-encoding (URLDecoder.decode throws IllegalArgumentException) is treated as
+        // an absent parameter so the endpoint fails closed to 400 rather than surfacing a 500.
+        try {
+            return Optional.of(URLDecoder.decode(value, StandardCharsets.UTF_8));
+        } catch (IllegalArgumentException malformed) {
+            LOGGER.debug(malformed, "Back-channel logout form value carried malformed percent-encoding — treated as absent");
+            return Optional.empty();
+        }
     }
 
     /**

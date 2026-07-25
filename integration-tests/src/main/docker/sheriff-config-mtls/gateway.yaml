@@ -127,20 +127,20 @@ token_validation:
 # client: integration-client / integration-secret against the compose 'integration'
 # realm (standardFlowEnabled, redirectUris '*'). OIDC discovery is lazy (first engine
 # use), so boot needs no live IdP; the browser reaches the gateway on the published
-# host port 10443 and Keycloak on its published host port, while the gateway reaches
-# Keycloak container-internally at keycloak:8443.
+# host port 10444 (this mTLS instance's own published port) and Keycloak on its published
+# host port, while the gateway reaches Keycloak container-internally at keycloak:8443.
 oidc:
   issuer: https://keycloak:8443/realms/integration
   client_id: integration-client
   client_secret: ${OIDC_CLIENT_SECRET}
   scopes: ["openid", "profile", "email"]
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
-  # reserved path binds to; its origin ('https://localhost:10443') is the gateway
+  # reserved path binds to; its origin ('https://localhost:10444') is the gateway
   # origin used for same-origin return-URL validation and the default CSRF trusted origin.
-  redirect_uri: https://localhost:10443/auth/callback
+  redirect_uri: https://localhost:10444/auth/callback
   logout:
     path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    post_logout_redirect_uri: https://localhost:10444/auth/logout/return
     final_redirect: /
     backchannel_path: /auth/backchannel
   session:
@@ -151,7 +151,7 @@ oidc:
       enabled: true
       leeway_seconds: 30
     csrf:
-      trusted_origins: ["https://localhost:10443"]
+      trusted_origins: ["https://localhost:10444"]
   user_info:
     path: /auth/userinfo
     allowed_claims: ["sub", "preferred_username", "email", "groups"]

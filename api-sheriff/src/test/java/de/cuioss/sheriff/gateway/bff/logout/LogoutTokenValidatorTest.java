@@ -208,6 +208,48 @@ class LogoutTokenValidatorTest {
         }
 
         @Test
+        @DisplayName("Should reject a scalar events claim that merely equals the event URI (not a JSON object)")
+        void shouldRejectScalarEventsEqualToUri() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString(LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT));
+
+            assertTrue(validator.validate(token(claims), NOW).isEmpty(),
+                    "a scalar events string that only contains the event URI must not destroy a session");
+        }
+
+        @Test
+        @DisplayName("Should reject an events claim that is a JSON array containing the event URI")
+        void shouldRejectEventsArray() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString(
+                    "[\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\"]"));
+
+            assertTrue(validator.validate(token(claims), NOW).isEmpty(), "events must be a JSON object, not an array");
+        }
+
+        @Test
+        @DisplayName("Should reject an events object carrying the event URI only as a value, not a member key")
+        void shouldRejectEventsUriInValuePosition() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString(
+                    "{\"event\":\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\"}"));
+
+            assertTrue(validator.validate(token(claims), NOW).isEmpty(),
+                    "the back-channel-logout URI must be a member key, not a member value");
+        }
+
+        @Test
+        @DisplayName("Should accept an events object that carries the member key with surrounding whitespace")
+        void shouldAcceptEventsObjectWithWhitespace() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("events", ClaimValue.forPlainString(
+                    "{ \"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\" : {} }"));
+
+            assertTrue(validator.validate(token(claims), NOW).isPresent(),
+                    "compact and pretty-printed object serializations are both accepted");
+        }
+
+        @Test
         @DisplayName("Should reject a token that carries a nonce (prohibited in a logout token)")
         void shouldRejectPresentNonce() {
             Map<String, ClaimValue> claims = validClaims();

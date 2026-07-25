@@ -231,6 +231,15 @@ class PendingAuthorizationStoreTest {
             assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN));
         }
 
+        @ParameterizedTest(name = "backslash-authority return URL \"{0}\" is rejected")
+        @ValueSource(strings = {"/\\evil.example.com", "/\\/evil.example.com", "\\evil.example.com",
+                "\\\\evil.example.com", "/app\\x"})
+        @DisplayName("Should reject a backslash-authority return URL (browsers normalize \\ to /)")
+        void shouldRejectBackslashAuthority(String returnUrl) {
+            assertFalse(PendingAuthorizationRecord.sameOrigin(returnUrl, GATEWAY_ORIGIN),
+                    "a backslash the browser normalizes to / must never yield a protocol-relative open redirect");
+        }
+
         @Test
         @DisplayName("Should reject a null or blank return URL")
         void shouldRejectNullOrBlank() {

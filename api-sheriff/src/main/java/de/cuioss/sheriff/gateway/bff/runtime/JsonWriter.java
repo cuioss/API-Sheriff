@@ -55,11 +55,21 @@ final class JsonWriter {
             case null -> out.append("null");
             case String string -> writeString(out, string);
             case Boolean bool -> out.append(bool.booleanValue());
-            case Number number -> out.append(number);
+            case Number number -> writeNumber(out, number);
             case Map<?, ?> map -> writeObject(out, map);
             case Collection<?> collection -> writeArray(out, collection);
             default -> writeString(out, String.valueOf(value));
         }
+    }
+
+    private static void writeNumber(StringBuilder out, Number number) {
+        // RFC 8259 defines no NaN / Infinity token, so a non-finite floating-point value would emit an
+        // invalid JSON literal. Normalize it to null so the gateway-controlled body is always valid JSON.
+        if ((number instanceof Double || number instanceof Float) && !Double.isFinite(number.doubleValue())) {
+            out.append("null");
+            return;
+        }
+        out.append(number);
     }
 
     private static void writeObject(StringBuilder out, Map<?, ?> map) {

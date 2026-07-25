@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -157,6 +158,10 @@ public class GatewayEdgeRoute {
     private static final int INTERNAL_ERROR = 500;
     private static final int BAD_GATEWAY = 502;
     private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
+    // A small fixed deadline for reading the tiny back-channel logout form body (a single
+    // logout_token). Bounding the read prevents a slow/stalled chunked body from pinning the handler
+    // thread; a timeout is treated as fail-closed (rejected 400), consistent with the read-failure path.
+    private static final long BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS = 5L;
 
     /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
     private static final String ROUTE_KEY = "sheriff.route";
@@ -532,13 +537,20 @@ public class GatewayEdgeRoute {
         // rather than escape onto the request path, so the null return drives the receiver's 400.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            Buffer body = ctx.request().body().toCompletionStage().toCompletableFuture().get();
+            Buffer body = ctx.request().body().toCompletionStage().toCompletableFuture()
+                    .get(BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             return body == null ? null : body.toString(StandardCharsets.UTF_8);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return null;
         } catch (ExecutionException failure) {
             LOGGER.debug(failure, "Back-channel logout body read failed: %s", failure.getMessage());
+            return null;
+        } catch (TimeoutException timeout) {
+            // A slow/stalled chunked body exceeded the read deadline — fail closed to a rejected 400
+            // rather than pinning the handler thread waiting for a body that may never arrive.
+            LOGGER.debug(timeout, "Back-channel logout body read timed out after %s s — rejected",
+                    BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS);
             return null;
         }
     }
