@@ -19,12 +19,14 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
@@ -45,6 +47,8 @@ import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -142,6 +146,13 @@ public class GatewayEdgeRoute {
 
     private static final String PROBLEM_JSON = "application/problem+json";
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
+    private static final String REQUIRE_SESSION = "session";
+    private static final String COOKIE_HEADER = "Cookie";
+    private static final String LOCATION_HEADER = "Location";
+    private static final String SET_COOKIE_HEADER = "Set-Cookie";
+    private static final String CLAIMS_PARAM = "claims";
+    private static final String RETURN_TO_PARAM = "return_to";
+    private static final String STATE_PARAM = "state";
     private static final int SERVICE_UNAVAILABLE = 503;
     private static final int INTERNAL_ERROR = 500;
     private static final int BAD_GATEWAY = 502;
@@ -159,6 +170,7 @@ public class GatewayEdgeRoute {
     private final UpstreamFailureMapper upstreamFailureMapper;
     private final SheriffMetrics sheriffMetrics;
     private final ReservedPathRegistry reservedPathRegistry;
+    private final BffRuntime bffRuntime;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -196,15 +208,22 @@ public class GatewayEdgeRoute {
      * @param hardening             the edge transport / admission bounds
      * @param sheriffMetrics        the Micrometer adapter the request/error/upstream signals are
      *                              recorded through
+     * @param bffRuntime            the server-mode BFF runtime (D16); its {@code require: session}
+     *                              stage-4 runtime is injected into the session-aware
+     *                              {@link AuthenticationStage} and its reserved-endpoint handlers serve
+     *                              the carved-out OIDC paths. The {@linkplain BffRuntime#inert() inert}
+     *                              runtime (a bearer-only or cookie-mode gateway) leaves the bearer
+     *                              path and the empty reserved registry unchanged.
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
-            SheriffMetrics sheriffMetrics) {
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
+        this.bffRuntime = bffRuntime;
         this.admission = new Semaphore(hardening.admissionCap());
 
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
@@ -240,7 +259,12 @@ public class GatewayEdgeRoute {
         this.routeSelectionStage = new RouteSelectionStage(routes);
         this.verbGateStage = new VerbGateStage();
         this.thoroughChecksStage = new ThoroughChecksStage(defaultConfiguration, securityEventCounter);
-        this.authenticationStage = new AuthenticationStage(tokenValidator);
+        // A server-mode BFF wires the session-aware AuthenticationStage so a require:session route is
+        // served through the SessionAuthenticationStage (D4) rather than failing at request time; a
+        // bearer-only gateway keeps the no-session constructor unchanged.
+        this.authenticationStage = bffRuntime.isActive()
+                ? new AuthenticationStage(tokenValidator, bffRuntime.sessionStage())
+                : new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
         this.originValidationStage = new OriginValidationStage();
@@ -396,13 +420,21 @@ public class GatewayEdgeRoute {
                 return;
             }
             passthroughHostGuardStage.process(request);
-            // Reserved-path carve-out (D2): a reserved OIDC endpoint is resolved here, ahead of the
+            // Reserved-path carve-out (D2/D16): a reserved OIDC endpoint is resolved here, ahead of the
             // route table, so a proxy route such as path_prefix: /auth can never swallow the exact
-            // /auth/callback. The reserved-endpoint handlers are wired by the session runtime; until
-            // then a matched reserved path is carved out of proxy dispatch (never proxied to an upstream).
-            if (reservedPathRegistry.isReserved(request.host(), requireCanonicalPath(request))) {
-                LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s", requireCanonicalPath(request));
-                renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
+            // /auth/callback. When the server-mode BFF runtime is wired the matched path is DISPATCHED
+            // to its handler; a bearer-only / cookie-mode gateway carves it out of proxy dispatch and
+            // renders NO_ROUTE_MATCHED (the empty reserved registry never matches there anyway).
+            Optional<ReservedEndpoint> reserved =
+                    reservedPathRegistry.match(request.host(), requireCanonicalPath(request));
+            if (reserved.isPresent()) {
+                if (bffRuntime.isActive()) {
+                    dispatchReserved(ctx, request, reserved.get());
+                } else {
+                    LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s",
+                            requireCanonicalPath(request));
+                    renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
+                }
                 return;
             }
             routeSelectionStage.process(request);
@@ -410,6 +442,12 @@ public class GatewayEdgeRoute {
             RouteRuntime route = requireSelectedRoute(request);
             ctx.put(ROUTE_KEY, route.getId());
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
+            // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
+            // provenance before the session runtime resolves it. A bearer-only gateway has no session
+            // routes and never reaches this guard.
+            if (bffRuntime.isActive() && REQUIRE_SESSION.equals(route.getEffectiveAuth().require())) {
+                bffRuntime.csrfDefence().enforce(request);
+            }
             authenticationStage.process(request);
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
                     route.getEffectiveForward(), route.isNotModifiedEnabled());
@@ -442,6 +480,66 @@ public class GatewayEdgeRoute {
         } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             renderProblem(ctx, request, null);
+        }
+    }
+
+    /**
+     * Dispatches a matched reserved OIDC path (D16): extracts the raw request pieces each handler
+     * consumes, drives the {@link BffRuntime#dispatch reserved dispatch}, and renders the normalized
+     * response. Runs on the virtual thread (the handler may reach the confidential-client engine), then
+     * hops the response mutation back onto the event loop like every other terminal path.
+     */
+    private void dispatchReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind) {
+        String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
+        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? readFormBody(ctx) : null;
+        BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
+                ctx.request().query(), cookieHeader, firstQueryParam(request, CLAIMS_PARAM),
+                firstQueryParam(request, RETURN_TO_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody);
+        BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
+        renderReserved(ctx, request, response);
+    }
+
+    private void renderReserved(RoutingContext ctx, PipelineRequest request,
+            BffRuntime.ReservedHttpResponse response) {
+        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse httpResponse = ctx.response();
+            if (httpResponse.ended()) {
+                return;
+            }
+            httpResponse.setStatusCode(response.status());
+            stageHeaders.forEach(httpResponse::putHeader);
+            response.headers().forEach(httpResponse::putHeader);
+            response.locationOptional().ifPresent(location -> httpResponse.putHeader(LOCATION_HEADER, location));
+            // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
+            response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
+            response.jsonBodyOptional().ifPresentOrElse(httpResponse::end, httpResponse::end);
+        });
+    }
+
+    private static @Nullable String firstQueryParam(PipelineRequest request, String name) {
+        List<String> values = request.queryParameters().get(name);
+        return values == null || values.isEmpty() ? null : values.getFirst();
+    }
+
+    /**
+     * Reads the raw {@code application/x-www-form-urlencoded} back-channel logout body on the virtual
+     * thread. A read failure yields {@code null}, which the receiver rejects {@code 400} — the fail-
+     * closed default (a body the gateway could not read is not an accepted logout token).
+     */
+    private static @Nullable String readFormBody(RoutingContext ctx) {
+        // The catch is a deliberate boundary: a body-read failure must degrade to a rejected logout
+        // rather than escape onto the request path, so the null return drives the receiver's 400.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            Buffer body = ctx.request().body().toCompletionStage().toCompletableFuture().get();
+            return body == null ? null : body.toString(StandardCharsets.UTF_8);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (ExecutionException failure) {
+            LOGGER.debug(failure, "Back-channel logout body read failed: %s", failure.getMessage());
+            return null;
         }
     }
 

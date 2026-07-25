@@ -29,10 +29,12 @@ import org.jspecify.annotations.Nullable;
 /**
  * The exact-match registry of the gateway's reserved OIDC endpoints (D2).
  * <p>
- * The BFF variants carve four gateway-owned paths out of the proxy route table — the
+ * The BFF variants carve up to six gateway-owned paths out of the proxy route table — the
  * {@code oidc.redirect_uri} callback, the RP-initiated {@code oidc.logout.path}, its
- * {@code post_logout_redirect_uri} return leg, and the {@code oidc.logout.backchannel_path}
- * receiver. Each is matched <strong>exactly</strong> (never by prefix) and <strong>only on the
+ * {@code post_logout_redirect_uri} return leg, the {@code oidc.logout.backchannel_path}
+ * receiver, the {@code oidc.user_info.path} session/user-info fold (D11), and the
+ * {@code oidc.login.path} login-initiation fold (D12). Each is matched <strong>exactly</strong>
+ * (never by prefix) and <strong>only on the
  * OIDC host</strong> (the host of {@code oidc.redirect_uri}). The gateway edge consults this
  * registry <em>before</em> the route table, so a proxy route such as {@code path_prefix: /auth}
  * can never swallow the exact {@code /auth/callback}: the reserved path is resolved here first
@@ -66,7 +68,13 @@ public final class ReservedPathRegistry {
         LOGOUT_RETURN,
 
         /** The {@code oidc.logout.backchannel_path} back-channel logout receiver. */
-        BACKCHANNEL_LOGOUT
+        BACKCHANNEL_LOGOUT,
+
+        /** The {@code oidc.user_info.path} session/user-info fold endpoint (D11). */
+        USER_INFO,
+
+        /** The {@code oidc.login.path} login-initiation fold endpoint (D12). */
+        LOGIN
     }
 
     private final @Nullable String oidcHost;
@@ -102,6 +110,10 @@ public final class ReservedPathRegistry {
                 .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.LOGOUT_RETURN));
         logout.flatMap(OidcConfig.Logout::backchannelPath).flatMap(ReservedPathRegistry::toPath)
                 .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.BACKCHANNEL_LOGOUT));
+        oidc.flatMap(OidcConfig::userInfo).flatMap(OidcConfig.UserInfo::path).flatMap(ReservedPathRegistry::toPath)
+                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.USER_INFO));
+        oidc.flatMap(OidcConfig::login).flatMap(OidcConfig.Login::path).flatMap(ReservedPathRegistry::toPath)
+                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.LOGIN));
         return new ReservedPathRegistry(host, paths);
     }
 
