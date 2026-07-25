@@ -224,7 +224,7 @@ public final class BffRuntime {
         if (req.isFormPost()) {
             return Objects.requireNonNullElse(req.rawFormBody(), "");
         }
-        return req.rawQuery();
+        return Objects.requireNonNullElse(req.rawQuery(), "");
     }
 
     private static ReservedHttpResponse render(CallbackEndpoint.CallbackOutcome outcome) {

@@ -215,7 +215,10 @@ final class BffKeycloakLoginFlow {
     private static String extractFormAction(String html) {
         Matcher matcher = FORM_ACTION.matcher(html);
         if (!matcher.find()) {
-            throw new IllegalStateException("Keycloak login form action not found in login page");
+            String body = html == null ? "" : html;
+            String snippet = body.substring(0, Math.min(body.length(), 1500));
+            throw new IllegalStateException("Keycloak login form action not found in login page (length="
+                    + body.length() + "). Page head:\n" + snippet);
         }
         return unescapeHtml(matcher.group(1));
     }
