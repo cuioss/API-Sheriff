@@ -156,6 +156,20 @@ services:
         - quay.io/quarkus/quarkus-distroless-image:2.0
         - quay.io/quarkus/ubi9-quarkus-micro-image:2.0
 
+    # Point the JVM DEFAULT truststore at the mounted private-CA PKCS12. The confidential-client
+    # OIDC engine (token-sheriff-client) performs its outbound OIDC discovery/token/refresh/logout
+    # calls with ONLY the JVM default TrustManager (TrustManagerFactory.init((KeyStore) null)) — it
+    # exposes no per-client TLS-trust seam (token-sheriff-client#597) — so the per-issuer tls_profile
+    # that already validates JWKS does NOT cover these calls. Against the self-signed IT Keycloak the
+    # login flows otherwise fail PKIX/500. The Dockerfile's ENTRYPOINT is exec-form with no CMD, so
+    # this command list appends as runtime -D args on the native runner's command line; a
+    # GraalVM/Mandrel native executable honors runtime -Djavax.net.ssl.trustStore* for the default
+    # TrustManager (JAVA_TOOL_OPTIONS is NOT honored by a native runner — command-line -D is).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+
     ports:
       - "10443:8443"  # External test port for integration tests
       - "19000:9000"  # Management interface (health/metrics, plain HTTP)
@@ -260,6 +274,14 @@ services:
   # miss; the mutual-auth security check itself is identical on 1.2 and 1.3.
   api-sheriff-mtls:
     image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as the primary instance: this service overlays the same oidc
+    # block (lockstep gateway.yaml) so its confidential-client engine needs the private-CA trust for
+    # any OIDC discovery/token call — harmless if the mTLS suite never exercises a login. See the
+    # primary api-sheriff service's command comment for the mechanism (token-sheriff-client#597).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
     ports:
       - "10444:8443"  # External test port for MtlsHandshakeIT (test.mtls.port)
       - "19001:9000"  # Management interface (health/metrics, plain HTTP)

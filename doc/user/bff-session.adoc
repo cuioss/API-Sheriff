@@ -123,6 +123,26 @@ site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
   without the IdP -- but logins fail until the issuer is reachable. Confirm egress to the issuer
   (and its JWKS) is permitted.
 
+== Private-CA / self-signed IdP
+
+If your IdP presents a certificate from a *private CA* (or a self-signed cert), you must add that CA
+to the *JVM default truststore*. The confidential-client engine uses the JVM default truststore for
+its outbound OIDC calls (discovery, token, refresh, logout); the per-issuer `tls_profile` that
+validates JWKS does *not* cover these calls (token-sheriff-client#597). Without it, logins fail with
+a PKIX/TLS trust error even though JWKS validation succeeds.
+
+Point the JVM default truststore at your CA store with system properties on the runner command line
+(a native runner does not honour `JAVA_TOOL_OPTIONS` — pass `-D` on the command line):
+
+[source]
+----
+-Djavax.net.ssl.trustStore=/app/certificates/idp-truststore.p12
+-Djavax.net.ssl.trustStorePassword=<password>
+-Djavax.net.ssl.trustStoreType=PKCS12
+----
+
+A publicly-trusted IdP needs none of this — the JDK's built-in truststore already trusts it.
+
 == See also
 
 * link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract.
