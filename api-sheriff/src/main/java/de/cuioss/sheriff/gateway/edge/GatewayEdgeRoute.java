@@ -82,6 +82,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -158,10 +159,13 @@ public class GatewayEdgeRoute {
     private static final int INTERNAL_ERROR = 500;
     private static final int BAD_GATEWAY = 502;
     private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
-    // A small fixed deadline for reading the tiny back-channel logout form body (a single
-    // logout_token). Bounding the read prevents a slow/stalled chunked body from pinning the handler
-    // thread; a timeout is treated as fail-closed (rejected 400), consistent with the read-failure path.
-    private static final long BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS = 5L;
+    // Fail-closed deadline for reading a tiny reserved-POST form body (the form_post callback's
+    // code/state, or a back-channel logout_token). It bounds a genuinely slow/stalled body so it cannot
+    // pin admission indefinitely; it is deliberately generous because the body is read on a shared event
+    // loop that can be scheduling-starved under CPU contention, and the deadline handler still honours a
+    // body that has already fully arrived (see readReservedBodyThenDispatch), so a legitimate body is
+    // never falsely rejected — the deadline only fires for a body that truly never completes.
+    private static final long RESERVED_BODY_READ_TIMEOUT_SECONDS = 20L;
 
     /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
     private static final String ROUTE_KEY = "sheriff.route";
@@ -370,23 +374,33 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Reads the reserved-POST body on the event loop under a bounded deadline, stashes it (or the
-     * {@link #RESERVED_BODY_FAILED} sentinel on failure/timeout), then dispatches processing exactly
-     * once. The request is NOT paused: {@code body()} drains the stream on its own event loop.
+     * Reads the reserved-POST body on the event loop, stashes it under {@link #RESERVED_BODY_KEY}, then
+     * dispatches processing exactly once. The request is NOT paused: {@code body()} drains the stream on
+     * its own event loop, fully asynchronously — no virtual-thread {@code .get()} blocks on a contended
+     * event loop. A bounded deadline guards a body that truly never completes, but the deadline handler
+     * still honours a body that has already fully arrived (it inspects the read future), so a legitimate
+     * body delayed only by event-loop scheduling under CPU contention is never falsely rejected.
      */
     private void readReservedBodyThenDispatch(RoutingContext ctx, AtomicBoolean admissionReleased) {
         AtomicBoolean bodyDone = new AtomicBoolean();
-        long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS), id -> {
+        HttpServerRequest request = ctx.request();
+        Future<Buffer> bodyFuture = request.body();
+        long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(RESERVED_BODY_READ_TIMEOUT_SECONDS), id -> {
             if (bodyDone.compareAndSet(false, true)) {
-                // The body did not arrive within the deadline — leave RESERVED_BODY_KEY unset so the
-                // receiver fails closed to 400 rather than pinning on a body that may never arrive.
-                LOGGER.debug("Reserved form body read timed out after %s s — failing closed",
-                        BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS);
+                if (bodyFuture.succeeded() && bodyFuture.result() != null) {
+                    // The body actually arrived; only its completion callback had not yet drained from
+                    // this (contention-starved) event loop's queue. Honour it rather than falsely reject.
+                    ctx.put(RESERVED_BODY_KEY, bodyFuture.result());
+                } else {
+                    // A body that truly never completed within the deadline — leave RESERVED_BODY_KEY
+                    // unset so the receiver fails closed to 400 rather than pinning on it indefinitely.
+                    LOGGER.debug("Reserved form body read did not complete within %s s — failing closed",
+                            RESERVED_BODY_READ_TIMEOUT_SECONDS);
+                }
                 dispatchProcessing(ctx, admissionReleased);
             }
         });
-        HttpServerRequest request = ctx.request();
-        request.body().onComplete(result -> {
+        bodyFuture.onComplete(result -> {
             if (bodyDone.compareAndSet(false, true)) {
                 ctx.vertx().cancelTimer(timer);
                 if (result.succeeded() && result.result() != null) {
@@ -399,9 +413,7 @@ public class GatewayEdgeRoute {
             }
         });
         // body() registers the collector but the inbound request stream arrives in fetch/paused mode;
-        // resume() (on this event loop) re-arms it so the buffered body is delivered. Reading fully
-        // asynchronously here — with no virtual-thread .get() blocking on a contended event loop —
-        // is what makes this reliable under constrained CPU (the failure mode that flaked in CI).
+        // resume() (on this event loop) re-arms it so the buffered body is delivered.
         request.resume();
     }
 
