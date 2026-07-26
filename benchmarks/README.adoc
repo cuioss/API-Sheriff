@@ -34,9 +34,10 @@ The two lanes run deliberately different sets, so a number is always attributabl
 |The eight matrix aspects only.
 |===
 
-The two health benchmarks are excluded from the comparison lane on purpose: they measure the
-Quarkus management port and API Sheriff's own `/api/health` surface, neither of which APISIX
-exposes. Driving them against APISIX would still label their summaries `gateway_target: apisix`
+The two health benchmarks are excluded from the comparison lane on purpose: both measure the
+Quarkus management port, which APISIX does not expose — `apisix.yaml` declares routes for the eight
+matrix aspects only, and no management or health route at all. Driving them against APISIX would
+still label their summaries `gateway_target: apisix`
 while actually measuring API Sheriff — mislabelled data that reads as correct. `run-comparison.sh`
 closes its aspect list to the eight comparable aspects so that is unreachable.
 
@@ -124,17 +125,25 @@ more on gateway A than on gateway B", never as an absolute relay-throughput clai
 |Name |Path |What it measures
 
 |`healthLiveCheck`
-|`http://api-sheriff:9000/q/health/live`
-|Management-interface liveness throughput — the plain-HTTP floor with no TLS or routing. A run
- whose numbers collapse here indicates a host or container problem, not a gateway regression.
+|`https://api-sheriff:9000/q/health/live`
+|Management-interface *liveness* throughput over TLS — the liveness probe only. Still the lightest
+ path in the stack (no routing, no pipeline, no upstream), so it remains the harness-health
+ indicator: a run whose numbers collapse here indicates a host or container problem, not a gateway
+ regression. It is no longer a plain-HTTP floor — see the note below.
 
 |`gatewayHealth`
-|`https://api-sheriff:8443/api/health`
-|The health endpoint over HTTPS — baseline HTTPS request-handling overhead with no upstream hop.
+|`https://api-sheriff:9000/q/health`
+|Management-interface *aggregate* health throughput over TLS — `/q/health` runs every registered
+ health check, including the token-sheriff JWKS readiness check, so it is the heavier of the two.
 |===
 
-Both are retained so their existing badge / history / trend series are not orphaned by the
-toolchain swap.
+Both are retained so their existing badge / history / trend series are not orphaned.
+
+The two health benchmarks share a scheme and a port; they are distinguished by *work done*
+(liveness probe vs aggregate check), not by transport. They can no longer differ by TLS: the Quarkus
+management interface has exactly one port — its config declares no `ssl-port` and no
+`insecure-requests` — so activating management TLS converted port 9000 itself to HTTPS. No
+plain-HTTP surface remains anywhere in the stack.
 
 == Running the CI baseline lane
 
@@ -230,9 +239,13 @@ available — see _Known fidelity limit_). A metric a run did not measure render
 
 Readiness, not warm-up discard::
 `pre-benchmark-health-check.sh` gates every run on the stack actually serving, so no run starts
-against a cold or half-started gateway. There is no separate warm-up phase whose samples are
-discarded: the first seconds of each 60-second window are included. Because the gateway is a
-native (AOT-compiled) image rather than a JIT-warming JVM, and because both sides are treated
+against a cold or half-started gateway. It gates both halves of the lane: the management interface
+(the target of the two health benchmarks) *and* a data-plane benchmark target — `/proxy/static`,
+the matrix baseline whose failure would invalidate every other data-plane number. A target that is
+not served therefore fails at pre-flight, naming the target, rather than 60 seconds later as an
+opaque k6 threshold breach. There is no separate warm-up phase whose samples are discarded: the
+first seconds of each 60-second window are included. Because the gateway is a native
+(AOT-compiled) image rather than a JIT-warming JVM, and because both sides are treated
 identically, this is a symmetric effect rather than a bias.
 
 Dedicated load-generator capacity::
@@ -423,13 +436,27 @@ The published history and trend series are keyed by benchmark name and carry wrk
 measured by a different engine. Because engine change is exactly the thing that makes two numbers
 incomparable, the k6 series starts fresh rather than continuing the wrk series:
 
-* `healthLiveCheck` and `gatewayHealth` keep their names — and therefore their series — because
-  they measure the same endpoints; expect a *visible one-time discontinuity* at the swap commit
-  that is a toolchain artifact, not a regression.
+* `healthLiveCheck` and `gatewayHealth` keep their names — and therefore their series — by
+  deliberate choice, so the badges and trend pages are not orphaned. Expect a *visible one-time
+  discontinuity* at the swap commit that is a toolchain artifact, not a regression.
 * The `error` / variability / confidence-band columns go permanently zero-width from that point
   (see the `latency_ms.stdev` limit above).
 * The four new matrix aspects begin with no history and need ten runs before their trend series is
   meaningful.
 
-Do not investigate the discontinuity at the swap commit as a performance regression; compare only
-within the k6 era.
+==== A second, target-change discontinuity
+
+Both health benchmarks carry a *second* discontinuity, distinct from and later than the wrk->k6
+engine swap above, at the commit that repointed them:
+
+* `gatewayHealth` previously drove `https://api-sheriff:8443/api/health`. That data-plane endpoint
+  was deleted by the pre-1.0 clean break in PR #76, so the benchmark had been measuring a
+  deny-by-default `404` rather than a health surface. It now drives the management port's aggregate
+  health check.
+* `healthLiveCheck` previously drove the same endpoint over plain HTTP. Its numbers now include TLS
+  handshake and record-layer cost.
+
+Both names are again retained deliberately to preserve the series. Neither benchmark's post-change
+numbers are comparable to its pre-change history, so compare only within the current target era.
+
+Do not investigate either discontinuity as a performance regression.

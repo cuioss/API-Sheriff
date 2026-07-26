@@ -36,15 +36,19 @@ Use a 10-minute Bash timeout. On a loaded machine the whole cycle can exceed the
 | Service | Container | Host | Notes |
 |---------|-----------|------|-------|
 | api-sheriff HTTPS | 8443 | 10443 | app edge |
-| api-sheriff mgmt | 9000 | 19000 | health + metrics (plain HTTP) |
+| api-sheriff mgmt | 9000 | 19000 | health + metrics (**HTTPS** — self-signed, always curl with `-k`) |
+| api-sheriff-mtls mgmt | 9000 | 19001 | health + metrics for the mTLS instance (**HTTPS**, `-k`) |
 | keycloak HTTPS | 8443 | 1443 | realms: `benchmark`, `integration` |
 | keycloak mgmt | 9000 | 1090 | `KC_HEALTH_ENABLED` → `/health/ready` |
 | go-httpbin | 8080 | 18080 | proxy upstream |
 
-Health (management port `:19000`, plain HTTP):
-- `curl -sf http://localhost:19000/q/health/live` — liveness (the startup wait uses this)
-- `curl -s  http://localhost:19000/q/health/ready` — readiness; **this is the diagnostic goldmine** — the token-sheriff JWKS check attaches a per-issuer `withData` block naming the exact failure
-- `curl -s  http://localhost:19000/q/health` — aggregate (503 if any check is DOWN)
+Health (management port `:19000`, **HTTPS**). The management interface has exactly one port, so
+activating TLS converted 9000 itself — there is no plain-HTTP fallback. **`-k` is mandatory** (the
+stack serves the self-signed localhost bundle); omitting it makes every probe below fail
+certificate validation and look like a dead container:
+- `curl -skf https://localhost:19000/q/health/live` — liveness (the startup wait uses this)
+- `curl -sk  https://localhost:19000/q/health/ready` — readiness; **this is the diagnostic goldmine** — the token-sheriff JWKS check attaches a per-issuer `withData` block naming the exact failure
+- `curl -sk  https://localhost:19000/q/health` — aggregate (503 if any check is DOWN). This is also the `gatewayHealth` benchmark's target
 - Keycloak: `curl -k https://localhost:1090/health/ready`
 
 ## Reading logs
