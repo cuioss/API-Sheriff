@@ -169,10 +169,6 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
-      # TEMP DIAGNOSTIC (revert): surface the reserved-callback 400 reason (logged at DEBUG).
-      - -Dquarkus.log.category."de.cuioss.sheriff.gateway.bff".level=DEBUG
-      - -Dquarkus.log.category."de.cuioss.sheriff.gateway.edge".level=DEBUG
-      - -Dquarkus.log.category."de.cuioss.sheriff.token.client".level=DEBUG
 
     ports:
       - "10443:8443"  # External test port for integration tests
@@ -286,10 +282,6 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
-      # TEMP DIAGNOSTIC (revert): surface the reserved-callback 400 reason (logged at DEBUG).
-      - -Dquarkus.log.category."de.cuioss.sheriff.gateway.bff".level=DEBUG
-      - -Dquarkus.log.category."de.cuioss.sheriff.gateway.edge".level=DEBUG
-      - -Dquarkus.log.category."de.cuioss.sheriff.token.client".level=DEBUG
     ports:
       - "10444:8443"  # External test port for MtlsHandshakeIT (test.mtls.port)
       - "19001:9000"  # Management interface (health/metrics, plain HTTP)
