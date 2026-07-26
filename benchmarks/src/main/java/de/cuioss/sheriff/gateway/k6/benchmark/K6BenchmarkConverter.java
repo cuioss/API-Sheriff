@@ -95,6 +95,20 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
     /** Key for the k6-reported request failure ratio in {@link BenchmarkData.Benchmark#getAdditionalData()}. */
     static final String ERROR_RATE = "errorRate";
 
+    /**
+     * The session-mediation benchmark name — the headline aspect of the server-session BFF variant.
+     * <p>
+     * When a run includes this aspect it is chosen as the report overview's primary (see
+     * {@link #selectOverviewPrimary}), so the single figure the report leads with characterises the
+     * BFF mediation hot path — cookie → store lookup → bearer injection → upstream — rather than an
+     * arbitrary alphabetically-first aspect. That aspect is measured in the same run as, and is
+     * directly comparable against, the {@code bearerProxied} (offline-validation) and
+     * {@code proxiedStatic} (plain-proxy, no auth) baselines; the three together isolate the added
+     * cost of session mediation. A run without this aspect (every non-BFF benchmark run) is
+     * unaffected: the overview keeps leading with the first parsed benchmark.
+     */
+    public static final String SESSION_MEDIATED_BENCHMARK = "sessionMediated";
+
     private static final String FIELD_BENCHMARK_NAME = "benchmark_name";
     private static final String FIELD_GATEWAY_TARGET = "gateway_target";
     private static final String FIELD_REQUESTS_PER_SECOND = "requests_per_second";
@@ -283,7 +297,7 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
                     .build();
         }
 
-        BenchmarkData.Benchmark primary = benchmarks.getFirst();
+        BenchmarkData.Benchmark primary = selectOverviewPrimary(benchmarks);
         double throughput = primary.getRawScore();
         double latencyMs = resolveLatencyMs(primary);
         // Delegate to MetricsComputer - the single home for score/grade computation
@@ -301,6 +315,25 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
                 .performanceGrade(grade)
                 .performanceGradeClass("grade-" + grade.toLowerCase())
                 .build();
+    }
+
+    /**
+     * Selects the benchmark whose figures headline the report overview.
+     * <p>
+     * The session-mediation aspect ({@link #SESSION_MEDIATED_BENCHMARK}), when present, is preferred
+     * so a BFF run's headline characterises the mediation hot path it exists to measure — the aspect
+     * compared against the bearer and plain-proxy baselines. Any run without it (every non-BFF
+     * benchmark run) keeps the prior behaviour of leading with the first parsed benchmark, so
+     * existing reports are unchanged.
+     *
+     * @param benchmarks the parsed benchmarks, never empty
+     * @return the benchmark to headline the overview
+     */
+    private BenchmarkData.Benchmark selectOverviewPrimary(List<BenchmarkData.Benchmark> benchmarks) {
+        return benchmarks.stream()
+                .filter(benchmark -> SESSION_MEDIATED_BENCHMARK.equals(benchmark.getName()))
+                .findFirst()
+                .orElseGet(benchmarks::getFirst);
     }
 
     /**

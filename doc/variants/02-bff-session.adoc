@@ -33,6 +33,28 @@ POST); the gateway -- driving the `token-sheriff-client` engine -- verifies `sta
 code server-to-server, validates the tokens offline, and -- in this variant -- *stores them
 server-side* and sets an opaque session-id cookie.
 
+=== Login-initiation entry point
+
+A browser can start a login explicitly by navigating to the gateway-owned `oidc.login.path`
+(a link:../configuration.adoc#_oidc[reserved gateway path], the mirror of the callback that
+*lands* the login). A caller that already holds a live session is redirected straight to a
+*same-origin-validated* return URL -- no fresh auth-code flow is run and no cookies are set --
+so re-entering the login URL while signed in is not an open redirect and not a redundant
+handshake. An unauthenticated caller is driven into the authorization-code flow above. When
+`oidc.login.path` is omitted the deployment simply has no gateway-owned login-start URL; the
+callback and mediation paths are unaffected.
+
+=== Pending-authorization binding cookie
+
+Between the initial redirect and the callback there is not yet a session, so the in-flight
+login is tied to *this* browser by a short-lived, single-use `+__Host-+`-prefixed *binding
+cookie* carrying an opaque pending-authorization record id -- the pre-session analogue of the
+session cookie. The gateway persists the transaction context (the engine-owned PKCE verifier,
+`state`, `nonce`, and the same-origin-validated post-login return URL) as a `PendingAuthorization`
+record keyed by that id; the callback resolves the record by the binding cookie before it will
+exchange the code, so a callback replayed in a different browser (which carries no matching
+binding cookie) is refused. The record is consumed on first use and expires on a short TTL.
+
 image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, session binding, align=center]
 
 == Steady-State API Call
@@ -156,6 +178,23 @@ attempts a silent refresh, and -- if that cannot satisfy the challenge -- re-dri
 authorization-code flow with the elevated parameters, then replays the request. This is a
 link:../features-analysis.adoc#_differentiators[differentiator] no competitor covers.
 
+== User-Info Endpoint
+
+The gateway serves the browser a *curated identity view* at the gateway-owned `oidc.user_info.path`
+(a link:../configuration.adoc#_oidc[reserved gateway path]), assembled from the session's tokens --
+never a passthrough of the raw ID/userinfo claims, and never a way for the browser to reach token
+material. What it may disclose is bounded by an *operator-owned* claim allowlist whose secure
+default is *closed*:
+
+* `oidc.user_info.allowed_claims` is the disclosure ceiling. Empty (the default) discloses
+  *nothing*, so the operator -- never the browser client -- widens what the endpoint returns; a
+  claim absent from the allowlist is never emitted regardless of what the caller asks for.
+* `oidc.user_info.default_view` is the claim selector returned when the caller requests no explicit
+  claims. Every entry must lie within `allowed_claims` (a default-view claim outside the allowlist
+  fails the boot), so the curated default can never exceed the ceiling.
+
+When `oidc.user_info.path` is omitted no user-info endpoint is exposed.
+
 == Configuration
 
 [source,yaml]
@@ -167,9 +206,16 @@ oidc:
   client_secret: ${SHERIFF_CLIENT_SECRET}
   redirect_uri: https://gw.example.com/auth/callback
   scopes: [openid, profile, orders.read]   # must include every scope a route requires
+  login:
+    path: /auth/login            # gateway-owned login-initiation entry point (reserved path)
+  user_info:
+    path: /auth/userinfo         # curated identity view (reserved path)
+    allowed_claims: [sub, name, email]   # disclosure ceiling; empty (default) discloses nothing
+    default_view: [sub, name]    # returned when no explicit claims requested; subset of allowed_claims
   session:
     mode: server                 # server-side token store (this variant)
     store: memory                # the only initial option (single-node / sticky sessions)
+    max_sessions: 10000          # DoS guard: upper bound on concurrently stored sessions
     cookie_name: __Host-sheriff
     ttl_seconds: 3600
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }

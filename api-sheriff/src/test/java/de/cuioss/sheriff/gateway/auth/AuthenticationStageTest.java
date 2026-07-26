@@ -18,11 +18,21 @@ package de.cuioss.sheriff.gateway.auth;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
 
+import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
+import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
+import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -34,14 +44,19 @@ import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 
+import jakarta.inject.Provider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 @EnableGeneratorController
-@DisplayName("AuthenticationStage — stage 4 offline bearer-token validation")
+@DisplayName("AuthenticationStage — stage 4 auth dispatch (offline bearer validation and session dispatch)")
 class AuthenticationStageTest {
 
     private static final String ABSENT_SCOPE = "gateway:definitely-absent-scope-xyz";
+    private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
+    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+    private static final String SESSION_ID = "opaque-session-id";
+    private static final String MEDIATED_TOKEN = "mediated-access-token";
 
     @Test
     @DisplayName("passes a require:none route without inspecting any token")
@@ -125,9 +140,75 @@ class AuthenticationStageTest {
         assertEquals(EventType.SCOPE_MISSING, thrown.getEventType());
     }
 
+    @Test
+    @DisplayName("dispatches a require:session route to the wired session stage-4 runtime")
+    void dispatchesSessionRouteToWiredSessionStage() {
+        // Arrange — a session stage wired with a live session; a require:session request carrying the
+        // session cookie must be dispatched here and complete, recording the mediated bearer.
+        AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
+        PipelineRequest request = sessionRequest(authConfig("session", List.of()));
+
+        // Act + Assert
+        assertDoesNotThrow(() -> stage.process(request));
+        assertTrue(request.mediatedBearer().isPresent(),
+                "dispatch reached the session stage, which mediated the session's bearer");
+        assertEquals(MEDIATED_TOKEN, request.mediatedBearer().orElseThrow());
+    }
+
+    @Test
+    @DisplayName("rejects a require:session route when no session runtime is wired")
+    void rejectsSessionRouteWithoutWiredSessionRuntime() {
+        // Arrange — a stage built without a session runtime (non-BFF gateway).
+        AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
+        PipelineRequest request = sessionRequest(authConfig("session", List.of()));
+
+        // Act
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> stage.process(request));
+
+        // Assert
+        assertTrue(thrown.getMessage().contains("no session runtime is wired"),
+                "the unwired session route is a boot-configuration error, not a served request");
+    }
+
     private static AuthenticationStage stageFor(TestTokenHolder holder) {
         TokenValidator validator = TokenValidator.builder().issuerConfig(holder.getIssuerConfig()).build();
         return new AuthenticationStage(() -> validator);
+    }
+
+    private static Provider<TokenValidator> failingValidatorProvider() {
+        return () -> {
+            throw new AssertionError("a require:session route must not resolve the bearer validator");
+        };
+    }
+
+    private static SessionAuthenticationStage sessionStage() {
+        InMemorySessionStore store = new InMemorySessionStore(16);
+        store.create(SessionRecord.builder()
+                .sessionId(SESSION_ID)
+                .accessToken(MEDIATED_TOKEN)
+                .idToken("id-token")
+                .sub("subject")
+                .expiresAt(NOW.plusSeconds(3600))
+                .build());
+        SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
+        return new SessionAuthenticationStage(store, codec,
+                (session, now) -> session,
+                (accessToken, requiredScopes) -> true,
+                (returnUrl, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
+                CLOCK);
+    }
+
+    private static PipelineRequest sessionRequest(AuthConfig auth) {
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/app/orders")
+                .queryParameters(Map.of())
+                .headers(Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+                        "accept", List.of("application/json")))
+                .build();
+        request.canonicalPath("/app/orders");
+        request.selectedRoute(RouteRuntime.builder().id("orders").effectiveAuth(auth).build());
+        return request;
     }
 
     private static AuthConfig authConfig(String require, List<String> requiredScopes) {

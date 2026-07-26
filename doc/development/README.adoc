@@ -53,6 +53,12 @@ This tree is seeded here and grows as contributor-facing material lands.
 | The Vert.x `NetServer` front architecture, the accept-time L4/L7 split, the internal-handoff
   loopback relay and public/internal port ownership, the runtime Host-vs-SNI smuggle guard, and the
   fail-closed (GW-06) rationale with the Traefik / KrakenD CVEs it answers.
+
+| link:bff-session.adoc[Server-Session BFF -- Contributor Guide]
+| Where the server-session BFF code lives (the `bff.*` packages and the framework-agnostic seam),
+  how to build and test it, the engine-boundary rule (drive the `token-sheriff-client` engine, never
+  re-implement an OAuth leg), the integration-test and benchmark entry points, and how to add a new
+  reserved endpoint.
 |===
 
 == Scope of This Layer

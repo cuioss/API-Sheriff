@@ -86,25 +86,36 @@ mkdir -p "${LOG_TARGET_DIR}"
 chmod 0777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
-# Start with Docker Compose (includes Keycloak)
-echo "🐳 Starting Docker containers (Quarkus $MODE + Keycloak)..."
-(cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d)
+# Bring up Keycloak FIRST and wait until it is READY before starting the gateway. The api-sheriff
+# native app eagerly loads the Keycloak issuers' JWKS at boot; if it starts before Keycloak can
+# answer, that initial load fails (ConnectException) and — with a long background-refresh interval —
+# the issuer stays unhealthy for the whole test run, so every mediated login's token validation
+# fails with "No healthy issuer configuration found". Under CI's shared-CPU contention Keycloak is
+# slower to answer than the gateway's brief initial-retry window, which made this flake. Gating the
+# gateway start on a ready Keycloak removes the race. (docker compose up -d keycloak starts Keycloak
+# and its own dependencies only; the gateway and remaining infra are started afterwards.)
+echo "🐳 Starting Keycloak first (the Quarkus $MODE gateway starts only after Keycloak is ready)..."
+(cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d keycloak)
 
 # Wait for Keycloak to be ready first
 echo "⏳ Waiting for Keycloak to be ready..."
-for i in {1..60}; do
+for i in {1..120}; do
     if curl -k -s https://localhost:1090/health/ready > /dev/null 2>&1; then
         echo "✅ Keycloak is ready!"
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "❌ Keycloak failed to start within 60 seconds"
+    if [ $i -eq 120 ]; then
+        echo "❌ Keycloak failed to become ready within 120 seconds"
         echo "Check logs with: ${COMPOSE_BASE} logs keycloak"
         exit 1
     fi
-    echo "⏳ Waiting for Keycloak... (attempt $i/60)"
+    echo "⏳ Waiting for Keycloak... (attempt $i/120)"
     sleep 1
 done
+
+# Keycloak is ready — now bring up the gateway and the remaining containers.
+echo "🐳 Starting the gateway ($MODE) and remaining containers..."
+(cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d)
 
 # Wait for the go-httpbin upstream backend (proxy target) to be ready
 echo "⏳ Waiting for go-httpbin upstream to be ready..."

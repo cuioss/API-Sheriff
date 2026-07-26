@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The require:session protected upstream the server-mode BFF mediation suite targets.
+# Anchored to the 'bff-session' anchor (type: bff, access: authenticated,
+# auth: require: session) declared in gateway.yaml, so every route here inherits the
+# session floor. It routes to the same go-httpbin echo backend the proxy suite uses
+# (the UPSTREAM topology alias) so BffSessionMediationIT can observe exactly what the
+# gateway forwarded: the mediated bearer the SessionAuthenticationStage injects from the
+# stored session, and the ABSENCE of the browser session cookie upstream.
+#
+# The forward stage is deny-by-default (stage 5): only the allow-listed request headers
+# cross to the upstream. Authorization is allow-listed so the injected mediated bearer is
+# echoed back by go-httpbin; Cookie is deliberately NOT allow-listed, so the browser
+# session cookie is stripped and never reaches the upstream — the two halves of the
+# mediation proof.
+endpoint:
+  id: bff-session
+  enabled: true
+  base_url: UPSTREAM
+  anchor: bff-session
+  routes:
+    - id: bff-session-mediated
+      match:
+        path_prefix: /bff-session
+      forward:
+        headers_allow: ["Authorization", "Content-Type"]

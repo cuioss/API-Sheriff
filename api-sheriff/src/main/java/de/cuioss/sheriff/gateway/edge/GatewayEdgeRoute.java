@@ -19,6 +19,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,6 +45,9 @@ import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
+import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -78,6 +82,7 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -114,7 +119,9 @@ import org.jspecify.annotations.Nullable;
  * last} so management / health routes keep working. Each request is admitted under a bounded
  * {@linkplain EdgeHardeningOptions#admissionCap() admission cap} <em>before</em> a virtual thread is
  * dispatched (a flood is rejected {@code 503} rather than spawning unbounded virtual threads), then
- * the request stream is paused and the whole pipeline runs on a virtual thread:
+ * the request stream is paused and the whole pipeline runs on a virtual thread (a reserved POST path —
+ * the form_post callback and back-channel logout — instead has its small body read on the event loop
+ * first, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
  *   <li>stage 0 — response-header preparation + CORS preflight (short-circuits a preflight here);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
@@ -141,13 +148,33 @@ public class GatewayEdgeRoute {
 
     private static final String PROBLEM_JSON = "application/problem+json";
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
+    private static final String REQUIRE_SESSION = "session";
+    private static final String COOKIE_HEADER = "Cookie";
+    private static final String LOCATION_HEADER = "Location";
+    private static final String SET_COOKIE_HEADER = "Set-Cookie";
+    private static final String CLAIMS_PARAM = "claims";
+    private static final String RETURN_TO_PARAM = "return_to";
+    private static final String STATE_PARAM = "state";
     private static final int SERVICE_UNAVAILABLE = 503;
     private static final int INTERNAL_ERROR = 500;
     private static final int BAD_GATEWAY = 502;
     private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
+    // Fail-closed deadline for reading a tiny reserved-POST form body (the form_post callback's
+    // code/state, or a back-channel logout_token). It bounds a genuinely slow/stalled body so it cannot
+    // pin admission indefinitely; it is deliberately generous because the body is read on a shared event
+    // loop that can be scheduling-starved under CPU contention, and the deadline handler still honours a
+    // body that has already fully arrived (see readReservedBodyThenDispatch), so a legitimate body is
+    // never falsely rejected — the deadline only fires for a body that truly never completes.
+    private static final long RESERVED_BODY_READ_TIMEOUT_SECONDS = 20L;
 
     /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
     private static final String ROUTE_KEY = "sheriff.route";
+    /** Holds the fully-read {@code application/x-www-form-urlencoded} body of a reserved POST path
+     * (form_post callback / back-channel logout), buffered on the event loop in {@link #handle} before
+     * the virtual-thread dispatch so the handler never has to re-arm a paused stream. Left unset on a
+     * read failure or timeout, so {@link #readFormBody} reads {@code null} and the receiver fails closed
+     * to {@code 400}. */
+    private static final String RESERVED_BODY_KEY = "sheriff.reservedbody";
 
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
@@ -157,6 +184,8 @@ public class GatewayEdgeRoute {
     private final GatewayEventCounter gatewayEventCounter;
     private final UpstreamFailureMapper upstreamFailureMapper;
     private final SheriffMetrics sheriffMetrics;
+    private final ReservedPathRegistry reservedPathRegistry;
+    private final BffRuntime bffRuntime;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -194,15 +223,22 @@ public class GatewayEdgeRoute {
      * @param hardening             the edge transport / admission bounds
      * @param sheriffMetrics        the Micrometer adapter the request/error/upstream signals are
      *                              recorded through
+     * @param bffRuntime            the server-mode BFF runtime (D16); its {@code require: session}
+     *                              stage-4 runtime is injected into the session-aware
+     *                              {@link AuthenticationStage} and its reserved-endpoint handlers serve
+     *                              the carved-out OIDC paths. The {@linkplain BffRuntime#inert() inert}
+     *                              runtime (a bearer-only or cookie-mode gateway) leaves the bearer
+     *                              path and the empty reserved registry unchanged.
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
-            SheriffMetrics sheriffMetrics) {
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
+        this.bffRuntime = bffRuntime;
         this.admission = new Semaphore(hardening.admissionCap());
 
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
@@ -229,8 +265,16 @@ public class GatewayEdgeRoute {
                 GatewayEdgeRoute::assetSourceFor);
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
+        // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
+        // consulted in process() ahead of route selection, so a proxy route such as
+        // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
+        // global oidc block declares a redirect_uri. Built before basicChecksStage so the latter can
+        // reuse the same match to exempt gateway-terminated reserved params from the url-parameter
+        // pipeline (see BasicChecksStage — reserved handlers self-validate their own params).
+        this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
-        this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter);
+        this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
+                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent());
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
@@ -238,7 +282,12 @@ public class GatewayEdgeRoute {
         this.routeSelectionStage = new RouteSelectionStage(routes);
         this.verbGateStage = new VerbGateStage();
         this.thoroughChecksStage = new ThoroughChecksStage(defaultConfiguration, securityEventCounter);
-        this.authenticationStage = new AuthenticationStage(tokenValidator);
+        // A server-mode BFF wires the session-aware AuthenticationStage so a require:session route is
+        // served through the SessionAuthenticationStage (D4) rather than failing at request time; a
+        // bearer-only gateway keeps the no-session constructor unchanged.
+        this.authenticationStage = bffRuntime.isActive()
+                ? new AuthenticationStage(tokenValidator, bffRuntime.sessionStage())
+                : new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
         this.originValidationStage = new OriginValidationStage();
@@ -296,7 +345,83 @@ public class GatewayEdgeRoute {
             releaseAdmission(admissionReleased);
             recordRequestMetrics(ctx, startNanos);
         });
-        ctx.request().pause();
+        if (needsReservedBodyRead(ctx)) {
+            // A reserved POST (form_post callback / back-channel logout) is dispatched on a virtual
+            // thread that cannot reliably re-arm a paused request stream. Read the small, gateway-
+            // terminated body here on its own event loop — the natural Vert.x path — under a bounded
+            // deadline, stash it, then dispatch. This avoids any paused-stream / cross-thread resume.
+            readReservedBodyThenDispatch(ctx, admissionReleased);
+        } else {
+            ctx.request().pause();
+            dispatchProcessing(ctx, admissionReleased);
+        }
+    }
+
+    /**
+     * @return {@code true} when the request is a reserved POST path whose {@code x-www-form-urlencoded}
+     *         body a handler consumes (the form_post callback and back-channel logout). Matched on the
+     *         raw path against the reserved registry's exact-match set, so only an exact clean reserved
+     *         path (raw == canonical) triggers the eager body read; every other request pauses as before.
+     */
+    private boolean needsReservedBodyRead(RoutingContext ctx) {
+        if (!"POST".equalsIgnoreCase(ctx.request().method().name())) {
+            return false;
+        }
+        String host = ctx.request().authority() != null ? ctx.request().authority().host() : ctx.request().host();
+        return reservedPathRegistry.match(host, ctx.request().path())
+                .filter(kind -> kind == ReservedEndpoint.CALLBACK || kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
+                .isPresent();
+    }
+
+    /**
+     * Reads the reserved-POST body on the event loop, stashes it under {@link #RESERVED_BODY_KEY}, then
+     * dispatches processing exactly once. The request is NOT paused: {@code body()} drains the stream on
+     * its own event loop, fully asynchronously — no virtual-thread {@code .get()} blocks on a contended
+     * event loop. A bounded deadline guards a body that truly never completes, but the deadline handler
+     * still honours a body that has already fully arrived (it inspects the read future), so a legitimate
+     * body delayed only by event-loop scheduling under CPU contention is never falsely rejected.
+     */
+    private void readReservedBodyThenDispatch(RoutingContext ctx, AtomicBoolean admissionReleased) {
+        AtomicBoolean bodyDone = new AtomicBoolean();
+        HttpServerRequest request = ctx.request();
+        Future<Buffer> bodyFuture = request.body();
+        long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(RESERVED_BODY_READ_TIMEOUT_SECONDS), id -> {
+            if (bodyDone.compareAndSet(false, true)) {
+                if (bodyFuture.succeeded() && bodyFuture.result() != null) {
+                    // The body actually arrived; only its completion callback had not yet drained from
+                    // this (contention-starved) event loop's queue. Honour it rather than falsely reject.
+                    ctx.put(RESERVED_BODY_KEY, bodyFuture.result());
+                } else {
+                    // A body that truly never completed within the deadline — leave RESERVED_BODY_KEY
+                    // unset so the receiver fails closed to 400 rather than pinning on it indefinitely.
+                    LOGGER.debug("Reserved form body read did not complete within %s s — failing closed",
+                            RESERVED_BODY_READ_TIMEOUT_SECONDS);
+                }
+                dispatchProcessing(ctx, admissionReleased);
+            }
+        });
+        bodyFuture.onComplete(result -> {
+            if (bodyDone.compareAndSet(false, true)) {
+                ctx.vertx().cancelTimer(timer);
+                if (result.succeeded() && result.result() != null) {
+                    ctx.put(RESERVED_BODY_KEY, result.result());
+                } else {
+                    // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
+                    LOGGER.debug(result.cause(), "Reserved form body read failed — failing closed");
+                }
+                dispatchProcessing(ctx, admissionReleased);
+            }
+        });
+        // body() registers the collector but the inbound request stream arrives in fetch/paused mode;
+        // resume() (on this event loop) re-arms it so the buffered body is delivered.
+        request.resume();
+    }
+
+    /**
+     * Hands the request to the virtual-thread pipeline, rolling admission back and failing {@code 503}
+     * if the executor refuses the dispatch (a shutdown race) so the response always ends.
+     */
+    private void dispatchProcessing(RoutingContext ctx, AtomicBoolean admissionReleased) {
         try {
             virtualThreadExecutor.execute(() -> process(ctx));
         } catch (RejectedExecutionException rejected) {
@@ -388,12 +513,31 @@ public class GatewayEdgeRoute {
                 return;
             }
             passthroughHostGuardStage.process(request);
+            if (handleReservedPath(ctx, request)) {
+                return;
+            }
             routeSelectionStage.process(request);
             verbGateStage.process(request);
             RouteRuntime route = requireSelectedRoute(request);
             ctx.put(ROUTE_KEY, route.getId());
             thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
+            // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
+            // provenance before the session runtime resolves it. A bearer-only gateway has no session
+            // routes and never reaches this guard.
+            if (bffRuntime.isActive() && REQUIRE_SESSION.equals(route.getEffectiveAuth().require())) {
+                bffRuntime.csrfDefence().enforce(request);
+            }
             authenticationStage.process(request);
+            // Honor an auth-stage short-circuit before forwarding: the BFF SessionAuthenticationStage
+            // challenges an unauthenticated require:session navigation by setting shortCircuit(302) plus a
+            // Location header that redirects the browser into the auth-code flow. Without this gate the
+            // request would fall through to the upstream (200) instead of being challenged — both a broken
+            // login redirect and a security defect (an unauthenticated require:session request reaching the
+            // upstream). Mirrors the post-framing short-circuit gate above.
+            if (request.shortCircuitStatus().isPresent()) {
+                writeShortCircuit(ctx, request);
+                return;
+            }
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
                     route.getEffectiveForward(), route.isNotModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
@@ -407,25 +551,118 @@ public class GatewayEdgeRoute {
                 dispatchAndRelay(ctx, request, route, forward);
             }
         } catch (GatewayException rejected) {
-            // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
-            if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
-                gatewayEventCounter.increment(rejected.getEventType());
-            }
-            if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
-                // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
-                // rejected.getMessage() already carries a sanitized description (see GatewayException).
-                LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
-            } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
-                // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
-                // message is a fixed disposition (never the raw Host value).
-                LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
-            }
-            recordError(ctx, rejected.getEventType());
-            renderRejection(ctx, request, rejected.getEventType());
+            handleGatewayRejection(ctx, request, rejected);
         } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             renderProblem(ctx, request, null);
         }
+    }
+
+    /**
+     * Resolves and dispatches a reserved OIDC carve-out (D2/D16): a reserved endpoint is matched here,
+     * ahead of the route table, so a proxy route such as {@code path_prefix: /auth} can never swallow
+     * the exact {@code /auth/callback}. When the server-mode BFF runtime is wired the matched path is
+     * DISPATCHED to its handler; a bearer-only / cookie-mode gateway carves it out of proxy dispatch
+     * and renders {@code NO_ROUTE_MATCHED} (the empty reserved registry never matches there anyway).
+     *
+     * @return {@code true} when the request was a reserved path and has been handled (the caller must
+     *         stop processing); {@code false} when no reserved path matched and normal routing continues
+     */
+    private boolean handleReservedPath(RoutingContext ctx, PipelineRequest request) {
+        Optional<ReservedEndpoint> reserved =
+                reservedPathRegistry.match(request.host(), requireCanonicalPath(request));
+        if (reserved.isEmpty()) {
+            return false;
+        }
+        if (bffRuntime.isActive()) {
+            dispatchReserved(ctx, request, reserved.get());
+        } else {
+            LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s",
+                    requireCanonicalPath(request));
+            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
+        }
+        return true;
+    }
+
+    /**
+     * Meters and renders a categorized {@link GatewayException} rejection: increments the event counter
+     * (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits the
+     * security-relevant WARN for filter violations and smuggled passthrough hosts, records the error
+     * metric, and renders the rejection.
+     */
+    private void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
+        // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
+        if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
+            gatewayEventCounter.increment(rejected.getEventType());
+        }
+        if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+            // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
+            // rejected.getMessage() already carries a sanitized description (see GatewayException).
+            LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
+        } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
+            // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
+            // message is a fixed disposition (never the raw Host value).
+            LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
+        }
+        recordError(ctx, rejected.getEventType());
+        renderRejection(ctx, request, rejected.getEventType());
+    }
+
+    /**
+     * Dispatches a matched reserved OIDC path (D16): extracts the raw request pieces each handler
+     * consumes, drives the {@link BffRuntime#dispatch reserved dispatch}, and renders the normalized
+     * response. Runs on the virtual thread (the handler may reach the confidential-client engine), then
+     * hops the response mutation back onto the event loop like every other terminal path.
+     */
+    private void dispatchReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind) {
+        String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
+        String method = ctx.request().method().name();
+        // The reserved form body is read for two POST reserved paths: back-channel logout, and an OIDC
+        // response_mode=form_post callback (Keycloak POSTs the code/state to redirect_uri as an
+        // urlencoded body rather than returning a 302 with the code in the query). Both reuse the same
+        // bounded read; every other reserved path (and a GET callback) carries no body.
+        boolean callbackFormPost = kind == ReservedEndpoint.CALLBACK && "POST".equalsIgnoreCase(method);
+        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT || callbackFormPost ? readFormBody(ctx) : null;
+        BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
+                ctx.request().query(), cookieHeader, firstQueryParam(request, CLAIMS_PARAM),
+                firstQueryParam(request, RETURN_TO_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody, method);
+        BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
+        renderReserved(ctx, request, response);
+    }
+
+    private void renderReserved(RoutingContext ctx, PipelineRequest request,
+            BffRuntime.ReservedHttpResponse response) {
+        Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        ctx.vertx().runOnContext(v -> {
+            HttpServerResponse httpResponse = ctx.response();
+            if (httpResponse.ended()) {
+                return;
+            }
+            httpResponse.setStatusCode(response.status());
+            stageHeaders.forEach(httpResponse::putHeader);
+            response.headers().forEach(httpResponse::putHeader);
+            response.locationOptional().ifPresent(location -> httpResponse.putHeader(LOCATION_HEADER, location));
+            // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
+            response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
+            response.jsonBodyOptional().ifPresentOrElse(httpResponse::end, httpResponse::end);
+        });
+    }
+
+    private static @Nullable String firstQueryParam(PipelineRequest request, String name) {
+        List<String> values = request.queryParameters().get(name);
+        return values == null || values.isEmpty() ? null : values.getFirst();
+    }
+
+    /**
+     * Returns the raw {@code application/x-www-form-urlencoded} body of a reserved POST path (the OIDC
+     * {@code response_mode=form_post} callback and back-channel logout), buffered on the event loop in
+     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout stashed the
+     * {@link #RESERVED_BODY_FAILED} sentinel, so this returns {@code null} — the fail-closed default a
+     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token).
+     */
+    private static @Nullable String readFormBody(RoutingContext ctx) {
+        Buffer body = ctx.get(RESERVED_BODY_KEY);
+        return body == null ? null : body.toString(StandardCharsets.UTF_8);
     }
 
     private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, RouteRuntime route,

@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import java.lang.annotation.Annotation;
@@ -29,6 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 
+import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -37,8 +37,6 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
-import de.cuioss.sheriff.gateway.events.EventType;
-import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -115,19 +113,17 @@ class GatewayEdgeRouteTest {
     }
 
     @Test
-    @DisplayName("fails boot fast when a route requires session authentication")
-    void failsBootForSessionAuth() {
+    @DisplayName("boots a require:session route now the boot-time rejection is removed (D4)")
+    void bootsSessionAuthRoute() {
         // Arrange
         RouteTable sessionTable = new RouteTable(List.of(
                 route("s", Protocol.HTTP, "session")));
 
-        // Act
-        GatewayException thrown = assertThrows(GatewayException.class, () -> newEdge(sessionTable),
-                "Session auth is not implemented and must fail boot");
-
-        // Assert
-        assertEquals(EventType.CONFIG_INVALID, thrown.getEventType(),
-                "A session-auth route is rejected as an invalid configuration");
+        // Act + Assert — a require:session route now assembles at boot; its stage-4 runtime is the
+        // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection. This
+        // edge wires no session runtime, so such a route is only rejected at request time, not at boot.
+        assertDoesNotThrow(() -> newEdge(sessionTable),
+                "A require:session route assembles at boot now the boot-time rejection is removed");
     }
 
     @Test
@@ -157,19 +153,16 @@ class GatewayEdgeRouteTest {
     }
 
     @Test
-    @DisplayName("fails boot fast for a session-auth WebSocket route (session unimplemented)")
-    void failsBootForSessionAuthWebSocket() {
+    @DisplayName("boots a session-auth WebSocket route now the boot-time rejection is removed (D4)")
+    void bootsSessionAuthWebSocketRoute() {
         // Arrange
         RouteTable webSocketTable = new RouteTable(List.of(
                 route("w", Protocol.WEBSOCKET, "session")));
 
-        // Act — session-auth WebSocket routes remain unimplemented until Plan 07
-        GatewayException thrown = assertThrows(GatewayException.class, () -> newEdge(webSocketTable),
-                "Session-auth WebSocket routes are not yet implemented and must fail boot");
-
-        // Assert
-        assertEquals(EventType.CONFIG_INVALID, thrown.getEventType(),
-                "A session-auth WebSocket route is rejected as an invalid configuration");
+        // Act + Assert — session auth no longer gates boot, so a session-auth WebSocket route
+        // assembles exactly like any other WebSocket route.
+        assertDoesNotThrow(() -> newEdge(webSocketTable),
+                "A session-auth WebSocket route assembles at boot now session auth no longer fails boot");
     }
 
     @Test
@@ -186,7 +179,7 @@ class GatewayEdgeRouteTest {
 
     private GatewayEdgeRoute newEdge(RouteTable table) {
         return new GatewayEdgeRoute(table, gatewayConfig, new SingletonInstance<>(tokenValidator), vertx,
-                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()));
+                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert());
     }
 
     /**

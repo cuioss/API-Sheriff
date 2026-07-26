@@ -40,6 +40,11 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-5 |EDGE |WebSocket relay on route '%s' reclaimed after idle timeout (%s seconds) |Logged when an established WebSocket relay is closed because no frame travelled in either direction for the per-route websocket.idle_timeout_seconds window; ping/pong counts as activity, so only genuinely dead sockets are reaped
 |ApiSheriff-6 |EDGE |Passthrough relay established for SNI '%s' to upstream '%s' |Logged once per accepted connection whose SNI matched tls.passthrough_sni, when the opaque L4 relay to the resolved backend is established; the gateway never handshakes, so the backend certificate reaches the client end-to-end
 |ApiSheriff-7 |EDGE |Accept-time SNI front listener started on port %s (%s passthrough SNI mapping(s)) |Logged once at startup when the Vert.x front listener binds the public TLS port; emitted only when tls.passthrough_sni is non-empty (the front listener is not started for the default single-listener topology)
+|ApiSheriff-10 |BFF |Server-side session established for a require:session route |Logged once when a `mode: server` BFF session is created after a successful IdP login; carries no session id, subject, or IdP `sid`
+|ApiSheriff-11 |BFF |Server-side session destroyed (%s) |Logged when a server-side session is destroyed; `%s` is a bounded, non-sensitive disposition (`logout` / `backchannel-logout` / `expiry` / `refresh-failure`) — never the session id, subject, or `sid`
+|ApiSheriff-12 |BFF |Mediated tokens refreshed for a require:session route (single-flight) |Logged when the transparent single-flight token refresh rotates a session's mediated tokens through the engine; token material is never logged
+|ApiSheriff-13 |BFF |Back-channel logout accepted — %s session(s) destroyed |Logged when a signature- and claim-valid back-channel `logout_token` destroys the affected sessions; `%s` is the bounded destroyed-session count — never the subject or `sid`
+|ApiSheriff-14 |BFF |RP-initiated logout completed for a require:session route |Logged when the RP-initiated logout return leg verifies its single-use logout-state cookie and redirects the browser to the configured final_redirect
 |===
 
 == WARN Level (100-199)
@@ -55,6 +60,9 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-105 |EDGE |WebSocket upgrade rejected on route '%s': Origin '%s' is not in the allowed_origins allowlist |Logged when a bearer WebSocket handshake presents an Origin that does not exactly match the route's allowed_origins allowlist; the upgrade is refused before any upstream dial (fail-closed CSWSH defence, GW-09 / ADR-0015)
 |ApiSheriff-107 |EDGE |TLS ClientHello failed closed to terminated path: %s |Logged when an accept-time TLS ClientHello is failed closed to the terminated-strict path (GW-06) because it carried no usable SNI, was malformed, or exceeded the reassembly bound; records the disposition only — never the raw ClientHello bytes
 |ApiSheriff-108 |EDGE |Host-vs-SNI smuggle rejected before route selection: %s |Logged when a terminated request's Host header names a reserved passthrough SNI hostname and is rejected 404 before route selection; records a fixed disposition only — never the raw Host value
+|ApiSheriff-110 |BFF |CSRF defence rejected an unsafe-method session request: %s |Logged when the fixed CSRF defence rejects an unsafe-method `require: session` request; `%s` is the non-sensitive rejection disposition (`untrusted-origin` / `no-origin-proof`) — the raw offending `Origin` value is never logged
+|ApiSheriff-111 |BFF |Token refresh failed for a require:session route (%s) — session destroyed |Logged when a transparent token refresh fails (IdP rejection or engine-detected refresh-token reuse) and the session is destroyed; `%s` is a bounded, non-sensitive reason — never the presented refresh token or session id
+|ApiSheriff-112 |BFF |Back-channel logout token rejected: %s |Logged when a back-channel `logout_token` fails signature or claim validation; `%s` is the non-sensitive rejection disposition (`signature` / `claims`) — the raw logout token is never logged
 |===
 
 == ERROR Level (200-299)

@@ -100,6 +100,11 @@ configuration. Each has its own design section:
 | link:variants/03-bff-cookie.adoc[3. BFF -- Cookie-based (non-session)]
 | Backend-For-Frontend where the tokens travel only inside an AES-256-GCM encrypted
   `HttpOnly` cookie, decrypted per request. Stateless (manifest Variant A).
+
+| Variant 2 -- three-layer guides
+| Task-oriented companions to the Variant 2 design section above:
+  link:user/bff-session.adoc[operator setup] (configure and run the server-session BFF) and
+  link:development/bff-session.adoc[contributor guide] (build, test, and extend it).
 |===
 
 == Implementation Plans

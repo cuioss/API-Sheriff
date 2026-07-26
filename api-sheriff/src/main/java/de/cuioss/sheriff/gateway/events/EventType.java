@@ -93,6 +93,26 @@ public enum EventType {
     /** The upstream call exceeded its configured timeout. */
     UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
 
+    // --- BFF server-session lifecycle (informational; no category, no HTTP mapping) ---
+
+    /** A server-side session was established after a successful IdP login ({@code require: session}). */
+    SESSION_CREATED(null, 0),
+    /** A server-side session was destroyed (RP-initiated logout, back-channel logout, TTL eviction, or refresh failure). */
+    SESSION_DESTROYED(null, 0),
+    /** A transparent token refresh failed (IdP rejection or refresh-token reuse) and its session was destroyed. */
+    SESSION_REFRESH_FAILED(null, 0),
+    /** A back-channel logout token was accepted and its affected sessions were destroyed. */
+    BACKCHANNEL_LOGOUT(null, 0),
+
+    // --- BFF back-channel logout rejection (400) ---
+
+    /**
+     * A back-channel {@code logout_token} failed signature or claim validation; the back-channel
+     * logout receiver rejects the request {@code 400} (OpenID Connect Back-Channel Logout), so it
+     * carries an HTTP mapping despite being an authentication-class failure.
+     */
+    LOGOUT_TOKEN_INVALID(EventCategory.AUTHENTICATION, 400),
+
     // --- WebSocket (403 on the handshake; 1001 "Going Away" close on the established relay) ---
 
     /**

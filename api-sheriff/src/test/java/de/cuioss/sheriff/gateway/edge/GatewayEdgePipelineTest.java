@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -113,7 +114,7 @@ class GatewayEdgePipelineTest {
 
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()));
+                new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

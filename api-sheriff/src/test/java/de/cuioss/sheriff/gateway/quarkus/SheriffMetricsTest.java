@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
@@ -31,6 +33,7 @@ import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -47,8 +50,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
- * names named in {@code architecture.adoc} § Metrics, and {@link GatewayReadinessCheck} reflects
- * configuration and JWKS status.
+ * names named in {@code architecture.adoc} § Metrics (including the BFF session-lifecycle counter),
+ * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for a BFF
+ * {@code mode: server} deployment — issuer reachability.
  */
 class SheriffMetricsTest {
 
@@ -67,6 +71,7 @@ class SheriffMetricsTest {
             assertEquals("sheriff_errors_total", SheriffMetrics.ERRORS_TOTAL);
             assertEquals("sheriff_security_events_total", SheriffMetrics.SECURITY_EVENTS_TOTAL);
             assertEquals("sheriff_upstream_duration_seconds", SheriffMetrics.UPSTREAM_DURATION_SECONDS);
+            assertEquals("sheriff_session_events_total", SheriffMetrics.SESSION_EVENTS_TOTAL);
         }
 
         @Test
@@ -100,6 +105,29 @@ class SheriffMetricsTest {
                     .tags("route", "api", "category", "upstream").counter();
             assertNotNull(counter, "sheriff_errors_total must be keyed by the category slug");
             assertEquals(1.0, counter.count());
+        }
+
+        @Test
+        @DisplayName("recordSessionEvent counts under sheriff_session_events_total{event} keyed by the EventType name")
+        void recordSessionEventCountsSessionLifecycle() {
+            metrics.recordSessionEvent(EventType.SESSION_CREATED);
+            metrics.recordSessionEvent(EventType.SESSION_CREATED);
+            metrics.recordSessionEvent(EventType.SESSION_DESTROYED);
+            metrics.recordSessionEvent(EventType.BACKCHANNEL_LOGOUT);
+
+            var created = registry.find("sheriff_session_events_total").tags("event", "SESSION_CREATED").counter();
+            var destroyed = registry.find("sheriff_session_events_total").tags("event", "SESSION_DESTROYED").counter();
+            var backchannel = registry.find("sheriff_session_events_total").tags("event", "BACKCHANNEL_LOGOUT").counter();
+            assertNotNull(created, "sheriff_session_events_total must be keyed by the EventType name");
+            assertEquals(2.0, created.count(), "each recordSessionEvent call increments the event's series");
+            assertEquals(1.0, destroyed.count());
+            assertEquals(1.0, backchannel.count());
+        }
+
+        @Test
+        @DisplayName("recordSessionEvent rejects a null event type fail-closed")
+        void recordSessionEventRejectsNull() {
+            assertThrows(NullPointerException.class, () -> metrics.recordSessionEvent(null));
         }
 
         @Test
@@ -159,13 +187,13 @@ class SheriffMetricsTest {
     }
 
     @Nested
-    @DisplayName("GatewayReadinessCheck reflects config and JWKS status")
+    @DisplayName("GatewayReadinessCheck reflects config, JWKS status, and server-mode issuer reachability")
     class Readiness {
 
         @Test
         @DisplayName("UP with jwks=not-applicable when no token_validation is configured")
         void upWhenNoTokenValidation() {
-            GatewayConfig config = configWith(Optional.empty(), Optional.empty());
+            GatewayConfig config = configWith(Optional.empty(), Optional.empty(), Optional.empty());
             GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
 
             HealthCheckResponse response = check.call();
@@ -174,13 +202,15 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("loaded", data.get("config"));
             assertEquals("not-applicable", data.get("jwks"));
+            assertNull(data.get("oidc"), "a non-server-mode probe carries no oidc datum");
+            assertNull(data.get("issuer_reachability"), "a non-server-mode probe carries no issuer_reachability datum");
         }
 
         @Test
         @DisplayName("UP with jwks=ready when the gateway validator resolves")
         void upWhenValidatorResolves() {
             GatewayConfig config = configWith(Optional.empty(),
-                    Optional.of(new TokenValidationConfig(List.of())));
+                    Optional.of(new TokenValidationConfig(List.of())), Optional.empty());
             GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
 
             HealthCheckResponse response = check.call();
@@ -189,13 +219,14 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("ready", data.get("jwks"));
             assertEquals(0L, data.get("issuers"));
+            assertNull(data.get("oidc"), "a non-server-mode probe carries no oidc datum");
         }
 
         @Test
         @DisplayName("DOWN with jwks=unavailable when the validator fails to resolve")
         void downWhenValidatorFails() {
             GatewayConfig config = configWith(Optional.empty(),
-                    Optional.of(new TokenValidationConfig(List.of())));
+                    Optional.of(new TokenValidationConfig(List.of())), Optional.empty());
             GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "no usable jwks source");
             GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.failing(failure));
 
@@ -208,10 +239,58 @@ class SheriffMetricsTest {
         }
 
         @Test
+        @DisplayName("server mode UP reports oidc=server and issuer_reachability=reachable when the issuer JWKS resolves")
+        void serverModeUpReportsIssuerReachable() {
+            GatewayConfig config = configWith(Optional.empty(),
+                    Optional.of(new TokenValidationConfig(List.of())), serverMode());
+            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("server", data.get("oidc"));
+            assertEquals("ready", data.get("jwks"));
+            assertEquals("reachable", data.get("issuer_reachability"));
+        }
+
+        @Test
+        @DisplayName("server mode DOWN reports issuer_reachability=unreachable when the issuer JWKS is unreachable")
+        void serverModeDownReportsIssuerUnreachable() {
+            GatewayConfig config = configWith(Optional.empty(),
+                    Optional.of(new TokenValidationConfig(List.of())), serverMode());
+            GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "issuer JWKS unreachable");
+            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.failing(failure));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("server", data.get("oidc"));
+            assertEquals("unavailable", data.get("jwks"));
+            assertEquals("unreachable", data.get("issuer_reachability"));
+        }
+
+        @Test
+        @DisplayName("server mode without token_validation reports issuer_reachability=unverified but stays UP")
+        void serverModeWithoutValidationReportsUnverified() {
+            GatewayConfig config = configWith(Optional.empty(), Optional.empty(), serverMode());
+            GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("server", data.get("oidc"));
+            assertEquals("not-applicable", data.get("jwks"));
+            assertEquals("unverified", data.get("issuer_reachability"));
+        }
+
+        @Test
         @DisplayName("config_version is surfaced when metadata carries one")
         void configVersionSurfaced() {
             GatewayConfig config = configWith(Optional.of(new Metadata(Optional.of("2026-07-19"))),
-                    Optional.empty());
+                    Optional.empty(), Optional.empty());
             GatewayReadinessCheck check = new GatewayReadinessCheck(config, FakeValidatorInstance.resolving());
 
             HealthCheckResponse response = check.call();
@@ -219,9 +298,15 @@ class SheriffMetricsTest {
             assertEquals("2026-07-19", response.getData().orElseThrow().get("config_version"));
         }
 
-        private GatewayConfig configWith(Optional<Metadata> metadata, Optional<TokenValidationConfig> tokenValidation) {
+        private Optional<OidcConfig> serverMode() {
+            OidcConfig.Session session = OidcConfig.Session.builder().mode(Optional.of("server")).build();
+            return Optional.of(OidcConfig.builder().session(Optional.of(session)).build());
+        }
+
+        private GatewayConfig configWith(Optional<Metadata> metadata, Optional<TokenValidationConfig> tokenValidation,
+                Optional<OidcConfig> oidc) {
             return new GatewayConfig(1, metadata, Optional.empty(), Optional.empty(), Optional.empty(),
-                    null, null, Optional.empty(), Optional.empty(), tokenValidation, Optional.empty());
+                    null, null, Optional.empty(), Optional.empty(), tokenValidation, oidc);
         }
     }
 

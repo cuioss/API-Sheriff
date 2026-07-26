@@ -63,6 +63,7 @@ public final class PipelineRequest {
     private @Nullable String canonicalPath;
     private @Nullable RouteRuntime selectedRoute;
     private @Nullable Integer shortCircuitStatus;
+    private @Nullable String mediatedBearer;
 
     private PipelineRequest(Builder builder) {
         this.method = Objects.requireNonNull(builder.method, "method");
@@ -250,6 +251,27 @@ public final class PipelineRequest {
      */
     public void shortCircuit(int status) {
         this.shortCircuitStatus = status;
+    }
+
+    /**
+     * @return the mediated access token the {@code require: session} stage-4 runtime resolved for
+     *         automatic upstream injection, or empty when no session mediation applied. The forward
+     *         policy stage renders it as the outbound {@code Authorization: Bearer} header so the
+     *         upstream sees only the mediated bearer, never the opaque session cookie.
+     */
+    public Optional<String> mediatedBearer() {
+        return Optional.ofNullable(mediatedBearer);
+    }
+
+    /**
+     * Records the mediated access token the session stage-4 runtime injects automatically as the
+     * upstream {@code Authorization: Bearer} (never operator-configured). The token material stays
+     * server-side up to this point; the forward stage is its sole consumer.
+     *
+     * @param mediatedBearer the raw mediated access token
+     */
+    public void mediatedBearer(String mediatedBearer) {
+        this.mediatedBearer = Objects.requireNonNull(mediatedBearer, "mediatedBearer");
     }
 
     /**

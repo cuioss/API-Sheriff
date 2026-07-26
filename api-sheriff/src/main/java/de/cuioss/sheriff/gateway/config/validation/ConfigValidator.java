@@ -106,6 +106,14 @@ public final class ConfigValidator {
     private static final String REQUIRE_NONE = "none";
     private static final String REQUIRE_BEARER = "bearer";
     private static final String REQUIRE_SESSION = "session";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
+    private static final String OIDC_USER_INFO_DEFAULT_VIEW_POINTER = "/oidc/user_info/default_view";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
+    private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -125,6 +133,9 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors));
@@ -732,6 +743,76 @@ public final class ConfigValidator {
                                 "server session mode requires a store"));
                     }
                 }));
+    }
+
+    /**
+     * Rule: the server-mode session store bound (D1/D3). When
+     * {@code oidc.session.max_sessions} is present it must be a positive integer —
+     * the bound is a DoS guard on the in-memory store, so a non-positive value is a
+     * misconfiguration. A no-op when the bound is omitted (the store applies its own
+     * documented default bound).
+     */
+    private static void validateSessionMaxSessions(GatewayConfig gateway, List<ConfigError> errors) {
+        gateway.oidc().flatMap(OidcConfig::session).flatMap(OidcConfig.Session::maxSessions).ifPresent(max -> {
+            if (max <= 0) {
+                errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_POINTER,
+                        "oidc session max_sessions must be a positive integer, but was %d".formatted(max)));
+            }
+        });
+    }
+
+    /**
+     * Rule: the session/user-info reserved endpoint (fold, D1). When an
+     * {@code oidc.user_info} block is present, its {@code path} must be an absolute
+     * gateway path, and every {@code default_view} claim must lie within the
+     * {@code allowed_claims} allowlist — the operator-owned allowlist caps
+     * disclosure and the default view can never exceed it. An empty allowlist is the
+     * secure closed default (nothing disclosed) and is not itself an error. Every
+     * violation collects into the shared list; the rule never fails fast.
+     */
+    private static void validateUserInfo(GatewayConfig gateway, List<ConfigError> errors) {
+        gateway.oidc().flatMap(OidcConfig::userInfo).ifPresent(userInfo -> {
+            userInfo.path().ifPresent(path -> {
+                if (!isAbsoluteGatewayPath(path)) {
+                    errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_PATH_POINTER,
+                            "oidc user_info path '%s' must be an absolute gateway path starting with a single '/'"
+                                    .formatted(path)));
+                }
+            });
+            Set<String> allowed = new HashSet<>(userInfo.allowedClaims());
+            for (String claim : userInfo.defaultView()) {
+                if (!allowed.contains(claim)) {
+                    errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_DEFAULT_VIEW_POINTER,
+                            "oidc user_info default_view claim '%s' is not in allowed_claims; the default view cannot disclose a claim outside the operator allowlist"
+                                    .formatted(claim)));
+                }
+            }
+        });
+    }
+
+    /**
+     * Rule: the login-initiation reserved path (fold, D1). When
+     * {@code oidc.login.path} is present it must be an absolute gateway path — a
+     * schema-relative ({@code //host}) or off-path value is rejected as an
+     * open-redirect hazard.
+     */
+    private static void validateLoginPath(GatewayConfig gateway, List<ConfigError> errors) {
+        gateway.oidc().flatMap(OidcConfig::login).flatMap(OidcConfig.Login::path).ifPresent(path -> {
+            if (!isAbsoluteGatewayPath(path)) {
+                errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_PATH_POINTER,
+                        "oidc login path '%s' must be an absolute gateway path starting with a single '/'"
+                                .formatted(path)));
+            }
+        });
+    }
+
+    /**
+     * Whether {@code path} is an absolute gateway path: it starts with a single
+     * {@code /} and is not a schema-relative {@code //host} URL (which would be an
+     * open-redirect vector for a reserved path).
+     */
+    private static boolean isAbsoluteGatewayPath(String path) {
+        return path.startsWith("/") && !path.startsWith("//");
     }
 
     private static void validatePassthroughHostCollision(GatewayConfig gateway, List<EndpointConfig> endpoints,

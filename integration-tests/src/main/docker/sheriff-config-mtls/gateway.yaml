@@ -38,6 +38,19 @@ anchors:
     path_prefix: /bff
     type: proxy
     access: public
+  # Server-mode BFF session namespace exercised by the Bff*IT suite. A require:session
+  # route lives here so an authenticated browser session mediates a bearer to the
+  # go-httpbin echo upstream (BffSessionMediationIT). type: bff forces access:
+  # authenticated (ADR-0013), and the session floor is backed by the global oidc block
+  # below (ConfigValidator rejects a session floor with no oidc block). The reserved
+  # OIDC endpoints themselves are carved out of the route table on the oidc host and
+  # live under /auth (see the oidc block), disjoint from this /bff-session proxy prefix.
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
   secure:
     path_prefix: /secure
     type: proxy
@@ -90,3 +103,58 @@ token_validation:
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
         allowed_egress_hosts: ["keycloak"]
         tls_profile: benchmark-idp
+    # The server-mode BFF (oidc block below) validates the id/access tokens the
+    # 'integration' realm mints for the browser session. The gateway's shared
+    # @GatewayValidator TokenValidator is built from THIS token_validation block (not
+    # the Quarkus %it issuer surface), so the integration issuer MUST be declared here
+    # or every mediated session token is rejected. Same container-internal iss the
+    # integration realm pins via frontendUrl https://keycloak:8443, reached over the
+    # shared api-sheriff network where 'keycloak' resolves by service name; the same
+    # narrow SSRF egress widening and self-signed trust profile the benchmark issuer uses.
+    - name: integration-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+# --- Server-mode BFF confidential-client block (BFF-* integration suite) -----------
+# Activates the server-mode BffRuntime (BffRuntimeProducer builds the active runtime
+# only when a global oidc block declares session.mode=server AND a redirect_uri). The
+# reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
+# the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
+# under /auth and never collide with the /bff-session proxy anchor above. Confidential
+# client: integration-client / integration-secret against the compose 'integration'
+# realm (standardFlowEnabled, redirectUris '*'). OIDC discovery is lazy (first engine
+# use), so boot needs no live IdP; the browser reaches the gateway on the published
+# host port 10444 (this mTLS instance's own published port) and Keycloak on its published
+# host port, while the gateway reaches Keycloak container-internally at keycloak:8443.
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
+  # reserved path binds to; its origin ('https://localhost:10444') is the gateway
+  # origin used for same-origin return-URL validation and the default CSRF trusted origin.
+  redirect_uri: https://localhost:10444/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10444/auth/logout/return
+    final_redirect: /
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    refresh:
+      enabled: true
+      leeway_seconds: 30
+    csrf:
+      trusted_origins: ["https://localhost:10444"]
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub", "preferred_username", "email", "groups"]
+    default_view: ["sub", "preferred_username"]
+  login:
+    path: /auth/login

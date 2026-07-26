@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 
+import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -127,7 +128,7 @@ class WebSocketRelayStageTest {
                 .build();
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()));
+                new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

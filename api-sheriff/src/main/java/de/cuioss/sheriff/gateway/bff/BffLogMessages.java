@@ -1,0 +1,140 @@
+/*
+ * Copyright © 2026 CUI-OpenSource-Software (info@cuioss.de)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package de.cuioss.sheriff.gateway.bff;
+
+import de.cuioss.tools.logging.LogRecord;
+import de.cuioss.tools.logging.LogRecordModel;
+
+import lombok.experimental.UtilityClass;
+
+/**
+ * DSL-style {@link LogRecord} catalogue for the Backend-for-Frontend {@code require: session}
+ * surface — the session lifecycle, transparent token refresh, CSRF defence, and logout events.
+ * <p>
+ * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the shared
+ * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and assertable.
+ * This catalogue's identifier ranges are disjoint from the request-pipeline edge
+ * ({@link de.cuioss.sheriff.gateway.ApiSheriffLogMessages}: {@code 1} / {@code 4} / {@code 100} /
+ * {@code 103-106}) and the configuration subsystem
+ * ({@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}: {@code 2-3} / {@code 101-102} /
+ * {@code 200-201}), which share the same {@code ApiSheriff} prefix — this BFF catalogue owns
+ * {@code 10-14} (INFO) and {@code 110-112} (WARN). Never renumber one catalogue without checking
+ * the others for a collision.
+ * <p>
+ * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
+ * ({@code sid}), token material, and raw offending values never appear in a template: a rejection
+ * records only its non-sensitive <em>disposition</em> ({@code untrusted-origin} / {@code signature}
+ * / …), a lifecycle event records only a non-sensitive reason or a bounded count. Exception-bearing
+ * {@code WARN}s pass the throwable first, per the CUI logging contract; callers must not attach a
+ * raw, unsanitized IdP exception whose message could re-inject untrusted content. {@code DEBUG} /
+ * {@code TRACE} diagnostics use the logger directly and are not catalogued here.
+ *
+ * @author API Sheriff Team
+ * @since 1.0
+ */
+@UtilityClass
+public final class BffLogMessages {
+
+    private static final String PREFIX = "ApiSheriff";
+
+    /**
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-14).
+     */
+    @UtilityClass
+    public static final class INFO {
+
+        /** A server-side session was established after a successful IdP login (require: session). */
+        public static final LogRecord SESSION_CREATED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(10)
+                .template("Server-side session established for a require:session route")
+                .build();
+
+        /**
+         * A server-side session was destroyed. The reason is a bounded, non-sensitive disposition
+         * ({@code logout} / {@code backchannel-logout} / {@code expiry} / {@code refresh-failure}) —
+         * never the session id, subject, or IdP {@code sid}.
+         */
+        public static final LogRecord SESSION_DESTROYED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(11)
+                .template("Server-side session destroyed (%s)")
+                .build();
+
+        /** The mediated tokens were transparently refreshed for a require:session route. */
+        public static final LogRecord TOKEN_REFRESHED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(12)
+                .template("Mediated tokens refreshed for a require:session route (single-flight)")
+                .build();
+
+        /**
+         * A back-channel logout token was accepted and its affected sessions were destroyed. The
+         * template carries only the bounded destroyed-session count — never the subject or {@code sid}.
+         */
+        public static final LogRecord BACKCHANNEL_LOGOUT = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(13)
+                .template("Back-channel logout accepted — %s session(s) destroyed")
+                .build();
+
+        /** An RP-initiated logout completed its return leg for a require:session route. */
+        public static final LogRecord RP_LOGOUT_COMPLETED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(14)
+                .template("RP-initiated logout completed for a require:session route")
+                .build();
+    }
+
+    /**
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-112).
+     */
+    @UtilityClass
+    public static final class WARN {
+
+        /**
+         * The fixed CSRF defence rejected an unsafe-method session request. Records the non-sensitive
+         * rejection disposition ({@code untrusted-origin} / {@code no-origin-proof}) only — never the
+         * raw offending {@code Origin} value.
+         */
+        public static final LogRecord CSRF_REJECTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(110)
+                .template("CSRF defence rejected an unsafe-method session request: %s")
+                .build();
+
+        /**
+         * A transparent token refresh failed (IdP rejection or engine-detected refresh-token reuse)
+         * and its session was destroyed; the caller re-authenticates. Records only a bounded,
+         * non-sensitive reason — never the presented refresh token or session id.
+         */
+        public static final LogRecord SESSION_REFRESH_FAILED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(111)
+                .template("Token refresh failed for a require:session route (%s) — session destroyed")
+                .build();
+
+        /**
+         * A back-channel logout token was rejected. Records the non-sensitive rejection disposition
+         * ({@code signature} / {@code claims}) only — never the raw logout token.
+         */
+        public static final LogRecord LOGOUT_TOKEN_REJECTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(112)
+                .template("Back-channel logout token rejected: %s")
+                .build();
+    }
+}

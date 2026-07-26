@@ -171,6 +171,42 @@ the engine wires it internally. The engine's API surface is specified in
 `TokenSheriff/doc/client`.
 ====
 
+[[_bff_session_runtime]]
+==== Server-session BFF runtime (edge wiring)
+
+The *server-session* variant realizes the BFF side of that seam as four structural pieces, all
+framework-agnostic (raw request pieces in, a rendered response out -- no JAX-RS/Vert.x coupling)
+so each is unit-testable without a container:
+
+* *Session-resolution seam.* The opaque session-id cookie is the only browser-held state. A
+  `SessionCookieCodec` reads the id out of the request `Cookie` header and a `SessionStore`
+  (the in-memory `InMemorySessionStore`, bounded by `oidc.session.max_sessions`) resolves it to
+  the server-held `SessionRecord` carrying the tokens. A `require: session` route is served by a
+  `SessionAuthenticationStage` injected into the session-aware authentication stage -- so the
+  route is *mediated* (the stored access token injected upstream) rather than rejected.
+
+* *Reserved-path registry + live-edge dispatch.* The `ReservedPathRegistry` classifies each of the
+  up-to-six gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout,
+  user-info, login-initiation) by *exact* host+path match. The gateway edge consults it *before*
+  the proxy route table, so a matched reserved path is dispatched to its handler and a proxy route
+  such as `path_prefix: /auth` can never swallow `/auth/callback`. The
+  link:configuration.adoc#_oidc[`oidc`] block is the single source of the registered paths.
+
+* *Engine boundary.* The gateway re-implements no OAuth leg. Every reserved handler (login
+  initiation, callback code-exchange, RP-initiated + back-channel logout, transparent refresh,
+  RFC 9470 step-up) drives the `token-sheriff-client` engine across a small set of seams and adds
+  only the browser-facing concern on top (binding/session cookies, CSRF, curated user-info view,
+  RFC 9457 rendering). The BFF never holds token material outside the `SessionStore`.
+
+* *`BffRuntime` / `BffRuntimeProducer` CDI wiring.* `BffRuntime` is the single collaborator the
+  edge consults: it carries the `SessionAuthenticationStage` + fixed `CsrfDefence` and a
+  `dispatch(...)` fan-out that routes each matched reserved kind to its wired handler and
+  normalizes the outcomes into one response the edge renders verbatim. `BffRuntimeProducer` builds
+  it once at boot *only when a global `oidc` block with `session.mode=server` and a `redirect_uri`
+  is configured*; otherwise it produces the *inert* runtime, so a bearer-only gateway (or a
+  cookie-mode BFF) is unchanged and never touches the confidential-client engine. Provider-metadata
+  discovery is resolved lazily on first engine use, so a server-mode gateway boots without a live IdP.
+
 === Forward Policy (Zero-Trust)
 
 Nothing crosses to the upstream unless it is explicitly allowed. The forward policy defines
@@ -472,6 +508,34 @@ per link:adr/0001-java25-runtime-baseline.adoc[ADR-0001] (`maven.compiler.releas
 container/native runtime is the JDK 25 line). The CI build/test matrix additionally exercises
 the next GA release (Java 26, then 27 at GA) as a forward-compatibility guard. Java 21 is not a
 target for this project.
+
+[CAUTION]
+.Never drive inbound-socket I/O from the request's virtual thread
+====
+The virtual thread runs the *pipeline logic*; the request's own *event loop* owns the inbound
+socket. Any operation on the inbound Vert.x connection -- reading the request body, `pause()`
+/ `resume()`, writing the response, the WebSocket upgrade (`toWebSocket()`) -- MUST run on that
+event loop, never inline on the per-request virtual thread.
+
+* *Writing the response* from the pipeline: marshal it with
+  `ctx.vertx().runOnContext(v -> ...)` (every renderer in `GatewayEdgeRoute` does this; the sole
+  exception, `reject(...)`, is called only from the event loop and so needs no hop).
+* *Reading a body the gateway itself consumes* (the `response_mode=form_post` callback and
+  back-channel logout): read it on the event loop *before* the virtual-thread hop, then dispatch
+  with the buffered bytes -- see `GatewayEdgeRoute#readReservedBodyThenDispatch`. A proxied body
+  is never buffered; it streams on the client's event loop (ADR-0008).
+
+The anti-pattern that this rule forbids: pausing the inbound stream, hopping to the virtual
+thread, then draining the paused body from that virtual thread -- e.g. blocking on
+`request.body().toCompletionStage().get()` or re-arming the stream via a captured context and
+`runOnContext`. It *appears* to work on a multi-core dev box but hits its read deadline under
+CPU contention (a 1--2-core CI runner, or a 1--2 CPU cgroup limit), because the paused read is
+re-armed across the event-loop/virtual-thread boundary instead of on the connection's own event
+loop. The failure signature is a body-read timeout surfacing as a downstream 400 (a
+form_post callback rejected "missing state"). This is a threading defect, not a test flake:
+reproduce it locally by pinning the app container's CPU (`docker update --cpus 1 <container>`)
+and running the integration suite against the running stack.
+====
 
 [[_performance_object_reuse]]
 == Performance: Boot-Time Assembly and Object Reuse

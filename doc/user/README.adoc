@@ -38,6 +38,12 @@ layer.
   `tls.mtls` (require-and-verify a client certificate on terminated connections), plus the
   emergency trust-root-replacement blast radius every operator must understand before relying on
   mTLS. Links to the Configuration Reference for the field contract.
+
+| link:bff-session.adoc[Server-Session BFF -- Operator Setup]
+| A task-oriented guide for standing up the server-session BFF (Variant 2): registering the OIDC
+  confidential client, protecting a route with `require: session`, the gateway-owned reserved
+  paths, serving a curated user-info view, CSRF for a cross-origin SPA, and operating the in-memory
+  session store. Links to the Configuration Reference for the `oidc` key contract.
 |===
 
 == Scope of This Layer

@@ -44,6 +44,10 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
  *       {@linkplain TcpPeerGate#isTrustedPeer(String) trusted proxy}, inbound forwarding headers are
  *       ignored (a spoofed chain from an untrusted peer never influences the regenerated set).</li>
  *   <li><strong>Static set headers.</strong> {@code set_headers} are appended verbatim.</li>
+ *   <li><strong>Mediated session bearer.</strong> A {@code require: session} route's stage-4
+ *       runtime records the mediated access token on the request; it is rendered here as the
+ *       outbound {@code Authorization: Bearer} <em>last</em>, so it wins over any allow-listed
+ *       inbound {@code Authorization}. The upstream therefore sees only the mediated bearer.</li>
  *   <li><strong>Conditional requests.</strong> {@code If-None-Match} / {@code If-Modified-Since}
  *       cross only when the route enables {@code not_modified}; otherwise they are dropped here.</li>
  * </ul>
@@ -95,8 +99,19 @@ public final class ForwardPolicyStage {
         headers.putAll(forwardConfig.setHeaders());
         applyConditionalHeaders(request, notModifiedEnabled, headers);
         applyRegeneratedForwarding(request, headers);
+        applyMediatedBearer(request, headers);
 
         return new Result(Map.copyOf(headers), copyAllowedQuery(request, forwardConfig));
+    }
+
+    /**
+     * Applies the {@code require: session} stage-4 mediated bearer as the outbound
+     * {@code Authorization} header, last, so it deterministically wins over any inbound
+     * {@code Authorization} an allowlist happened to forward. A pure-proxy or {@code require: bearer}
+     * route resolves no mediated bearer, so this is a no-op there.
+     */
+    private static void applyMediatedBearer(PipelineRequest request, Map<String, String> headers) {
+        request.mediatedBearer().ifPresent(token -> headers.put("Authorization", "Bearer " + token));
     }
 
     private static void copyAllowedHeaders(PipelineRequest request, ForwardConfig forwardConfig,

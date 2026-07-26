@@ -35,13 +35,17 @@ import lombok.Builder;
  * @param logout       the logout settings, empty when omitted
  * @param session      the session settings, empty when omitted
  * @param stepUp       the step-up authentication settings, empty when omitted
+ * @param userInfo     the session/user-info reserved-endpoint settings, empty
+ *                     when omitted
+ * @param login        the login-initiation reserved-path settings, empty when
+ *                     omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
 public record OidcConfig(Optional<String> issuer, Optional<String> clientId, Optional<String> clientSecret,
 List<String> scopes, Optional<String> redirectUri, Optional<Logout> logout, Optional<Session> session,
-Optional<StepUp> stepUp) {
+Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
 
     /**
      * Canonical constructor defensively copying {@code scopes} and normalizing
@@ -56,6 +60,8 @@ Optional<StepUp> stepUp) {
         logout = Objects.requireNonNullElse(logout, Optional.empty());
         session = Objects.requireNonNullElse(session, Optional.empty());
         stepUp = Objects.requireNonNullElse(stepUp, Optional.empty());
+        userInfo = Objects.requireNonNullElse(userInfo, Optional.empty());
+        login = Objects.requireNonNullElse(login, Optional.empty());
     }
 
     /**
@@ -70,8 +76,9 @@ Optional<StepUp> stepUp) {
      */
     @Override
     public String toString() {
-        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s]"
-                .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp);
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s]"
+                .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
+                        login);
     }
 
     /**
@@ -127,13 +134,16 @@ Optional<StepUp> stepUp) {
      *                      omitted
      * @param csrf          the CSRF settings, empty when omitted
      * @param refresh       the token-refresh settings, empty when omitted
+     * @param maxSessions   the server-mode upper bound on concurrently stored
+     *                      sessions — a DoS guard on the in-memory store, empty
+     *                      when omitted
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
     public record Session(Optional<String> mode, Optional<String> store, Optional<String> cookieName,
     Optional<String> encryptionKey, Optional<String> previousKey, Optional<Integer> ttlSeconds,
-    Optional<Csrf> csrf, Optional<Refresh> refresh) {
+    Optional<Csrf> csrf, Optional<Refresh> refresh, Optional<Integer> maxSessions) {
 
         /**
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
@@ -147,6 +157,7 @@ Optional<StepUp> stepUp) {
             ttlSeconds = Objects.requireNonNullElse(ttlSeconds, Optional.empty());
             csrf = Objects.requireNonNullElse(csrf, Optional.empty());
             refresh = Objects.requireNonNullElse(refresh, Optional.empty());
+            maxSessions = Objects.requireNonNullElse(maxSessions, Optional.empty());
         }
 
         /**
@@ -159,9 +170,9 @@ Optional<StepUp> stepUp) {
          */
         @Override
         public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s]"
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s]"
                     .formatted(mode, store, cookieName, redact(encryptionKey), redact(previousKey), ttlSeconds, csrf,
-                            refresh);
+                            refresh, maxSessions);
         }
     }
 
@@ -225,6 +236,55 @@ Optional<StepUp> stepUp) {
         public StepUp {
             enabled = Objects.requireNonNullElse(enabled, Optional.empty());
             honorUpstreamChallenge = Objects.requireNonNullElse(honorUpstreamChallenge, Optional.empty());
+        }
+    }
+
+    /**
+     * Session/user-info reserved-endpoint settings (fold). Configures the curated
+     * identity view the gateway serves to the browser, capped by an operator-owned
+     * claim allowlist whose secure default is closed: an empty {@code allowedClaims}
+     * discloses nothing, so the operator — never the browser client — widens
+     * disclosure.
+     *
+     * @param path          the gateway-served user-info path, empty when omitted
+     * @param allowedClaims the operator claim allowlist; empty is the secure closed
+     *                      default that discloses nothing
+     * @param defaultView   the curated default-view claim selector returned when the
+     *                      caller requests no explicit claims; every entry must lie
+     *                      within {@code allowedClaims}
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    @Builder
+    public record UserInfo(Optional<String> path, List<String> allowedClaims, List<String> defaultView) {
+
+        /**
+         * Canonical constructor defensively copying the claim lists and normalizing an
+         * absent path to {@link Optional#empty()}.
+         */
+        public UserInfo {
+            path = Objects.requireNonNullElse(path, Optional.empty());
+            allowedClaims = allowedClaims == null ? List.of() : List.copyOf(allowedClaims);
+            defaultView = defaultView == null ? List.of() : List.copyOf(defaultView);
+        }
+    }
+
+    /**
+     * Login-initiation reserved-path settings (fold). Mirrors the {@link Logout}
+     * shape so the login-initiation endpoint reads as {@code oidc.login.path}.
+     *
+     * @param path the gateway-served login-initiation path, empty when omitted
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    @Builder
+    public record Login(Optional<String> path) {
+
+        /**
+         * Canonical constructor normalizing an absent path to {@link Optional#empty()}.
+         */
+        public Login {
+            path = Objects.requireNonNullElse(path, Optional.empty());
         }
     }
 }

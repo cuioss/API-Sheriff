@@ -252,6 +252,10 @@
                 "leeway_seconds": { "type": "integer" },
                 "on_failure": { "type": "string", "enum": ["reauthenticate", "reject"] }
               }
+            },
+            "max_sessions": {
+              "type": "integer",
+              "description": "Server-mode upper bound on concurrently stored sessions — a DoS guard on the in-memory store. Creating a session beyond the bound is refused fail-closed."
             }
           }
         },
@@ -261,6 +265,32 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "honor_upstream_challenge": { "type": "boolean" }
+          }
+        },
+        "user_info": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Session/user-info reserved-endpoint settings (fold). The curated identity view the gateway serves to the browser, capped by an operator-owned claim allowlist whose secure default is closed: an empty allowed_claims discloses nothing.",
+          "properties": {
+            "path": { "type": "string" },
+            "allowed_claims": {
+              "type": "array",
+              "description": "Operator claim allowlist; empty is the secure closed default that discloses nothing. The operator — never the browser client — widens disclosure.",
+              "items": { "type": "string" }
+            },
+            "default_view": {
+              "type": "array",
+              "description": "Curated default-view claim selector returned when the caller requests no explicit claims; every entry must lie within allowed_claims.",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "login": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Login-initiation reserved-path settings (fold). Mirrors the logout shape so the login-initiation endpoint reads as oidc.login.path.",
+          "properties": {
+            "path": { "type": "string" }
           }
         }
       }
