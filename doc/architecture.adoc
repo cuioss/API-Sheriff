@@ -509,6 +509,34 @@ container/native runtime is the JDK 25 line). The CI build/test matrix additiona
 the next GA release (Java 26, then 27 at GA) as a forward-compatibility guard. Java 21 is not a
 target for this project.
 
+[CAUTION]
+.Never drive inbound-socket I/O from the request's virtual thread
+====
+The virtual thread runs the *pipeline logic*; the request's own *event loop* owns the inbound
+socket. Any operation on the inbound Vert.x connection -- reading the request body, `pause()`
+/ `resume()`, writing the response, the WebSocket upgrade (`toWebSocket()`) -- MUST run on that
+event loop, never inline on the per-request virtual thread.
+
+* *Writing the response* from the pipeline: marshal it with
+  `ctx.vertx().runOnContext(v -> ...)` (every renderer in `GatewayEdgeRoute` does this; the sole
+  exception, `reject(...)`, is called only from the event loop and so needs no hop).
+* *Reading a body the gateway itself consumes* (the `response_mode=form_post` callback and
+  back-channel logout): read it on the event loop *before* the virtual-thread hop, then dispatch
+  with the buffered bytes -- see `GatewayEdgeRoute#readReservedBodyThenDispatch`. A proxied body
+  is never buffered; it streams on the client's event loop (ADR-0008).
+
+The anti-pattern that this rule forbids: pausing the inbound stream, hopping to the virtual
+thread, then draining the paused body from that virtual thread -- e.g. blocking on
+`request.body().toCompletionStage().get()` or re-arming the stream via a captured context and
+`runOnContext`. It *appears* to work on a multi-core dev box but hits its read deadline under
+CPU contention (a 1--2-core CI runner, or a 1--2 CPU cgroup limit), because the paused read is
+re-armed across the event-loop/virtual-thread boundary instead of on the connection's own event
+loop. The failure signature is a body-read timeout surfacing as a downstream 400 (a
+form_post callback rejected "missing state"). This is a threading defect, not a test flake:
+reproduce it locally by pinning the app container's CPU (`docker update --cpus 1 <container>`)
+and running the integration suite against the running stack.
+====
+
 [[_performance_object_reuse]]
 == Performance: Boot-Time Assembly and Object Reuse
 
