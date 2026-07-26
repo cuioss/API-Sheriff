@@ -7,4 +7,11 @@ scrape_configs:
     static_configs:
       - targets: ['api-sheriff:9000']
     metrics_path: '/q/metrics'
-    scheme: http
+    # The management interface is HTTPS-only (Quarkus' management config has a single port, so
+    # activating TLS converts 9000 itself). Without the scheme switch Prometheus silently stops
+    # scraping and the benchmark artifacts would be emitted with missing metrics rather than
+    # failing loudly.
+    scheme: https
+    tls_config:
+      # The stack serves the self-signed localhost bundle mounted into every service.
+      insecure_skip_verify: true
