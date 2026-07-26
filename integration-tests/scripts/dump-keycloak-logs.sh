@@ -38,6 +38,18 @@ echo "🚀 Dumping Keycloak container logs..."
 echo "📦 Keycloak container: $KEYCLOAK_CONTAINER_NAME"
 echo "📝 Output file: $KEYCLOAK_LOG_FILE_PATH"
 
+# Best-effort dump of the api-sheriff app containers into failsafe-reports (uploaded as a CI
+# artifact) so a TEST failure — not just a startup failure — is diagnosable from the app's stdout.
+# Never fail the build on a dump problem.
+FAILSAFE_DIR="${TARGET_ABS_PATH}/failsafe-reports"
+mkdir -p "$FAILSAFE_DIR" || true
+for app in integration-tests-api-sheriff-1 integration-tests-api-sheriff-mtls-1; do
+    if docker ps -a --format "{{.Names}}" | grep -q "^${app}$"; then
+        echo "📥 Dumping app logs: ${app} -> ${FAILSAFE_DIR}/${app}.log"
+        docker logs "$app" > "${FAILSAFE_DIR}/${app}.log" 2>&1 || true
+    fi
+done
+
 # Check if container exists and is running
 if ! docker ps --format "{{.Names}}" | grep -q "^${KEYCLOAK_CONTAINER_NAME}$"; then
     if docker ps -a --format "{{.Names}}" | grep -q "^${KEYCLOAK_CONTAINER_NAME}$"; then
