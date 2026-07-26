@@ -280,9 +280,14 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record ReservedHttpRequest(String rawQuery, @Nullable String cookieHeader,
-            @Nullable String claimsParam, @Nullable String returnUrlParam, @Nullable String stateParam,
-            @Nullable String rawFormBody, String httpMethod) {
+    public record ReservedHttpRequest(String rawQuery, @Nullable
+            String cookieHeader,
+    @Nullable
+    String claimsParam, @Nullable
+            String returnUrlParam, @Nullable
+            String stateParam,
+    @Nullable
+    String rawFormBody, String httpMethod) {
 
         /**
          * Canonical constructor normalizing an absent raw query to the empty string and an absent HTTP
