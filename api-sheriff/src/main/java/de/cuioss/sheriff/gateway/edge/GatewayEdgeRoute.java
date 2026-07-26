@@ -26,13 +26,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -85,7 +82,6 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
-import io.vertx.core.Context;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -122,7 +118,9 @@ import org.jspecify.annotations.Nullable;
  * last} so management / health routes keep working. Each request is admitted under a bounded
  * {@linkplain EdgeHardeningOptions#admissionCap() admission cap} <em>before</em> a virtual thread is
  * dispatched (a flood is rejected {@code 503} rather than spawning unbounded virtual threads), then
- * the request stream is paused and the whole pipeline runs on a virtual thread:
+ * the request stream is paused and the whole pipeline runs on a virtual thread (a reserved POST path —
+ * the form_post callback and back-channel logout — instead has its small body read on the event loop
+ * first, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
  *   <li>stage 0 — response-header preparation + CORS preflight (short-circuits a preflight here);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
@@ -167,10 +165,12 @@ public class GatewayEdgeRoute {
 
     /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
     private static final String ROUTE_KEY = "sheriff.route";
-    /** Stashes the request's event-loop {@link Context}, captured in {@link #handle} before the pause,
-     * so a reserved-path body read on the virtual thread can re-arm and drain the paused request stream
-     * on its own event loop (see {@link #readFormBody}). */
-    private static final String REQUEST_CONTEXT_KEY = "sheriff.reqctx";
+    /** Holds the fully-read {@code application/x-www-form-urlencoded} body of a reserved POST path
+     * (form_post callback / back-channel logout), buffered on the event loop in {@link #handle} before
+     * the virtual-thread dispatch so the handler never has to re-arm a paused stream. Left unset on a
+     * read failure or timeout, so {@link #readFormBody} reads {@code null} and the receiver fails closed
+     * to {@code 400}. */
+    private static final String RESERVED_BODY_KEY = "sheriff.reservedbody";
 
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
@@ -341,11 +341,75 @@ public class GatewayEdgeRoute {
             releaseAdmission(admissionReleased);
             recordRequestMetrics(ctx, startNanos);
         });
-        // Capture the request's event-loop context BEFORE pausing (handle() runs on that context). A
-        // reserved POST body read happens later on a virtual thread, where re-arming the paused request
-        // stream must be marshalled back onto this same event loop — see readFormBody().
-        ctx.put(REQUEST_CONTEXT_KEY, ctx.vertx().getOrCreateContext());
-        ctx.request().pause();
+        if (needsReservedBodyRead(ctx)) {
+            // A reserved POST (form_post callback / back-channel logout) is dispatched on a virtual
+            // thread that cannot reliably re-arm a paused request stream. Read the small, gateway-
+            // terminated body here on its own event loop — the natural Vert.x path — under a bounded
+            // deadline, stash it, then dispatch. This avoids any paused-stream / cross-thread resume.
+            readReservedBodyThenDispatch(ctx, admissionReleased);
+        } else {
+            ctx.request().pause();
+            dispatchProcessing(ctx, admissionReleased);
+        }
+    }
+
+    /**
+     * @return {@code true} when the request is a reserved POST path whose {@code x-www-form-urlencoded}
+     *         body a handler consumes (the form_post callback and back-channel logout). Matched on the
+     *         raw path against the reserved registry's exact-match set, so only an exact clean reserved
+     *         path (raw == canonical) triggers the eager body read; every other request pauses as before.
+     */
+    private boolean needsReservedBodyRead(RoutingContext ctx) {
+        if (!"POST".equalsIgnoreCase(ctx.request().method().name())) {
+            return false;
+        }
+        String host = ctx.request().authority() != null ? ctx.request().authority().host() : ctx.request().host();
+        return reservedPathRegistry.match(host, ctx.request().path())
+                .filter(kind -> kind == ReservedEndpoint.CALLBACK || kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
+                .isPresent();
+    }
+
+    /**
+     * Reads the reserved-POST body on the event loop under a bounded deadline, stashes it (or the
+     * {@link #RESERVED_BODY_FAILED} sentinel on failure/timeout), then dispatches processing exactly
+     * once. The request is NOT paused: {@code body()} drains the stream on its own event loop.
+     */
+    private void readReservedBodyThenDispatch(RoutingContext ctx, AtomicBoolean admissionReleased) {
+        AtomicBoolean bodyDone = new AtomicBoolean();
+        long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS), id -> {
+            if (bodyDone.compareAndSet(false, true)) {
+                // The body did not arrive within the deadline — leave RESERVED_BODY_KEY unset so the
+                // receiver fails closed to 400 rather than pinning on a body that may never arrive.
+                LOGGER.debug("Reserved form body read timed out after %s s — failing closed",
+                        BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS);
+                dispatchProcessing(ctx, admissionReleased);
+            }
+        });
+        HttpServerRequest request = ctx.request();
+        request.body().onComplete(result -> {
+            if (bodyDone.compareAndSet(false, true)) {
+                ctx.vertx().cancelTimer(timer);
+                if (result.succeeded() && result.result() != null) {
+                    ctx.put(RESERVED_BODY_KEY, result.result());
+                } else {
+                    // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
+                    LOGGER.debug(result.cause(), "Reserved form body read failed — failing closed");
+                }
+                dispatchProcessing(ctx, admissionReleased);
+            }
+        });
+        // body() registers the collector but the inbound request stream arrives in fetch/paused mode;
+        // resume() (on this event loop) re-arms it so the buffered body is delivered. Reading fully
+        // asynchronously here — with no virtual-thread .get() blocking on a contended event loop —
+        // is what makes this reliable under constrained CPU (the failure mode that flaked in CI).
+        request.resume();
+    }
+
+    /**
+     * Hands the request to the virtual-thread pipeline, rolling admission back and failing {@code 503}
+     * if the executor refuses the dispatch (a shutdown race) so the response always ends.
+     */
+    private void dispatchProcessing(RoutingContext ctx, AtomicBoolean admissionReleased) {
         try {
             virtualThreadExecutor.execute(() -> process(ctx));
         } catch (RejectedExecutionException rejected) {
@@ -578,58 +642,15 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Reads the raw {@code application/x-www-form-urlencoded} body of a reserved POST path (the OIDC
-     * {@code response_mode=form_post} callback and back-channel logout) on the virtual thread. A read
-     * failure yields {@code null}, which the receiver rejects {@code 400} — the fail-
-     * closed default (a body the gateway could not read is not an accepted logout token).
+     * Returns the raw {@code application/x-www-form-urlencoded} body of a reserved POST path (the OIDC
+     * {@code response_mode=form_post} callback and back-channel logout), buffered on the event loop in
+     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout stashed the
+     * {@link #RESERVED_BODY_FAILED} sentinel, so this returns {@code null} — the fail-closed default a
+     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token).
      */
     private static @Nullable String readFormBody(RoutingContext ctx) {
-        // The inbound request was paused on its event loop in handle() before this virtual-thread
-        // dispatch. Vert.x's request().body() attaches its collector and resumes, but calling it from a
-        // virtual thread does NOT re-arm the explicitly-paused stream — the read then stalls until the
-        // deadline and the body is lost. So marshal the body().resume() back onto the request's own
-        // event-loop context (captured in handle()); the collector then drains the buffered body and
-        // completes the holder, which this virtual thread awaits under a bounded deadline.
-        HttpServerRequest request = ctx.request();
-        Context requestContext = ctx.get(REQUEST_CONTEXT_KEY);
-        CompletableFuture<@Nullable Buffer> holder = new CompletableFuture<>();
-        Runnable read = () -> {
-            request.body().onComplete(result -> {
-                if (result.succeeded()) {
-                    holder.complete(result.result());
-                } else {
-                    holder.completeExceptionally(result.cause());
-                }
-            });
-            // body() attaches the collector but does NOT re-arm an explicitly-paused stream; resume it
-            // here (on the request's event loop) so the buffered body is delivered — exactly what the
-            // proxy path's pipeTo(send) does for a streamed upstream body.
-            request.resume();
-        };
-        if (requestContext != null) {
-            requestContext.runOnContext(v -> read.run());
-        } else {
-            read.run();
-        }
-        // The catch is a deliberate boundary: a body-read failure must degrade to a rejected request
-        // rather than escape onto the request path, so the null return drives the receiver's 400.
-        // cui-rewrite:disable InvalidExceptionUsageRecipe
-        try {
-            Buffer body = holder.get(BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            return body == null ? null : body.toString(StandardCharsets.UTF_8);
-        } catch (InterruptedException _) {
-            Thread.currentThread().interrupt();
-            return null;
-        } catch (ExecutionException failure) {
-            LOGGER.debug(failure, "Reserved form body read failed: %s", failure.getMessage());
-            return null;
-        } catch (TimeoutException timeout) {
-            // A slow/stalled chunked body exceeded the read deadline — fail closed to a rejected 400
-            // rather than pinning the handler thread waiting for a body that may never arrive.
-            LOGGER.debug(timeout, "Reserved form body read timed out after %s s — rejected",
-                    BACKCHANNEL_BODY_READ_TIMEOUT_SECONDS);
-            return null;
-        }
+        Buffer body = ctx.get(RESERVED_BODY_KEY);
+        return body == null ? null : body.toString(StandardCharsets.UTF_8);
     }
 
     private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
