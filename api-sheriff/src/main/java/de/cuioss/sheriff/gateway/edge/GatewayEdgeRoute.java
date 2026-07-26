@@ -261,8 +261,16 @@ public class GatewayEdgeRoute {
                 GatewayEdgeRoute::assetSourceFor);
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
+        // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
+        // consulted in process() ahead of route selection, so a proxy route such as
+        // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
+        // global oidc block declares a redirect_uri. Built before basicChecksStage so the latter can
+        // reuse the same match to exempt gateway-terminated reserved params from the url-parameter
+        // pipeline (see BasicChecksStage — reserved handlers self-validate their own params).
+        this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
-        this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter);
+        this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
+                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent());
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
@@ -286,12 +294,6 @@ public class GatewayEdgeRoute {
         // security-filter counts surface as sheriff_security_events_total, completing the fixed
         // five-meter contract alongside the request/duration/error/upstream meters recorded above.
         sheriffMetrics.bindSecurityEventCounter(securityEventCounter);
-
-        // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
-        // consulted in process() ahead of route selection, so a proxy route such as
-        // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
-        // global oidc block declares a redirect_uri.
-        this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
     }
 
     /**

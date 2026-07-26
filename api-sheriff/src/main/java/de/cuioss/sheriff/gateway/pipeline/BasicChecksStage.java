@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.pipeline;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BiPredicate;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -47,15 +48,25 @@ public final class BasicChecksStage {
 
     private final SecurityConfiguration configuration;
     private final PipelineFactory.PipelineSet pipelines;
+    private final BiPredicate<String, String> reservedPathMatcher;
 
     /**
-     * @param configuration the gateway's default inbound validation policy
-     * @param eventCounter  the shared cui-http security event counter (never a local instance)
+     * @param configuration      the gateway's default inbound validation policy
+     * @param eventCounter       the shared cui-http security event counter (never a local instance)
+     * @param reservedPathMatcher predicate {@code (host, canonicalPath) -> isReserved}: a matched
+     *                           reserved gateway path is terminated at the gateway (never proxied) and
+     *                           its query params are validated by the reserved handler itself, so the
+     *                           url-parameter value pipeline — an anti-injection defense for params
+     *                           forwarded to an upstream — is not applied to it (a same-origin
+     *                           {@code return_to} path legitimately carries {@code /}, which the
+     *                           pipeline would otherwise reject)
      */
-    public BasicChecksStage(SecurityConfiguration configuration, SecurityEventCounter eventCounter) {
+    public BasicChecksStage(SecurityConfiguration configuration, SecurityEventCounter eventCounter,
+            BiPredicate<String, String> reservedPathMatcher) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         this.pipelines = PipelineFactory.createCommonPipelines(configuration,
                 Objects.requireNonNull(eventCounter, "eventCounter"));
+        this.reservedPathMatcher = Objects.requireNonNull(reservedPathMatcher, "reservedPathMatcher");
     }
 
     /**
@@ -70,9 +81,16 @@ public final class BasicChecksStage {
         Objects.requireNonNull(request, "request");
         enforceCollectionLimits(request);
         String canonical = validatePath(request.requestPath());
-        validateParameters(request.queryParameters());
-        validateHeaders(request.headers());
         request.canonicalPath(canonical);
+        // A gateway-terminated reserved path (callback/login/logout/userinfo/back-channel) self-validates
+        // its own params in its handler; the generic url-parameter value pipeline (an anti-injection
+        // defense for upstream-forwarded params) is not applied to it, so a legitimate same-origin
+        // return_to path carrying '/' is not rejected. The param-count cap, path pipeline, and header
+        // pipeline above/below still apply.
+        if (!reservedPathMatcher.test(request.host(), canonical)) {
+            validateParameters(request.queryParameters());
+        }
+        validateHeaders(request.headers());
     }
 
     private void enforceCollectionLimits(PipelineRequest request) {

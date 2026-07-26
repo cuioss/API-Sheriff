@@ -58,9 +58,9 @@ class BffUserInfoIT extends BaseIntegrationTest {
                 .statusCode(200)
                 .extract();
 
-        assertEquals("integration-user", response.path("preferred_username"),
+        assertEquals("integration-user", response.path("claims.preferred_username"),
                 "the curated default view must disclose the session user's preferred_username");
-        assertNull(response.path("client_secret"),
+        assertNull(response.path("claims.client_secret"),
                 "the fold must never disclose a claim outside the operator allowlist");
     }
 }
