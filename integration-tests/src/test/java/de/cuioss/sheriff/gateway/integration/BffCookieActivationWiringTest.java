@@ -164,7 +164,7 @@ class BffCookieActivationWiringTest {
         // here is a hard startup failure rather than a silent fallback.
         assertTrue(suppliesKey,
                 "the cookie instance must supply SESSION_ENCRYPTION_KEY for the gateway.yaml reference");
-        assertFalse(environment.stream().anyMatch(entry -> entry.equals(SEALING_KEY_VAR)),
+        assertFalse(environment.stream().anyMatch(entry -> SEALING_KEY_VAR.equals(entry)),
                 "SESSION_ENCRYPTION_KEY must carry a value — a blank key cannot seal a session");
     }
 

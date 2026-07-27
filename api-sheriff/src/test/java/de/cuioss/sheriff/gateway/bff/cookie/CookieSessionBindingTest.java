@@ -25,9 +25,9 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
-
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;

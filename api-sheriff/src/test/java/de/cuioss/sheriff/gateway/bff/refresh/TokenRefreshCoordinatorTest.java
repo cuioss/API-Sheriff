@@ -34,10 +34,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
-
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+
 
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;

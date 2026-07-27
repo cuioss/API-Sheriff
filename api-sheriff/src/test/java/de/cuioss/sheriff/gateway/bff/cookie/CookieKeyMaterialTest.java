@@ -27,7 +27,6 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
 
-import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -81,7 +80,7 @@ class CookieKeyMaterialTest {
 
         @Test
         @DisplayName("Should carry a key sealed before the rotation over into the rotating material")
-        void shouldAcceptPreviousKey() throws CookieSizeBudgetExceededException {
+        void shouldAcceptPreviousKey() throws Exception {
             // Before the rotation the retired key was THE key, so it sealed under its own id.
             CookieKeyMaterial beforeRotation =
                     CookieKeyMaterial.resolve(Optional.of(PREVIOUS_KEY_B64), Optional.empty());
@@ -93,7 +92,7 @@ class CookieKeyMaterialTest {
 
             assertTrue(rotating.hasPreviousKey());
             assertEquals(Optional.of(payload()), rotatingCodec.unseal(sealedBeforeRotation)
-                    .map(SealedSessionCookieCodec.Unsealed::payload),
+                            .map(SealedSessionCookieCodec.Unsealed::payload),
                     "the pre-rotation cookie still unseals — the key id follows the key, not its position");
             assertTrue(rotatingCodec.unseal(sealedBeforeRotation).orElseThrow().sealedWithPreviousKey(),
                     "and is flagged as the retired generation, so its next write rolls it over");
@@ -105,7 +104,7 @@ class CookieKeyMaterialTest {
 
         @Test
         @DisplayName("Should survive a round trip through the codec it builds")
-        void shouldRoundTripThroughItsCodec() throws CookieSizeBudgetExceededException {
+        void shouldRoundTripThroughItsCodec() throws Exception {
             SealedSessionCookieCodec codec = CookieKeyMaterial
                     .resolve(Optional.of(CURRENT_KEY_B64), Optional.empty())
                     .codec(COOKIE_NAME, TTL);
@@ -198,7 +197,7 @@ class CookieKeyMaterialTest {
 
         @Test
         @DisplayName("Should generate a distinct key per boot, so a restart drops every session")
-        void shouldGenerateADistinctKeyPerBoot() throws CookieSizeBudgetExceededException {
+        void shouldGenerateADistinctKeyPerBoot() throws Exception {
             SealedSessionCookieCodec firstBoot =
                     CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL);
             SealedSessionCookieCodec secondBoot =

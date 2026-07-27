@@ -338,10 +338,10 @@ class GatewayEdgeRouteBffWiringTest {
                 throw new AssertionError("engine authorize must not be reached");
             }, pendingStore, bindingCodec, ORIGIN);
             BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
-                    rawToken -> {
-                        throw new AssertionError("engine verify must not be reached");
-                    },
-                    new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding),
+                            rawToken -> {
+                                throw new AssertionError("engine verify must not be reached");
+                            },
+                            new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding),
                     sessionBinding);
             UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionBinding,
                     new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),

@@ -23,10 +23,10 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
-
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;

@@ -27,9 +27,9 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
-
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+
 
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.Unsealed;
@@ -98,7 +98,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should unseal a sealed payload back to an equal payload")
-        void shouldRoundTrip() throws CookieSizeBudgetExceededException {
+        void shouldRoundTrip() throws Exception {
             SealedSessionPayload original = payload();
 
             String sealed = codec.seal(original);
@@ -110,7 +110,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should draw a fresh nonce per seal, so two seals of one payload differ")
-        void shouldUseAFreshNoncePerSeal() throws CookieSizeBudgetExceededException {
+        void shouldUseAFreshNoncePerSeal() throws Exception {
             SealedSessionPayload original = payload();
 
             String first = codec.seal(original);
@@ -123,7 +123,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should carry the version and key id in the first two bytes of the value")
-        void shouldCarryVersionAndKeyIdHeader() throws CookieSizeBudgetExceededException {
+        void shouldCarryVersionAndKeyIdHeader() throws Exception {
             byte[] raw = Base64.getUrlDecoder().decode(codec.seal(payload()));
 
             assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, raw[0]);
@@ -137,7 +137,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject a flipped ciphertext byte as no session")
-        void shouldRejectFlippedCiphertextByte() throws CookieSizeBudgetExceededException {
+        void shouldRejectFlippedCiphertextByte() throws Exception {
             String sealed = codec.seal(payload());
             // Byte 14 is the first ciphertext byte: version(1) + key-id(1) + nonce(12).
             String tampered = flipByteAt(sealed, 14);
@@ -147,7 +147,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject a flipped nonce byte as no session")
-        void shouldRejectFlippedNonceByte() throws CookieSizeBudgetExceededException {
+        void shouldRejectFlippedNonceByte() throws Exception {
             String sealed = codec.seal(payload());
 
             assertTrue(codec.unseal(flipByteAt(sealed, 2)).isEmpty(), "a tampered nonce fails the tag check");
@@ -155,7 +155,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject a flipped tag byte as no session")
-        void shouldRejectFlippedTagByte() throws CookieSizeBudgetExceededException {
+        void shouldRejectFlippedTagByte() throws Exception {
             String sealed = codec.seal(payload());
             int lastByte = Base64.getUrlDecoder().decode(sealed).length - 1;
 
@@ -164,7 +164,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject a value sealed for a different cookie name (AAD binding)")
-        void shouldRejectCookieNameMismatch() throws CookieSizeBudgetExceededException {
+        void shouldRejectCookieNameMismatch() throws Exception {
             String sealed = codec.seal(payload());
             SealedSessionCookieCodec otherName = new SealedSessionCookieCodec(OTHER_COOKIE_NAME, TTL, key, KEY_ID);
 
@@ -174,7 +174,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject an unknown format version")
-        void shouldRejectUnknownVersion() throws CookieSizeBudgetExceededException {
+        void shouldRejectUnknownVersion() throws Exception {
             String sealed = codec.seal(payload());
             byte[] raw = Base64.getUrlDecoder().decode(sealed);
             raw[0] = (byte) (SealedSessionCookieCodec.FORMAT_VERSION + 1);
@@ -185,7 +185,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject an unknown key id without trying the key it does hold")
-        void shouldRejectUnknownKeyId() throws CookieSizeBudgetExceededException {
+        void shouldRejectUnknownKeyId() throws Exception {
             SealedSessionCookieCodec otherKeyId = new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, OTHER_KEY_ID);
             String sealedUnderOtherId = otherKeyId.seal(payload());
 
@@ -195,7 +195,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should reject a value sealed under a different key")
-        void shouldRejectForeignKey() throws CookieSizeBudgetExceededException {
+        void shouldRejectForeignKey() throws Exception {
             SealedSessionCookieCodec foreign =
                     new SealedSessionCookieCodec(COOKIE_NAME, TTL, aesKey((byte) 0x22), KEY_ID);
             String sealedUnderForeignKey = foreign.seal(payload());
@@ -231,7 +231,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should accept a value sealed under the previous key and flag it for re-seal")
-        void shouldAcceptPreviousKeyValue() throws CookieSizeBudgetExceededException {
+        void shouldAcceptPreviousKeyValue() throws Exception {
             SealedSessionPayload original = payload();
             String sealedUnderPreviousKey = retiredCodec.seal(original);
 
@@ -243,7 +243,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should never seal under the previous key id, so a rollover is one-way")
-        void shouldNeverSealWithThePreviousKey() throws CookieSizeBudgetExceededException {
+        void shouldNeverSealWithThePreviousKey() throws Exception {
             byte[] raw = Base64.getUrlDecoder().decode(rotating.seal(payload()));
 
             assertEquals(KEY_ID, raw[1], "seal always stamps the current key id");
@@ -252,7 +252,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should still flag a current-key value as not sealed with the previous key")
-        void shouldNotFlagCurrentKeyValue() throws CookieSizeBudgetExceededException {
+        void shouldNotFlagCurrentKeyValue() throws Exception {
             Optional<Unsealed> unsealed = rotating.unseal(rotating.seal(payload()));
 
             assertTrue(unsealed.isPresent());
@@ -261,7 +261,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should treat a previous-key value as no session once the previous key is withdrawn")
-        void shouldRejectPreviousKeyValueAfterWithdrawal() throws CookieSizeBudgetExceededException {
+        void shouldRejectPreviousKeyValueAfterWithdrawal() throws Exception {
             String sealedUnderPreviousKey = retiredCodec.seal(payload());
             SealedSessionCookieCodec currentKeyOnly = new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, KEY_ID);
 
@@ -311,7 +311,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should emit the landed hardening attributes")
-        void shouldEmitHardenedAttributes() throws CookieSizeBudgetExceededException {
+        void shouldEmitHardenedAttributes() throws Exception {
             String header = codec.toSetCookieHeader(codec.seal(payload()), LOGIN, LOGIN);
 
             assertTrue(header.startsWith(COOKIE_NAME + "="), header);
@@ -323,7 +323,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should set Max-Age to the remaining lifetime, so a re-seal never extends the session")
-        void shouldSetMaxAgeToRemainingLifetime() throws CookieSizeBudgetExceededException {
+        void shouldSetMaxAgeToRemainingLifetime() throws Exception {
             String sealed = codec.seal(payload());
             Instant halfway = LOGIN.plus(TTL.dividedBy(2));
 
@@ -337,7 +337,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should clamp Max-Age at zero past the absolute deadline")
-        void shouldClampMaxAgeAtZero() throws CookieSizeBudgetExceededException {
+        void shouldClampMaxAgeAtZero() throws Exception {
             String header = codec.toSetCookieHeader(codec.seal(payload()), LOGIN, LOGIN.plus(TTL).plusSeconds(60));
 
             assertTrue(header.contains("Max-Age=0"), header);
@@ -381,7 +381,7 @@ class SealedSessionCookieCodecTest {
 
         @Test
         @DisplayName("Should keep token material out of the emitted Set-Cookie header")
-        void shouldNotLeakTokensIntoTheHeader() throws CookieSizeBudgetExceededException {
+        void shouldNotLeakTokensIntoTheHeader() throws Exception {
             String header = codec.toSetCookieHeader(codec.seal(payload()), LOGIN, LOGIN);
 
             assertFalse(header.contains(ACCESS_TOKEN), "the access token is sealed, never emitted in the clear");
