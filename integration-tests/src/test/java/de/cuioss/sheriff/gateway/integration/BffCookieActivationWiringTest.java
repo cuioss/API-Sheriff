@@ -62,8 +62,14 @@ class BffCookieActivationWiringTest {
     private static final Path COOKIE_GATEWAY = DOCKER.resolve("sheriff-config-cookie/gateway.yaml");
 
     private static final String COOKIE_SERVICE = "api-sheriff-cookie";
+
+    /** The key-sharing peer instance {@code BffCookieStatelessnessIT} replays a sealed cookie against. */
+    private static final String COOKIE_PEER_SERVICE = "api-sheriff-cookie-2";
+
     private static final String COOKIE_OVERLAY_MOUNT =
             "./src/main/docker/sheriff-config-cookie/gateway.yaml:/app/sheriff-config/gateway.yaml:ro";
+
+    private static final String SEALING_KEY_VAR = "SESSION_ENCRYPTION_KEY=";
 
     @Test
     @DisplayName("the cookie instance gateway.yaml declares session.mode cookie with no store")
@@ -152,14 +158,67 @@ class BffCookieActivationWiringTest {
         List<String> environment = environment(composeServices(), COOKIE_SERVICE);
 
         // Act — the variable the overlaid gateway.yaml's bare ${SESSION_ENCRYPTION_KEY} resolves to.
-        boolean suppliesKey = environment.stream().anyMatch(entry -> entry.startsWith("SESSION_ENCRYPTION_KEY="));
+        boolean suppliesKey = environment.stream().anyMatch(entry -> entry.startsWith(SEALING_KEY_VAR));
 
         // Assert — a bare reference naming an undefined variable aborts the boot, so an absent value
         // here is a hard startup failure rather than a silent fallback.
         assertTrue(suppliesKey,
                 "the cookie instance must supply SESSION_ENCRYPTION_KEY for the gateway.yaml reference");
-        assertFalse(environment.stream().anyMatch(entry -> entry.equals("SESSION_ENCRYPTION_KEY=")),
+        assertFalse(environment.stream().anyMatch(entry -> entry.equals(SEALING_KEY_VAR)),
                 "SESSION_ENCRYPTION_KEY must carry a value — a blank key cannot seal a session");
+    }
+
+    @Test
+    @DisplayName("docker-compose defines the key-sharing peer instance backing the statelessness proof")
+    void composeDefinesThePeerInstance() throws Exception {
+        // Arrange
+        Map<String, Object> services = composeServices();
+        Object peerService = services.get(COOKIE_PEER_SERVICE);
+
+        // Assert — BffCookieStatelessnessIT replays a sealed cookie against a genuinely separate
+        // process on 10446; without the peer defined that suite would have no second instance and its
+        // proof would silently collapse back into a single-instance round trip.
+        assertNotNull(peerService, "the " + COOKIE_PEER_SERVICE + " peer instance must be defined");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> peer = (Map<String, Object>) peerService;
+
+        Object ports = peer.get("ports");
+        assertInstanceOf(List.class, ports, "the peer instance must publish ports");
+        assertTrue(((List<?>) ports).stream().map(String::valueOf).anyMatch(p -> p.startsWith("10446:")),
+                "the peer instance must publish host port 10446 so it is addressed without sticky routing");
+
+        Object volumes = peer.get("volumes");
+        assertInstanceOf(List.class, volumes, "the peer instance must declare volumes");
+        List<String> mounts = ((List<?>) volumes).stream().map(String::valueOf).toList();
+        assertTrue(mounts.contains(COOKIE_OVERLAY_MOUNT),
+                "the peer must overlay the SAME cookie gateway.yaml as the sealing instance, was: " + mounts);
+    }
+
+    @Test
+    @DisplayName("the two cookie instances share the identical sealing key and nothing else stateful")
+    void thePeerSharesTheIdenticalSealingKey() throws Exception {
+        // Arrange
+        Map<String, Object> services = composeServices();
+
+        // Act
+        String sealingKey = sealingKey(services, COOKIE_SERVICE);
+        String peerSealingKey = sealingKey(services, COOKIE_PEER_SERVICE);
+
+        // Assert — the shared key IS the experiment: it is the only state the two processes have in
+        // common, so a drifted value would turn the statelessness proof into an unexplained failure,
+        // and a shared session store would turn its success into a false pass.
+        assertEquals(sealingKey, peerSealingKey,
+                "both cookie instances must carry a byte-identical SESSION_ENCRYPTION_KEY");
+        assertFalse(sealingKey.isEmpty(), "the shared sealing key must carry a value");
+    }
+
+    private static String sealingKey(Map<String, Object> services, String service) {
+        return environment(services, service).stream()
+                .filter(entry -> entry.startsWith(SEALING_KEY_VAR))
+                .map(entry -> entry.substring(SEALING_KEY_VAR.length()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "the '" + service + "' service must supply " + SEALING_KEY_VAR));
     }
 
     @SuppressWarnings("unchecked")

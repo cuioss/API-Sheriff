@@ -445,6 +445,90 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # --- Variant 3, second instance: the peer that shares NOTHING but the sealing key ----------------
+  # A literal clone of api-sheriff-cookie above — same image, same overlaid cookie gateway.yaml, and
+  # the SAME SESSION_ENCRYPTION_KEY value — published on 10446 with its own management port 19003.
+  #
+  # It exists solely so BffCookieStatelessnessIT can land the proof as an actual two-instance fact
+  # rather than an inference: a session sealed by the instance on 10445 is replayed, with no sticky
+  # routing and no shared store, against this separate process on 10446 and is served. The two
+  # containers share the compose network and the mounted read-only config, and nothing else — no
+  # session store, no volume, no state — so the only thing that can make the replay succeed is the
+  # shared key unsealing a self-contained cookie.
+  #
+  # The overlay is mounted verbatim, so this instance's redirect_uri and CSRF trusted origin still
+  # name 10445. That is deliberate and correct: no login is ever driven against this instance. It
+  # only serves an already-sealed cookie on a steady-state GET, which is precisely the portability
+  # property under test. Giving it its own overlay would introduce a second cookie-mode descriptor
+  # to keep in lockstep for no gain.
+  api-sheriff-cookie-2:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    ports:
+      - "10446:8443"  # External test port for BffCookieStatelessnessIT's peer instance
+      - "19003:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      - LOG_FILE_PATH=/logs/quarkus-cookie-2.log
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19003 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness wait in start-integration-container.sh (https + -k for all) would hang.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      - OIDC_CLIENT_SECRET=integration-secret
+      # Byte-identical to api-sheriff-cookie's key. This equality IS the experiment: it is the only
+      # state the two instances share, so BffCookieActivationWiringTest asserts the two values match
+      # rather than merely that both are present.
+      - SESSION_ENCRYPTION_KEY=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then the SAME cookie-mode gateway.yaml overlay as api-sheriff-cookie.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-cookie/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
+    # gated host-side by start-integration-container.sh probing the published management port 19003.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.6.0
     ports:
