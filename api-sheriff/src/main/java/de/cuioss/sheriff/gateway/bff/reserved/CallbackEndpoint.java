@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -89,6 +90,7 @@ public final class CallbackEndpoint {
 
     private static final int BAD_REQUEST = 400;
     private static final int FORBIDDEN = 403;
+    private static final int INTERNAL_ERROR = 500;
     private static final int FOUND = 302;
 
     private static final String CLAIM_SID = "sid";
@@ -128,7 +130,9 @@ public final class CallbackEndpoint {
      *                      POST callback (never map-collapsed — BFF-13)
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now         the reference instant (TTL anchor for pending resolution and session expiry)
-     * @return the redirect outcome on success, or a {@code 400}/{@code 403} error outcome
+     * @return the redirect outcome on success, a {@code 400}/{@code 403} error outcome when the
+     *         callback is rejected, or a {@code 500} error outcome when the validated session could
+     *         not be bound (e.g. the sealed cookie-mode value exceeds the cookie-size budget)
      */
     public CallbackOutcome handle(String rawParameters, @Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(rawParameters, "rawParameters");
@@ -200,7 +204,20 @@ public final class CallbackEndpoint {
                 .acr(claim(idToken, CLAIM_ACR))
                 .authTime(claimEpochSeconds(idToken, CLAIM_AUTH_TIME))
                 .build();
-        SessionBinding.BoundSession bound = sessionBinding.bind(session, now);
+        SessionBinding.BoundSession bound;
+        try {
+            bound = sessionBinding.bind(session, now);
+        } catch (IllegalStateException bindFailure) {
+            // bind() is documented to throw when the binding cannot hold the session: the stateless
+            // cookie binding refuses a sealed value beyond the browser-safe cookie-size budget (a
+            // realistic outcome for a large ID token or claim set), and the server binding refuses at
+            // store capacity. The exchange itself succeeded and the caller did nothing wrong, so this
+            // is an honest gateway-side 500 rather than a 4xx — and it must not escape handle() as an
+            // unhandled exception. Only the binding's own bounded reason is logged; the session's
+            // token material never reaches the log or the response.
+            LOGGER.debug(bindFailure, "OIDC callback could not bind the new session — login not completed");
+            return CallbackOutcome.error(INTERNAL_ERROR);
+        }
 
         List<String> setCookies = new ArrayList<>(bound.setCookieHeaders());
         setCookies.add(bindingCookieCodec.toClearingSetCookieHeader());
@@ -220,7 +237,10 @@ public final class CallbackEndpoint {
         return claim(token, name).flatMap(raw -> {
             try {
                 return Optional.of(Instant.ofEpochSecond(Long.parseLong(raw.trim())));
-            } catch (NumberFormatException _) {
+            } catch (NumberFormatException | DateTimeException _) {
+                // An IdP-supplied auth_time is external input: it may not parse as a long, and a value
+                // that does parse can still exceed Instant's range (DateTimeException is NOT a
+                // NumberFormatException). Either way the claim is simply absent, never a 500.
                 return Optional.empty();
             }
         });
@@ -300,7 +320,7 @@ public final class CallbackEndpoint {
         /**
          * An error outcome carrying no redirect and no cookies.
          *
-         * @param status the {@code 4xx} status
+         * @param status the error status ({@code 400} / {@code 403} rejected, {@code 500} unbindable)
          * @return the error outcome
          */
         public static CallbackOutcome error(int status) {
