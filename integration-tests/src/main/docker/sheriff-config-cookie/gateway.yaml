@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the DEDICATED cookie-mode integration-test instance
+# (api-sheriff-cookie in docker-compose.yml). It is overlay-mounted on top of the shared
+# sheriff-config directory so it replaces ONLY gateway.yaml — the endpoints/ subdirectory and
+# topology.properties are shared with the primary instance, keeping the documents in lockstep
+# except for their oidc.session block. This mirrors the sheriff-config-mtls precedent exactly.
+#
+# This instance exists because the session mode is a property of the whole gateway: flipping the
+# primary instance to session.mode=cookie would change the binding under every landed server-mode
+# BFF IT. So Variant 3 (the stateless sealed-cookie session) is proven on this separate instance,
+# published on host port 10445, while the primary instance (10443) stays server-mode for the rest
+# of the suite — and BffCookieBackchannelDisabledIT asserts both contracts side by side.
+#
+# The anchors and token_validation block are a faithful copy of the primary gateway.yaml so the
+# shared endpoints/ resolve identically and the offline it-static JWKS issuer reaches readiness
+# without Keycloak. The ONLY intentional difference is the oidc.session block: mode cookie, an
+# encryption_key ${ENV_VAR} reference, and NO store (a stateless binding holds no server-side index).
+version: 1
+metadata:
+  config_version: "integration-test-cookie"
+allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+tls:
+  # No passthrough_sni on this instance: the SNI front never starts, so Quarkus terminates
+  # directly on the public port — the same simplification the mTLS instance makes.
+  alpn: ["h2", "http/1.1"]
+anchors:
+  api:
+    path_prefix: /proxy
+    type: proxy
+    access: public
+  bff:
+    path_prefix: /bff
+    type: proxy
+    access: public
+  # BFF session namespace exercised by the Bff*Cookie*IT suite. A require:session route lives here
+  # so an authenticated browser session mediates a bearer to the go-httpbin echo upstream. type: bff
+  # forces access: authenticated (ADR-0013), and the session floor is backed by the global oidc
+  # block below (ConfigValidator rejects a session floor with no oidc block). The reserved OIDC
+  # endpoints are carved out of the route table on the oidc host and live under /auth, disjoint
+  # from this /bff-session proxy prefix.
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+  graphql:
+    path_prefix: /graphql
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+    security_filter:
+      max_body_bytes: 67108864
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+  grpc:
+    path_prefix: /grpc
+    type: proxy
+    access: public
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+    # The cookie-mode BFF (oidc block below) validates the id/access tokens the 'integration' realm
+    # mints for the browser session. The gateway's shared @GatewayValidator TokenValidator is built
+    # from THIS token_validation block, so the integration issuer MUST be declared here or every
+    # mediated session token is rejected. Same container-internal iss the integration realm pins via
+    # frontendUrl https://keycloak:8443, reached over the shared api-sheriff network; the same narrow
+    # SSRF egress widening and self-signed trust profile the benchmark issuer uses.
+    - name: integration-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+# --- Cookie-mode BFF confidential-client block (Variant 3, BFF-Cookie-* integration suite) --------
+# Activates the cookie-mode BffRuntime (BffRuntimeProducer builds the active runtime for either
+# recognised session.mode — server or cookie — provided a redirect_uri is configured). Confidential
+# client: integration-client / integration-secret against the compose 'integration' realm, exactly
+# as the primary instance. OIDC discovery is lazy (first engine use), so boot needs no live IdP; the
+# browser reaches this instance on the published host port 10445, while the gateway reaches Keycloak
+# container-internally at keycloak:8443.
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  # Full browser-facing callback URL. Its host ('localhost') is the oidc host every reserved path
+  # binds to; its origin ('https://localhost:10445') is the gateway origin used for same-origin
+  # return-URL validation and the default CSRF trusted origin.
+  redirect_uri: https://localhost:10445/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10445/auth/logout/return
+    final_redirect: /
+    # Registered in cookie mode too: the endpoint's capability gate answers a deliberate 404 here
+    # (the stateless binding cannot honour IdP-driven sid/sub destruction), so the reserved path
+    # never falls through to the proxy route table. BffCookieBackchannelDisabledIT asserts that.
+    backchannel_path: /auth/backchannel
+  session:
+    # Variant 3: the sealed cookie IS the session. No store — a stateless binding holds no
+    # server-side index, which is exactly what makes the back-channel logout endpoint report
+    # UNSUPPORTED and answer 404.
+    mode: cookie
+    # The AES-256 sealing key as a bare ${ENV_VAR} reference (the D4 secrets rule refuses a
+    # literal). Supplying it — rather than letting the gateway generate one at startup — is what
+    # lets a second instance unseal a cookie this one sealed: the instances share only this key.
+    encryption_key: ${SESSION_ENCRYPTION_KEY}
+    ttl_seconds: 3600
+    refresh:
+      enabled: true
+      leeway_seconds: 30
+    csrf:
+      trusted_origins: ["https://localhost:10445"]
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub", "preferred_username", "email", "groups"]
+    default_view: ["sub", "preferred_username"]
+  login:
+    path: /auth/login
