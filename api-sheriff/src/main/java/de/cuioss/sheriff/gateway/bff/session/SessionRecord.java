@@ -24,20 +24,26 @@ import java.util.Optional;
 import lombok.Builder;
 
 /**
- * A single server-side session (D3, {@code mode: server}).
+ * A single authenticated session, as held by whichever {@link SessionBinding} is in force.
  * <p>
  * The record holds the mediated token material — the access token injected as
  * {@code Authorization: Bearer} on proxied requests, the optional refresh token, and the raw
  * ID token retained as the {@code id_token_hint} at logout — plus the session metadata
- * ({@code expiry}, {@code acr}, {@code auth_time}, {@code sid}, {@code sub}). The token material
- * <strong>never leaves the server</strong>: the browser only ever carries the opaque
- * {@link #sessionId()} in the session cookie, so {@link #toString()} redacts every credential
- * (the session id itself is a bearer credential) to keep tokens out of logs and stack traces.
+ * ({@code expiry}, {@code acr}, {@code auth_time}, {@code sid}, {@code sub}). The token material is
+ * <strong>never disclosed in the clear</strong>, so {@link #toString()} redacts every credential to
+ * keep tokens out of logs and stack traces.
  * <p>
- * {@link #sid()} and {@link #sub()} back the store's secondary index for O(1) back-channel
- * logout destruction.
+ * <strong>Session identity.</strong> {@link #sessionId()} is the one identity model the seam
+ * defines: a stable per-session identity every {@link SessionBinding} populates, and the key the
+ * refresh coordinator uses for single-flight coalescing. In server mode it is the opaque store key,
+ * which is also the session-cookie value; in a stateless mode it is a derived identity that is
+ * never emitted to the browser. It is redacted from {@link #toString()} either way, because in
+ * server mode it is itself a bearer credential.
+ * <p>
+ * {@link #sid()} and {@link #sub()} back a server-mode store's secondary index for O(1)
+ * back-channel logout destruction.
  *
- * @param sessionId    the opaque session id (store key and session-cookie value)
+ * @param sessionId    the stable per-session identity (see the identity model above)
  * @param accessToken  the mediated access token injected as the upstream bearer
  * @param refreshToken the refresh token, empty when the IdP granted none
  * @param idToken      the raw ID token retained for the logout {@code id_token_hint}
@@ -74,7 +80,8 @@ String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optio
     }
 
     /**
-     * Generates a 256-bit URL-safe opaque session id.
+     * Generates a 256-bit URL-safe opaque session id — the server-mode session identity, which is
+     * also the value carried in that mode's session cookie.
      *
      * @return the base64url (unpadded) encoding of 32 secure-random bytes
      */

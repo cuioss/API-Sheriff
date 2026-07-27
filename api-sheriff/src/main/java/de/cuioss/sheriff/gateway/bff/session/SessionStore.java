@@ -19,7 +19,13 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * The server-side session store contract (D3).
+ * The <strong>server-mode implementation detail</strong> behind {@link SessionBinding} (D3) — the
+ * keyed store {@link ServerSessionBinding} delegates to.
+ * <p>
+ * No BFF collaborator binds this contract directly any more: the stage, the refresh coordinator,
+ * and every reserved endpoint bind the mode-neutral {@link SessionBinding} seam, so a stateless
+ * variant that keeps no server-side session state is representable. This interface therefore
+ * describes only the server-mode storage semantics.
  * <p>
  * A session is created after a successful IdP login, resolved by its opaque id on every
  * subsequent request, and destroyed either directly (RP-initiated logout) or via the IdP's
@@ -34,7 +40,8 @@ import java.util.Optional;
 public interface SessionStore {
 
     /**
-     * Stores a freshly created session.
+     * Stores a session, upserting by its opaque id — re-creating an existing id replaces the record
+     * in place, which is how a rotated session is persisted without a destroy-then-create window.
      *
      * @param session the session to store
      * @throws IllegalStateException when the store is at its max-session capacity bound

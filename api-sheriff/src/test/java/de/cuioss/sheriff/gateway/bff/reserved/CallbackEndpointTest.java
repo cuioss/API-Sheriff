@@ -33,6 +33,8 @@ import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CallbackOutcome;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CodeExchange;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -71,6 +73,7 @@ class CallbackEndpointTest {
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
+    private SessionBinding sessionBinding;
     private CallbackEndpoint endpoint;
 
     private String state;
@@ -83,8 +86,8 @@ class CallbackEndpointTest {
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
-        endpoint = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec, sessionStore, sessionCodec,
-                SESSION_TTL);
+        sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
+        endpoint = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
 
         FlowContext flow = FlowContext.create("https://gw.example.com/auth/callback");
         state = flow.state();
@@ -204,8 +207,8 @@ class CallbackEndpointTest {
             CodeExchange failing = (context, params) -> {
                 throw new ClientProtocolException("token endpoint rejected the code");
             };
-            CallbackEndpoint failingEndpoint = new CallbackEndpoint(failing, pendingStore, bindingCodec, sessionStore,
-                    sessionCodec, SESSION_TTL);
+            CallbackEndpoint failingEndpoint = new CallbackEndpoint(failing, pendingStore, bindingCodec, sessionBinding,
+                    SESSION_TTL);
 
             CallbackOutcome outcome = failingEndpoint.handle("code=abc&state=" + state, bindingCookieHeader, T0);
 

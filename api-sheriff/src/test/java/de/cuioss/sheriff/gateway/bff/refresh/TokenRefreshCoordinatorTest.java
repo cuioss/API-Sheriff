@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -38,6 +39,9 @@ import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.AccessToken
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshExchange;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
@@ -74,11 +78,16 @@ class TokenRefreshCoordinatorTest {
     private static final String ROTATED_REFRESH = "rotated-refresh-token";
     private static final String ROTATED_ID = "rotated-id-token";
 
+    private static final String COOKIE_HEADER = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID;
+
     private InMemorySessionStore store;
+    private SessionBinding binding;
 
     @BeforeEach
     void setUp() {
         store = new InMemorySessionStore(16);
+        binding = new ServerSessionBinding(store,
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
     }
 
     private static SessionRecord session(String refreshToken) {
@@ -103,7 +112,7 @@ class TokenRefreshCoordinatorTest {
     }
 
     private TokenRefreshCoordinator coordinator(Instant accessExpiry, RefreshExchange exchange) {
-        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, store);
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding);
     }
 
     @Nested
@@ -121,7 +130,7 @@ class TokenRefreshCoordinatorTest {
                 return rotation();
             });
 
-            RefreshOutcome outcome = coordinator.refresh(live, NOW);
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(RefreshOutcome.Kind.CURRENT, outcome.kind());
             assertSame(live, outcome.session().orElseThrow(), "the same session is returned unchanged");
@@ -139,7 +148,7 @@ class TokenRefreshCoordinatorTest {
                 return rotation();
             });
 
-            RefreshOutcome outcome = coordinator.refresh(live, NOW);
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(RefreshOutcome.Kind.CURRENT, outcome.kind());
             assertEquals(0, calls.get(), "a session without a refresh token cannot be refreshed");
@@ -157,7 +166,7 @@ class TokenRefreshCoordinatorTest {
             store.create(live);
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
 
-            RefreshOutcome outcome = coordinator.refresh(live, NOW);
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
             SessionRecord rotated = outcome.session().orElseThrow();
@@ -179,7 +188,7 @@ class TokenRefreshCoordinatorTest {
                 return rotation();
             });
 
-            coordinator.refresh(live, NOW);
+            coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(1, calls.get());
             SessionRecord persisted = store.resolve(SESSION_ID, NOW).orElseThrow();
@@ -200,7 +209,7 @@ class TokenRefreshCoordinatorTest {
                 throw new ClientProtocolException("token endpoint rejected the refresh grant");
             });
 
-            RefreshOutcome outcome = coordinator.refresh(live, NOW);
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertTrue(outcome.isFailure());
             assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind());
@@ -217,7 +226,7 @@ class TokenRefreshCoordinatorTest {
                 throw new ClientProtocolException("refresh token family is revoked");
             });
 
-            RefreshOutcome outcome = coordinator.refresh(live, NOW);
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertTrue(outcome.isFailure(), "a revoked refresh-token family fails the refresh");
             assertTrue(store.resolve(SESSION_ID, NOW).isEmpty(), "a reused-token session is destroyed");
@@ -230,7 +239,7 @@ class TokenRefreshCoordinatorTest {
             // Deliberately NOT stored — models a session destroyed concurrently before the lead resolves it.
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
 
-            RefreshOutcome outcome = coordinator.refresh(live, NOW);
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertTrue(outcome.isFailure(), "a session absent from the store cannot be refreshed");
         }
@@ -257,9 +266,9 @@ class TokenRefreshCoordinatorTest {
 
             ExecutorService pool = Executors.newFixedThreadPool(2);
             try {
-                Future<RefreshOutcome> leader = pool.submit(() -> coordinator.refresh(live, NOW));
+                Future<RefreshOutcome> leader = pool.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
                 assertTrue(entered.await(2, TimeUnit.SECONDS), "the leader entered the engine refresh");
-                Future<RefreshOutcome> follower = pool.submit(() -> coordinator.refresh(live, NOW));
+                Future<RefreshOutcome> follower = pool.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
                 // Let the follower reach the in-flight join before the leader is released. There is no
                 // observable hook for a thread reaching CompletableFuture#join, so this best-effort
                 // ordering sleep cannot be made deterministic without an added dependency.
@@ -297,24 +306,25 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
 
             var session = session(CURRENT_REFRESH);
-            assertThrows(NullPointerException.class, () -> coordinator.refresh(null, NOW));
-            assertThrows(NullPointerException.class, () -> coordinator.refresh(session, null));
+            assertThrows(NullPointerException.class, () -> coordinator.refresh(null, COOKIE_HEADER, NOW));
+            assertThrows(NullPointerException.class, () -> coordinator.refresh(session, COOKIE_HEADER, null));
         }
 
         @Test
         @DisplayName("Should reject constructing a non-failed outcome without a session")
         void shouldRejectPresentContractViolation() {
             assertThrows(IllegalArgumentException.class,
-                    () -> new RefreshOutcome(RefreshOutcome.Kind.CURRENT, Optional.empty()));
+                    () -> new RefreshOutcome(RefreshOutcome.Kind.CURRENT, Optional.empty(), List.of()));
         }
 
         @Test
-        @DisplayName("Should expose an empty session on a failed outcome")
+        @DisplayName("Should expose an empty session and no cookies on a failed outcome")
         void failedOutcomeCarriesNoSession() {
             RefreshOutcome failed = RefreshOutcome.failed();
 
             assertTrue(failed.isFailure());
             assertTrue(failed.session().isEmpty());
+            assertTrue(failed.setCookieHeaders().isEmpty());
         }
     }
 }

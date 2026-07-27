@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,9 +28,8 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.CallbackParameters;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -74,10 +74,11 @@ import org.jspecify.annotations.Nullable;
  * runtime binds it to {@link AuthorizationCodeFlow#exchange}, so the engine owns the code
  * exchange, PKCE, and {@code state}/{@code nonce}/{@code iss} validation (fail-closed). The seam
  * keeps the endpoint decoupled from the confidential-client wiring (discovery metadata, client
- * authentication) and unit-testable without a live token endpoint. On success the endpoint creates
- * the server-side {@link SessionRecord}, sets the opaque {@code __Host-} session cookie, clears the
- * now-consumed binding cookie (single-use), and redirects the browser to the record's
- * same-origin-validated return URL.
+ * authentication) and unit-testable without a live token endpoint. On success the endpoint builds
+ * the {@link SessionRecord} and binds it to the browser through the mode-neutral
+ * {@link SessionBinding} seam — emitting whatever {@code Set-Cookie} that binding produces rather
+ * than building one itself — clears the now-consumed binding cookie (single-use), and redirects the
+ * browser to the record's same-origin-validated return URL.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -97,28 +98,24 @@ public final class CallbackEndpoint {
     private final CodeExchange codeExchange;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
-    private final SessionStore sessionStore;
-    private final SessionCookieCodec sessionCookieCodec;
+    private final SessionBinding sessionBinding;
     private final Duration sessionTtl;
 
     /**
-     * Assembles the callback endpoint with the exchange seam and the gateway-side stores it drives.
+     * Assembles the callback endpoint with the exchange seam and the gateway-side collaborators it drives.
      *
      * @param codeExchange       the engine code-exchange seam (bound to {@link AuthorizationCodeFlow#exchange})
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
-     * @param sessionStore       the server-side session store
-     * @param sessionCookieCodec the opaque session-cookie codec
+     * @param sessionBinding     the mode-neutral session binding the new session is bound through
      * @param sessionTtl         the absolute session lifetime from login
      */
     public CallbackEndpoint(CodeExchange codeExchange, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, SessionStore sessionStore, SessionCookieCodec sessionCookieCodec,
-            Duration sessionTtl) {
+            BindingCookieCodec bindingCookieCodec, SessionBinding sessionBinding, Duration sessionTtl) {
         this.codeExchange = Objects.requireNonNull(codeExchange, "codeExchange");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
-        this.sessionCookieCodec = Objects.requireNonNull(sessionCookieCodec, "sessionCookieCodec");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.sessionTtl = Objects.requireNonNull(sessionTtl, "sessionTtl");
     }
 
@@ -192,9 +189,8 @@ public final class CallbackEndpoint {
             return CallbackOutcome.error(BAD_REQUEST);
         }
 
-        String sessionId = SessionRecord.newSessionId();
         SessionRecord session = SessionRecord.builder()
-                .sessionId(sessionId)
+                .sessionId(SessionRecord.newSessionId())
                 .accessToken(accessToken.getRawToken())
                 .refreshToken(Optional.empty())
                 .idToken(idToken.getRawToken())
@@ -204,11 +200,10 @@ public final class CallbackEndpoint {
                 .acr(claim(idToken, CLAIM_ACR))
                 .authTime(claimEpochSeconds(idToken, CLAIM_AUTH_TIME))
                 .build();
-        sessionStore.create(session);
+        SessionBinding.BoundSession bound = sessionBinding.bind(session, now);
 
-        List<String> setCookies = List.of(
-                sessionCookieCodec.toSetCookieHeader(sessionId),
-                bindingCookieCodec.toClearingSetCookieHeader());
+        List<String> setCookies = new ArrayList<>(bound.setCookieHeaders());
+        setCookies.add(bindingCookieCodec.toClearingSetCookieHeader());
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 

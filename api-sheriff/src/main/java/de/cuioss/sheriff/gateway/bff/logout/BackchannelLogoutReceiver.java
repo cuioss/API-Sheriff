@@ -20,7 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.tools.logging.CuiLogger;
@@ -28,7 +28,7 @@ import de.cuioss.tools.logging.CuiLogger;
 /**
  * The gateway-side back-channel logout receiver (D2c): signature-verify the logout token via the
  * engine's issuer/JWKS infrastructure, run the {@link LogoutTokenValidator claim residual}, then
- * destroy the affected sessions through the store's O(1) secondary index.
+ * destroy the affected sessions through the mode-neutral {@link SessionBinding} seam.
  * <p>
  * Signature verification is reached through the {@link LogoutTokenVerifier} seam — the session
  * runtime binds it to the engine's token validation (reuse of {@code token-sheriff-validation},
@@ -37,10 +37,12 @@ import de.cuioss.tools.logging.CuiLogger;
  * signature-failure and the claim-rejection paths unit-testable without a live IdP.
  * <p>
  * Destruction is fail-closed and precise: a token carrying a {@code sid} destroys exactly that IdP
- * session ({@link SessionStore#destroyBySid}); a token carrying only a {@code sub} destroys every
- * session for the subject ({@link SessionStore#destroyBySub}). A signature or claim failure destroys
- * nothing. The receiver is framework-agnostic; the {@link de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint}
- * owns the HTTP concern.
+ * session ({@link SessionBinding#destroyBySid}); a token carrying only a {@code sub} destroys every
+ * session for the subject ({@link SessionBinding#destroyBySub}). A signature or claim failure
+ * destroys nothing. A binding that reports {@link SessionBinding.IdpDestruction#UNSUPPORTED} holds
+ * no server-side index and cannot honour either form, so the receiver rejects the token rather than
+ * reporting a destruction that never happened. The receiver is framework-agnostic; the
+ * {@link de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint} owns the HTTP concern.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -51,20 +53,20 @@ public final class BackchannelLogoutReceiver {
 
     private final LogoutTokenVerifier verifier;
     private final LogoutTokenValidator validator;
-    private final SessionStore sessionStore;
+    private final SessionBinding sessionBinding;
 
     /**
-     * Assembles the receiver with the signature-verification seam, the claim residual, and the store.
+     * Assembles the receiver with the signature-verification seam, the claim residual, and the binding.
      *
-     * @param verifier     the engine signature-verification seam (bound to the JWKS token validation)
-     * @param validator    the pure logout-token claim pipeline
-     * @param sessionStore the server-side session store destroyed through its secondary index
+     * @param verifier       the engine signature-verification seam (bound to the JWKS token validation)
+     * @param validator      the pure logout-token claim pipeline
+     * @param sessionBinding the mode-neutral session binding the IdP-driven destruction runs through
      */
     public BackchannelLogoutReceiver(LogoutTokenVerifier verifier, LogoutTokenValidator validator,
-            SessionStore sessionStore) {
+            SessionBinding sessionBinding) {
         this.verifier = Objects.requireNonNull(verifier, "verifier");
         this.validator = Objects.requireNonNull(validator, "validator");
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
     }
 
     /**
@@ -72,11 +74,18 @@ public final class BackchannelLogoutReceiver {
      *
      * @param rawLogoutToken the raw {@code logout_token} JWT from the back-channel request
      * @param now            the reference instant for the {@code iat} freshness check
-     * @return an accepted result carrying the destroyed-session count, or a rejected result
+     * @return an accepted result carrying the destroyed-session count, or a rejected result — the
+     *         latter also when the active binding cannot honour IdP-driven destruction
      */
     public BackchannelResult receive(String rawLogoutToken, Instant now) {
         Objects.requireNonNull(rawLogoutToken, "rawLogoutToken");
         Objects.requireNonNull(now, "now");
+
+        if (sessionBinding.idpDestruction() == SessionBinding.IdpDestruction.UNSUPPORTED) {
+            LOGGER.debug("Back-channel logout rejected — the active session binding cannot honour "
+                    + "IdP-driven sid/sub destruction");
+            return BackchannelResult.rejected();
+        }
 
         TokenContent token;
         try {
@@ -92,8 +101,8 @@ public final class BackchannelLogoutReceiver {
         }
 
         LogoutTokenValidator.LogoutSubject logoutSubject = subject.get();
-        int destroyed = logoutSubject.sid().map(sessionStore::destroyBySid)
-                .orElseGet(() -> logoutSubject.sub().map(sessionStore::destroyBySub).orElse(0));
+        int destroyed = logoutSubject.sid().map(sessionBinding::destroyBySid)
+                .orElseGet(() -> logoutSubject.sub().map(sessionBinding::destroyBySub).orElse(0));
         LOGGER.debug("Back-channel logout accepted — destroyed %s session(s)", destroyed);
         return BackchannelResult.accepted(destroyed);
     }

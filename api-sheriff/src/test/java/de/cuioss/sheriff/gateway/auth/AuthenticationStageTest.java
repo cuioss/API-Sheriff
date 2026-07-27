@@ -31,6 +31,8 @@ import java.util.Map;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -191,8 +193,8 @@ class AuthenticationStageTest {
                 .expiresAt(NOW.plusSeconds(3600))
                 .build());
         SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
-        return new SessionAuthenticationStage(store, codec,
-                (session, now) -> session,
+        return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
+                (session, cookieHeader, now) -> new SessionBinding.BoundSession(session, List.of()),
                 (accessToken, requiredScopes) -> true,
                 (returnUrl, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
                 CLOCK);

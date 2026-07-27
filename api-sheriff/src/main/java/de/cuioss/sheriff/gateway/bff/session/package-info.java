@@ -14,21 +14,29 @@
  * limitations under the License.
  */
 /**
- * The server-side session store and its opaque cookie (D3, {@code mode: server}).
+ * The session-binding seam (D7) and its server-mode implementation (D3, {@code mode: server}).
  * <p>
- * After a successful IdP login the gateway holds the mediated tokens server-side and hands the
- * browser only an opaque handle:
+ * The package is split into the mode-neutral <strong>contract</strong> the rest of the BFF binds
+ * and the server-mode <strong>implementation detail</strong> behind it:
  * <ul>
- *   <li>{@link de.cuioss.sheriff.gateway.bff.session.SessionRecord} holds the access, refresh,
- *       and raw ID tokens plus session metadata; token material never leaves the server and is
- *       redacted from {@code toString()}.</li>
- *   <li>{@link de.cuioss.sheriff.gateway.bff.session.SessionStore} is the store contract, and
- *       {@link de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore} its only
- *       implementation — keyed by opaque id, with secondary indexes by {@code sid}/{@code sub}
- *       for O(1) back-channel destruction, an absolute TTL enforced lazily plus by a periodic
- *       sweep (no per-session timer threads), and a documented max-session bound.</li>
- *   <li>{@link de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec} sets and reads the
- *       hardened {@code __Host-} session cookie carrying only the opaque id.</li>
+ *   <li><strong>Seam.</strong> {@link de.cuioss.sheriff.gateway.bff.session.SessionBinding} is the
+ *       single session-state contract the stage, the refresh coordinator, and every reserved
+ *       endpoint bind — bind / resolve / persist / destroy plus the two IdP-driven destruction
+ *       forms and their {@code SUPPORTED}/{@code UNSUPPORTED} capability flag. It names no store
+ *       and no opaque id, so a stateless variant is representable.</li>
+ *   <li><strong>Record.</strong> {@link de.cuioss.sheriff.gateway.bff.session.SessionRecord} holds
+ *       the access, refresh, and raw ID tokens plus session metadata; every credential is redacted
+ *       from {@code toString()}. Its {@code sessionId} is the one identity model — a stable
+ *       per-session identity every binding populates.</li>
+ *   <li><strong>Server-mode implementation.</strong>
+ *       {@link de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding} is a thin adapter over
+ *       {@link de.cuioss.sheriff.gateway.bff.session.SessionStore} (implemented only by
+ *       {@link de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore} — keyed by opaque id,
+ *       with secondary indexes by {@code sid}/{@code sub} for O(1) back-channel destruction, an
+ *       absolute TTL enforced lazily plus by a periodic sweep, and a documented max-session bound)
+ *       and {@link de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec}, which sets and reads
+ *       the hardened {@code __Host-} session cookie carrying only the opaque id. In this mode the
+ *       token material never leaves the server.</li>
  * </ul>
  * The classes are framework-agnostic (no CDI, no JAX-RS/Vert.x coupling); the runtime and
  * reserved-endpoint packages wire them to the request/response edge.

@@ -32,6 +32,7 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.ClaimSource;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.UserInfoOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 
@@ -47,9 +48,10 @@ import org.junit.jupiter.api.Test;
  * {@code 403} when explicitly requested), the absence of any raw token material in the response, and
  * the {@code Cache-Control: no-store} header on every outcome.
  * <p>
- * The endpoint is framework-agnostic, so it is exercised with a real {@link InMemorySessionStore},
- * the real {@link SessionCookieCodec}, and a hand-built {@link ClaimSource} lambda — no container, no
- * live IdP, no test double framework.
+ * The endpoint is framework-agnostic, so it is exercised with a real
+ * {@link de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding} over an
+ * {@link InMemorySessionStore} and the real {@link SessionCookieCodec}, plus a hand-built
+ * {@link ClaimSource} lambda — no container, no live IdP, no test double framework.
  */
 class UserInfoEndpointTest {
 
@@ -75,7 +77,8 @@ class UserInfoEndpointTest {
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, TTL);
         claimFilter = new ClaimAllowlistFilter(List.of("sub", "name", "roles"), List.of("sub", "name", "roles"));
-        endpoint = new UserInfoEndpoint(sessionStore, sessionCodec, claimFilter, validatedClaims());
+        endpoint = new UserInfoEndpoint(new ServerSessionBinding(sessionStore, sessionCodec), claimFilter,
+                validatedClaims());
 
         SessionRecord session = SessionRecord.builder()
                 .sessionId(SESSION_ID)

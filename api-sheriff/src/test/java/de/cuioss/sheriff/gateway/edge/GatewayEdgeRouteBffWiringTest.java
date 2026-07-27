@@ -53,6 +53,8 @@ import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
@@ -164,14 +166,14 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("Should boot a require:session route through the session-aware AuthenticationStage")
         void shouldBootSessionRouteWithActiveRuntime() {
             RouteTable sessionTable = new RouteTable(List.of(sessionRoute()));
-            assertDoesNotThrow(() -> newEdge(sessionTable, activeRuntime(new InMemorySessionStore(16))),
+            assertDoesNotThrow(() -> newEdge(sessionTable, activeRuntime(serverBinding(new InMemorySessionStore(16)))),
                     "A require:session route assembles through the wired SessionAuthenticationStage");
         }
 
         @Test
         @DisplayName("Should still register a single catch-all route with an active runtime")
         void shouldRegisterCatchAll() {
-            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(new InMemorySessionStore(16)));
+            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(new InMemorySessionStore(16))));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             assertEquals(1, router.getRoutes().size());
@@ -189,9 +191,7 @@ class GatewayEdgeRouteBffWiringTest {
     class ReservedDispatch {
 
         private final SessionStore store = new InMemorySessionStore(16);
-        private final SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
-                Duration.ofHours(1));
-        private final BffRuntime runtime = activeRuntime(store, codec);
+        private final BffRuntime runtime = activeRuntime(serverBinding(store));
         private final Instant now = Instant.parse("2026-07-25T10:00:00Z");
 
         @Test
@@ -265,8 +265,7 @@ class GatewayEdgeRouteBffWiringTest {
 
         private PendingAuthorizationStore.InMemory pendingStore;
         private BindingCookieCodec bindingCodec;
-        private SessionStore sessionStore;
-        private SessionCookieCodec codec;
+        private SessionBinding sessionBinding;
         private BffRuntime runtime;
         private String state;
         private String bindingCookieHeader;
@@ -275,8 +274,7 @@ class GatewayEdgeRouteBffWiringTest {
         void setUp() {
             pendingStore = new PendingAuthorizationStore.InMemory(16);
             bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-            sessionStore = new InMemorySessionStore(16);
-            codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
+            sessionBinding = serverBinding(new InMemorySessionStore(16));
 
             FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
             state = flow.state();
@@ -322,10 +320,10 @@ class GatewayEdgeRouteBffWiringTest {
                 idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
                 IdTokenContent id = new IdTokenContent(idClaims, RAW_ID_TOKEN);
                 return new AuthorizationCodeFlow.AuthenticationResult(access, id);
-            }, pendingStore, bindingCodec, sessionStore, codec, Duration.ofHours(1));
+            }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1));
 
-            SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionStore, codec,
-                    (session, instant) -> session,
+            SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
+                    (session, cookieHeader, instant) -> new SessionBinding.BoundSession(session, List.of()),
                     (token, scopes) -> true,
                     (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                     Clock.systemUTC());
@@ -342,14 +340,14 @@ class GatewayEdgeRouteBffWiringTest {
                     rawToken -> {
                         throw new AssertionError("engine verify must not be reached");
                     },
-                    new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionStore));
-            UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionStore, codec,
+                    new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding));
+            UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionBinding,
                     new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
                     session -> Map.of("sub", session.sub()));
-            LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, sessionStore, codec, ORIGIN);
+            LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, sessionBinding, ORIGIN);
 
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
-                    () -> logoutEndpoint(sessionStore, codec), backchannel, userInfo, login);
+                    () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login);
         }
     }
 
@@ -367,9 +365,10 @@ class GatewayEdgeRouteBffWiringTest {
                 .build();
     }
 
-    private static BffRuntime activeRuntime(SessionStore store) {
-        return activeRuntime(store, new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
-                Duration.ofHours(1)));
+    /** The server-mode seam over an in-memory store, standing in for whichever binding is in force. */
+    private static SessionBinding serverBinding(SessionStore store) {
+        return new ServerSessionBinding(store,
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1)));
     }
 
     /**
@@ -378,7 +377,7 @@ class GatewayEdgeRouteBffWiringTest {
      * so the paths these tests drive (no-session, no-input, live-session short-circuit) never touch a
      * live IdP.
      */
-    private static BffRuntime activeRuntime(SessionStore store, SessionCookieCodec codec) {
+    private static BffRuntime activeRuntime(SessionBinding binding) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
         Duration ttl = Duration.ofHours(1);
@@ -387,8 +386,8 @@ class GatewayEdgeRouteBffWiringTest {
             throw new AssertionError("engine authorize must not be reached");
         }, pendingStore, bindingCodec, ORIGIN);
 
-        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(store, codec,
-                (session, instant) -> session,
+        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
+                (session, cookieHeader, instant) -> new SessionBinding.BoundSession(session, List.of()),
                 (token, scopes) -> true,
                 (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                 Clock.systemUTC());
@@ -404,30 +403,30 @@ class GatewayEdgeRouteBffWiringTest {
 
         CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
             throw new AssertionError("engine exchange must not be reached");
-        }, pendingStore, bindingCodec, store, codec, ttl);
+        }, pendingStore, bindingCodec, binding, ttl);
 
         BackchannelLogoutEndpoint backchannel = new BackchannelLogoutEndpoint(new BackchannelLogoutReceiver(
                 rawToken -> {
                     throw new AssertionError("engine verify must not be reached");
                 },
-                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), store));
+                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding));
 
-        UserInfoEndpoint userInfo = new UserInfoEndpoint(store, codec,
+        UserInfoEndpoint userInfo = new UserInfoEndpoint(binding,
                 new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
                 session -> Map.of("sub", session.sub()));
 
-        LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, store, codec, ORIGIN);
+        LoginInitiationEndpoint login = new LoginInitiationEndpoint(loginFlow, binding, ORIGIN);
 
-        return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(store, codec), backchannel,
+        return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login);
     }
 
-    private static LogoutEndpoint logoutEndpoint(SessionStore store, SessionCookieCodec codec) {
+    private static LogoutEndpoint logoutEndpoint(SessionBinding binding) {
         EndSessionFlow endSessionFlow = new EndSessionFlow(
                 new PostLogoutRedirectValidator(Set.of(ORIGIN + LOGOUT_RETURN_PATH)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow, session -> {
         }, "https://idp.example.com/logout", ORIGIN + LOGOUT_RETURN_PATH, "/", Duration.ofMinutes(1));
-        return new LogoutEndpoint(rpInitiatedLogout, store, codec);
+        return new LogoutEndpoint(rpInitiatedLogout, binding);
     }
 
     private static ResolvedRoute sessionRoute() {

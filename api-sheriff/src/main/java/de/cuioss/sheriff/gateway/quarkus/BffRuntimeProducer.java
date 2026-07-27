@@ -48,8 +48,9 @@ import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
@@ -189,7 +190,10 @@ public class BffRuntimeProducer {
 
         SessionCookieCodec sessionCookieCodec = new SessionCookieCodec(cookieName, sessionTtl);
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        SessionStore sessionStore = new InMemorySessionStore(maxSessions);
+        // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. Server mode
+        // supplies the store-backed adapter; the cookie-mode binding plugs in at the same point.
+        SessionBinding sessionBinding = new ServerSessionBinding(new InMemorySessionStore(maxSessions),
+                sessionCookieCodec);
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
@@ -201,18 +205,23 @@ public class BffRuntimeProducer {
         CallbackEndpoint callbackEndpoint = new CallbackEndpoint(
                 (context, params) -> authorizationCodeFlow.exchange(metadata.get(), context, params,
                         clientAuthentication),
-                pendingStore, bindingCookieCodec, sessionStore, sessionCookieCodec, sessionTtl);
+                pendingStore, bindingCookieCodec, sessionBinding, sessionTtl);
 
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
         TokenRefreshCoordinator refreshCoordinator = new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
-                sessionStore);
+                sessionBinding);
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
-        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionStore, sessionCookieCodec,
-                (sessionRecord, now) -> refreshCoordinator.refresh(sessionRecord, now).session().orElse(sessionRecord),
+        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
+                (sessionRecord, cookieHeader, now) -> {
+                    TokenRefreshCoordinator.RefreshOutcome outcome =
+                            refreshCoordinator.refresh(sessionRecord, cookieHeader, now);
+                    return new SessionBinding.BoundSession(outcome.session().orElse(sessionRecord),
+                            outcome.setCookieHeaders());
+                },
                 (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
                         .providesScopes(requiredScopes),
                 (returnUrl, now) -> {
@@ -234,25 +243,25 @@ public class BffRuntimeProducer {
         ClaimAllowlistFilter claimFilter = new ClaimAllowlistFilter(
                 oidc.userInfo().map(OidcConfig.UserInfo::allowedClaims).orElse(List.of()),
                 oidc.userInfo().map(OidcConfig.UserInfo::defaultView).orElse(List.of()));
-        UserInfoEndpoint userInfoEndpoint = new UserInfoEndpoint(sessionStore, sessionCookieCodec, claimFilter,
+        UserInfoEndpoint userInfoEndpoint = new UserInfoEndpoint(sessionBinding, claimFilter,
                 sessionRecord -> toClaimMap(idBridge.validateRefreshedIdToken(sessionRecord.idToken()).getClaims()));
 
         // D12 login-initiation fold — the browser-facing start mirror of the callback.
-        LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionStore,
-                sessionCookieCodec, gatewayOrigin);
+        LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
+                gatewayOrigin);
 
         // D2c back-channel logout — JWKS signature verification through the engine, then the claim residual.
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
                 idBridge::validateRefreshedIdToken,
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
-                sessionStore);
+                sessionBinding);
         BackchannelLogoutEndpoint backchannelLogoutEndpoint = new BackchannelLogoutEndpoint(backchannelReceiver);
 
         // D5 RP-initiated logout — lazy so the discovery-sourced end_session_endpoint is resolved on
         // first logout, not at boot. Revocation at the IdP is best-effort; the authoritative logout is
         // the local session destruction the LogoutEndpoint performs.
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata.get(), sessionStore, sessionCookieCodec));
+                metadata.get(), sessionBinding));
 
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
 
@@ -262,7 +271,7 @@ public class BffRuntimeProducer {
     }
 
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,
-            SessionStore sessionStore, SessionCookieCodec sessionCookieCodec) {
+            SessionBinding sessionBinding) {
         Optional<OidcConfig.Logout> logout = oidc.logout();
         String postLogoutRedirectUri = logout.flatMap(OidcConfig.Logout::postLogoutRedirectUri)
                 .orElse(gatewayOrigin + "/");
@@ -276,7 +285,7 @@ public class BffRuntimeProducer {
                     // Best-effort by design: the authoritative logout is the local session destruction.
                 },
                 endSessionEndpoint, postLogoutRedirectUri, finalRedirect, LOGOUT_STATE_TTL);
-        return new LogoutEndpoint(rpInitiatedLogout, sessionStore, sessionCookieCodec);
+        return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);
     }
 
     private static Map<String, Object> toClaimMap(Map<String, ClaimValue> claims) {

@@ -23,9 +23,8 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.tools.logging.CuiLogger;
 
 import org.jspecify.annotations.Nullable;
@@ -34,18 +33,19 @@ import org.jspecify.annotations.Nullable;
  * The RP-initiated logout endpoint — the request/response edge over {@link RpInitiatedLogout}, the
  * mirror of {@link CallbackEndpoint} for the logout direction (D5). It owns the two reserved logout
  * legs ({@link ReservedPathRegistry.ReservedEndpoint#LOGOUT} and
- * {@link ReservedPathRegistry.ReservedEndpoint#LOGOUT_RETURN}) and the session store; the
+ * {@link ReservedPathRegistry.ReservedEndpoint#LOGOUT_RETURN}) and the session binding; the
  * transport-free logic — token revocation, {@code state} minting, the engine end-session redirect,
  * and the return-leg {@code state} verification — lives in {@link RpInitiatedLogout}.
  * <p>
- * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the opaque {@code __Host-}
- * session cookie to a live {@link SessionRecord}, drives {@link RpInitiatedLogout#initiate} (which
- * revokes the mediated tokens and builds the {@code end_session_endpoint} redirect carrying the
- * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the single-use logout-state
- * cookie), then destroys the server-side session ({@link SessionStore#destroyById}) and clears the
- * session cookie. The local session destruction is the authoritative, immediately-effective logout;
- * the IdP round-trip is layered on top. A logout request that carries <em>no</em> live session is
- * already logged out — the endpoint clears any stale session cookie and lands the browser on
+ * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the request's live
+ * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam, drives
+ * {@link RpInitiatedLogout#initiate} (which revokes the mediated tokens and builds the
+ * {@code end_session_endpoint} redirect carrying the {@code id_token_hint}, the exact
+ * {@code post_logout_redirect_uri}, and the single-use logout-state cookie), then destroys the
+ * session ({@link SessionBinding#destroy}) and clears the session cookie. The local session
+ * destruction is the authoritative, immediately-effective logout; the IdP round-trip is layered on
+ * top. A logout request that carries <em>no</em> live session is already logged out — the endpoint
+ * clears any stale session cookie and lands the browser on
  * {@link RpInitiatedLogout#finalRedirect()} directly, bypassing the IdP round-trip (there is no
  * {@code id_token_hint} to send).
  * <p>
@@ -67,21 +67,18 @@ public final class LogoutEndpoint {
     private static final CuiLogger LOGGER = new CuiLogger(LogoutEndpoint.class);
 
     private final RpInitiatedLogout rpInitiatedLogout;
-    private final SessionStore sessionStore;
-    private final SessionCookieCodec sessionCookieCodec;
+    private final SessionBinding sessionBinding;
 
     /**
-     * Assembles the logout endpoint with the RP-initiated logout logic and the gateway-side stores.
+     * Assembles the logout endpoint with the RP-initiated logout logic and the session binding.
      *
-     * @param rpInitiatedLogout  the transport-free RP-initiated logout orchestration
-     * @param sessionStore       the server-side session store the session is destroyed in
-     * @param sessionCookieCodec the opaque session-cookie codec reading and clearing the session cookie
+     * @param rpInitiatedLogout the transport-free RP-initiated logout orchestration
+     * @param sessionBinding    the mode-neutral session binding the session is resolved, destroyed,
+     *                          and cleared through
      */
-    public LogoutEndpoint(RpInitiatedLogout rpInitiatedLogout, SessionStore sessionStore,
-            SessionCookieCodec sessionCookieCodec) {
+    public LogoutEndpoint(RpInitiatedLogout rpInitiatedLogout, SessionBinding sessionBinding) {
         this.rpInitiatedLogout = Objects.requireNonNull(rpInitiatedLogout, "rpInitiatedLogout");
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
-        this.sessionCookieCodec = Objects.requireNonNull(sessionCookieCodec, "sessionCookieCodec");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
     }
 
     /**
@@ -97,14 +94,13 @@ public final class LogoutEndpoint {
     public LogoutOutcome logout(@Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(now, "now");
 
-        Optional<String> sessionIdOpt = sessionCookieCodec.readSessionId(cookieHeader);
-        Optional<SessionRecord> session = sessionIdOpt.flatMap(id -> sessionStore.resolve(id, now));
-        if (sessionIdOpt.isEmpty() || session.isEmpty()) {
+        Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
+        if (resolved.isEmpty()) {
             LOGGER.debug("RP-initiated logout without a live session — already logged out, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
-                    List.of(sessionCookieCodec.toClearingSetCookieHeader()));
+                    List.of(sessionBinding.clearingSetCookieHeader()));
         }
-        String sessionId = sessionIdOpt.get();
+        SessionRecord session = resolved.get();
 
         RpInitiatedLogout.LogoutRedirect redirect;
         // Local logout is the authoritative, immediately-effective step and must ALWAYS succeed: if the
@@ -113,17 +109,17 @@ public final class LogoutEndpoint {
         // redirect-construction failure can leave the local session usable.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            redirect = rpInitiatedLogout.initiate(session.get());
+            redirect = rpInitiatedLogout.initiate(session);
         } catch (RuntimeException initiationFailure) {
-            sessionStore.destroyById(sessionId);
+            sessionBinding.destroy(session);
             LOGGER.debug(initiationFailure,
                     "RP-initiated logout — end-session redirect construction failed; local session destroyed, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
-                    List.of(sessionCookieCodec.toClearingSetCookieHeader()));
+                    List.of(sessionBinding.clearingSetCookieHeader()));
         }
-        sessionStore.destroyById(sessionId);
+        sessionBinding.destroy(session);
         List<String> setCookies = new ArrayList<>(redirect.setCookieHeaders());
-        setCookies.add(sessionCookieCodec.toClearingSetCookieHeader());
+        setCookies.add(sessionBinding.clearingSetCookieHeader());
         LOGGER.debug("RP-initiated logout — session destroyed, redirecting to the IdP end_session_endpoint");
         return LogoutOutcome.redirect(redirect.location(), setCookies);
     }

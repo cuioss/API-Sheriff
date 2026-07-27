@@ -23,14 +23,15 @@ import java.util.Objects;
 import java.util.Optional;
 
 
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 4 — the {@code require: session} runtime (D4), the server-session counterpart of the
@@ -39,18 +40,21 @@ import de.cuioss.tools.logging.CuiLogger;
  * <p>
  * For a request selected onto a {@code require: session} route the stage:
  * <ol>
- *   <li>resolves the opaque {@code __Host-} session cookie to a live {@link SessionRecord} through
- *       the {@link SessionStore} (an expired / unknown session is treated as unauthenticated);</li>
+ *   <li>resolves the request's live {@link SessionRecord} through the mode-neutral
+ *       {@link SessionBinding} seam (an expired / unknown / unreadable session is treated as
+ *       unauthenticated) — no opaque session id appears in this stage's contract, so the stage is
+ *       identical for a server-side store and for a stateless binding;</li>
  *   <li>on a live session, offers it to the single-flight {@link TokenRefresh} refresh seam (the D9
  *       hook — the seam owns the near-expiry decision, single-flight coalescing, and rotation; the
- *       unwired binding returns the session unchanged);</li>
+ *       unwired binding returns the session unchanged) and emits any {@code Set-Cookie} the seam
+ *       returns, so a binding that re-binds on refresh reaches the browser on the same response;</li>
  *   <li>enforces the route's {@code required_scopes} against the <em>mediated</em> token's granted
  *       scopes through the {@link GrantedScopes} seam — a shortfall is {@code 403}
  *       {@link EventType#SCOPE_MISSING} (the D2c residual);</li>
  *   <li>records the mediated access token on the request for automatic upstream injection as
  *       {@code Authorization: Bearer} ({@link PipelineRequest#mediatedBearer(String)} — never an
- *       operator-configured header). The token material never leaves the server up to this point;
- *       the forward stage renders the bearer and the opaque session cookie never crosses.</li>
+ *       operator-configured header). The token material is never disclosed to the browser up to
+ *       this point; the forward stage renders the bearer and the session cookie never crosses.</li>
  * </ol>
  * An <strong>unauthenticated</strong> request is content-negotiated: a <em>navigation</em> request
  * (its {@code Accept} offers {@code text/html}) is redirected {@code 302} into the auth-code flow via
@@ -76,27 +80,24 @@ public final class SessionAuthenticationStage {
     private static final String TEXT_HTML = "text/html";
     private static final int FOUND = 302;
 
-    private final SessionStore sessionStore;
-    private final SessionCookieCodec sessionCookieCodec;
+    private final SessionBinding sessionBinding;
     private final TokenRefresh tokenRefresh;
     private final GrantedScopes grantedScopes;
     private final LoginInitiation loginInitiation;
     private final Clock clock;
 
     /**
-     * Assembles the stage with the session stores and the engine / edge seams.
+     * Assembles the stage with the session binding and the engine / edge seams.
      *
-     * @param sessionStore       the server-side session store resolving the opaque session id
-     * @param sessionCookieCodec the opaque session-cookie codec reading the request cookie
-     * @param tokenRefresh       the single-flight near-expiry refresh seam (the D9 hook)
-     * @param grantedScopes      the mediated-token scope-membership seam backing {@code required_scopes}
-     * @param loginInitiation    the auth-code-flow initiation seam for a navigation redirect
-     * @param clock              the reference clock (TTL anchor for session resolution and refresh)
+     * @param sessionBinding  the mode-neutral session binding resolving the request's live session
+     * @param tokenRefresh    the single-flight near-expiry refresh seam (the D9 hook)
+     * @param grantedScopes   the mediated-token scope-membership seam backing {@code required_scopes}
+     * @param loginInitiation the auth-code-flow initiation seam for a navigation redirect
+     * @param clock           the reference clock (TTL anchor for session resolution and refresh)
      */
-    public SessionAuthenticationStage(SessionStore sessionStore, SessionCookieCodec sessionCookieCodec,
-            TokenRefresh tokenRefresh, GrantedScopes grantedScopes, LoginInitiation loginInitiation, Clock clock) {
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
-        this.sessionCookieCodec = Objects.requireNonNull(sessionCookieCodec, "sessionCookieCodec");
+    public SessionAuthenticationStage(SessionBinding sessionBinding, TokenRefresh tokenRefresh,
+            GrantedScopes grantedScopes, LoginInitiation loginInitiation, Clock clock) {
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.tokenRefresh = Objects.requireNonNull(tokenRefresh, "tokenRefresh");
         this.grantedScopes = Objects.requireNonNull(grantedScopes, "grantedScopes");
         this.loginInitiation = Objects.requireNonNull(loginInitiation, "loginInitiation");
@@ -114,21 +115,24 @@ public final class SessionAuthenticationStage {
         Objects.requireNonNull(request, "request");
         RouteRuntime route = requireSelectedRoute(request);
         Instant now = clock.instant();
+        String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
 
-        Optional<SessionRecord> resolved = resolveSession(request, now);
+        Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
         if (resolved.isEmpty()) {
             challengeUnauthenticated(request, route, now);
             return;
         }
 
-        SessionRecord session = tokenRefresh.refreshIfNeeded(resolved.get(), now);
+        SessionBinding.BoundSession refreshed = tokenRefresh.refreshIfNeeded(resolved.get(), cookieHeader, now);
+        emitSetCookies(request, refreshed.setCookieHeaders());
+        SessionRecord session = refreshed.session();
         enforceScopes(route, session);
         request.mediatedBearer(session.accessToken());
     }
 
-    private Optional<SessionRecord> resolveSession(PipelineRequest request, Instant now) {
-        return sessionCookieCodec.readSessionId(request.firstHeader(COOKIE_HEADER).orElse(null))
-                .flatMap(sessionId -> sessionStore.resolve(sessionId, now));
+    private static void emitSetCookies(PipelineRequest request, List<String> setCookieHeaders) {
+        setCookieHeaders.stream().findFirst()
+                .ifPresent(cookie -> request.responseHeaders().put(SET_COOKIE_HEADER, cookie));
     }
 
     private void enforceScopes(RouteRuntime route, SessionRecord session) {
@@ -143,8 +147,7 @@ public final class SessionAuthenticationStage {
         if (acceptsHtml(request)) {
             LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), now);
             request.responseHeaders().put(LOCATION_HEADER, challenge.location());
-            challenge.setCookieHeaders().stream().findFirst()
-                    .ifPresent(cookie -> request.responseHeaders().put(SET_COOKIE_HEADER, cookie));
+            emitSetCookies(request, challenge.setCookieHeaders());
             request.shortCircuit(FOUND);
             LOGGER.debug("Unauthenticated navigation on require:session route %s — redirecting into login",
                     route.getId());
@@ -175,8 +178,8 @@ public final class SessionAuthenticationStage {
     /**
      * The single-flight near-expiry refresh seam (the D9 hook). The session runtime binds it to the
      * refresh coordinator, which owns the near-expiry decision, single-flight coalescing per session,
-     * and refresh-token rotation. The unwired binding returns the session unchanged, so a gateway
-     * without the refresh coordinator injects the current mediated token verbatim.
+     * and refresh-token rotation. The unwired binding returns the session unchanged with no cookies,
+     * so a gateway without the refresh coordinator injects the current mediated token verbatim.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -187,11 +190,15 @@ public final class SessionAuthenticationStage {
         /**
          * Returns the session to mediate from, refreshing its mediated token when near expiry.
          *
-         * @param session the resolved live session
-         * @param now     the reference instant
-         * @return the same session, or a refreshed copy carrying the rotated token material
+         * @param session      the resolved live session
+         * @param cookieHeader the raw request {@code Cookie} header value the session was resolved
+         *                     from, so the coordinator can re-resolve it under single-flight
+         *                     exclusion; may be absent
+         * @param now          the reference instant
+         * @return the session to mediate from — the same one, or a refreshed copy carrying the
+         *         rotated token material — plus any {@code Set-Cookie} the re-bind produced
          */
-        SessionRecord refreshIfNeeded(SessionRecord session, Instant now);
+        SessionBinding.BoundSession refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
     }
 
     /**

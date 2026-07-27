@@ -32,6 +32,8 @@ import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint.BackchannelLogoutOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
@@ -68,7 +70,8 @@ class BackchannelLogoutEndpointTest {
         BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(rawToken -> {
             verifierInvoked.set(true);
             return validLogoutToken();
-        }, validator, new InMemorySessionStore(16));
+        }, validator, new ServerSessionBinding(new InMemorySessionStore(16),
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8))));
         return new BackchannelLogoutEndpoint(receiver);
     }
 
