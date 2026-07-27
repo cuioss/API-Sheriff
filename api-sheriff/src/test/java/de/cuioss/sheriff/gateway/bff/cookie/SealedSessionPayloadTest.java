@@ -131,13 +131,13 @@ class SealedSessionPayloadTest {
             String login = Long.toString(LOGIN.getEpochSecond());
 
             assertTrue(SealedSessionPayload
-                    .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMax)).isEmpty(),
+                            .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMax)).isEmpty(),
                     "DateTimeException is not an IllegalArgumentException, so an out-of-range login instant "
                             + "must still decode to no session rather than escaping unseal()");
             assertTrue(SealedSessionPayload
                     .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMin)).isEmpty());
             assertTrue(SealedSessionPayload
-                    .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", beyondInstantMax, login)).isEmpty(),
+                            .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", beyondInstantMax, login)).isEmpty(),
                     "the optional authTime field carries the same overflow risk as the login instant");
         }
     }

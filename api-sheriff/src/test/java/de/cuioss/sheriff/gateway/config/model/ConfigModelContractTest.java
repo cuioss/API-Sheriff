@@ -869,7 +869,7 @@ class ConfigModelContractTest {
         }
 
         @ParameterizedTest(name = "mode ''{0}'' canonicalizes to cookie mode")
-        @ValueSource(strings ={"cookie", "Cookie", "COOKIE", "  CoOkIe  "})
+        @ValueSource(strings = {"cookie", "Cookie", "COOKIE", "  CoOkIe  "})
         @DisplayName("Should read every spelling of the cookie mode as cookie mode")
         void shouldCanonicalizeCookieMode(String declared) {
             OidcConfig.Session session = sessionWithMode(declared);
@@ -882,7 +882,7 @@ class ConfigModelContractTest {
         }
 
         @ParameterizedTest(name = "mode ''{0}'' canonicalizes to server mode")
-        @ValueSource(strings ={"server", "Server", "SERVER", " sErVeR "})
+        @ValueSource(strings = {"server", "Server", "SERVER", " sErVeR "})
         @DisplayName("Should read every spelling of the server mode as server mode")
         void shouldCanonicalizeServerMode(String declared) {
             OidcConfig.Session session = sessionWithMode(declared);

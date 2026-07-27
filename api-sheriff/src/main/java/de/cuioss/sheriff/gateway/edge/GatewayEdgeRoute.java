@@ -864,7 +864,7 @@ public class GatewayEdgeRoute {
         ctx.vertx().runOnContext(v -> {
             applyStageSetCookies(ctx.response(), stageSetCookies);
             responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                            request.responseHeaders())
+                    request.responseHeaders())
                     .onFailure(failure -> failRelay(ctx, failure));
         });
     }
