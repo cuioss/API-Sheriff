@@ -127,9 +127,18 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
      *                      when omitted
      * @param store         the server-mode store, empty when omitted
      * @param cookieName    the session cookie name, empty when omitted
-     * @param encryptionKey the cookie-mode AES key ({@code ${ENV_VAR}} reference),
-     *                      empty when omitted
-     * @param previousKey   the optional decrypt-only rotation key, empty when omitted
+     * @param encryptionKey the cookie-mode AES-256 sealing key ({@code ${ENV_VAR}}
+     *                      reference). Present selects the <em>passed-key</em> mode;
+     *                      empty selects <em>generate-on-startup</em>, which is a
+     *                      fully supported production mode whose key is fresh per
+     *                      boot — so every session is dropped on restart and the key
+     *                      cannot be shared across replicas
+     * @param previousKey   the optional decrypt-only rotation key ({@code ${ENV_VAR}}
+     *                      reference), empty when no rotation is in progress. Values
+     *                      sealed under it still unseal, but nothing is ever sealed
+     *                      under it again. It composes with the passed-key mode only:
+     *                      supplying it without an {@code encryptionKey} is a
+     *                      configuration error the validator rejects
      * @param ttlSeconds    the absolute session lifetime in seconds, empty when
      *                      omitted
      * @param csrf          the CSRF settings, empty when omitted

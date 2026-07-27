@@ -626,8 +626,8 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject cookie session mode without an encryption_key")
-        void shouldRejectCookieSessionWithoutEncryptionKey() {
+        @DisplayName("Should accept cookie session mode without an encryption_key (generate-on-startup)")
+        void shouldAcceptCookieSessionWithoutEncryptionKey() {
             GatewayConfig gateway = validGateway()
                     .oidc(Optional.of(OidcConfig.builder()
                             .session(Optional.of(OidcConfig.Session.builder()
@@ -639,7 +639,47 @@ class ConfigValidatorTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/oidc/session/encryption_key", "cookie session mode requires an encryption_key");
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
+                    () -> "omitting encryption_key selects the generate-on-startup key mode, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject previous_key without encryption_key")
+        void shouldRejectPreviousKeyWithoutEncryptionKey() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("cookie"))
+                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/previous_key",
+                    "cookie session mode with a previous_key requires an encryption_key");
+        }
+
+        @Test
+        @DisplayName("Should accept cookie session mode with both an encryption_key and a previous_key")
+        void shouldAcceptCookieSessionWithRotationKeys() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("cookie"))
+                                    .encryptionKey(Optional.of("${SHERIFF_SESSION_KEY}"))
+                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
+                    () -> "rotation composes with the passed-key mode, got: " + errors);
         }
 
         @Test

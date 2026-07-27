@@ -119,8 +119,8 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should refuse to boot cookie mode without a usable encryption key")
-        void shouldRefuseCookieModeWithoutKey() {
+        @DisplayName("Should boot cookie mode without an encryption key, generating one on startup")
+        void shouldBootCookieModeWithoutKey() {
             OidcConfig noKey = OidcConfig.builder()
                     .issuer(Optional.of(ISSUER))
                     .clientId(Optional.of("gateway-client"))
@@ -130,8 +130,30 @@ class BffRuntimeProducerTest {
                     .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("cookie")).build()))
                     .build();
 
-            assertThrows(IllegalStateException.class, () -> producer(Optional.of(noKey)).bffRuntime(),
-                    "a cookie-mode gateway with no sealing key must fail closed at boot, never serve unsealed");
+            BffRuntime generated = producer(Optional.of(noKey)).bffRuntime();
+
+            assertTrue(generated.isActive(),
+                    "omitting the key selects generate-on-startup, a supported production mode — not a boot failure");
+            assertNotNull(generated.sessionStage());
+        }
+
+        @Test
+        @DisplayName("Should refuse to boot a previous_key without an encryption_key")
+        void shouldRefusePreviousKeyWithoutEncryptionKey() {
+            OidcConfig previousOnly = OidcConfig.builder()
+                    .issuer(Optional.of(ISSUER))
+                    .clientId(Optional.of("gateway-client"))
+                    .clientSecret(Optional.of("secret"))
+                    .scopes(List.of("openid"))
+                    .redirectUri(Optional.of(REDIRECT_URI))
+                    .session(Optional.of(OidcConfig.Session.builder()
+                            .mode(Optional.of("cookie"))
+                            .previousKey(Optional.of(Base64.getEncoder().encodeToString(new byte[32])))
+                            .build()))
+                    .build();
+
+            assertThrows(IllegalStateException.class, () -> producer(Optional.of(previousOnly)).bffRuntime(),
+                    "a decrypt-only rotation key with no current key to roll onto is refused, never ignored");
         }
 
         @Test

@@ -262,8 +262,10 @@ oidc:                              # only used by the BFF variants (2 and 3)
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
                                    #   sessions -- a DoS guard on the in-memory store
     cookie_name: __Host-sheriff
-    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM)
-    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation
+    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
+                                   #   generate a key on startup (sessions die on restart)
+    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation;
+                                   #   requires encryption_key
     ttl_seconds: 3600              # absolute session lifetime from login
     csrf:
       trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
@@ -1190,9 +1192,20 @@ ignored when no route's effective auth is `require: session`.
   and recommended.
 
 | `session.encryption_key` / `session.previous_key`
-| `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. `previous_key` is optional
-  and *decrypt-only*: during key rotation, cookies sealed with the old key are still accepted
-  (and re-sealed with the new key on next write) for a grace window.
+| `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
+  fully supported production options:
+
+  * *Passed key* -- `encryption_key` is set. Sessions survive a restart and the key can be shared
+    across replicas. This is the mode a multi-replica deployment must use.
+  * *Generate on startup* -- `encryption_key` is omitted. A fresh AES-256 key is generated at boot.
+    Two consequences the operator must accept: *all sessions are dropped on every restart*, and
+    *the key cannot be shared across replicas*, so a load-balanced deployment would reject every
+    cookie sealed by another instance.
+
+  `previous_key` is optional and *decrypt-only*: during key rotation, cookies sealed with the old
+  key are still accepted (and re-sealed with the current key on next write) for a grace window; it
+  is never used to seal, so a rollover is one-way. It composes with the passed-key mode only, and
+  supplying it without an `encryption_key` is rejected at boot.
 
 | `session.ttl_seconds`
 | *Absolute* session lifetime, counted from a login timestamp stored inside the session record
@@ -1564,9 +1577,12 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   restriction, which existed only for the `cui-http` `HttpHandler` builder).
 * Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
   literals.
-* `session.mode: cookie` requires `session.encryption_key`; `previous_key` is optional and
-  decrypt-only. `session.mode: server` requires an explicit `session.store` (only `memory` is
-  valid) and uses neither encryption key.
+* `session.mode: cookie` does *not* require `session.encryption_key` -- omitting it selects the
+  generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
+  across replicas). `previous_key` is optional and decrypt-only, and *requires* an
+  `encryption_key`: `previous_key` without `encryption_key` is rejected, because a decrypt-only
+  rotation key with no current key to roll onto is nonsensical. `session.mode: server` requires an
+  explicit `session.store` (only `memory` is valid) and uses neither encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
   *non-empty* link:#_allowed_origins[`allowed_origins`] list; an absent or empty allowlist *fails

@@ -731,12 +731,25 @@ public final class ConfigValidator {
         });
     }
 
+    /**
+     * Rule: the session mode's mandatory companions (D1/D2b).
+     * <p>
+     * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require an
+     * {@code encryption_key} — omitting it selects the generate-on-startup key mode, a first-class
+     * production option (at the cost of dropping every session on restart and being unshareable
+     * across replicas). Its companion rule survives the relaxation: a {@code previous_key} present
+     * <em>without</em> an {@code encryption_key} is still invalid, because a decrypt-only rotation
+     * key with no current key to roll onto is semantically nonsensical and rotation composes with
+     * the passed-key mode only.
+     */
     private static void validateSessionMode(GatewayConfig gateway, List<ConfigError> errors) {
         gateway.oidc().flatMap(OidcConfig::session).ifPresent(session ->
                 session.mode().ifPresent(mode -> {
-                    if ("cookie".equals(mode) && session.encryptionKey().isEmpty()) {
-                        errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/encryption_key",
-                                "cookie session mode requires an encryption_key"));
+                    if ("cookie".equals(mode) && session.encryptionKey().isEmpty()
+                            && session.previousKey().isPresent()) {
+                        errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/previous_key",
+                                "cookie session mode with a previous_key requires an encryption_key — "
+                                        + "the decrypt-only rotation key composes with the passed-key mode only"));
                     }
                     if ("server".equals(mode) && session.store().isEmpty()) {
                         errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",

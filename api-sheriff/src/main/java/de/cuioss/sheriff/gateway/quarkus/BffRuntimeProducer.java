@@ -16,12 +16,8 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,13 +27,9 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
-
-
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
-import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
@@ -121,9 +113,6 @@ public class BffRuntimeProducer {
 
     private static final String SESSION_MODE_SERVER = "server";
     private static final String SESSION_MODE_COOKIE = "cookie";
-    private static final int AES_256_KEY_BYTES = 32;
-    private static final byte COOKIE_KEY_ID_CURRENT = 1;
-    private static final String IDENTITY_SALT_LABEL = "api-sheriff:cookie-session-identity";
     private static final int DEFAULT_SESSION_TTL_SECONDS = 3600;
     private static final int DEFAULT_MAX_SESSIONS = 10_000;
     private static final int DEFAULT_MAX_PENDING = 10_000;
@@ -304,50 +293,27 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Assembles the stateless cookie-mode binding: the AES-256-GCM sealed-cookie codec over the
-     * configured {@code session.encryption_key}, plus the per-gateway salt that keys the derived,
-     * never-emitted session identity. The salt is derived from the sealing key rather than
-     * configured separately, so it needs no operator input and cannot be recomputed off-gateway.
+     * Assembles the stateless cookie-mode binding from the resolved {@link CookieKeyMaterial}: the
+     * AES-256-GCM sealed-cookie codec (with the decrypt-only {@code previous_key} wired in when a
+     * rotation is in progress), plus the per-gateway salt that keys the derived, never-emitted
+     * session identity. The salt is derived from the sealing key rather than configured separately,
+     * so it needs no operator input and cannot be recomputed off-gateway.
+     * <p>
+     * Per ADR-0011 the configuration stays neutral — the keys are {@code ${ENV_VAR}} references
+     * carrying no material — so the concrete runtime choice is named by a startup diagnostic
+     * reporting the active key mode and rotation state, never any key bytes. The
+     * generate-on-startup mode additionally raises the catalogued INFO
+     * {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
+     * sessions-die-on-restart consequence is operationally notable rather than merely diagnostic.
      */
     private static SessionBinding cookieSessionBinding(Optional<OidcConfig.Session> session, String cookieName,
             Duration sessionTtl) {
-        byte[] keyBytes = decodeAesKey(session.flatMap(OidcConfig.Session::encryptionKey)
-                .orElseThrow(() -> new IllegalStateException(
-                        "session.mode=cookie requires session.encryption_key")));
-        SecretKey key = new SecretKeySpec(keyBytes, "AES");
-        SealedSessionCookieCodec codec = new SealedSessionCookieCodec(cookieName, sessionTtl, key,
-                COOKIE_KEY_ID_CURRENT);
-        return new CookieSessionBinding(codec, deriveIdentitySalt(keyBytes));
-    }
-
-    /**
-     * Decodes the operator-supplied base64 AES-256 key. The value is an {@code ${ENV_VAR}}
-     * reference in config (ADR-0011), so the material itself never lives in a descriptor.
-     */
-    private static byte[] decodeAesKey(String encoded) {
-        byte[] decoded;
-        try {
-            decoded = Base64.getDecoder().decode(encoded.trim());
-        } catch (IllegalArgumentException notBase64) {
-            throw new IllegalStateException("session.encryption_key is not valid base64", notBase64);
-        }
-        if (decoded.length != AES_256_KEY_BYTES) {
-            throw new IllegalStateException(
-                    "session.encryption_key must decode to %d bytes (AES-256), but was %d"
-                            .formatted(AES_256_KEY_BYTES, decoded.length));
-        }
-        return decoded;
-    }
-
-    private static byte[] deriveIdentitySalt(byte[] keyBytes) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(IDENTITY_SALT_LABEL.getBytes(StandardCharsets.UTF_8));
-            return digest.digest(keyBytes);
-        } catch (NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException("SHA-256 is required to derive the cookie-mode session identity salt",
-                    unavailable);
-        }
+        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(
+                session.flatMap(OidcConfig.Session::encryptionKey),
+                session.flatMap(OidcConfig.Session::previousKey));
+        LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s",
+                keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey());
+        return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl), keyMaterial.identitySalt());
     }
 
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,
