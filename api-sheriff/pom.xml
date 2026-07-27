@@ -265,6 +265,22 @@
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The D4 secrets rule requires every secret-classified config field to be a
+                         bare ${VAR} reference — a literal is refused at load time — and a bare
+                         reference naming an undefined variable aborts the boot. CookieModeBootTest
+                         boots the gateway from a real YAML fixture, so its oidc.client_secret must
+                         resolve from the environment. This is a throwaway test-only value that
+                         authenticates to nothing: the boot fixture reaches no IdP (OIDC discovery is
+                         lazy) and no network. -->
+                    <environmentVariables>
+                        <COOKIE_BOOT_CLIENT_SECRET>cookie-boot-test-secret</COOKIE_BOOT_CLIENT_SECRET>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
