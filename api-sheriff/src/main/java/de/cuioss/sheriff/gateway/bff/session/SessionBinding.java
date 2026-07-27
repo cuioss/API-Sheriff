@@ -58,7 +58,9 @@ public interface SessionBinding {
      * @param session the session to bind
      * @param now     the reference instant
      * @return the bound session and the {@code Set-Cookie} header value(s) the caller emits
-     * @throws IllegalStateException when a stateful implementation is at its capacity bound
+     * @throws IllegalStateException when the binding cannot bind the session at all — a stateful
+     *         implementation at its capacity bound, or a stateless one whose sealed representation
+     *         exceeds the browser-safe cookie size budget
      */
     BoundSession bind(SessionRecord session, Instant now);
 

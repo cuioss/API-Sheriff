@@ -24,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
@@ -93,7 +95,59 @@ class BffRuntimeProducerTest {
     }
 
     @Nested
-    @DisplayName("Inert bearer-only / cookie-mode runtime")
+    @DisplayName("Active cookie-mode runtime")
+    class ActiveCookieMode {
+
+        private final BffRuntime runtime = producer(cookieModeOidc()).bffRuntime();
+
+        @Test
+        @DisplayName("Should activate the runtime for session.mode=cookie, exactly as for server mode")
+        void shouldActivateForCookieMode() {
+            assertTrue(runtime.isActive(), "cookie mode is a recognised BFF mode, not a bearer-only gateway");
+            assertNotNull(runtime.sessionStage());
+            assertNotNull(runtime.csrfDefence());
+            assertNotNull(runtime.stepUpCoordinator());
+        }
+
+        @Test
+        @DisplayName("Should wire the same reserved endpoints — no session yields 401 from the user-info fold")
+        void shouldWireTheSameReservedEndpoints() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.USER_INFO,
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"),
+                    Instant.parse("2026-07-25T10:00:00Z"));
+            assertEquals(401, response.status(), "both modes drive identical wiring above the session binding");
+        }
+
+        @Test
+        @DisplayName("Should refuse to boot cookie mode without a usable encryption key")
+        void shouldRefuseCookieModeWithoutKey() {
+            OidcConfig noKey = OidcConfig.builder()
+                    .issuer(Optional.of(ISSUER))
+                    .clientId(Optional.of("gateway-client"))
+                    .clientSecret(Optional.of("secret"))
+                    .scopes(List.of("openid"))
+                    .redirectUri(Optional.of(REDIRECT_URI))
+                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("cookie")).build()))
+                    .build();
+
+            assertThrows(IllegalStateException.class, () -> producer(Optional.of(noKey)).bffRuntime(),
+                    "a cookie-mode gateway with no sealing key must fail closed at boot, never serve unsealed");
+        }
+
+        @Test
+        @DisplayName("Should refuse an encryption key that is not a base64 AES-256 value")
+        void shouldRefuseMalformedKey() {
+            assertThrows(IllegalStateException.class,
+                    () -> producer(cookieModeOidcWithKey("not-base64-~~~")).bffRuntime());
+            assertThrows(IllegalStateException.class,
+                    () -> producer(cookieModeOidcWithKey(Base64.getEncoder().encodeToString(new byte[16])))
+                            .bffRuntime(),
+                    "an AES-128 key is refused — the codec is specified as AES-256-GCM");
+        }
+    }
+
+    @Nested
+    @DisplayName("Inert bearer-only runtime")
     class Inert {
 
         @Test
@@ -104,24 +158,29 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should stay inert for a cookie-mode session (server mode not selected)")
-        void shouldBeInertForCookieMode() {
+        @DisplayName("Should stay inert for an unrecognised session mode")
+        void shouldBeInertForUnrecognisedMode() {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(Optional.of(ISSUER))
                     .redirectUri(Optional.of(REDIRECT_URI))
-                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("cookie")).build()))
+                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("stateless")).build()))
                     .build();
             assertFalse(producer(Optional.of(oidc)).bffRuntime().isActive());
         }
 
         @Test
-        @DisplayName("Should stay inert when server mode is set but no redirect_uri is configured")
+        @DisplayName("Should stay inert when a mode is set but no redirect_uri is configured")
         void shouldBeInertWithoutRedirectUri() {
-            OidcConfig oidc = OidcConfig.builder()
+            OidcConfig serverNoRedirect = OidcConfig.builder()
                     .issuer(Optional.of(ISSUER))
                     .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("server")).build()))
                     .build();
-            assertFalse(producer(Optional.of(oidc)).bffRuntime().isActive());
+            OidcConfig cookieNoRedirect = OidcConfig.builder()
+                    .issuer(Optional.of(ISSUER))
+                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("cookie")).build()))
+                    .build();
+            assertFalse(producer(Optional.of(serverNoRedirect)).bffRuntime().isActive());
+            assertFalse(producer(Optional.of(cookieNoRedirect)).bffRuntime().isActive());
         }
 
         @Test
@@ -182,6 +241,34 @@ class BffRuntimeProducerTest {
         OidcConfig.Session session = OidcConfig.Session.builder()
                 .mode(Optional.of("server"))
                 .ttlSeconds(Optional.of(3600))
+                .build();
+        return Optional.of(OidcConfig.builder()
+                .issuer(Optional.of(ISSUER))
+                .clientId(Optional.of("gateway-client"))
+                .clientSecret(Optional.of("secret"))
+                .scopes(List.of("openid"))
+                .redirectUri(Optional.of(REDIRECT_URI))
+                .session(Optional.of(session))
+                .userInfo(Optional.of(OidcConfig.UserInfo.builder()
+                        .path(Optional.of("/auth/userinfo"))
+                        .allowedClaims(List.of("sub", "name"))
+                        .defaultView(List.of("sub"))
+                        .build()))
+                .login(Optional.of(OidcConfig.Login.builder().path(Optional.of("/auth/login")).build()))
+                .build());
+    }
+
+    private static Optional<OidcConfig> cookieModeOidc() {
+        byte[] key = new byte[32];
+        Arrays.fill(key, (byte) 0x11);
+        return cookieModeOidcWithKey(Base64.getEncoder().encodeToString(key));
+    }
+
+    private static Optional<OidcConfig> cookieModeOidcWithKey(String encryptionKey) {
+        OidcConfig.Session session = OidcConfig.Session.builder()
+                .mode(Optional.of("cookie"))
+                .ttlSeconds(Optional.of(3600))
+                .encryptionKey(Optional.of(encryptionKey))
                 .build();
         return Optional.of(OidcConfig.builder()
                 .issuer(Optional.of(ISSUER))
