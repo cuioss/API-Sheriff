@@ -22,7 +22,9 @@ import java.util.Objects;
 import java.util.Optional;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.tools.logging.CuiLogger;
 
 import org.jspecify.annotations.Nullable;
@@ -42,6 +44,17 @@ import org.jspecify.annotations.Nullable;
  * is destroyed on rejection. Per the spec both the success and error responses must be served
  * uncacheable ({@code Cache-Control: no-store}); the framework edge renders that header.
  * <p>
+ * <strong>Capability gate (D4).</strong> The endpoint is gated on the active
+ * {@link SessionBinding}'s {@linkplain SessionBinding#idpDestruction() IdP-destruction capability},
+ * never on a mode string. A binding reporting {@link SessionBinding.IdpDestruction#UNSUPPORTED} — the
+ * stateless cookie-mode binding, which holds no server-side index — cannot honour an IdP-driven
+ * {@code sid}/{@code sub} destruction, so the endpoint answers {@code 404} <em>before</em> the form
+ * body is parsed: the {@code logout_token} is never read and the receiver is never reached. That is
+ * strictly better than accepting a post the gateway could only answer with a destruction that never
+ * happened. Each rejected request records the catalogued WARN
+ * {@code COOKIE_BACKCHANNEL_DISABLED} carrying only a bounded, non-sensitive reason — no token
+ * material. Server-mode behaviour is unchanged.
+ * <p>
  * The endpoint is framework-agnostic (raw form body in, a {@link BackchannelLogoutOutcome} the edge
  * renders out — no JAX-RS/Vert.x coupling), so it is unit-testable without a container or a live IdP;
  * the session runtime wires it to the request/response edge.
@@ -58,16 +71,26 @@ public final class BackchannelLogoutEndpoint {
 
     private static final int OK = 200;
     private static final int BAD_REQUEST = 400;
+    private static final int NOT_FOUND = 404;
+
+    /** The bounded, non-sensitive reason recorded when the capability gate refuses a request. */
+    private static final String DISABLED_REASON = "no-idp-destruction-capability";
 
     private final BackchannelLogoutReceiver receiver;
+    private final SessionBinding sessionBinding;
 
     /**
-     * Assembles the endpoint with the back-channel logout receiver.
+     * Assembles the endpoint with the back-channel logout receiver and the active session binding
+     * whose IdP-destruction capability gates the endpoint.
      *
-     * @param receiver the transport-free back-channel logout receiver (verify, validate, destroy)
+     * @param receiver       the transport-free back-channel logout receiver (verify, validate, destroy)
+     * @param sessionBinding the active session binding; a binding reporting
+     *                       {@link SessionBinding.IdpDestruction#UNSUPPORTED} gates the endpoint to
+     *                       {@code 404}
      */
-    public BackchannelLogoutEndpoint(BackchannelLogoutReceiver receiver) {
+    public BackchannelLogoutEndpoint(BackchannelLogoutReceiver receiver, SessionBinding sessionBinding) {
         this.receiver = Objects.requireNonNull(receiver, "receiver");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
     }
 
     /**
@@ -76,11 +99,19 @@ public final class BackchannelLogoutEndpoint {
      *
      * @param rawFormBody the raw {@code application/x-www-form-urlencoded} request body, may be absent
      * @param now         the reference instant for the {@code iat} freshness check
-     * @return {@code 200} carrying the destroyed-session count on an accepted token, or {@code 400}
+     * @return {@code 404} when the active session binding cannot honour IdP-driven destruction,
+     *         {@code 200} carrying the destroyed-session count on an accepted token, or {@code 400}
      *         when {@code logout_token} is absent or the token is rejected
      */
     public BackchannelLogoutOutcome receive(@Nullable String rawFormBody, Instant now) {
         Objects.requireNonNull(now, "now");
+
+        if (sessionBinding.idpDestruction() == SessionBinding.IdpDestruction.UNSUPPORTED) {
+            // Fail closed before the body is touched: the logout_token is never read and the receiver
+            // is never reached, so the gateway cannot report a destruction it could not perform.
+            LOGGER.warn(BffLogMessages.WARN.COOKIE_BACKCHANNEL_DISABLED, DISABLED_REASON);
+            return BackchannelLogoutOutcome.error(NOT_FOUND);
+        }
 
         Optional<String> logoutToken = extractLogoutToken(rawFormBody);
         if (logoutToken.isEmpty()) {
@@ -126,10 +157,12 @@ public final class BackchannelLogoutEndpoint {
 
     /**
      * The framework-agnostic result of a back-channel logout: the HTTP status the edge returns and,
-     * on acceptance, how many server-side sessions were destroyed. A rejected outcome destroys nothing.
-     * Both outcomes must be served uncacheable ({@code Cache-Control: no-store}) by the edge.
+     * on acceptance, how many server-side sessions were destroyed. A rejected or gated outcome
+     * destroys nothing. Every outcome must be served uncacheable ({@code Cache-Control: no-store}) by
+     * the edge.
      *
-     * @param status    the HTTP status the edge returns ({@code 200} accepted, {@code 400} rejected)
+     * @param status    the HTTP status the edge returns ({@code 200} accepted, {@code 400} rejected,
+     *                  {@code 404} gated off for a binding without IdP-destruction capability)
      * @param destroyed the number of sessions destroyed, always {@code 0} for a rejected outcome
      * @author API Sheriff Team
      * @since 1.0
@@ -149,7 +182,7 @@ public final class BackchannelLogoutEndpoint {
         /**
          * An error outcome carrying the given status and destroying nothing.
          *
-         * @param status the {@code 4xx} status
+         * @param status the {@code 4xx} status ({@code 400} rejected, {@code 404} gated off)
          * @return the error outcome
          */
         public static BackchannelLogoutOutcome error(int status) {

@@ -341,7 +341,8 @@ class GatewayEdgeRouteBffWiringTest {
                     rawToken -> {
                         throw new AssertionError("engine verify must not be reached");
                     },
-                    new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding));
+                    new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding),
+                    sessionBinding);
             UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionBinding,
                     new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
                     session -> Map.of("sub", session.sub()));
@@ -411,7 +412,7 @@ class GatewayEdgeRouteBffWiringTest {
                 rawToken -> {
                     throw new AssertionError("engine verify must not be reached");
                 },
-                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding));
+                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding), binding);
 
         UserInfoEndpoint userInfo = new UserInfoEndpoint(binding,
                 new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),

@@ -85,6 +85,17 @@ class BffRuntimeProducerTest {
         }
 
         @Test
+        @DisplayName("Should keep the back-channel path un-gated — an absent logout_token yields the 400 contract")
+        void shouldNotGateBackchannelInServerMode() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null, "other=value", "POST"),
+                    Instant.parse("2026-07-25T10:00:00Z"));
+
+            assertEquals(400, response.status(),
+                    "the store-backed binding supports IdP destruction, so the endpoint stays open");
+        }
+
+        @Test
         @DisplayName("Should wire the user-info fold reachably — no session yields 401")
         void shouldWireUserInfo() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.USER_INFO,
@@ -116,6 +127,20 @@ class BffRuntimeProducerTest {
                     new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"),
                     Instant.parse("2026-07-25T10:00:00Z"));
             assertEquals(401, response.status(), "both modes drive identical wiring above the session binding");
+        }
+
+        @Test
+        @DisplayName("Should still register the back-channel path, answering a deliberate uncacheable 404")
+        void shouldRegisterBackchannelPathGatedTo404() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.BACKCHANNEL_LOGOUT,
+                    new BffRuntime.ReservedHttpRequest("", null, null, null, null,
+                            "logout_token=abc.def.ghi", "POST"),
+                    Instant.parse("2026-07-25T10:00:00Z"));
+
+            assertEquals(404, response.status(),
+                    "the reserved path stays registered and returns a deliberate 404, never falling through");
+            assertEquals("no-store", response.headers().get("Cache-Control"),
+                    "the gated outcome is served uncacheable exactly as the 200/400 outcomes are");
         }
 
         @Test

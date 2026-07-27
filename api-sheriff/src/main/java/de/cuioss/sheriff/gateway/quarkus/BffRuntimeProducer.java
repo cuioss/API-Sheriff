@@ -279,11 +279,15 @@ public class BffRuntimeProducer {
                 gatewayOrigin);
 
         // D2c back-channel logout — JWKS signature verification through the engine, then the claim residual.
+        // The endpoint stays wired in both modes: it is gated on the binding's IdP-destruction
+        // capability, so a stateless binding answers a deliberate 404 on the reserved path rather than
+        // letting that path fall through to the proxy route table.
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
                 idBridge::validateRefreshedIdToken,
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
                 sessionBinding);
-        BackchannelLogoutEndpoint backchannelLogoutEndpoint = new BackchannelLogoutEndpoint(backchannelReceiver);
+        BackchannelLogoutEndpoint backchannelLogoutEndpoint =
+                new BackchannelLogoutEndpoint(backchannelReceiver, sessionBinding);
 
         // D5 RP-initiated logout — lazy so the discovery-sourced end_session_endpoint is resolved on
         // first logout, not at boot. Revocation at the IdP is best-effort; the authoritative logout is
