@@ -43,6 +43,9 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -58,8 +61,10 @@ import org.junit.jupiter.api.Test;
  * {@code 500} (the receiver's signature seam is bound to a hand-built token so the accepted path is
  * exercised without a live IdP). In <strong>cookie mode</strong> the focus is the capability gate:
  * a binding reporting {@link SessionBinding.IdpDestruction#UNSUPPORTED} answers {@code 404} for every
- * request without ever parsing the body or reaching the receiver.
+ * request without ever parsing the body or reaching the receiver — and does so without emitting a
+ * {@code WARN}, since the path is reserved and unauthenticated.
  */
+@EnableTestLogger
 class BackchannelLogoutEndpointTest {
 
     private static final String ISSUER = "https://idp.example.com";
@@ -198,6 +203,18 @@ class BackchannelLogoutEndpointTest {
 
             assertEquals(404, outcome.status());
             assertFalse(verifierInvoked.get());
+        }
+
+        @Test
+        @DisplayName("Should not emit a WARN for the unauthenticated capability-gate rejection")
+        void shouldNotWarnOnCapabilityGate() {
+            BackchannelLogoutEndpoint endpoint = endpoint(new AtomicBoolean(false), cookieBinding());
+
+            for (int request = 0; request < 5; request++) {
+                assertEquals(404, endpoint.receive("logout_token=abc.def.ghi", NOW).status());
+            }
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, BackchannelLogoutEndpoint.class);
         }
     }
 }

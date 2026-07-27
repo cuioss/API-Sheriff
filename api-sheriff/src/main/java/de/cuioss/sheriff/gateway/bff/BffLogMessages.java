@@ -31,7 +31,7 @@ import lombok.experimental.UtilityClass;
  * {@code 103-106}) and the configuration subsystem
  * ({@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}: {@code 2-3} / {@code 101-102} /
  * {@code 200-201}), which share the same {@code ApiSheriff} prefix — this BFF catalogue owns
- * {@code 10-17} (INFO) and {@code 110-115} (WARN). Never renumber one catalogue without checking
+ * {@code 10-17} (INFO) and {@code 110-114} (WARN). Never renumber one catalogue without checking
  * the others for a collision.
  * <p>
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
@@ -130,7 +130,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-115).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114).
      */
     @UtilityClass
     public static final class WARN {
@@ -187,17 +187,6 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(114)
                 .template("Sealed session cookie exceeds the size budget (%s bytes) — seal refused")
-                .build();
-
-        /**
-         * The OIDC back-channel logout endpoint is disabled because the active session binding
-         * cannot honour IdP-driven destruction (cookie mode holds no server-side index). Records
-         * only the non-sensitive reason.
-         */
-        public static final LogRecord COOKIE_BACKCHANNEL_DISABLED = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(115)
-                .template("Back-channel logout disabled for the active session binding (%s)")
                 .build();
     }
 }

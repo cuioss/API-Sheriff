@@ -69,7 +69,6 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-112 |BFF |Back-channel logout token rejected: %s |Logged when a back-channel `logout_token` fails signature or claim validation; `%s` is the non-sensitive rejection disposition (`signature` / `claims`) — the raw logout token is never logged
 |ApiSheriff-113 |BFF |Sealed session cookie rejected: %s |Logged when a `mode: cookie` session cookie fails to unseal and is treated as "no session"; `%s` is the non-sensitive disposition (`malformed` / `unknown-version` / `unknown-key-id` / `authentication-tag` / `payload-format`) — the offending cookie value and all key material are never logged
 |ApiSheriff-114 |BFF |Sealed session cookie exceeds the size budget (%s bytes) — seal refused |Logged when a sealed session cookie would exceed the browser-safe ~4 KB budget; the seal is refused rather than emitting a value the browser would silently drop, and `%s` is the bounded length only
-|ApiSheriff-115 |BFF |Back-channel logout disabled for the active session binding (%s) |Logged when the OIDC back-channel logout endpoint is disabled because the active session binding cannot honour IdP-driven `sid`/`sub` destruction (cookie mode holds no server-side index); `%s` is the non-sensitive reason
 |===
 
 == ERROR Level (200-299)

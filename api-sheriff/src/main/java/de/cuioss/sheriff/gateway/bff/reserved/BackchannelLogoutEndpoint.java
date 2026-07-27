@@ -22,7 +22,6 @@ import java.util.Objects;
 import java.util.Optional;
 
 
-import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.tools.logging.CuiLogger;
@@ -51,9 +50,11 @@ import org.jspecify.annotations.Nullable;
  * {@code sid}/{@code sub} destruction, so the endpoint answers {@code 404} <em>before</em> the form
  * body is parsed: the {@code logout_token} is never read and the receiver is never reached. That is
  * strictly better than accepting a post the gateway could only answer with a destruction that never
- * happened. Each rejected request records the catalogued WARN
- * {@code COOKIE_BACKCHANNEL_DISABLED} carrying only a bounded, non-sensitive reason — no token
- * material. Server-mode behaviour is unchanged.
+ * happened. The gated rejection is recorded at {@code DEBUG} carrying only a bounded, non-sensitive
+ * reason — no token material — because this is a reserved, unauthenticated path: any caller who can
+ * reach the gateway could otherwise drive an unbounded WARN flood by posting to it, without a
+ * {@code logout_token}, a session, or any credential. Every other malformed-input rejection on this
+ * endpoint logs at {@code DEBUG} for the same reason. Server-mode behaviour is unchanged.
  * <p>
  * The endpoint is framework-agnostic (raw form body in, a {@link BackchannelLogoutOutcome} the edge
  * renders out — no JAX-RS/Vert.x coupling), so it is unit-testable without a container or a live IdP;
@@ -109,7 +110,10 @@ public final class BackchannelLogoutEndpoint {
         if (sessionBinding.idpDestruction() == SessionBinding.IdpDestruction.UNSUPPORTED) {
             // Fail closed before the body is touched: the logout_token is never read and the receiver
             // is never reached, so the gateway cannot report a destruction it could not perform.
-            LOGGER.warn(BffLogMessages.WARN.COOKIE_BACKCHANNEL_DISABLED, DISABLED_REASON);
+            // DEBUG, not WARN: this path is reserved and unauthenticated, so a WARN here is an
+            // attacker-triggerable log-flood vector — see the capability-gate note on the type.
+            LOGGER.debug("Back-channel logout gated off for the active session binding (%s) — rejected 404",
+                    DISABLED_REASON);
             return BackchannelLogoutOutcome.error(NOT_FOUND);
         }
 
