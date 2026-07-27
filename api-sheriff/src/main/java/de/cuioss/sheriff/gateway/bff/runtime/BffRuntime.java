@@ -285,6 +285,11 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
+    // The component layout below — the line breaks between each @Nullable annotation and its
+    // component — is what the formatter inherited from de.cuioss:cui-java-parent produces. It is
+    // deliberately accepted rather than fought: this project declares no formatter plugin of its own,
+    // and adding one to change this is out of scope. Do NOT hand-reflow the header; the next
+    // format-check would simply undo it. ReservedHttpResponse below carries the identical note.
     public record ReservedHttpRequest(String rawQuery, @Nullable
             String cookieHeader,
     @Nullable
@@ -328,6 +333,11 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
+    // The component layout below — the line breaks between each @Nullable annotation and its
+    // component — is what the formatter inherited from de.cuioss:cui-java-parent produces. It is
+    // deliberately accepted rather than fought: this project declares no formatter plugin of its own,
+    // and adding one to change this is out of scope. Do NOT hand-reflow the header; the next
+    // format-check would simply undo it. ReservedHttpRequest above carries the identical note.
     public record ReservedHttpResponse(int status, @Nullable
             String location, @Nullable
             String jsonBody,
