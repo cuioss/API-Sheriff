@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -123,8 +124,12 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
      * Session settings. The exhibited fields span both modes: {@code store} is
      * server-mode only, the encryption keys are cookie-mode only.
      *
-     * @param mode          the session mode ({@code cookie} / {@code server}), empty
-     *                      when omitted
+     * @param mode          the session mode, canonicalized to lower case by the
+     *                      canonical constructor ({@link Session#MODE_COOKIE} /
+     *                      {@link Session#MODE_SERVER}), empty when omitted. Compare it
+     *                      through {@link Session#isCookieMode()} /
+     *                      {@link Session#isServerMode()} — never against a
+     *                      locally-declared constant
      * @param store         the server-mode store, empty when omitted
      * @param cookieName    the session cookie name, empty when omitted
      * @param encryptionKey the cookie-mode AES-256 sealing key ({@code ${ENV_VAR}}
@@ -161,11 +166,28 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
     Optional<Csrf> csrf, Optional<Refresh> refresh, Optional<Integer> maxSessions,
     Optional<Integer> maxCookieSize) {
 
+        /** The stateless cookie session mode, in its one canonical spelling. */
+        public static final String MODE_COOKIE = "cookie";
+
+        /** The server-side store session mode, in its one canonical spelling. */
+        public static final String MODE_SERVER = "server";
+
         /**
-         * Canonical constructor normalizing absent components to {@link Optional#empty()}.
+         * Canonical constructor normalizing absent components to {@link Optional#empty()} and
+         * canonicalizing {@link #mode()} to its lower-case, trimmed spelling.
+         * <p>
+         * The mode is canonicalized <em>here, once</em>, so every downstream consumer compares the
+         * same spelling. Leaving it raw let a value like {@code Cookie} be read case-sensitively by
+         * boot validation (which then silently skipped both the cookie and server companion rules)
+         * and case-insensitively by the edge (which relaxed the pre-route {@code Cookie}
+         * header-value cap) — a validated-but-wrong runtime mode with a weakened inbound control.
+         * Consumers MUST use {@link #isCookieMode()} / {@link #isServerMode()} rather than
+         * re-deriving a comparison against a locally-declared constant.
          */
         public Session {
-            mode = Objects.requireNonNullElse(mode, Optional.empty());
+            mode = Objects.requireNonNullElse(mode, Optional.<String>empty())
+                    .map(value -> value.trim().toLowerCase(Locale.ROOT))
+                    .filter(value -> !value.isEmpty());
             store = Objects.requireNonNullElse(store, Optional.empty());
             cookieName = Objects.requireNonNullElse(cookieName, Optional.empty());
             encryptionKey = Objects.requireNonNullElse(encryptionKey, Optional.empty());
@@ -175,6 +197,33 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
             refresh = Objects.requireNonNullElse(refresh, Optional.empty());
             maxSessions = Objects.requireNonNullElse(maxSessions, Optional.empty());
             maxCookieSize = Objects.requireNonNullElse(maxCookieSize, Optional.empty());
+        }
+
+        /**
+         * The single cookie-mode predicate every consumer shares — boot validation, the edge's
+         * pre-route {@code Cookie} header-value cap, and the runtime session-binding selection.
+         *
+         * @return {@code true} when the declared mode is the stateless cookie mode
+         */
+        public boolean isCookieMode() {
+            return mode.filter(MODE_COOKIE::equals).isPresent();
+        }
+
+        /**
+         * The single server-mode predicate every consumer shares (see {@link #isCookieMode()}).
+         *
+         * @return {@code true} when the declared mode is the server-side store mode
+         */
+        public boolean isServerMode() {
+            return mode.filter(MODE_SERVER::equals).isPresent();
+        }
+
+        /**
+         * @return {@code true} when the declared mode is one of the two recognised session modes;
+         *         an unrecognised or absent mode leaves the gateway bearer-only
+         */
+        public boolean isRecognisedMode() {
+            return isCookieMode() || isServerMode();
         }
 
         /**

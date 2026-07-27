@@ -152,7 +152,6 @@ public class GatewayEdgeRoute {
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
 
     /** The {@code oidc.session.mode} value selecting the stateless sealed-cookie BFF variant. */
-    private static final String SESSION_MODE_COOKIE = "cookie";
 
     /**
      * Headroom added to the configured sealed-cookie budget when deriving the pre-route
@@ -1133,8 +1132,10 @@ public class GatewayEdgeRoute {
     private static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
             BffRuntime bffRuntime) {
         Optional<OidcConfig.Session> session = gatewayConfig.oidc().flatMap(OidcConfig::session);
-        boolean cookieMode = bffRuntime.isActive() && session.flatMap(OidcConfig.Session::mode)
-                .filter(SESSION_MODE_COOKIE::equalsIgnoreCase).isPresent();
+        // The SHARED cookie-mode predicate on the config model — never a locally-declared constant
+        // compared here. A private constant plus a local comparison is what let this cap relax for a
+        // mode spelling boot validation had already skipped.
+        boolean cookieMode = bffRuntime.isActive() && session.map(OidcConfig.Session::isCookieMode).orElse(false);
         if (!cookieMode) {
             return null;
         }

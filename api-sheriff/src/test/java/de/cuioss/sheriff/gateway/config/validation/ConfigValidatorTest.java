@@ -700,6 +700,42 @@ class ConfigValidatorTest {
         }
 
         @Test
+        @DisplayName("Should apply the cookie-mode companion rule to a mixed-case mode value")
+        void shouldApplyCookieRuleToMixedCaseMode() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("  CoOkIe "))
+                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/previous_key",
+                    "cookie session mode with a previous_key requires an encryption_key");
+        }
+
+        @Test
+        @DisplayName("Should apply the server-mode companion rule to a mixed-case mode value")
+        void shouldApplyServerRuleToMixedCaseMode() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("SERVER"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/store", "server session mode requires a store");
+        }
+
+        @Test
         @DisplayName("Should accept effective auth 'bearer' when a token_validation issuer is present")
         void shouldAcceptBearerWithIssuer() {
             GatewayConfig gateway = validGateway()

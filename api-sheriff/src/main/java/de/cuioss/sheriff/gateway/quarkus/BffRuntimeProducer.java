@@ -113,8 +113,6 @@ public class BffRuntimeProducer {
 
     private static final CuiLogger LOGGER = new CuiLogger(BffRuntimeProducer.class);
 
-    private static final String SESSION_MODE_SERVER = "server";
-    private static final String SESSION_MODE_COOKIE = "cookie";
     private static final int DEFAULT_SESSION_TTL_SECONDS = 3600;
     private static final int DEFAULT_MAX_SESSIONS = 10_000;
     private static final int DEFAULT_MAX_PENDING = 10_000;
@@ -164,16 +162,16 @@ public class BffRuntimeProducer {
      * configured. An unrecognised or absent mode leaves the gateway bearer-only.
      */
     private static boolean isBffMode(Optional<OidcConfig> oidc) {
-        boolean recognisedMode = oidc.flatMap(OidcConfig::session).flatMap(OidcConfig.Session::mode)
-                .filter(mode -> SESSION_MODE_SERVER.equalsIgnoreCase(mode)
-                        || SESSION_MODE_COOKIE.equalsIgnoreCase(mode))
-                .isPresent();
+        boolean recognisedMode = oidc.flatMap(OidcConfig::session)
+                .map(OidcConfig.Session::isRecognisedMode).orElse(false);
         boolean hasRedirect = oidc.flatMap(OidcConfig::redirectUri).isPresent();
         return recognisedMode && hasRedirect;
     }
 
     private static boolean isCookieMode(Optional<OidcConfig.Session> session) {
-        return session.flatMap(OidcConfig.Session::mode).filter(SESSION_MODE_COOKIE::equalsIgnoreCase).isPresent();
+        // The SHARED predicate on the config model, identical to the one boot validation and the
+        // edge's pre-route Cookie header-value cap read — never a locally-declared constant.
+        return session.map(OidcConfig.Session::isCookieMode).orElse(false);
     }
 
     private BffRuntime build(OidcConfig oidc) {
