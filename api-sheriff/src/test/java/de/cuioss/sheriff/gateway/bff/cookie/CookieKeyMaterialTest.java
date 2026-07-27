@@ -132,9 +132,11 @@ class CookieKeyMaterialTest {
         @DisplayName("Should reject a key that is not base64, naming the field but never the value")
         void shouldRejectNonBase64Key() {
             String offending = "not base64 ~~~";
+            Optional<String> encryptionKey = Optional.of(offending);
+            Optional<String> noPreviousKey = Optional.empty();
 
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(Optional.of(offending), Optional.empty()));
+                    () -> CookieKeyMaterial.resolve(encryptionKey, noPreviousKey));
 
             assertTrue(thrown.getMessage().contains("session.encryption_key"), thrown.getMessage());
             assertFalse(thrown.getMessage().contains(offending), "the offending value is never echoed");
@@ -144,9 +146,11 @@ class CookieKeyMaterialTest {
         @DisplayName("Should reject a key of the wrong length with a message naming the expected size")
         void shouldRejectWrongLengthKey() {
             String tooShort = Base64.getEncoder().encodeToString(new byte[16]);
+            Optional<String> encryptionKey = Optional.of(tooShort);
+            Optional<String> noPreviousKey = Optional.empty();
 
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(Optional.of(tooShort), Optional.empty()));
+                    () -> CookieKeyMaterial.resolve(encryptionKey, noPreviousKey));
 
             assertTrue(thrown.getMessage().contains("32"), thrown.getMessage());
             assertTrue(thrown.getMessage().contains("AES-256"), thrown.getMessage());
@@ -156,8 +160,11 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should reject a malformed previous key naming the previous-key field")
         void shouldRejectMalformedPreviousKey() {
-            IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> CookieKeyMaterial
-                    .resolve(Optional.of(CURRENT_KEY_B64), Optional.of(Base64.getEncoder().encodeToString(new byte[8]))));
+            Optional<String> encryptionKey = Optional.of(CURRENT_KEY_B64);
+            Optional<String> malformedPreviousKey = Optional.of(Base64.getEncoder().encodeToString(new byte[8]));
+
+            IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                    () -> CookieKeyMaterial.resolve(encryptionKey, malformedPreviousKey));
 
             assertTrue(thrown.getMessage().contains("session.previous_key"), thrown.getMessage());
         }
@@ -165,8 +172,11 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should refuse a previous key that derives the same wire id as the current key")
         void shouldRefuseCollidingKeyIds() {
+            Optional<String> encryptionKey = Optional.of(CURRENT_KEY_B64);
+            Optional<String> collidingPreviousKey = Optional.of(CURRENT_KEY_B64);
+
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(Optional.of(CURRENT_KEY_B64), Optional.of(CURRENT_KEY_B64)));
+                    () -> CookieKeyMaterial.resolve(encryptionKey, collidingPreviousKey));
 
             assertTrue(thrown.getMessage().contains("same key id"), thrown.getMessage());
         }
@@ -174,8 +184,11 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should refuse a previous key without an encryption key rather than ignore it")
         void shouldRefusePreviousKeyAlone() {
+            Optional<String> noEncryptionKey = Optional.empty();
+            Optional<String> previousKey = Optional.of(PREVIOUS_KEY_B64);
+
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(Optional.empty(), Optional.of(PREVIOUS_KEY_B64)));
+                    () -> CookieKeyMaterial.resolve(noEncryptionKey, previousKey));
 
             assertTrue(thrown.getMessage().contains("session.previous_key"), thrown.getMessage());
             assertTrue(thrown.getMessage().contains("session.encryption_key"), thrown.getMessage());
@@ -213,10 +226,20 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should generate a 256-bit key, so the codec it builds is AES-256-GCM")
         void shouldGenerateA256BitKey() {
+            CookieKeyMaterial generated = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty());
+
+            assertEquals(32, generated.currentKeyLengthBytes(),
+                    "the generated key must be 256-bit — asserting the derived salt's length instead would "
+                            + "pass for a 128-bit key too, since the salt is a fixed-width SHA-256 digest");
+        }
+
+        @Test
+        @DisplayName("Should derive a distinct identity salt per boot, following the generated key")
+        void shouldDeriveADistinctSaltPerBoot() {
             byte[] salt = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).identitySalt();
             byte[] otherSalt = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).identitySalt();
 
-            assertEquals(32, salt.length);
+            assertEquals(32, salt.length, "the salt is a full SHA-256 digest");
             assertFalse(Arrays.equals(salt, otherSalt), "each boot's salt follows its own generated key");
         }
     }

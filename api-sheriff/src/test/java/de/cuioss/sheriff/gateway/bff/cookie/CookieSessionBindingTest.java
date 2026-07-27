@@ -122,13 +122,14 @@ class CookieSessionBindingTest {
             Optional<SessionRecord> resolved = binding.resolve(cookieHeaderOf(bound), LOGIN);
 
             assertTrue(resolved.isPresent());
-            SessionRecord record = resolved.get();
-            assertEquals(ACCESS_TOKEN, record.accessToken());
-            assertEquals(Optional.of(REFRESH_TOKEN), record.refreshToken());
-            assertEquals(ID_TOKEN, record.idToken());
-            assertEquals(SUB, record.sub());
-            assertEquals(Optional.of(SID), record.sid());
-            assertEquals(LOGIN.plus(TTL), record.expiresAt(), "the deadline is derived from the sealed login instant");
+            SessionRecord resolvedSession = resolved.get();
+            assertEquals(ACCESS_TOKEN, resolvedSession.accessToken());
+            assertEquals(Optional.of(REFRESH_TOKEN), resolvedSession.refreshToken());
+            assertEquals(ID_TOKEN, resolvedSession.idToken());
+            assertEquals(SUB, resolvedSession.sub());
+            assertEquals(Optional.of(SID), resolvedSession.sid());
+            assertEquals(LOGIN.plus(TTL), resolvedSession.expiresAt(),
+                    "the deadline is derived from the sealed login instant");
         }
 
         @Test
@@ -375,9 +376,9 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should leave destroy a local no-op — nothing is held server-side")
         void shouldTreatDestroyAsALocalNoOp() {
-            SessionRecord record = session(ACCESS_TOKEN, LOGIN.plus(TTL));
+            SessionRecord liveSession = session(ACCESS_TOKEN, LOGIN.plus(TTL));
 
-            binding.destroy(record);
+            binding.destroy(liveSession);
 
             assertEquals(codec.toClearingSetCookieHeader(), binding.clearingSetCookieHeader(),
                     "destruction is expressed through the clearing cookie the caller emits");

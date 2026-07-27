@@ -200,6 +200,19 @@ public final class CookieKeyMaterial {
     }
 
     /**
+     * The sealing key's length in bytes — the crypto-strength fact, carrying none of the material.
+     * <p>
+     * Package-private on purpose: it exists so a test can assert the AES-256 key <em>length</em>
+     * directly. The derived {@link #identitySalt()} cannot stand in for that: it is a fixed-width
+     * SHA-256 digest, so it measures 32 bytes for a 128-bit key exactly as for a 256-bit one.
+     *
+     * @return the current sealing key's encoded length in bytes, always {@value #AES_256_KEY_BYTES}
+     */
+    int currentKeyLengthBytes() {
+        return currentKey.getEncoded().length;
+    }
+
+    /**
      * Overridden to expose only the non-sensitive mode and rotation state — never key material.
      *
      * @return the redacted description

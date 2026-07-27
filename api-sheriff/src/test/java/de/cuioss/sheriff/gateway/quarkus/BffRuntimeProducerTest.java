@@ -177,18 +177,21 @@ class BffRuntimeProducerTest {
                             .build()))
                     .build();
 
-            assertThrows(IllegalStateException.class, () -> producer(Optional.of(previousOnly)).bffRuntime(),
+            BffRuntimeProducer producer = producer(Optional.of(previousOnly));
+
+            assertThrows(IllegalStateException.class, producer::bffRuntime,
                     "a decrypt-only rotation key with no current key to roll onto is refused, never ignored");
         }
 
         @Test
         @DisplayName("Should refuse an encryption key that is not a base64 AES-256 value")
         void shouldRefuseMalformedKey() {
-            assertThrows(IllegalStateException.class,
-                    () -> producer(cookieModeOidcWithKey("not-base64-~~~")).bffRuntime());
-            assertThrows(IllegalStateException.class,
-                    () -> producer(cookieModeOidcWithKey(Base64.getEncoder().encodeToString(new byte[16])))
-                            .bffRuntime(),
+            BffRuntimeProducer nonBase64 = producer(cookieModeOidcWithKey("not-base64-~~~"));
+            BffRuntimeProducer aes128 =
+                    producer(cookieModeOidcWithKey(Base64.getEncoder().encodeToString(new byte[16])));
+
+            assertThrows(IllegalStateException.class, nonBase64::bffRuntime);
+            assertThrows(IllegalStateException.class, aes128::bffRuntime,
                     "an AES-128 key is refused — the codec is specified as AES-256-GCM");
         }
     }
