@@ -110,7 +110,7 @@ class SessionAuthenticationStageTest {
 
             stage.process(request);
 
-            assertEquals(RESEAL_COOKIE, request.responseHeaders().get("Set-Cookie"),
+            assertEquals(List.of(RESEAL_COOKIE), request.responseSetCookies(),
                     "a cookie-mode re-seal must reach the browser on the very response it was produced for");
             assertEquals(Optional.of(REFRESHED_TOKEN), request.mediatedBearer(),
                     "the re-seal is emitted before the mediated bearer is injected");
@@ -163,7 +163,7 @@ class SessionAuthenticationStageTest {
             assertEquals(Optional.of(302), request.shortCircuitStatus(), "an unauthenticated navigation is short-circuited 302");
             assertEquals(LOGIN_LOCATION, request.responseHeaders().get("Location"),
                     "the redirect targets the login-initiation location");
-            assertEquals(BINDING_COOKIE, request.responseHeaders().get("Set-Cookie"),
+            assertEquals(List.of(BINDING_COOKIE), request.responseSetCookies(),
                     "the browser-binding Set-Cookie is emitted with the redirect");
             assertTrue(request.mediatedBearer().isEmpty(), "an unauthenticated request mediates no bearer");
         }
@@ -229,8 +229,40 @@ class SessionAuthenticationStageTest {
 
             assertThrows(GatewayException.class, () -> stage.process(request));
 
-            assertEquals(binding.clearingSetCookieHeader(), request.responseHeaders().get("Set-Cookie"),
+            assertEquals(List.of(binding.clearingSetCookieHeader()), request.responseSetCookies(),
                     "the stale cookie is cleared so the browser stops presenting a destroyed session");
+        }
+
+        @Test
+        @DisplayName("emits BOTH the clearing cookie and the login-challenge cookie when a refresh fails on an HTML navigation")
+        void retainsBothCookiesOnFailedRefreshNavigation() {
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage stage = stage(binding, failedRefresh(), scopesGranted(), redirectLogin());
+            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(List.of(binding.clearingSetCookieHeader(), BINDING_COOKIE), request.responseSetCookies(),
+                    "both Set-Cookie values must reach the browser: the clearing cookie drops the revoked "
+                            + "session's cookie, the binding cookie carries the new login — they name different "
+                            + "cookies, so neither may overwrite or truncate the other");
+        }
+
+        @Test
+        @DisplayName("retains every Set-Cookie a binding returns, never only the first")
+        void retainsEveryBindingSetCookie() {
+            String secondCookie = "__Host-sheriff-extra=second-value; Path=/; Secure; HttpOnly; SameSite=Lax";
+            SessionBinding binding = bindingWith(session(MEDIATED_TOKEN));
+            SessionAuthenticationStage.TokenRefresh multiCookieRefresh =
+                    (session, cookieHeader, now) -> Optional.of(new SessionBinding.BoundSession(
+                            rebind(session, REFRESHED_TOKEN), List.of(RESEAL_COOKIE, secondCookie)));
+            SessionAuthenticationStage stage = stage(binding, multiCookieRefresh, scopesGranted(), redirectLogin());
+            PipelineRequest request = sessionRequest(authConfig(List.of()), navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(List.of(RESEAL_COOKIE, secondCookie), request.responseSetCookies(),
+                    "Set-Cookie is multi-valued — a binding returning two cookies must not be truncated to one");
         }
 
         @Test

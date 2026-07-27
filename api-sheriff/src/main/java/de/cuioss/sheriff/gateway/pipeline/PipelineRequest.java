@@ -39,8 +39,9 @@ import org.jspecify.annotations.Nullable;
  * populated by the stages</strong> as the request flows: the {@linkplain #canonicalPath()
  * single canonical path} (stage 1), the {@linkplain #selectedRoute() selected route} (stage 2),
  * the accumulating {@linkplain #responseHeaders() response-header map} (stage 0 onward, applied
- * to every response including rejections), and an optional {@linkplain #shortCircuitStatus()
- * short-circuit status} (e.g. a CORS preflight answered at stage 0 before auth).
+ * to every response including rejections), the multi-valued {@linkplain #responseSetCookies()
+ * Set-Cookie accumulator}, and an optional {@linkplain #shortCircuitStatus() short-circuit status}
+ * (e.g. a CORS preflight answered at stage 0 before auth).
  * <p>
  * Header lookups are case-insensitive: header names are normalized to lower case when the
  * instance is built, matching RFC 7230 field-name semantics.
@@ -60,6 +61,7 @@ public final class PipelineRequest {
     private final boolean bodyPresent;
 
     private final Map<String, String> responseHeaders = new LinkedHashMap<>();
+    private final List<String> responseSetCookies = new ArrayList<>();
     private @Nullable String canonicalPath;
     private @Nullable RouteRuntime selectedRoute;
     private @Nullable Integer shortCircuitStatus;
@@ -233,6 +235,30 @@ public final class PipelineRequest {
      */
     public Map<String, String> responseHeaders() {
         return responseHeaders;
+    }
+
+    /**
+     * The accumulated {@code Set-Cookie} values, in emission order. {@code Set-Cookie} is the one
+     * legitimately multi-valued response header (RFC 6265 §3), so it is carried here rather than in
+     * the single-valued {@link #responseHeaders() header map}: the session runtime can emit a
+     * clearing cookie and a login-binding cookie on the very same response, and a single-valued slot
+     * would silently drop one of them — leaving a revoked session cookie in the browser. The edge
+     * writes each value as its own header line; it never comma-joins them.
+     *
+     * @return an immutable snapshot of the accumulated {@code Set-Cookie} values, empty when none
+     */
+    public List<String> responseSetCookies() {
+        return List.copyOf(responseSetCookies);
+    }
+
+    /**
+     * Appends one {@code Set-Cookie} value to the response. Every appended value reaches the client
+     * as its own header line — appending never replaces a previously appended value.
+     *
+     * @param setCookieHeader the fully-rendered {@code Set-Cookie} header value
+     */
+    public void addResponseSetCookie(String setCookieHeader) {
+        responseSetCookies.add(Objects.requireNonNull(setCookieHeader, "setCookieHeader"));
     }
 
     /**

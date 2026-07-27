@@ -706,6 +706,7 @@ public class GatewayEdgeRoute {
     private void renderReserved(RoutingContext ctx, PipelineRequest request,
             BffRuntime.ReservedHttpResponse response) {
         Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse httpResponse = ctx.response();
             if (httpResponse.ended()) {
@@ -713,12 +714,23 @@ public class GatewayEdgeRoute {
             }
             httpResponse.setStatusCode(response.status());
             stageHeaders.forEach(httpResponse::putHeader);
+            applyStageSetCookies(httpResponse, stageSetCookies);
             response.headers().forEach(httpResponse::putHeader);
             response.locationOptional().ifPresent(location -> httpResponse.putHeader(LOCATION_HEADER, location));
             // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
             response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
             response.jsonBodyOptional().ifPresentOrElse(httpResponse::end, httpResponse::end);
         });
+    }
+
+    /**
+     * Writes the pipeline's accumulated {@code Set-Cookie} values as distinct header lines.
+     * {@code Set-Cookie} is legitimately multi-valued (RFC 6265 §3) — the session runtime can emit a
+     * clearing cookie and a login-binding cookie on the same response — so each value gets its own
+     * line and is never comma-joined into, or overwritten in, the single-valued stage-header map.
+     */
+    private static void applyStageSetCookies(HttpServerResponse response, List<String> setCookieHeaders) {
+        setCookieHeaders.forEach(cookie -> response.headers().add(SET_COOKIE_HEADER, cookie));
     }
 
     private static @Nullable String firstQueryParam(PipelineRequest request, String name) {
@@ -768,9 +780,12 @@ public class GatewayEdgeRoute {
         // virtual thread. Hop back onto the event loop exactly like every other terminal path
         // (renderProblem / writeShortCircuit / failRelay); doing the relay off-loop races the
         // response object and corrupts / truncates the streamed body.
-        ctx.vertx().runOnContext(v ->
-                responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
-                        .onFailure(failure -> failRelay(ctx, failure)));
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            applyStageSetCookies(ctx.response(), stageSetCookies);
+            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
+                    .onFailure(failure -> failRelay(ctx, failure));
+        });
     }
 
     /**
@@ -791,6 +806,7 @@ public class GatewayEdgeRoute {
         ResolvedUpstream upstreamTarget = route.getUpstream()
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
+        applyStageSetCookies(ctx.response(), request.responseSetCookies());
         webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri);
     }
 
@@ -820,10 +836,13 @@ public class GatewayEdgeRoute {
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
         // like the HTTP relay path.
-        ctx.vertx().runOnContext(v ->
-                responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                        request.responseHeaders())
-                        .onFailure(failure -> failRelay(ctx, failure)));
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            applyStageSetCookies(ctx.response(), stageSetCookies);
+            responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
+                            request.responseHeaders())
+                    .onFailure(failure -> failRelay(ctx, failure));
+        });
     }
 
     /**
@@ -842,12 +861,14 @@ public class GatewayEdgeRoute {
 
     private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served) {
         Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
                 return;
             }
             response.setStatusCode(served.status());
+            applyStageSetCookies(response, stageSetCookies);
             // The stage-0 security headers (HSTS, frame options, …) apply to every response; the
             // envelope's governed headers (fixed Content-Type, nosniff, no-store) are written last
             // so they win any name collision.
@@ -878,6 +899,7 @@ public class GatewayEdgeRoute {
     private void writeShortCircuit(RoutingContext ctx, PipelineRequest request) {
         int status = request.shortCircuitStatus().orElse(204);
         Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+        List<String> setCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
@@ -885,6 +907,7 @@ public class GatewayEdgeRoute {
             }
             response.setStatusCode(status);
             responseHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, setCookies);
             response.end();
         });
     }
@@ -899,7 +922,11 @@ public class GatewayEdgeRoute {
         RouteRuntime selected = request != null ? request.selectedRoute() : null;
         if (selected != null && selected.getProtocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
-            ctx.vertx().runOnContext(v -> grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders));
+            List<String> setCookies = request.responseSetCookies();
+            ctx.vertx().runOnContext(v -> {
+                applyStageSetCookies(ctx.response(), setCookies);
+                grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders);
+            });
             return;
         }
         renderProblem(ctx, request, eventType);
@@ -921,6 +948,9 @@ public class GatewayEdgeRoute {
         }
         String body = "{\"type\":\"" + type + "\",\"title\":\"" + title + "\",\"status\":" + status + "}";
         Map<String, String> responseHeaders = request != null ? Map.copyOf(request.responseHeaders()) : Map.of();
+        // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
+        // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
+        List<String> setCookies = request != null ? request.responseSetCookies() : List.of();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
@@ -928,6 +958,7 @@ public class GatewayEdgeRoute {
             }
             response.setStatusCode(status);
             responseHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, setCookies);
             response.putHeader("Content-Type", PROBLEM_JSON);
             response.end(body);
         });

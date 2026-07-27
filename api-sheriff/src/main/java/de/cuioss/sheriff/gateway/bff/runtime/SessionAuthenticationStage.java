@@ -78,7 +78,6 @@ public final class SessionAuthenticationStage {
     private static final String COOKIE_HEADER = "Cookie";
     private static final String ACCEPT_HEADER = "Accept";
     private static final String LOCATION_HEADER = "Location";
-    private static final String SET_COOKIE_HEADER = "Set-Cookie";
     private static final String TEXT_HTML = "text/html";
     private static final int FOUND = 302;
 
@@ -132,8 +131,10 @@ public final class SessionAuthenticationStage {
             // engine-detected refresh-token reuse that revoked the whole family). Mediating the
             // pre-refresh token here would keep serving a session the gateway just revoked, so the
             // request re-drives the SAME unauthenticated negotiation as a missing session. The
-            // clearing cookie drops the browser's stale copy; on the navigation branch the login
-            // challenge replaces it with its own binding cookie, which supersedes it either way.
+            // clearing cookie drops the browser's stale copy of the revoked session; on the
+            // navigation branch the login challenge adds its own binding cookie for a DIFFERENT
+            // cookie name, so both must reach the browser on this one response — hence the
+            // multi-valued Set-Cookie accumulator rather than a single-valued header slot.
             emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
             challengeUnauthenticated(request, route, now);
             return;
@@ -144,9 +145,15 @@ public final class SessionAuthenticationStage {
         request.mediatedBearer(session.accessToken());
     }
 
+    /**
+     * Appends every supplied {@code Set-Cookie} value to the request's multi-valued Set-Cookie
+     * accumulator. Appending — never a single-valued put, never a {@code findFirst()} truncation —
+     * is what keeps BOTH the clearing cookie and the login-challenge cookie alive on the
+     * failed-refresh navigation path: the clearing cookie is what drops the browser's copy of a
+     * session the gateway just revoked, so losing it would leave a revoked session cookie in place.
+     */
     private static void emitSetCookies(PipelineRequest request, List<String> setCookieHeaders) {
-        setCookieHeaders.stream().findFirst()
-                .ifPresent(cookie -> request.responseHeaders().put(SET_COOKIE_HEADER, cookie));
+        setCookieHeaders.forEach(request::addResponseSetCookie);
     }
 
     private void enforceScopes(RouteRuntime route, SessionRecord session) {
