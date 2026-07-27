@@ -323,7 +323,8 @@ class GatewayEdgeRouteBffWiringTest {
             }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1));
 
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
-                    (session, cookieHeader, instant) -> new SessionBinding.BoundSession(session, List.of()),
+                    (session, cookieHeader, instant) ->
+                            Optional.of(new SessionBinding.BoundSession(session, List.of())),
                     (token, scopes) -> true,
                     (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                     Clock.systemUTC());
@@ -387,7 +388,8 @@ class GatewayEdgeRouteBffWiringTest {
         }, pendingStore, bindingCodec, ORIGIN);
 
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(binding,
-                (session, cookieHeader, instant) -> new SessionBinding.BoundSession(session, List.of()),
+                (session, cookieHeader, instant) ->
+                        Optional.of(new SessionBinding.BoundSession(session, List.of())),
                 (token, scopes) -> true,
                 (returnUrl, instant) -> new SessionAuthenticationStage.LoginChallenge("/login", List.of()),
                 Clock.systemUTC());

@@ -47,7 +47,9 @@ import org.jspecify.annotations.Nullable;
  *   <li>on a live session, offers it to the single-flight {@link TokenRefresh} refresh seam (the D9
  *       hook — the seam owns the near-expiry decision, single-flight coalescing, and rotation; the
  *       unwired binding returns the session unchanged) and emits any {@code Set-Cookie} the seam
- *       returns, so a binding that re-binds on refresh reaches the browser on the same response;</li>
+ *       returns, so a binding that re-binds on refresh reaches the browser on the same response. A
+ *       <em>failed</em> refresh destroyed the session, so the stage clears the browser's copy and
+ *       re-drives the same unauthenticated negotiation rather than mediating a revoked token;</li>
  *   <li>enforces the route's {@code required_scopes} against the <em>mediated</em> token's granted
  *       scopes through the {@link GrantedScopes} seam — a shortfall is {@code 403}
  *       {@link EventType#SCOPE_MISSING} (the D2c residual);</li>
@@ -123,9 +125,21 @@ public final class SessionAuthenticationStage {
             return;
         }
 
-        SessionBinding.BoundSession refreshed = tokenRefresh.refreshIfNeeded(resolved.get(), cookieHeader, now);
-        emitSetCookies(request, refreshed.setCookieHeaders());
-        SessionRecord session = refreshed.session();
+        Optional<SessionBinding.BoundSession> refreshed =
+                tokenRefresh.refreshIfNeeded(resolved.get(), cookieHeader, now);
+        if (refreshed.isEmpty()) {
+            // The refresh failed and the seam already destroyed the session (an IdP rejection, or
+            // engine-detected refresh-token reuse that revoked the whole family). Mediating the
+            // pre-refresh token here would keep serving a session the gateway just revoked, so the
+            // request re-drives the SAME unauthenticated negotiation as a missing session. The
+            // clearing cookie drops the browser's stale copy; on the navigation branch the login
+            // challenge replaces it with its own binding cookie, which supersedes it either way.
+            emitSetCookies(request, List.of(sessionBinding.clearingSetCookieHeader()));
+            challengeUnauthenticated(request, route, now);
+            return;
+        }
+        emitSetCookies(request, refreshed.get().setCookieHeaders());
+        SessionRecord session = refreshed.get().session();
         enforceScopes(route, session);
         request.mediatedBearer(session.accessToken());
     }
@@ -196,9 +210,12 @@ public final class SessionAuthenticationStage {
          *                     exclusion; may be absent
          * @param now          the reference instant
          * @return the session to mediate from — the same one, or a refreshed copy carrying the
-         *         rotated token material — plus any {@code Set-Cookie} the re-bind produced
+         *         rotated token material — plus any {@code Set-Cookie} the re-bind produced; or
+         *         {@link Optional#empty()} when the refresh failed and the seam destroyed the
+         *         session, which the stage treats as unauthenticated
          */
-        SessionBinding.BoundSession refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
+        Optional<SessionBinding.BoundSession> refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader,
+                Instant now);
     }
 
     /**

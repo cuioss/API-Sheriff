@@ -241,8 +241,14 @@ public class BffRuntimeProducer {
                 (sessionRecord, cookieHeader, now) -> {
                     TokenRefreshCoordinator.RefreshOutcome outcome =
                             refreshCoordinator.refresh(sessionRecord, cookieHeader, now);
-                    return new SessionBinding.BoundSession(outcome.session().orElse(sessionRecord),
-                            outcome.setCookieHeaders());
+                    if (outcome.isFailure()) {
+                        // The coordinator already destroyed the session — signal it so the stage
+                        // re-drives the unauthenticated negotiation instead of mediating the
+                        // pre-refresh token of a session the gateway just revoked.
+                        return Optional.empty();
+                    }
+                    return Optional.of(new SessionBinding.BoundSession(outcome.session().orElse(sessionRecord),
+                            outcome.setCookieHeaders()));
                 },
                 (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
                         .providesScopes(requiredScopes),

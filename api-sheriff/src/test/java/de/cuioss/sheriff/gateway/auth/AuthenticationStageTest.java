@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
@@ -194,7 +195,7 @@ class AuthenticationStageTest {
                 .build());
         SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
         return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
-                (session, cookieHeader, now) -> new SessionBinding.BoundSession(session, List.of()),
+                (session, cookieHeader, now) -> Optional.of(new SessionBinding.BoundSession(session, List.of())),
                 (accessToken, requiredScopes) -> true,
                 (returnUrl, now) -> new LoginChallenge("https://idp.example/authorize", List.of()),
                 CLOCK);

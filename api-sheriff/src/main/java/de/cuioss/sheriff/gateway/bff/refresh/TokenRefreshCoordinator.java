@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.token.RotationResult;
@@ -73,6 +74,14 @@ import org.jspecify.annotations.Nullable;
 public final class TokenRefreshCoordinator {
 
     private static final CuiLogger LOGGER = new CuiLogger(TokenRefreshCoordinator.class);
+
+    /**
+     * The bounded, non-sensitive reason recorded on a refresh failure. Engine rejection and
+     * engine-detected refresh-token reuse are deliberately reported as one disposition: both end the
+     * session identically, and distinguishing them in a log line would tell an attacker whether a
+     * replayed token was recognised as reuse.
+     */
+    private static final String REFRESH_FAILURE_REASON = "engine rejection or refresh-token reuse";
 
     private final Duration leeway;
     private final AccessTokenExpiry accessTokenExpiry;
@@ -159,14 +168,14 @@ public final class TokenRefreshCoordinator {
             // no pre-persist destroy is needed on the success path. Destroying first would open a
             // window where a concurrent resolve() misses the rotating session.
             SessionBinding.BoundSession bound = sessionBinding.persist(rotated, now);
-            LOGGER.debug("Refreshed the mediated tokens for a require:session route (single-flight)");
+            LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
             return RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders());
         } catch (TokenSheriffException refreshFailure) {
             // Engine failure OR refresh-token reuse (the engine revoked the family) — the session can no
             // longer be sustained. Destroy it so the caller re-drives login / returns 401.
             sessionBinding.destroy(latest);
-            LOGGER.debug(refreshFailure,
-                    "Token refresh failed (IdP rejection or refresh-token reuse) — session destroyed");
+            // Bounded, non-sensitive reason only — never the presented refresh token or session id.
+            LOGGER.warn(refreshFailure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, REFRESH_FAILURE_REASON);
             return RefreshOutcome.failed();
         }
     }

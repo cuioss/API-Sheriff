@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +36,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.AccessTokenExpiry;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshExchange;
 import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator.RefreshOutcome;
@@ -285,6 +291,143 @@ class TokenRefreshCoordinatorTest {
             } finally {
                 pool.shutdownNow();
             }
+        }
+
+        private static void awaitUninterruptibly(CountDownLatch latch) {
+            try {
+                latch.await(2, TimeUnit.SECONDS);
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Cookie-mode refresh (stateless binding)")
+    class CookieMode {
+
+        private static final String COOKIE_NAME = "__Host-sheriff-session";
+
+        private CookieSessionBinding cookieBinding;
+        private String sealedCookieHeader;
+        private SessionRecord cookieSession;
+
+        @BeforeEach
+        void setUpCookieMode() {
+            byte[] keyMaterial = new byte[32];
+            Arrays.fill(keyMaterial, (byte) 0x11);
+            SecretKey key = new SecretKeySpec(keyMaterial, "AES");
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            cookieBinding = new CookieSessionBinding(
+                    new SealedSessionCookieCodec(COOKIE_NAME, SESSION_TTL, key, (byte) 1), salt);
+
+            SessionBinding.BoundSession bound = cookieBinding.bind(session(CURRENT_REFRESH), NOW);
+            String setCookie = bound.setCookieHeaders().getFirst();
+            sealedCookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
+            // The sealed cookie IS the session, so the record to refresh is the resolved one — its
+            // derived sessionId is what single-flight keys on.
+            cookieSession = cookieBinding.resolve(sealedCookieHeader, NOW).orElseThrow();
+        }
+
+        private TokenRefreshCoordinator cookieCoordinator(RefreshExchange exchange) {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, cookieBinding);
+        }
+
+        @Test
+        @DisplayName("Should re-seal the rotated material into a new Set-Cookie rather than a store write")
+        void shouldResealIntoANewCookie() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
+            assertEquals(ROTATED_ACCESS, outcome.session().orElseThrow().accessToken());
+            assertEquals(1, outcome.setCookieHeaders().size(),
+                    "a stateless refresh persists by emitting exactly one re-sealed cookie");
+            String reSealed = outcome.setCookieHeaders().getFirst();
+            assertTrue(reSealed.startsWith(COOKIE_NAME + "="), reSealed);
+            assertFalse(reSealed.contains(ROTATED_ACCESS), "the rotated token is sealed, never emitted in the clear");
+            assertFalse(reSealed.contains(ROTATED_REFRESH), "the rotated refresh token is sealed, never emitted");
+        }
+
+        @Test
+        @DisplayName("Should carry the rotated material in the re-sealed cookie the next request presents")
+        void shouldServeTheRotatedMaterialFromTheReSealedCookie() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            String reSealed = outcome.setCookieHeaders().getFirst();
+            String nextRequestCookie = reSealed.substring(0, reSealed.indexOf(';'));
+            SessionRecord nextRequest = cookieBinding.resolve(nextRequestCookie, NOW).orElseThrow();
+            assertEquals(ROTATED_ACCESS, nextRequest.accessToken());
+            assertEquals(Optional.of(ROTATED_REFRESH), nextRequest.refreshToken());
+            assertEquals(cookieSession.expiresAt(), nextRequest.expiresAt(),
+                    "the re-seal preserves the original absolute deadline — a refresh never extends the session");
+        }
+
+        @Test
+        @DisplayName("Should keep the derived identity stable across the re-seal, so single-flight keys the same")
+        void shouldKeepTheSingleFlightKeyStable() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertEquals(cookieSession.sessionId(), outcome.session().orElseThrow().sessionId(),
+                    "the single-flight key expression is unchanged in cookie mode");
+        }
+
+        @Test
+        @DisplayName("Should coalesce two concurrent cookie-mode refreshes into exactly one engine exchange")
+        void shouldCoalesceConcurrentCookieRefreshes() throws Exception {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch proceed = new CountDownLatch(1);
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> {
+                calls.incrementAndGet();
+                entered.countDown();
+                awaitUninterruptibly(proceed);
+                return rotation();
+            });
+
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            try {
+                Future<RefreshOutcome> leader =
+                        pool.submit(() -> coordinator.refresh(cookieSession, sealedCookieHeader, NOW));
+                assertTrue(entered.await(2, TimeUnit.SECONDS), "the leader entered the engine refresh");
+                Future<RefreshOutcome> follower =
+                        pool.submit(() -> coordinator.refresh(cookieSession, sealedCookieHeader, NOW));
+                // Best-effort ordering: there is no observable hook for a thread reaching
+                // CompletableFuture#join, so the follower's arrival cannot be awaited deterministically.
+                Thread.sleep(100); // NOSONAR java:S2925 - no observable hook for the follower reaching the in-flight join
+                proceed.countDown();
+
+                RefreshOutcome leaderOutcome = leader.get(2, TimeUnit.SECONDS);
+                RefreshOutcome followerOutcome = follower.get(2, TimeUnit.SECONDS);
+
+                assertEquals(1, calls.get(),
+                        "two threads on the same cookie produce exactly one engine exchange — single-flight is "
+                                + "per instance in cookie mode, which is the documented accepted trade-off");
+                assertFalse(leaderOutcome.isFailure());
+                assertFalse(followerOutcome.isFailure(), "the coalesced follower shares the successful refresh");
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+
+        @Test
+        @DisplayName("Should fail and destroy the session when the engine rejects the cookie-mode refresh")
+        void shouldFailOnEngineRejection() {
+            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> {
+                throw new ClientProtocolException("invalid_grant");
+            });
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertTrue(outcome.isFailure(),
+                    "reuse-as-failure is identical in cookie mode — the stage clears the cookie and re-negotiates");
+            assertTrue(outcome.setCookieHeaders().isEmpty(), "a failed refresh emits no re-seal");
         }
 
         private static void awaitUninterruptibly(CountDownLatch latch) {

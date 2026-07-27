@@ -112,12 +112,23 @@ public final class CookieSessionBinding implements SessionBinding {
                 .map(this::markForReseal);
     }
 
+    /**
+     * Re-seals the rotated material into a fresh {@code Set-Cookie} <em>without</em> extending the
+     * session — this is the cookie-mode persistence target of a transparent token refresh.
+     * <p>
+     * There is nothing to write server-side, so the whole of "persisting" a refresh here is emitting
+     * the new sealed value. The original login instant is re-derived from the record's absolute
+     * deadline rather than taken from {@code now}, so an endlessly-refreshed session still dies at
+     * its original absolute deadline: a refresh rotates the tokens, never the session's lifetime.
+     *
+     * @param rotated the session carrying the rotated token material
+     * @param now     the reference instant, used only for the cookie's remaining {@code Max-Age}
+     * @return the re-sealed session and its single {@code Set-Cookie}
+     */
     @Override
     public BoundSession persist(SessionRecord rotated, Instant now) {
         Objects.requireNonNull(rotated, "rotated");
         Objects.requireNonNull(now, "now");
-        // The absolute deadline lives in expiresAt, which the login anchored; re-deriving the login
-        // instant from it keeps the re-seal from extending the session.
         Instant loginInstant = rotated.expiresAt().minus(codec.sessionTtl());
         return seal(payloadOf(rotated, loginInstant), now);
     }
