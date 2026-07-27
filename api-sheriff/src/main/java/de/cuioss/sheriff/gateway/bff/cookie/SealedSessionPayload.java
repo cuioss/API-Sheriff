@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.bff.cookie;
 
 import java.nio.charset.StandardCharsets;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -117,9 +118,12 @@ String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTi
                     optionalField(fields[5]),
                     optionalField(fields[6]).map(seconds -> Instant.ofEpochSecond(Long.parseLong(seconds))),
                     Instant.ofEpochSecond(Long.parseLong(decodeField(fields[7])))));
-        } catch (IllegalArgumentException malformed) {
-            // Base64 or epoch-second parse failure on bytes that authenticated: a foreign payload
-            // format under the same key. Report "no session" rather than propagating.
+        } catch (IllegalArgumentException | DateTimeException _) {
+            // Base64 decode failure, epoch-second parse failure, or an epoch second that parses as a
+            // long but lies outside Instant's supported range, on bytes that authenticated: a
+            // foreign payload format under the same key. DateTimeException is NOT an
+            // IllegalArgumentException, so it must be caught explicitly or it escapes unseal() as an
+            // unhandled request error. Report "no session" rather than propagating.
             return Optional.empty();
         }
     }

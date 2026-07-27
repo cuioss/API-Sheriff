@@ -23,7 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -53,6 +56,19 @@ class SealedSessionPayloadTest {
     private static SealedSessionPayload minimal() {
         return new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(), ID_TOKEN, SUB,
                 Optional.empty(), Optional.empty(), Optional.empty(), LOGIN);
+    }
+
+    /**
+     * Builds the wire form {@code decode()} reads directly from raw field values, so a test can
+     * express a payload shape {@code encode()} could never produce — such as an epoch second outside
+     * {@link Instant}'s supported range.
+     */
+    private static byte[] wireForm(String... fields) {
+        Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+        return Arrays.stream(fields)
+                .map(field -> encoder.encodeToString(field.getBytes(StandardCharsets.UTF_8)))
+                .collect(Collectors.joining("\n"))
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     @Nested
@@ -105,6 +121,24 @@ class SealedSessionPayloadTest {
 
             assertTrue(SealedSessionPayload.decode(malformed).isEmpty(),
                     "a base64 failure on authenticated-but-foreign bytes is no session, never an exception");
+        }
+
+        @Test
+        @DisplayName("Should decode nothing when an epoch second parses as a long but exceeds Instant's range")
+        void shouldDecodeNothingFromOutOfRangeEpochSecond() {
+            String beyondInstantMax = "999999999999999999";
+            String beyondInstantMin = "-999999999999999999";
+            String login = Long.toString(LOGIN.getEpochSecond());
+
+            assertTrue(SealedSessionPayload
+                    .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMax)).isEmpty(),
+                    "DateTimeException is not an IllegalArgumentException, so an out-of-range login instant "
+                            + "must still decode to no session rather than escaping unseal()");
+            assertTrue(SealedSessionPayload
+                    .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "", beyondInstantMin)).isEmpty());
+            assertTrue(SealedSessionPayload
+                    .decode(wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", beyondInstantMax, login)).isEmpty(),
+                    "the optional authTime field carries the same overflow risk as the login instant");
         }
     }
 
