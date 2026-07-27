@@ -23,6 +23,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
@@ -54,8 +55,10 @@ import org.jspecify.annotations.Nullable;
  * cookie still sealed under it resolves normally and is marked for re-seal: because
  * {@link SealedSessionCookieCodec#seal} is unconditionally current-key, the session's next write —
  * {@link #bind} on a fresh login or {@link #persist} on a refresh — emits a cookie stamped with the
- * current key id, completing the rollover. The event is recorded once as INFO
- * {@code COOKIE_RESEALED_WITH_CURRENT_KEY} carrying only a bounded disposition. Rotation composes
+ * current key id, completing the rollover. The rotation is recorded once per process as INFO
+ * {@code COOKIE_ROLLOVER_IN_PROGRESS} carrying only a bounded disposition; the per-request
+ * re-detections that follow are DEBUG, since an unrotated session is re-detected on every one of its
+ * requests until its next write. Rotation composes
  * with the <em>passed-key</em> mode only: when the key material is generated on startup there is by
  * construction no previous key, so no cookie can carry a retired key id and this path never fires.
  * <p>
@@ -82,6 +85,13 @@ public final class CookieSessionBinding implements SessionBinding {
 
     private final SealedSessionCookieCodec codec;
     private final byte[] identitySalt;
+
+    /**
+     * Latches the catalogued rollover INFO to the first retired-key detection. The rollover is a
+     * gateway-wide condition, not a per-session one, so one record per process is the whole signal —
+     * and the latch holds no session state, preserving the binding's statelessness.
+     */
+    private final AtomicBoolean rolloverRecorded = new AtomicBoolean();
 
     /**
      * Assembles the cookie-mode binding over its sealing codec.
@@ -187,10 +197,22 @@ public final class CookieSessionBinding implements SessionBinding {
      * login and {@link #persist} on a refresh — necessarily emits a cookie stamped with the current
      * key id. The marking is therefore purely the audit record of the rollover, kept stateless so
      * the binding holds no server-side session index.
+     * <p>
+     * <strong>This runs on EVERY resolve.</strong> A cookie still sealed under the retired key is
+     * re-detected on every single request for that session until its next write actually re-seals it,
+     * so an unconditional INFO here would flood for the whole rotation window on a busy long-TTL
+     * deployment. The catalogued INFO is therefore latched to the FIRST detection in this process —
+     * the "recorded once" the class documentation promises — and every subsequent detection is a
+     * DEBUG diagnostic.
      */
     private SessionRecord markForReseal(SealedSessionCookieCodec.Unsealed unsealed) {
         if (unsealed.sealedWithPreviousKey()) {
-            LOGGER.info(BffLogMessages.INFO.COOKIE_RESEALED_WITH_CURRENT_KEY, RESEAL_DISPOSITION);
+            if (rolloverRecorded.compareAndSet(false, true)) {
+                LOGGER.info(BffLogMessages.INFO.COOKIE_ROLLOVER_IN_PROGRESS, RESEAL_DISPOSITION);
+            } else {
+                LOGGER.debug("Cookie-mode session still sealed under the previous key (%s) — "
+                        + "its next write re-seals it under the current key", RESEAL_DISPOSITION);
+            }
         }
         return toSessionRecord(unsealed.payload());
     }

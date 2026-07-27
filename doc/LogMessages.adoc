@@ -47,7 +47,7 @@ diagnostics use the logger directly and are not catalogued.
 |ApiSheriff-14 |BFF |RP-initiated logout completed for a require:session route |Logged when the RP-initiated logout return leg verifies its single-use logout-state cookie and redirects the browser to the configured final_redirect
 |ApiSheriff-15 |BFF |Cookie-mode session sealed (%s bytes) |Logged when a `mode: cookie` session is sealed into its `Set-Cookie`; `%s` is the bounded sealed-value length — never the sealed value, the sealing key, or any token material
 |ApiSheriff-16 |BFF |Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart |Logged once at startup when no `session.encryption_key` is configured and a cookie-mode sealing key is generated in memory; `%s` is the non-sensitive affected scope — key material is never logged
-|ApiSheriff-17 |BFF |Cookie-mode session re-sealed under the current key (%s) |Logged when a session sealed under the decrypt-only `previous_key` is re-sealed under the current key on its next write, completing that session's rotation; `%s` is a bounded disposition — never key or token material
+|ApiSheriff-17 |BFF |Cookie-mode previous-key rotation in progress (%s) — affected sessions re-seal under the current key on their next write |Logged once per process, on the first request carrying a cookie still sealed under the decrypt-only `previous_key`; each such session is re-sealed under the current key on its next write. The per-request re-detections that follow are DEBUG, since an unrotated session is re-detected on every one of its requests. `%s` is a bounded disposition — never key or token material
 |===
 
 == WARN Level (100-199)

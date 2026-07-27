@@ -35,10 +35,20 @@ import lombok.Builder;
  * <p>
  * <strong>Session identity.</strong> {@link #sessionId()} is the one identity model the seam
  * defines: a stable per-session identity every {@link SessionBinding} populates, and the key the
- * refresh coordinator uses for single-flight coalescing. In server mode it is the opaque store key,
- * which is also the session-cookie value; in a stateless mode it is a derived identity that is
- * never emitted to the browser. It is redacted from {@link #toString()} either way, because in
- * server mode it is itself a bearer credential.
+ * refresh coordinator uses for single-flight coalescing. Login always mints one with
+ * {@link #newSessionId()} before the mode-neutral {@link SessionBinding#bind}, but only server mode
+ * keeps it:
+ * <ul>
+ *   <li><strong>server mode</strong>: the minted id becomes the opaque store key, and the session
+ *       cookie carries it <em>in the clear</em> — the cookie value IS this identity, which is why it
+ *       is itself a bearer credential;</li>
+ *   <li><strong>cookie mode</strong>: the minted id is <em>discarded</em> — it is not among the
+ *       fields sealed into the cookie. The binding replaces it with an identity <em>derived</em>
+ *       from the sealed payload (a salted digest over the login instant and {@code sub}), so it is
+ *       stable across re-seals, un-recomputable outside this gateway, and never emitted to the
+ *       browser.</li>
+ * </ul>
+ * It is redacted from {@link #toString()} either way.
  * <p>
  * {@link #sid()} and {@link #sub()} back a server-mode store's secondary index for O(1)
  * back-channel logout destruction.
@@ -80,8 +90,12 @@ String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optio
     }
 
     /**
-     * Generates a 256-bit URL-safe opaque session id — the server-mode session identity, which is
-     * also the value carried in that mode's session cookie.
+     * Generates a 256-bit URL-safe opaque session id — the <strong>server-mode</strong> session
+     * identity, which is also the value carried in that mode's session cookie.
+     * <p>
+     * Login calls this before the mode-neutral {@link SessionBinding#bind}, so a cookie-mode login
+     * mints one too — but that binding discards it and derives its own identity from the sealed
+     * payload instead. Nothing downstream may assume the minted value survives {@code bind}.
      *
      * @return the base64url (unpadded) encoding of 32 secure-random bytes
      */

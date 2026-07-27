@@ -32,6 +32,9 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,8 +48,9 @@ import org.junit.jupiter.api.Test;
  * than the reset lifetime on a re-seal, the {@code previous_key} rotation (a retired-key cookie
  * resolves and its next write is sealed under the current key, while withdrawing the retired key
  * makes it no session), the stable-but-never-emitted session identity, and the
- * {@code UNSUPPORTED} IdP-driven destruction capability.
+ * {@code UNSUPPORTED} IdP-driven destruction capability, and the once-per-process rotation record.
  */
+@EnableTestLogger
 class CookieSessionBindingTest {
 
     private static final String COOKIE_NAME = "__Host-sheriff-session";
@@ -254,6 +258,21 @@ class CookieSessionBindingTest {
                     "the session survives the rotation and its next write is sealed under the current key");
             assertEquals(ACCESS_TOKEN, rotatingBinding.resolve(cookieHeaderOf(nextWrite), LOGIN.plusSeconds(60))
                     .orElseThrow().accessToken(), "the re-sealed cookie still carries the session material");
+        }
+
+        @Test
+        @DisplayName("Should record the rotation once, not on every resolve of an unrotated cookie")
+        void shouldRecordTheRotationOnlyOnce() {
+            BoundSession sealedBeforeRotation = retiredBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            String cookieHeader = cookieHeaderOf(sealedBeforeRotation);
+
+            for (int request = 0; request < 5; request++) {
+                assertTrue(rotatingBinding.resolve(cookieHeader, LOGIN).isPresent(),
+                        "a previous-key cookie keeps resolving for the whole rotation window");
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                    "Cookie-mode previous-key rotation in progress");
         }
 
         @Test

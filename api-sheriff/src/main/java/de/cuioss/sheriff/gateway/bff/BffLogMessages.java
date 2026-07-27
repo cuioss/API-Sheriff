@@ -119,13 +119,16 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A session sealed under the previous key was re-sealed under the current key on its next
-         * write, completing the rotation for that session. Records only the bounded disposition.
+         * A cookie still sealed under the decrypt-only {@code previous_key} was observed, so a key
+         * rotation is in progress: each such session is re-sealed under the current key on its next
+         * write. Recorded once per process — the condition is gateway-wide, and the detection recurs
+         * on every request for an unrotated session. Records only the bounded disposition.
          */
-        public static final LogRecord COOKIE_RESEALED_WITH_CURRENT_KEY = LogRecordModel.builder()
+        public static final LogRecord COOKIE_ROLLOVER_IN_PROGRESS = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(17)
-                .template("Cookie-mode session re-sealed under the current key (%s)")
+                .template("Cookie-mode previous-key rotation in progress (%s) — affected sessions "
+                        + "re-seal under the current key on their next write")
                 .build();
     }
 

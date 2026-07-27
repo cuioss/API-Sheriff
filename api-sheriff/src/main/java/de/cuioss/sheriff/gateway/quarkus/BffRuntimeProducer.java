@@ -297,7 +297,11 @@ public class BffRuntimeProducer {
 
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
 
-        LOGGER.debug("Server-mode BFF runtime assembled for origin %s (issuer %s)", gatewayOrigin, issuer);
+        // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
+        // resolved — this is the line an operator greps to confirm which binding came up.
+        LOGGER.debug("%s-mode BFF runtime assembled for origin %s (issuer %s)",
+                isCookieMode(session) ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
+                gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
     }

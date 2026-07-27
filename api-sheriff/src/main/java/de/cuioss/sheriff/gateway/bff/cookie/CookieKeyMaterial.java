@@ -53,7 +53,7 @@ import org.jspecify.annotations.Nullable;
  * {@code ConfigValidator} enforces at configuration-validation time.
  * <p>
  * The type never logs, serialises, or {@link #toString()}s key bytes; the material is reachable only
- * through {@link #codec(String, Duration)} and {@link #identitySalt()}, both of which consume it
+ * through {@link #codec(String, Duration, int)} and {@link #identitySalt()}, both of which consume it
  * without disclosing it.
  *
  * @author API Sheriff Team
