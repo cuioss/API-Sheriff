@@ -22,11 +22,14 @@ import java.util.function.BiPredicate;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.core.HttpSecurityValidator;
 import de.cuioss.http.security.exceptions.UrlSecurityException;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.http.security.pipeline.PipelineFactory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 1 — the baseline cui-http security filter plus collection-limit fast-reject, run for
@@ -40,14 +43,32 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  * {@link EventType#SECURITY_FILTER_VIOLATION} (400); a parameter- or header-count overflow beyond
  * the configured caps becomes a {@link EventType#PARAMETER_LIMIT_EXCEEDED} (400) — both without ever
  * echoing the offending value.
+ * <p>
+ * <strong>The cookie-mode header-value carve-out.</strong> A cookie-mode BFF's sealed session cookie
+ * is designed to a multi-kilobyte budget, which the default 2048-character header-value cap would
+ * reject at the edge on every authenticated request. The stage therefore accepts an OPTIONAL
+ * {@code cookieHeaderConfiguration} whose only difference from the default policy is a raised
+ * {@code maxHeaderValueLength}, and applies it to the {@code Cookie} / {@code Set-Cookie} header
+ * values ONLY — every other header keeps the default cap, and every other validator in the pipeline
+ * (null-byte, control-character, injection-pattern) applies to the cookie header unchanged. A
+ * bearer-only or server-mode gateway passes {@code null} and is byte-for-byte unaffected.
+ * <p>
+ * The relaxation is necessarily <strong>gateway-wide, not per-anchor</strong>: this stage runs
+ * BEFORE route selection, so no anchor is resolved yet. The configuration key that supplies the
+ * budget ({@code oidc.session.max_cookie_size}) sits on the global session block for exactly that
+ * reason — its placement must not be read as per-anchor enforcement.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 public final class BasicChecksStage {
 
+    private static final String COOKIE_HEADER = "cookie";
+    private static final String SET_COOKIE_HEADER = "set-cookie";
+
     private final SecurityConfiguration configuration;
     private final PipelineFactory.PipelineSet pipelines;
+    private final HttpSecurityValidator cookieHeaderValuePipeline;
     private final BiPredicate<String, String> reservedPathMatcher;
 
     /**
@@ -60,12 +81,21 @@ public final class BasicChecksStage {
      *                           forwarded to an upstream — is not applied to it (a same-origin
      *                           {@code return_to} path legitimately carries {@code /}, which the
      *                           pipeline would otherwise reject)
+     * @param cookieHeaderConfiguration the policy applied to {@code Cookie} / {@code Set-Cookie}
+     *                           header VALUES only, or {@code null} to validate them under
+     *                           {@code configuration} like every other header. Supplied only by a
+     *                           cookie-mode BFF gateway, whose sealed session cookie exceeds the
+     *                           default header-value cap
      */
     public BasicChecksStage(SecurityConfiguration configuration, SecurityEventCounter eventCounter,
-            BiPredicate<String, String> reservedPathMatcher) {
+            BiPredicate<String, String> reservedPathMatcher,
+            @Nullable SecurityConfiguration cookieHeaderConfiguration) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
-        this.pipelines = PipelineFactory.createCommonPipelines(configuration,
-                Objects.requireNonNull(eventCounter, "eventCounter"));
+        SecurityEventCounter counter = Objects.requireNonNull(eventCounter, "eventCounter");
+        this.pipelines = PipelineFactory.createCommonPipelines(configuration, counter);
+        this.cookieHeaderValuePipeline = cookieHeaderConfiguration == null
+                ? this.pipelines.headerValuePipeline()
+                : PipelineFactory.createHeaderValuePipeline(cookieHeaderConfiguration, counter);
         this.reservedPathMatcher = Objects.requireNonNull(reservedPathMatcher, "reservedPathMatcher");
     }
 
@@ -134,14 +164,24 @@ public final class BasicChecksStage {
     private void validateHeaders(Map<String, List<String>> headers) {
         try {
             for (Map.Entry<String, List<String>> header : headers.entrySet()) {
-                pipelines.headerNamePipeline().validate(header.getKey());
+                String name = header.getKey();
+                pipelines.headerNamePipeline().validate(name);
+                // The header NAME is already in hand here — that is the seam the cookie-mode
+                // carve-out hangs off. Only Cookie / Set-Cookie values may use the raised cap.
+                HttpSecurityValidator valuePipeline = isCookieHeader(name)
+                        ? cookieHeaderValuePipeline
+                        : pipelines.headerValuePipeline();
                 for (String value : header.getValue()) {
-                    pipelines.headerValuePipeline().validate(value);
+                    valuePipeline.validate(value);
                 }
             }
         } catch (UrlSecurityException violation) {
             throw rejected(violation);
         }
+    }
+
+    private static boolean isCookieHeader(String name) {
+        return COOKIE_HEADER.equalsIgnoreCase(name) || SET_COOKIE_HEADER.equalsIgnoreCase(name);
     }
 
     private static GatewayException rejected(UrlSecurityException violation) {

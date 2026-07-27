@@ -93,7 +93,8 @@ class BackchannelLogoutEndpointTest {
         byte[] salt = new byte[32];
         Arrays.fill(salt, (byte) 0x22);
         return new CookieSessionBinding(
-                new SealedSessionCookieCodec(COOKIE_NAME, Duration.ofHours(8), sealingKey, CURRENT_KEY_ID), salt);
+                new SealedSessionCookieCodec(COOKIE_NAME, Duration.ofHours(8),
+                        SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, sealingKey, CURRENT_KEY_ID), salt);
     }
 
     private BackchannelLogoutEndpoint endpoint(AtomicBoolean verifierInvoked) {

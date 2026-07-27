@@ -51,6 +51,7 @@ class CookieSessionBindingTest {
 
     private static final String COOKIE_NAME = "__Host-sheriff-session";
     private static final Duration TTL = Duration.ofHours(8);
+    private static final int BUDGET = SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
     private static final Instant LOGIN = Instant.parse("2026-07-27T10:00:00Z");
     private static final String ACCESS_TOKEN = "raw-access-token-SECRET-material";
     private static final String REFRESH_TOKEN = "raw-refresh-token-SECRET-material";
@@ -65,7 +66,7 @@ class CookieSessionBindingTest {
 
     @BeforeEach
     void setUp() {
-        codec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, aesKey((byte) 0x11), CURRENT_KEY_ID);
+        codec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x11), CURRENT_KEY_ID);
         binding = new CookieSessionBinding(codec, identitySalt());
     }
 
@@ -233,9 +234,9 @@ class CookieSessionBindingTest {
         void setUpRotation() {
             SecretKey previousKey = aesKey((byte) 0x33);
             retiredBinding = new CookieSessionBinding(
-                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, previousKey, PREVIOUS_KEY_ID), identitySalt());
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, previousKey, PREVIOUS_KEY_ID), identitySalt());
             rotatingBinding = new CookieSessionBinding(
-                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, aesKey((byte) 0x11), CURRENT_KEY_ID,
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x11), CURRENT_KEY_ID,
                             previousKey, PREVIOUS_KEY_ID),
                     identitySalt());
         }

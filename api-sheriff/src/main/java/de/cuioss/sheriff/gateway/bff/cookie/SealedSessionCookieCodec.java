@@ -65,10 +65,18 @@ import org.jspecify.annotations.Nullable;
  * session's next write. Withdrawing the previous key makes every value still sealed under it
  * <em>unauthenticated</em> — an unknown key id, hence "no session", never an error.
  * <p>
- * <strong>Size budget.</strong> A sealed value larger than {@link #MAX_COOKIE_VALUE_BYTES} fails
- * the seal with {@link CookieSizeBudgetExceededException} and a logged warning — never a silent
- * truncation. Cookie splitting across multiple {@code Set-Cookie} headers is a deliberate
- * non-goal; an operator whose token set does not fit is expected to reduce it or run server mode.
+ * <strong>Size budget.</strong> A sealed value larger than the configured
+ * {@linkplain #maxCookieValueBytes() budget} fails the seal with
+ * {@link CookieSizeBudgetExceededException} and a logged warning — never a silent truncation. Cookie
+ * splitting across multiple {@code Set-Cookie} headers is a deliberate non-goal; an operator whose
+ * token set does not fit is expected to reduce it or run server mode.
+ * <p>
+ * The budget is <strong>one declared number</strong> ({@code oidc.session.max_cookie_size},
+ * defaulting to {@link #DEFAULT_COOKIE_VALUE_BUDGET}) that drives BOTH ends of the round trip: the
+ * seal-time budget enforced here, and the gateway's pre-route {@code Cookie} header-value cap in
+ * {@code GatewayEdgeRoute}. Encoding the same limit as two independent constants is what made
+ * cookie mode unusable before — every request carrying a live sealed cookie was rejected {@code 400}
+ * at the edge by a 2048-character header-value cap the 4096-byte seal budget contradicted.
  * <p>
  * <strong>Absolute lifetime.</strong> {@link #toSetCookieHeader} sets {@code Max-Age} to the
  * <em>remaining</em> lifetime computed from the payload's login instant, so a re-seal after a token
@@ -89,17 +97,34 @@ public final class SealedSessionCookieCodec {
     /** The current sealed-cookie format version, bound into the GCM associated data. */
     public static final byte FORMAT_VERSION = 1;
 
-    /**
-     * The sealed cookie-value size budget in bytes (~4 KB). Browsers are only required to accept
-     * 4096 bytes per cookie, so a larger value would be silently dropped by the browser.
-     */
-    public static final int MAX_COOKIE_VALUE_BYTES = 4096;
-
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
     private static final int NONCE_BYTES = 12;
     private static final int TAG_BITS = 128;
     private static final int HEADER_BYTES = 2 + NONCE_BYTES;
     private static final int MIN_SEALED_BYTES = HEADER_BYTES + (TAG_BITS / 8);
+
+    /**
+     * The default sealed cookie-value size budget in bytes (~4 KB). Browsers are only required to
+     * accept 4096 bytes per cookie, so a larger value risks being silently dropped by the browser —
+     * which is why the default sits exactly there rather than at the gateway's transport ceiling.
+     */
+    public static final int DEFAULT_COOKIE_VALUE_BUDGET = 4096;
+
+    /**
+     * The smallest configurable budget: the encoded length of a sealed value carrying an
+     * <em>empty</em> plaintext ({@code version || key-id || nonce || tag}, base64url without
+     * padding). A budget below this could not admit even a structurally minimal sealed value, so it
+     * is refused at boot rather than failing every seal at runtime.
+     */
+    public static final int COOKIE_VALUE_BUDGET_FLOOR = (4 * MIN_SEALED_BYTES + 2) / 3;
+
+    /**
+     * The largest configurable budget (8 KiB), deliberately kept well below the gateway's 16 KiB
+     * inbound request-header-block limit ({@code EdgeHardeningOptions}). The {@code Cookie} header
+     * shares that block with every other inbound header, so a budget at or above the transport
+     * ceiling would produce a value the seal accepts but the transport rejects with {@code 431}.
+     */
+    public static final int COOKIE_VALUE_BUDGET_CEILING = 8192;
 
     private static final String DISPOSITION_MALFORMED = "malformed";
     private static final String DISPOSITION_UNKNOWN_VERSION = "unknown-version";
@@ -110,6 +135,7 @@ public final class SealedSessionCookieCodec {
     private final SecureRandom secureRandom = new SecureRandom();
     private final String cookieName;
     private final Duration sessionTtl;
+    private final int maxCookieValueBytes;
     private final SecretKey currentKey;
     private final byte currentKeyId;
     private final @Nullable SecretKey previousKey;
@@ -120,14 +146,18 @@ public final class SealedSessionCookieCodec {
      * current key. This is the shape the generate-on-startup key mode takes, where there is by
      * construction no previous key.
      *
-     * @param cookieName   the session-cookie name (bound into the associated data)
-     * @param sessionTtl   the absolute session lifetime from login
-     * @param currentKey   the AES-256 key new values are sealed under
-     * @param currentKeyId the id identifying {@code currentKey} in the cookie header
+     * @param cookieName          the session-cookie name (bound into the associated data)
+     * @param sessionTtl          the absolute session lifetime from login
+     * @param maxCookieValueBytes the sealed cookie-value size budget, the ONE declared number that
+     *                            also drives the gateway's pre-route {@code Cookie} header-value cap
+     * @param currentKey          the AES-256 key new values are sealed under
+     * @param currentKeyId        the id identifying {@code currentKey} in the cookie header
      */
-    public SealedSessionCookieCodec(String cookieName, Duration sessionTtl, SecretKey currentKey, byte currentKeyId) {
+    public SealedSessionCookieCodec(String cookieName, Duration sessionTtl, int maxCookieValueBytes,
+            SecretKey currentKey, byte currentKeyId) {
         this.cookieName = requireNonBlank(cookieName);
         this.sessionTtl = Objects.requireNonNull(sessionTtl, "sessionTtl");
+        this.maxCookieValueBytes = requireViableBudget(maxCookieValueBytes);
         this.currentKey = Objects.requireNonNull(currentKey, "currentKey");
         this.currentKeyId = currentKeyId;
         this.previousKey = null;
@@ -138,18 +168,21 @@ public final class SealedSessionCookieCodec {
      * Assembles the codec with a decrypt-only rotation key. Values already sealed under
      * {@code previousKey} keep unsealing, but nothing is ever sealed under it again.
      *
-     * @param cookieName    the session-cookie name (bound into the associated data)
-     * @param sessionTtl    the absolute session lifetime from login
-     * @param currentKey    the AES-256 key new values are sealed under
-     * @param currentKeyId  the id identifying {@code currentKey} in the cookie header
-     * @param previousKey   the AES-256 key retired values are still accepted under, decrypt-only
-     * @param previousKeyId the id identifying {@code previousKey}; must differ from
-     *                      {@code currentKeyId}, otherwise the stamped id could not select a key
+     * @param cookieName          the session-cookie name (bound into the associated data)
+     * @param sessionTtl          the absolute session lifetime from login
+     * @param maxCookieValueBytes the sealed cookie-value size budget, the ONE declared number that
+     *                            also drives the gateway's pre-route {@code Cookie} header-value cap
+     * @param currentKey          the AES-256 key new values are sealed under
+     * @param currentKeyId        the id identifying {@code currentKey} in the cookie header
+     * @param previousKey         the AES-256 key retired values are still accepted under, decrypt-only
+     * @param previousKeyId       the id identifying {@code previousKey}; must differ from
+     *                            {@code currentKeyId}, otherwise the stamped id could not select a key
      */
-    public SealedSessionCookieCodec(String cookieName, Duration sessionTtl, SecretKey currentKey, byte currentKeyId,
-            SecretKey previousKey, byte previousKeyId) {
+    public SealedSessionCookieCodec(String cookieName, Duration sessionTtl, int maxCookieValueBytes,
+            SecretKey currentKey, byte currentKeyId, SecretKey previousKey, byte previousKeyId) {
         this.cookieName = requireNonBlank(cookieName);
         this.sessionTtl = Objects.requireNonNull(sessionTtl, "sessionTtl");
+        this.maxCookieValueBytes = requireViableBudget(maxCookieValueBytes);
         this.currentKey = Objects.requireNonNull(currentKey, "currentKey");
         this.currentKeyId = currentKeyId;
         this.previousKey = Objects.requireNonNull(previousKey, "previousKey");
@@ -166,8 +199,8 @@ public final class SealedSessionCookieCodec {
      *
      * @param payload the session payload to seal
      * @return the base64url-encoded sealed cookie value
-     * @throws CookieSizeBudgetExceededException when the sealed value exceeds
-     *         {@link #MAX_COOKIE_VALUE_BYTES}
+     * @throws CookieSizeBudgetExceededException when the sealed value exceeds the configured
+     *         {@linkplain #maxCookieValueBytes() budget}
      */
     public String seal(SealedSessionPayload payload) throws CookieSizeBudgetExceededException {
         Objects.requireNonNull(payload, "payload");
@@ -189,9 +222,9 @@ public final class SealedSessionCookieCodec {
         byte[] value = ByteBuffer.allocate(HEADER_BYTES + sealed.length)
                 .put(FORMAT_VERSION).put(currentKeyId).put(nonce).put(sealed).array();
         String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(value);
-        if (encoded.length() > MAX_COOKIE_VALUE_BYTES) {
+        if (encoded.length() > maxCookieValueBytes) {
             LOGGER.warn(BffLogMessages.WARN.COOKIE_SIZE_BUDGET_EXCEEDED, encoded.length());
-            throw new CookieSizeBudgetExceededException(encoded.length(), MAX_COOKIE_VALUE_BYTES);
+            throw new CookieSizeBudgetExceededException(encoded.length(), maxCookieValueBytes);
         }
         LOGGER.info(BffLogMessages.INFO.COOKIE_SESSION_SEALED, encoded.length());
         return encoded;
@@ -312,6 +345,14 @@ public final class SealedSessionCookieCodec {
         return sessionTtl;
     }
 
+    /**
+     * @return the configured sealed cookie-value size budget in bytes — the same declared number the
+     *         gateway derives its pre-route {@code Cookie} header-value cap from
+     */
+    public int maxCookieValueBytes() {
+        return maxCookieValueBytes;
+    }
+
     private byte[] associatedData(byte version, byte keyId) {
         byte[] name = cookieName.getBytes(StandardCharsets.UTF_8);
         return ByteBuffer.allocate(name.length + 2).put(name).put(version).put(keyId).array();
@@ -320,6 +361,19 @@ public final class SealedSessionCookieCodec {
     private static Optional<Unsealed> reject(String disposition) {
         LOGGER.warn(BffLogMessages.WARN.COOKIE_UNSEAL_REJECTED, disposition);
         return Optional.empty();
+    }
+
+    /**
+     * Refuses a budget that could not admit even a structurally minimal sealed value. The
+     * operator-facing bounds check (floor AND ceiling, with a config-pointer message) lives in
+     * {@code ConfigValidator}; this is the codec's own structural guard for programmatic callers.
+     */
+    private static int requireViableBudget(int maxCookieValueBytes) {
+        if (maxCookieValueBytes < COOKIE_VALUE_BUDGET_FLOOR) {
+            throw new IllegalArgumentException("maxCookieValueBytes must be at least %d, but was %d"
+                    .formatted(COOKIE_VALUE_BUDGET_FLOOR, maxCookieValueBytes));
+        }
+        return maxCookieValueBytes;
     }
 
     private static String requireNonBlank(String cookieName) {

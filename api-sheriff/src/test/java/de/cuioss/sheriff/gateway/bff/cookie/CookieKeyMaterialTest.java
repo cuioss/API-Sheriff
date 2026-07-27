@@ -27,7 +27,6 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
 
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -45,6 +44,7 @@ class CookieKeyMaterialTest {
 
     private static final String COOKIE_NAME = "__Host-sheriff-session";
     private static final Duration TTL = Duration.ofHours(8);
+    private static final int BUDGET = SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
     private static final Instant LOGIN = Instant.parse("2026-07-27T10:00:00Z");
     private static final String CURRENT_KEY_B64 = base64Key((byte) 0x11);
     private static final String PREVIOUS_KEY_B64 = base64Key((byte) 0x33);
@@ -84,11 +84,11 @@ class CookieKeyMaterialTest {
             // Before the rotation the retired key was THE key, so it sealed under its own id.
             CookieKeyMaterial beforeRotation =
                     CookieKeyMaterial.resolve(Optional.of(PREVIOUS_KEY_B64), Optional.empty());
-            String sealedBeforeRotation = beforeRotation.codec(COOKIE_NAME, TTL).seal(payload());
+            String sealedBeforeRotation = beforeRotation.codec(COOKIE_NAME, TTL, BUDGET).seal(payload());
 
             CookieKeyMaterial rotating =
                     CookieKeyMaterial.resolve(Optional.of(CURRENT_KEY_B64), Optional.of(PREVIOUS_KEY_B64));
-            SealedSessionCookieCodec rotatingCodec = rotating.codec(COOKIE_NAME, TTL);
+            SealedSessionCookieCodec rotatingCodec = rotating.codec(COOKIE_NAME, TTL, BUDGET);
 
             assertTrue(rotating.hasPreviousKey());
             assertEquals(Optional.of(payload()), rotatingCodec.unseal(sealedBeforeRotation)
@@ -107,7 +107,7 @@ class CookieKeyMaterialTest {
         void shouldRoundTripThroughItsCodec() throws Exception {
             SealedSessionCookieCodec codec = CookieKeyMaterial
                     .resolve(Optional.of(CURRENT_KEY_B64), Optional.empty())
-                    .codec(COOKIE_NAME, TTL);
+                    .codec(COOKIE_NAME, TTL, BUDGET);
 
             assertEquals(Optional.of(payload()), codec.unseal(codec.seal(payload()))
                     .map(SealedSessionCookieCodec.Unsealed::payload));
@@ -199,9 +199,9 @@ class CookieKeyMaterialTest {
         @DisplayName("Should generate a distinct key per boot, so a restart drops every session")
         void shouldGenerateADistinctKeyPerBoot() throws Exception {
             SealedSessionCookieCodec firstBoot =
-                    CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL);
+                    CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL, BUDGET);
             SealedSessionCookieCodec secondBoot =
-                    CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL);
+                    CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL, BUDGET);
 
             String sealedBeforeRestart = firstBoot.seal(payload());
 

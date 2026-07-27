@@ -57,6 +57,7 @@ class SealedSessionCookieCodecTest {
     private static final String COOKIE_NAME = "__Host-sheriff-session";
     private static final String OTHER_COOKIE_NAME = "__Host-other-session";
     private static final Duration TTL = Duration.ofHours(8);
+    private static final int BUDGET = SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
     private static final Instant LOGIN = Instant.parse("2026-07-27T10:00:00Z");
     private static final byte KEY_ID = 1;
     private static final byte OTHER_KEY_ID = 2;
@@ -71,7 +72,7 @@ class SealedSessionCookieCodecTest {
     @BeforeEach
     void setUp() {
         key = aesKey((byte) 0x11);
-        codec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, KEY_ID);
+        codec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID);
     }
 
     private static SecretKey aesKey(byte fill) {
@@ -166,7 +167,7 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should reject a value sealed for a different cookie name (AAD binding)")
         void shouldRejectCookieNameMismatch() throws Exception {
             String sealed = codec.seal(payload());
-            SealedSessionCookieCodec otherName = new SealedSessionCookieCodec(OTHER_COOKIE_NAME, TTL, key, KEY_ID);
+            SealedSessionCookieCodec otherName = new SealedSessionCookieCodec(OTHER_COOKIE_NAME, TTL, BUDGET, key, KEY_ID);
 
             assertTrue(otherName.unseal(sealed).isEmpty(),
                     "the cookie name is bound into the associated data, so a value cannot be replayed under another name");
@@ -186,7 +187,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should reject an unknown key id without trying the key it does hold")
         void shouldRejectUnknownKeyId() throws Exception {
-            SealedSessionCookieCodec otherKeyId = new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, OTHER_KEY_ID);
+            SealedSessionCookieCodec otherKeyId = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, OTHER_KEY_ID);
             String sealedUnderOtherId = otherKeyId.seal(payload());
 
             assertTrue(codec.unseal(sealedUnderOtherId).isEmpty(),
@@ -197,7 +198,7 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should reject a value sealed under a different key")
         void shouldRejectForeignKey() throws Exception {
             SealedSessionCookieCodec foreign =
-                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, aesKey((byte) 0x22), KEY_ID);
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x22), KEY_ID);
             String sealedUnderForeignKey = foreign.seal(payload());
 
             assertTrue(codec.unseal(sealedUnderForeignKey).isEmpty(), "a foreign key fails the tag check");
@@ -225,8 +226,9 @@ class SealedSessionCookieCodecTest {
         @BeforeEach
         void setUpRotation() {
             previousKey = aesKey((byte) 0x33);
-            retiredCodec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, previousKey, PREVIOUS_KEY_ID);
-            rotating = new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, KEY_ID, previousKey, PREVIOUS_KEY_ID);
+            retiredCodec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, previousKey, PREVIOUS_KEY_ID);
+            rotating = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID, previousKey,
+                    PREVIOUS_KEY_ID);
         }
 
         @Test
@@ -263,7 +265,7 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should treat a previous-key value as no session once the previous key is withdrawn")
         void shouldRejectPreviousKeyValueAfterWithdrawal() throws Exception {
             String sealedUnderPreviousKey = retiredCodec.seal(payload());
-            SealedSessionCookieCodec currentKeyOnly = new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, KEY_ID);
+            SealedSessionCookieCodec currentKeyOnly = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID);
 
             assertTrue(currentKeyOnly.unseal(sealedUnderPreviousKey).isEmpty(),
                     "withdrawing the previous key makes the old cookie unauthenticated, never an error");
@@ -273,7 +275,7 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should refuse a previous key that reuses the current key id")
         void shouldRefuseAmbiguousKeyIds() {
             IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                    () -> new SealedSessionCookieCodec(COOKIE_NAME, TTL, key, KEY_ID, previousKey, KEY_ID));
+                    () -> new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID, previousKey, KEY_ID));
 
             assertTrue(thrown.getMessage().contains("previousKeyId"), thrown.getMessage());
         }
@@ -286,14 +288,14 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should refuse to seal a payload whose value exceeds the budget, never truncate")
         void shouldRefuseOversizedPayload() {
-            String huge = "x".repeat(SealedSessionCookieCodec.MAX_COOKIE_VALUE_BYTES * 2);
+            String huge = "x".repeat(BUDGET * 2);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, Optional.empty(), ID_TOKEN, SUB,
                     Optional.empty(), Optional.empty(), Optional.empty(), LOGIN);
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));
 
-            assertEquals(SealedSessionCookieCodec.MAX_COOKIE_VALUE_BYTES, thrown.budget());
+            assertEquals(BUDGET, thrown.budget());
             assertTrue(thrown.sealedLength() > thrown.budget(),
                     "the reported length is the value that would have been emitted");
         }
@@ -392,7 +394,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should keep key material out of the exception message on an oversized seal")
         void shouldNotLeakKeyMaterialIntoTheOverBudgetMessage() {
-            String huge = "x".repeat(SealedSessionCookieCodec.MAX_COOKIE_VALUE_BYTES * 2);
+            String huge = "x".repeat(BUDGET * 2);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, Optional.empty(), ID_TOKEN, SUB,
                     Optional.empty(), Optional.empty(), Optional.empty(), LOGIN);
 

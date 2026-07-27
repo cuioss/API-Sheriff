@@ -31,6 +31,7 @@ import java.util.function.Supplier;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
@@ -316,15 +317,22 @@ public class BffRuntimeProducer {
      * generate-on-startup mode additionally raises the catalogued INFO
      * {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
      * sessions-die-on-restart consequence is operationally notable rather than merely diagnostic.
+     * <p>
+     * The codec's seal-time size budget comes from {@code oidc.session.max_cookie_size} — the single
+     * declared number that also drives the edge's pre-route {@code Cookie} header-value cap, so the
+     * two ends of the round trip cannot drift apart.
      */
     private static SessionBinding cookieSessionBinding(Optional<OidcConfig.Session> session, String cookieName,
             Duration sessionTtl) {
         CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(
                 session.flatMap(OidcConfig.Session::encryptionKey),
                 session.flatMap(OidcConfig.Session::previousKey));
-        LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s",
-                keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey());
-        return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl), keyMaterial.identitySalt());
+        int maxCookieSize = session.flatMap(OidcConfig.Session::maxCookieSize)
+                .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s, maxCookieSize=%s",
+                keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey(), maxCookieSize);
+        return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
+                keyMaterial.identitySalt());
     }
 
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,

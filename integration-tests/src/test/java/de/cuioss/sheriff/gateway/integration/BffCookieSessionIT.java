@@ -116,7 +116,14 @@ class BffCookieSessionIT {
         Response echo = BffKeycloakLoginFlow.gateway(session.gatewayCookies(), COOKIE_ORIGIN)
                 .when().get(SESSION_ROUTE)
                 .then().statusCode(200).extract().response();
-        String mediatedToken = compactJwtIn(String.valueOf(echo.path("headers.Authorization")));
+        // Bind the echo to Object first, exactly as the sibling assertions below do. Passing
+        // response.path(...) straight into String.valueOf() lets the generic return type infer to
+        // char[] (the String.valueOf(char[]) overload wins), so the compiler inserts a cast the
+        // JSON-path proxy cannot satisfy — a ClassCastException that has nothing to do with the
+        // assertion under test.
+        Object authorizationEcho = echo.path("headers.Authorization");
+        assertNotNull(authorizationEcho, "the sealed session must mediate a bearer to the upstream");
+        String mediatedToken = compactJwtIn(authorizationEcho.toString());
 
         // Assert — no segment of the live access token may be readable in the cookie the browser holds.
         for (String segment : mediatedToken.split("\\.")) {

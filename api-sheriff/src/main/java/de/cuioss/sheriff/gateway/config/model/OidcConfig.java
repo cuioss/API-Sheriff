@@ -146,13 +146,20 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
      * @param maxSessions   the server-mode upper bound on concurrently stored
      *                      sessions — a DoS guard on the in-memory store, empty
      *                      when omitted
+     * @param maxCookieSize the cookie-mode sealed cookie-value size budget in
+     *                      bytes, empty when omitted (the codec's
+     *                      {@code DEFAULT_COOKIE_VALUE_BUDGET} then applies). It is
+     *                      the single declared number driving BOTH the seal-time
+     *                      budget and the gateway's pre-route {@code Cookie}
+     *                      header-value cap
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
     public record Session(Optional<String> mode, Optional<String> store, Optional<String> cookieName,
     Optional<String> encryptionKey, Optional<String> previousKey, Optional<Integer> ttlSeconds,
-    Optional<Csrf> csrf, Optional<Refresh> refresh, Optional<Integer> maxSessions) {
+    Optional<Csrf> csrf, Optional<Refresh> refresh, Optional<Integer> maxSessions,
+    Optional<Integer> maxCookieSize) {
 
         /**
          * Canonical constructor normalizing absent components to {@link Optional#empty()}.
@@ -167,6 +174,7 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
             csrf = Objects.requireNonNullElse(csrf, Optional.empty());
             refresh = Objects.requireNonNullElse(refresh, Optional.empty());
             maxSessions = Objects.requireNonNullElse(maxSessions, Optional.empty());
+            maxCookieSize = Objects.requireNonNullElse(maxCookieSize, Optional.empty());
         }
 
         /**
@@ -179,9 +187,9 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
          */
         @Override
         public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s]"
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s]"
                     .formatted(mode, store, cookieName, redact(encryptionKey), redact(previousKey), ttlSeconds, csrf,
-                            refresh, maxSessions);
+                            refresh, maxSessions, maxCookieSize);
         }
     }
 

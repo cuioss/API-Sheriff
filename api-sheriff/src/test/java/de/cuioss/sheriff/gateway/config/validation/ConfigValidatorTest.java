@@ -1433,5 +1433,37 @@ class ConfigValidatorTest {
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
         }
+
+        @ParameterizedTest(name = "max_cookie_size = {0} is rejected")
+        @ValueSource(ints = {0, -1, 39, 8193, 65536})
+        @DisplayName("Should reject a session max_cookie_size outside the viable budget bounds")
+        void shouldRejectOutOfBoundsMaxCookieSize(int maxCookieSize) {
+            // Arrange — below the floor no sealed value could ever be emitted; above the ceiling the
+            // derived pre-route Cookie cap would exceed what the transport carries.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(Optional.of(OidcConfig.Session.builder()
+                            .maxCookieSize(Optional.of(maxCookieSize)).build()))
+                    .build());
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Assert
+            assertHasError(errors, "/oidc/session/max_cookie_size", "must be between");
+        }
+
+        @ParameterizedTest(name = "max_cookie_size = {0} is accepted")
+        @ValueSource(ints = {40, 4096, 8192})
+        @DisplayName("Should accept a session max_cookie_size on and inside the viable budget bounds")
+        void shouldAcceptInBoundsMaxCookieSize(int maxCookieSize) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(Optional.of(OidcConfig.Session.builder()
+                            .maxCookieSize(Optional.of(maxCookieSize)).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
     }
 }

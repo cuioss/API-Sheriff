@@ -138,17 +138,19 @@ public final class CookieKeyMaterial {
      * Builds the sealed-cookie codec over this material, wiring the decrypt-only previous key only
      * when one is active.
      *
-     * @param cookieName the session-cookie name bound into the associated data
-     * @param sessionTtl the absolute session lifetime from login
+     * @param cookieName          the session-cookie name bound into the associated data
+     * @param sessionTtl          the absolute session lifetime from login
+     * @param maxCookieValueBytes the configured sealed cookie-value size budget
      * @return the codec sealing under the current key and, when rotating, unsealing under both
      */
-    public SealedSessionCookieCodec codec(String cookieName, Duration sessionTtl) {
+    public SealedSessionCookieCodec codec(String cookieName, Duration sessionTtl, int maxCookieValueBytes) {
         SecretKey retired = previousKey;
         if (retired == null) {
-            return new SealedSessionCookieCodec(cookieName, sessionTtl, currentKey, currentKeyId());
+            return new SealedSessionCookieCodec(cookieName, sessionTtl, maxCookieValueBytes, currentKey,
+                    currentKeyId());
         }
-        return new SealedSessionCookieCodec(cookieName, sessionTtl, currentKey, currentKeyId(), retired,
-                keyIdOf(retired));
+        return new SealedSessionCookieCodec(cookieName, sessionTtl, maxCookieValueBytes, currentKey, currentKeyId(),
+                retired, keyIdOf(retired));
     }
 
     /**

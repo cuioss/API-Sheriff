@@ -45,12 +45,14 @@ import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -148,6 +150,18 @@ public class GatewayEdgeRoute {
 
     private static final String PROBLEM_JSON = "application/problem+json";
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
+
+    /** The {@code oidc.session.mode} value selecting the stateless sealed-cookie BFF variant. */
+    private static final String SESSION_MODE_COOKIE = "cookie";
+
+    /**
+     * Headroom added to the configured sealed-cookie budget when deriving the pre-route
+     * {@code Cookie} header-value cap. The header value carries {@code <name>=<value>} and may carry
+     * co-resident cookies (the short-lived binding cookie) alongside the session cookie, so the cap
+     * cannot be the bare value budget. The sum stays far below the gateway's 16 KiB inbound
+     * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
+     */
+    private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
     private static final String REQUIRE_SESSION = "session";
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
@@ -274,7 +288,8 @@ public class GatewayEdgeRoute {
         this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
-                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent());
+                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent(),
+                cookieHeaderConfigurationFor(gatewayConfig, bffRuntime));
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
@@ -999,6 +1014,49 @@ public class GatewayEdgeRoute {
      * seeding the safe builder defaults and overriding only the limits the route declared, so an
      * undeclared dimension never falls below the gateway baseline.
      */
+    /**
+     * Derives the pre-route {@code Cookie} header-value policy from the gateway document, returning
+     * {@code null} for every gateway that is not an active cookie-mode BFF.
+     * <p>
+     * <strong>Why this exists.</strong> Stage 1 validates every inbound header value against the
+     * cui-http default {@code maxHeaderValueLength} of 2048 characters, while a cookie-mode BFF's
+     * sealed session cookie is designed to a multi-kilobyte budget. Encoded as two independent
+     * constants, the two limits contradicted each other inside the same product: every request
+     * carrying a live sealed cookie was rejected {@code 400} at the edge before any BFF logic ran.
+     * The single declared budget ({@code oidc.session.max_cookie_size}, defaulting to
+     * {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) now drives BOTH ends of the round
+     * trip — the codec's seal-time budget and this pre-route cap.
+     * <p>
+     * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only or server-mode gateway
+     * gets {@code null} and keeps the 2048 default on every header, exactly as before. By HEADER:
+     * within a cookie-mode gateway the raised cap applies to the {@code Cookie} / {@code Set-Cookie}
+     * values only — {@link BasicChecksStage} keeps the default policy for every other header, and
+     * every non-length validator (null-byte, control-character, injection-pattern) still applies to
+     * the cookie value. It remains a deliberate relaxation of an inbound hardening control, held as
+     * narrow as the pre-route position allows.
+     * <p>
+     * <strong>Recorded constraint — enforcement is gateway-wide, not per-anchor.</strong> Stage 1
+     * runs BEFORE route selection and this bean holds the whole route table, so no anchor exists at
+     * that point. The configuration key lives on the global {@code oidc.session} block for exactly
+     * that reason; its placement must not be read as per-anchor enforcement.
+     */
+    private static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
+            BffRuntime bffRuntime) {
+        Optional<OidcConfig.Session> session = gatewayConfig.oidc().flatMap(OidcConfig::session);
+        boolean cookieMode = bffRuntime.isActive() && session.flatMap(OidcConfig.Session::mode)
+                .filter(SESSION_MODE_COOKIE::equalsIgnoreCase).isPresent();
+        if (!cookieMode) {
+            return null;
+        }
+        int budget = session.flatMap(OidcConfig.Session::maxCookieSize)
+                .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        // SecurityConfiguration.builder() with no overrides IS SecurityConfiguration.defaults(), so
+        // this differs from the gateway default in maxHeaderValueLength and nothing else.
+        return SecurityConfiguration.builder()
+                .maxHeaderValueLength(budget + COOKIE_HEADER_OVERHEAD_BYTES)
+                .build();
+    }
+
     private static SecurityConfiguration securityConfigurationFor(SecurityFilterConfig filter) {
         SecurityConfigurationBuilder builder = SecurityConfiguration.builder();
         filter.maxBodyBytes().ifPresent(value -> builder.maxBodySize(value.longValue()));

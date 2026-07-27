@@ -319,7 +319,8 @@ class TokenRefreshCoordinatorTest {
             byte[] salt = new byte[32];
             Arrays.fill(salt, (byte) 0x22);
             cookieBinding = new CookieSessionBinding(
-                    new SealedSessionCookieCodec(COOKIE_NAME, SESSION_TTL, key, (byte) 1), salt);
+                    new SealedSessionCookieCodec(COOKIE_NAME, SESSION_TTL,
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, key, (byte) 1), salt);
 
             SessionBinding.BoundSession bound = cookieBinding.bind(session(CURRENT_REFRESH), NOW);
             String setCookie = bound.setCookieHeaders().getFirst();
