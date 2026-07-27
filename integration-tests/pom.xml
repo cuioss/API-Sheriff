@@ -144,6 +144,47 @@
     </build>
 
     <profiles>
+        <!-- Restricts the JaCoCo coverage gate to this module's hand-written main sources.
+
+             Every other class under de.cuioss.sheriff.gateway.integration.grpc is GENERATED
+             at build time by quarkus-grpc/protoc from echo.proto — the message and stub types
+             for both declared services (Echo and SecureEcho): Echo*/SecureEcho* plus the
+             Mutiny*Grpc stubs and their nested Stub/ImplBase/MethodHandlers/Builder types.
+             Hence the four name prefixes below. Those stubs carry a large body of protobuf
+             branches that no test in this repository exercises (skipITs=true by default, so
+             the IT suite never runs under -Pcoverage), which dragged the whole module bundle
+             to 0.13 branch / 0.14 instruction and failed the inherited coverage gate on code
+             nobody here writes or maintains. It is the same generated-code rationale that
+             already motivates sonar.skip and maven.javadoc.skip above.
+
+             The exclusions are CLASS-scoped, deliberately NOT package-scoped: the module's
+             sole hand-written main class, GrpcEchoService, lives in that very package and
+             MUST stay measured — it is fully covered by GrpcEchoServiceTest, including both
+             branches of the serverStream count clamp. Any future hand-written class here
+             stays measured too, provided it is not named Echo*/MutinyEcho*/SecureEcho*.
+
+             No coverage threshold is lowered, here or anywhere else, and the api-sheriff
+             module's coverage configuration is untouched. -->
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <configuration>
+                            <excludes>
+                                <exclude>de/cuioss/sheriff/gateway/integration/grpc/Echo*.class</exclude>
+                                <exclude>de/cuioss/sheriff/gateway/integration/grpc/SecureEcho*.class</exclude>
+                                <exclude>de/cuioss/sheriff/gateway/integration/grpc/MutinyEcho*.class</exclude>
+                                <exclude>de/cuioss/sheriff/gateway/integration/grpc/MutinySecureEcho*.class</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. Activated
              only by the grpc-echo Dockerfile build stage; it re-enables the Quarkus
              'build' goal that the normal module build deliberately leaves disabled. The
