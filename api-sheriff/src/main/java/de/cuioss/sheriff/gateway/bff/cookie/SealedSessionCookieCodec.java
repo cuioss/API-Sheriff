@@ -243,7 +243,9 @@ public final class SealedSessionCookieCodec {
         byte[] raw;
         try {
             raw = Base64.getUrlDecoder().decode(cookieValue);
-        } catch (IllegalArgumentException notBase64) {
+        } catch (IllegalArgumentException _) {
+            // Covers a cookie value that is not valid base64url at all (truncated, re-encoded by an
+            // intermediary, or simply foreign) — "no session", never an error.
             return reject(DISPOSITION_MALFORMED);
         }
         if (raw.length < MIN_SEALED_BYTES) {
@@ -278,7 +280,7 @@ public final class SealedSessionCookieCodec {
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, nonce));
             cipher.updateAAD(associatedData(version, keyId));
             plaintext = cipher.doFinal(sealed);
-        } catch (GeneralSecurityException tamperedOrMisconfigured) {
+        } catch (GeneralSecurityException _) {
             // Covers the tag mismatch (tampered ciphertext / nonce / tag, or a value replayed under
             // a different cookie name or key generation) — all are "no session", never an error.
             return reject(DISPOSITION_TAG);
