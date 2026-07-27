@@ -37,11 +37,15 @@
         <!-- Docker compose directory for k6 benchmarks -->
         <integration.compose.dir>${project.basedir}/../integration-tests</integration.compose.dir>
 
-        <!-- Integration test service URLs (host access via published ports) -->
+        <!-- Integration test service URLs (host access via published ports).
+             The management port is HTTPS: Quarkus' management interface has exactly one port, so
+             activating TLS converted 19000->9000 itself. integration.management.url is handed to
+             the pre-flight gate as MANAGEMENT_URL; leaving it on http fails pre-flight against a
+             correctly-working stack. -->
         <integration.service.url>https://localhost:10443</integration.service.url>
-        <integration.management.url>http://localhost:19000</integration.management.url>
+        <integration.management.url>https://localhost:19000</integration.management.url>
         <keycloak.url>https://localhost:1443</keycloak.url>
-        <quarkus.metrics.url>http://localhost:19000</quarkus.metrics.url>
+        <quarkus.metrics.url>https://localhost:19000</quarkus.metrics.url>
 
         <!-- k6 Configuration Properties -->
         <k6.duration>60s</k6.duration>

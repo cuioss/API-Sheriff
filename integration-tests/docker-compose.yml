@@ -172,7 +172,7 @@ services:
 
     ports:
       - "10443:8443"  # External test port for integration tests
-      - "19000:9000"  # Management interface (health/metrics, plain HTTP)
+      - "19000:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
 
     environment:
       # Activate the "it" Quarkus profile so the token-sheriff validation issuer
@@ -191,6 +191,15 @@ services:
       # Certificate paths (runtime override)
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, symmetric with the main-listener pair above and reusing
+      # the already-mounted ./src/main/docker/certificates volume (no new key material, no new
+      # mount). Quarkus' management interface has exactly ONE port — it declares no ssl-port and no
+      # insecure-requests — so supplying these two keys converts port 9000 itself to HTTPS. Every
+      # consumer of 9000 (host readiness probes, Prometheus, the k6 health benchmarks) must speak
+      # TLS with -k / insecure_skip_verify, because the certificate is the self-signed localhost
+      # bundle.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       # File-based configuration mounted at /app/sheriff-config: the proxy edge
@@ -254,7 +263,11 @@ services:
           memory: 256M
           cpus: '1.0'
 
-    # Health check: startup script probes management interface (port 9000, plain HTTP)
+    # Health check: no in-container healthcheck (the distroless image ships neither a shell nor
+    # curl). Readiness is gated host-side by start-integration-container.sh probing the published
+    # management port 19000 over HTTPS with -k. The in-image src/main/docker/health-check.sh probes
+    # the application port 8443 via /dev/tcp and never touches 9000, so it is unaffected by the
+    # management-TLS switch.
 
     # Network isolation (production pattern)
     networks:
@@ -284,13 +297,19 @@ services:
       - -Djavax.net.ssl.trustStoreType=PKCS12
     ports:
       - "10444:8443"  # External test port for MtlsHandshakeIT (test.mtls.port)
-      - "19001:9000"  # Management interface (health/metrics, plain HTTP)
+      - "19001:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
     environment:
       - QUARKUS_PROFILE=it
       - LOG_FILE_PATH=/logs/quarkus-mtls.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
+      # see that service's comment for the single-port mechanism. Without it this instance's
+      # management port 19001 stays plain HTTP while the primary's is HTTPS, and the host-side
+      # readiness wait in start-integration-container.sh (now https + -k for both) would hang.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
       # Pin the terminated HTTPS listener to TLS 1.2 so the require-client-cert rejection is

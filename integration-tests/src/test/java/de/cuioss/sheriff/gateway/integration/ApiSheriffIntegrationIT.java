@@ -46,6 +46,31 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
     }
 
     /**
+     * Pins the target of the {@code gatewayHealth} k6 benchmark.
+     * <p>
+     * Consumer: {@code benchmarks/src/main/resources/k6-scripts/gateway_health.js}, whose
+     * {@code TARGET_URL} default is {@code https://api-sheriff:9000/q/health} — the same scheme and
+     * path this test drives, on the same management port.
+     * <p>
+     * <strong>Contract being pinned:</strong> moving this endpoint, or reverting the management
+     * interface to plain HTTP, breaks the {@code gatewayHealth} benchmark. This guard lives here
+     * rather than in the benchmark pre-flight because {@code .github/workflows/benchmark.yml} runs
+     * only on {@code pull_request: types: [closed]}, tags and {@code workflow_dispatch} — it never
+     * runs on an open PR and is therefore not merge-queue gated. That blind spot is precisely how a
+     * red {@code gatewayHealth} benchmark merged four times. The integration-test job IS merge-queue
+     * gated, so a break is caught before merge only if it is caught here.
+     */
+    @Test
+    void benchmarkGatewayHealthTargetServesOverHttps() {
+        given()
+                .baseUri(managementBaseUri())
+                .when()
+                .get("/q/health")
+                .then()
+                .statusCode(200);
+    }
+
+    /**
      * Test that metrics endpoint is available on the management interface.
      */
     @Test

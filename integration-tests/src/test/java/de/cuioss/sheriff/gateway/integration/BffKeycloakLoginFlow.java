@@ -17,13 +17,12 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 
+import io.restassured.response.Response;
+import io.restassured.specification.RequestSpecification;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import io.restassured.response.Response;
-import io.restassured.specification.RequestSpecification;
 
 /**
  * Drives a scripted, browser-less OIDC authorization-code flow against the compose Keycloak

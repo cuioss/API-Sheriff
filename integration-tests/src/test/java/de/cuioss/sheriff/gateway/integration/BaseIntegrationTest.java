@@ -46,14 +46,21 @@ public abstract class BaseIntegrationTest {
     }
 
     /**
-     * Returns the management interface base URI (plain HTTP, port 19000).
+     * Returns the management interface base URI (HTTPS, port 19000).
      * Health and metrics endpoints are served on the management port
      * when {@code quarkus.management.enabled=true}.
+     * <p>
+     * The scheme is HTTPS, not plain HTTP: Quarkus' management interface has exactly one port
+     * (its config declares no {@code ssl-port} and no {@code insecure-requests}), so supplying
+     * {@code quarkus.management.ssl.certificate.*} — which the compose stack now does — converts
+     * port 9000 itself to HTTPS. No plain-HTTP management listener remains. The self-signed
+     * certificate needs no extra work here: {@link #setUpBaseIntegrationTest()} already calls
+     * {@link RestAssured#useRelaxedHTTPSValidation()}.
      *
      * @return management base URI for health/metrics endpoints
      */
     static String managementBaseUri() {
         String managementPort = System.getProperty("test.management.port", DEFAULT_MANAGEMENT_PORT);
-        return "http://localhost:" + managementPort;
+        return "https://localhost:" + managementPort;
     }
 }

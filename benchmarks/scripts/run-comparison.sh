@@ -40,8 +40,8 @@ set -euo pipefail
 
 # --- the matrix -------------------------------------------------------------
 # Aspect name -> k6 script. ONLY these eight are comparable across gateways. The retained
-# healthLiveCheck and gatewayHealth benchmarks are deliberately absent: they measure API Sheriff's
-# own management port and /api/health surface, which APISIX does not expose. Driving them under
+# healthLiveCheck and gatewayHealth benchmarks are deliberately absent: both measure API Sheriff's
+# own management port, which APISIX does not expose. Driving them under
 # GATEWAY_TARGET=apisix would still label their summaries `gateway_target: apisix` while actually
 # measuring API Sheriff -- mislabelled data that reads as correct. Keeping the matrix closed here
 # is what makes that unreachable.

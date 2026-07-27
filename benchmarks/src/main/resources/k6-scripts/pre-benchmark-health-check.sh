@@ -1,5 +1,13 @@
 #!/bin/bash
-# Pre-flight check: verify Quarkus, Prometheus, and Keycloak are reachable before benchmarks start
+# Pre-flight check: verify every BENCHMARK TARGET is actually served before the lane starts.
+#
+# This gate exists so a broken target fails here, naming the target, rather than 60 seconds later
+# as an opaque k6 threshold breach. It covers both halves of the matrix:
+#   - the management interface (HTTPS), which the gatewayHealth and healthLiveCheck benchmarks drive;
+#   - the gateway DATA PLANE, which every other benchmark drives. Only the proxiedStatic route is
+#     probed: it is the matrix baseline, so its failure invalidates every other data-plane number.
+# Prometheus and Keycloak are supporting infrastructure, not benchmark targets, but a benchmark run
+# without them yields artifacts with missing metrics or failing auth, so they are gated too.
 set -e
 
 INTEGRATION_SERVICE_URL="${INTEGRATION_SERVICE_URL:?INTEGRATION_SERVICE_URL must be set}"
@@ -26,14 +34,20 @@ check_service() {
         sleep $RETRY_INTERVAL
     done
 
-    echo "ERROR: ${name} at ${url} did not become ready within $((MAX_RETRIES * RETRY_INTERVAL))s"
+    echo "ERROR: benchmark target '${name}' at ${url} did not serve 200 within $((MAX_RETRIES * RETRY_INTERVAL))s"
+    echo "ERROR: aborting the benchmark lane — a benchmark against an unserved target measures nothing."
     return 1
 }
 
-echo "=== Pre-Benchmark Health Check ==="
+echo "=== Pre-Benchmark Target Check ==="
 
-check_service "Quarkus (health/live)" "${MANAGEMENT_URL}/q/health/live"
+# Management floor first: establish that the instance is alive before asking it to route.
+check_service "Quarkus management (health/live)" "${MANAGEMENT_URL}/q/health/live"
 check_service "Prometheus" "${PROMETHEUS_URL}/-/ready"
 check_service "Keycloak" "${KEYCLOAK_URL}/health/ready"
+# Data-plane target. Until this probe existed INTEGRATION_SERVICE_URL was required but never used,
+# so a deleted or misrouted data-plane route sailed through pre-flight and surfaced only as a k6
+# threshold breach. /proxy/static is the matrix baseline driven by proxied_static.js.
+check_service "Gateway data plane (proxiedStatic target)" "${INTEGRATION_SERVICE_URL}/proxy/static"
 
-echo "=== All services are ready. Proceeding with benchmarks. ==="
+echo "=== All benchmark targets are served. Proceeding with benchmarks. ==="

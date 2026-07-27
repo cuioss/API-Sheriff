@@ -1,5 +1,7 @@
 {
-  "best_practices": [],
+  "best_practices": [
+    "Treat a non-zero exit from any .plan/execute-script.py manage-* call as a hard stop, never as a warning to log and continue. An argparse rejection (exit 2) bypasses the script body entirely, so the intended write never lands: in plan benchmark-health-target a 'manage-findings qgate add' rejection silently dropped a phase-5 escalation, which surfaced only as an extra orchestrator round-trip. Verify the subcommand and flag names against the script's --help before invoking, and escalate rather than proceed when a call is rejected."
+  ],
   "insights": [
     "CI aggregation gates (build/conclusion, integration-tests/conclusion) fail only as derivatives of their upstream jobs, and a red build/sonar-build with successful scanner auth means a genuine server-side SonarCloud new-code quality-gate verdict (fetchable without credentials via the public sonarcloud.io API) \u2014 triage the upstream cause, never the aggregation gate.",
     "CI rollup 'conclusion' gate jobs (build / conclusion, integration-tests / conclusion) fail solely as mirrors of their failing child job; the project treats them as carrying no independent root cause and dispositions them taken_into_account, triaging only the child job's failure."

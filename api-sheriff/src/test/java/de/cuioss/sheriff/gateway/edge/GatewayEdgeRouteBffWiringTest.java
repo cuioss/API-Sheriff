@@ -297,7 +297,7 @@ class GatewayEdgeRouteBffWiringTest {
             assertEquals(302, response.status(), "form_post code exchange completes the login");
             assertEquals(Optional.of(RETURN_URL), response.locationOptional());
             assertTrue(response.setCookieHeaders().stream()
-                    .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
+                            .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
                     "the session cookie is set from the form_post callback");
         }
 

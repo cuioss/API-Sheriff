@@ -155,7 +155,10 @@ fi
 echo "⏳ Waiting for Quarkus service to be ready..."
 START_TIME=$(date +%s)
 for i in {1..30}; do
-    if curl -sf http://localhost:19000/q/health/live > /dev/null 2>&1; then
+    # -k is load-bearing: the management interface is HTTPS-only (single port, self-signed
+    # localhost bundle). Without it curl fails certificate validation and this wait degrades into
+    # a silent 30-attempt timeout against a perfectly healthy container.
+    if curl -skf https://localhost:19000/q/health/live > /dev/null 2>&1; then
         END_TIME=$(date +%s)
         TOTAL_TIME=$((END_TIME - START_TIME))
         echo "✅ Quarkus service is ready!"
@@ -171,7 +174,7 @@ for i in {1..30}; do
         echo "----- $COMPOSE_BASE logs api-sheriff -----"
         $COMPOSE_BASE logs --no-color api-sheriff 2>&1 | tee "$DIAG_DIR/api-sheriff-app.log"
         echo "----- /q/health -----"
-        curl -s http://localhost:19000/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-health.json"
+        curl -sk https://localhost:19000/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-health.json"
         echo ""
         exit 1
     fi
@@ -184,7 +187,7 @@ done
 # MtlsHandshakeIT connects to its TLS port 10444, so it must be up before the IT phase.
 echo "⏳ Waiting for the mTLS gateway instance to be ready..."
 for i in {1..30}; do
-    if curl -sf http://localhost:19001/q/health/live > /dev/null 2>&1; then
+    if curl -skf https://localhost:19001/q/health/live > /dev/null 2>&1; then
         echo "✅ mTLS gateway instance is ready!"
         break
     fi
@@ -194,7 +197,7 @@ for i in {1..30}; do
         mkdir -p "$DIAG_DIR"
         echo "----- $COMPOSE_BASE logs api-sheriff-mtls -----"
         $COMPOSE_BASE logs --no-color api-sheriff-mtls 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-app.log"
-        curl -s http://localhost:19001/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-health.json"
+        curl -sk https://localhost:19001/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-health.json"
         echo ""
         exit 1
     fi
@@ -218,12 +221,12 @@ echo ""
 echo "🎉 API Sheriff Integration Benchmark Environment is running!"
 echo ""
 echo "📱 Application URLs:"
-echo "  🔍 Health Check:   http://localhost:19000/q/health"
-echo "  📊 Metrics:        http://localhost:19000/q/metrics"
+echo "  🔍 Health Check:   https://localhost:19000/q/health"
+echo "  📊 Metrics:        https://localhost:19000/q/metrics"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"
 echo ""
-echo "🧪 Quick test commands:"
-echo "  curl -sf http://localhost:19000/q/health/live"
+echo "🧪 Quick test commands (management is HTTPS-only with a self-signed cert — -k is required):"
+echo "  curl -skf https://localhost:19000/q/health/live"
 echo "  curl -k https://localhost:1090/health/ready"
 echo ""
 echo "🛑 To stop: ./scripts/stop-integration-container.sh"
