@@ -1,6 +1,8 @@
 {
   "best_practices": [],
-  "insights": [],
+  "insights": [
+    "The JaCoCo coverage bundle for integration-tests measures almost nothing real: every main class it sees is a generated quarkus-grpc stub, so the bundle reports a near-zero branch ratio (0.13 observed) that no hand-written test can raise. The check is kept meaningful by a class-name-prefix-scoped coverage exclusion for the generated stubs; do not chase this ratio with new tests."
+  ],
   "internal_dependencies": [
     "api-sheriff"
   ],
