@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -203,6 +204,80 @@ class ReservedBodyCeilingTest {
                 "The arranged chunked body must exceed the ceiling for this to pin the streaming counter");
         assertTrue(statusLine.startsWith("HTTP/1.1 413"),
                 "The streaming cumulative counter refuses 413 with no declared length present: " + statusLine);
+    }
+
+    @Test
+    @DisplayName("retires the keep-alive connection after a declared-length 413")
+    void retiresConnectionAfterDeclaredLengthRejection() {
+        // A keep-alive request (no Connection: close from the client) declaring far more than the
+        // ceiling, whose body is never sent. The gateway refuses on the declared length alone and must
+        // NOT hand the connection back for reuse: the request body was never consumed, so pending bytes
+        // would desync the next request framed on it — or an attacker could pin connections by
+        // repeatedly tripping the 413, which is exactly the DoS this ceiling exists to bound.
+        String head = "POST " + CALLBACK_PATH + " HTTP/1.1" + CRLF
+                + "Host: localhost:" + frontPort + CRLF
+                + "Content-Length: " + (ceiling * 64) + CRLF + CRLF;
+
+        String response = assertDoesNotThrow(
+                () -> sendRawAwaitingClose(head).get(NO_BUFFERING_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+                "the gateway must close the connection itself, without the client asking");
+
+        assertTrue(response.startsWith("HTTP/1.1 413"), response);
+        assertTrue(response.toLowerCase(Locale.ROOT).contains("connection: close"),
+                "the 413 must advertise that the connection is being retired: " + response);
+    }
+
+    @Test
+    @DisplayName("retires the keep-alive connection after a mid-stream 413")
+    void retiresConnectionAfterStreamedRejection() {
+        // The chunked counterpart: the ceiling trips mid-read, leaving the remaining chunks unread. The
+        // same retirement applies — this path left the most unread bytes of the two.
+        int chunkSize = 1024;
+        long chunks = ceiling / chunkSize + 2;
+        StringBuilder raw = new StringBuilder("POST " + CALLBACK_PATH + " HTTP/1.1" + CRLF
+                + "Host: localhost:" + frontPort + CRLF
+                + "Transfer-Encoding: chunked" + CRLF + CRLF);
+        String chunk = "x".repeat(chunkSize);
+        for (long i = 0; i < chunks; i++) {
+            raw.append(Integer.toHexString(chunkSize)).append(CRLF).append(chunk).append(CRLF);
+        }
+        raw.append('0').append(CRLF).append(CRLF);
+
+        String response = assertDoesNotThrow(() -> sendRawAwaitingClose(raw.toString()).get(15, TimeUnit.SECONDS),
+                "the gateway must close the connection itself after aborting the read");
+
+        assertTrue(response.startsWith("HTTP/1.1 413"), response);
+        assertTrue(response.toLowerCase(Locale.ROOT).contains("connection: close"),
+                "the 413 must advertise that the connection is being retired: " + response);
+    }
+
+    /**
+     * Writes a verbatim HTTP/1.1 message and completes with everything received once the SERVER closes
+     * the connection. Completion is itself the assertion that matters: the client never closes and never
+     * asks for {@code Connection: close}, so the future only settles when the gateway retires the
+     * connection on its own.
+     */
+    private CompletableFuture<String> sendRawAwaitingClose(String rawRequest) {
+        CompletableFuture<String> closed = new CompletableFuture<>();
+        netClient.connect(frontPort, "localhost")
+                .onFailure(closed::completeExceptionally)
+                .onSuccess(socket -> {
+                    Buffer received = Buffer.buffer();
+                    socket.handler(received::appendBuffer);
+                    socket.endHandler(end -> closed.complete(received.toString()));
+                    socket.exceptionHandler(cause -> {
+                        if (!closed.isDone()) {
+                            closed.completeExceptionally(cause);
+                        }
+                    });
+                    // A mid-write reset is the expected outcome once the gateway has answered and closed.
+                    socket.write(rawRequest).onFailure(cause -> {
+                        if (!closed.isDone() && received.length() == 0) {
+                            closed.completeExceptionally(cause);
+                        }
+                    });
+                });
+        return closed;
     }
 
     /**

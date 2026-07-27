@@ -151,8 +151,6 @@ public class GatewayEdgeRoute {
     private static final String PROBLEM_JSON = "application/problem+json";
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
 
-    /** The {@code oidc.session.mode} value selecting the stateless sealed-cookie BFF variant. */
-
     /**
      * Headroom added to the configured sealed-cookie budget when deriving the pre-route
      * {@code Cookie} header-value cap. The header value carries {@code <name>=<value>} and may carry
@@ -165,6 +163,8 @@ public class GatewayEdgeRoute {
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
+    private static final String CONNECTION_HEADER = "Connection";
+    private static final String CONNECTION_CLOSE = "close";
     private static final String CLAIMS_PARAM = "claims";
     private static final String RETURN_TO_PARAM = "return_to";
     private static final String STATE_PARAM = "state";
@@ -484,9 +484,34 @@ public class GatewayEdgeRoute {
         LOGGER.warn(ApiSheriffLogMessages.WARN.RESERVED_BODY_TOO_LARGE, ceiling, disposition);
         gatewayEventCounter.increment(EventType.RESERVED_BODY_TOO_LARGE);
         recordError(ctx, EventType.RESERVED_BODY_TOO_LARGE);
+        closeAfterOversizedReservedBody(ctx);
         // Ending the response releases the admission permit through the end handler registered in
         // handle(), exactly like every other terminal path.
         renderProblem(ctx, null, EventType.RESERVED_BODY_TOO_LARGE);
+    }
+
+    /**
+     * Retires the connection a {@code 413} reserved-body rejection was served on, on BOTH rejection
+     * paths (the pre-read {@code Content-Length} refusal and the mid-stream ceiling abort).
+     * <p>
+     * The request body is deliberately left <em>unconsumed</em> — reading an attacker-supplied
+     * oversized body to completion is exactly the work the ceiling exists to avoid, so draining it is
+     * not an option. But unread bytes left pending on a reused HTTP/1.1 keep-alive connection desync
+     * the next request framed on that connection, or pin the connection until the idle timeout — which
+     * would leave the reserved-body DoS guard only half-effective, since an attacker could still tie up
+     * connections by repeatedly tripping the {@code 413}. Retiring the connection closes that gap: the
+     * response advertises {@code Connection: close} (HTTP/1.x only — the header is forbidden in
+     * HTTP/2), and the connection is closed once the response has been written.
+     */
+    private static void closeAfterOversizedReservedBody(RoutingContext ctx) {
+        HttpServerResponse response = ctx.response();
+        HttpVersion version = ctx.request().version();
+        if (!response.headWritten() && (version == HttpVersion.HTTP_1_0 || version == HttpVersion.HTTP_1_1)) {
+            response.putHeader(CONNECTION_HEADER, CONNECTION_CLOSE);
+        }
+        // addEndHandler is additive, so this composes with the admission-release handler handle()
+        // registered rather than replacing it.
+        ctx.addEndHandler(result -> ctx.request().connection().close());
     }
 
     /**
@@ -1099,11 +1124,6 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Maps a route's {@code security_filter} block to a cui-http {@link SecurityConfiguration},
-     * seeding the safe builder defaults and overriding only the limits the route declared, so an
-     * undeclared dimension never falls below the gateway baseline.
-     */
-    /**
      * Derives the pre-route {@code Cookie} header-value policy from the gateway document, returning
      * {@code null} for every gateway that is not an active cookie-mode BFF.
      * <p>
@@ -1148,6 +1168,11 @@ public class GatewayEdgeRoute {
                 .build();
     }
 
+    /**
+     * Maps a route's {@code security_filter} block to a cui-http {@link SecurityConfiguration},
+     * seeding the safe builder defaults and overriding only the limits the route declared, so an
+     * undeclared dimension never falls below the gateway baseline.
+     */
     private static SecurityConfiguration securityConfigurationFor(SecurityFilterConfig filter) {
         SecurityConfigurationBuilder builder = SecurityConfiguration.builder();
         filter.maxBodyBytes().ifPresent(value -> builder.maxBodySize(value.longValue()));
