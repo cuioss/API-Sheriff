@@ -84,7 +84,6 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
-import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -123,7 +122,8 @@ import org.jspecify.annotations.Nullable;
  * dispatched (a flood is rejected {@code 503} rather than spawning unbounded virtual threads), then
  * the request stream is paused and the whole pipeline runs on a virtual thread (a reserved POST path —
  * the form_post callback and back-channel logout — instead has its small body read on the event loop
- * first, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
+ * first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body byte
+ * ceiling}, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
  *   <li>stage 0 — response-header preparation + CORS preflight (short-circuits a preflight here);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
@@ -389,23 +389,48 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Reads the reserved-POST body on the event loop, stashes it under {@link #RESERVED_BODY_KEY}, then
-     * dispatches processing exactly once. The request is NOT paused: {@code body()} drains the stream on
-     * its own event loop, fully asynchronously — no virtual-thread {@code .get()} blocks on a contended
-     * event loop. A bounded deadline guards a body that truly never completes, but the deadline handler
-     * still honours a body that has already fully arrived (it inspects the read future), so a legitimate
-     * body delayed only by event-loop scheduling under CPU contention is never falsely rejected.
+     * Reads the reserved-POST body on the event loop under a byte ceiling, stashes it under
+     * {@link #RESERVED_BODY_KEY}, then dispatches processing exactly once. The request is NOT paused:
+     * the stream drains on its own event loop, fully asynchronously — no virtual-thread {@code .get()}
+     * blocks on a contended event loop.
+     * <p>
+     * <strong>Two bounds, both mandatory.</strong> These two reserved paths are read
+     * <em>pre-authentication</em> and <em>before</em> {@code basicChecksStage} /
+     * {@code thoroughChecksStage} run, so the per-route {@link SecurityConfiguration#maxBodySize()} cap
+     * that bounds every ordinary proxied route can never apply here, and the transport's
+     * {@link EdgeHardeningOptions} chunk bound caps only one chunk, not the cumulative body:
+     * <ol>
+     *   <li><strong>Byte ceiling</strong> ({@link EdgeHardeningOptions#reservedBodyMaxBytes()}),
+     *       enforced twice — a {@code Content-Length} pre-check that refuses before a single body byte
+     *       is buffered, and a streaming cumulative counter that aborts mid-read. The pre-check alone
+     *       is not sufficient: {@code Content-Length} is attacker-controlled and is absent entirely
+     *       under chunked transfer-encoding. Either breach is rejected {@code 413}
+     *       ({@link EventType#RESERVED_BODY_TOO_LARGE}) — never a {@code 500}, and never by silently
+     *       truncating the body into the handler.</li>
+     *   <li><strong>Wall-clock deadline</strong> ({@value #RESERVED_BODY_READ_TIMEOUT_SECONDS}s),
+     *       guarding a body that truly never completes. The deadline handler still honours a body that
+     *       has already fully arrived (it inspects {@link HttpServerRequest#isEnded()}), so a
+     *       legitimate body delayed only by event-loop scheduling under CPU contention is never falsely
+     *       rejected.</li>
+     * </ol>
      */
     private void readReservedBodyThenDispatch(RoutingContext ctx, AtomicBoolean admissionReleased) {
-        AtomicBoolean bodyDone = new AtomicBoolean();
         HttpServerRequest request = ctx.request();
-        Future<Buffer> bodyFuture = request.body();
+        long ceiling = hardening.reservedBodyMaxBytes();
+        // Bound 1a — declared size. Refuse before the stream is ever resumed, so an oversized declared
+        // body costs the gateway zero heap.
+        if (parseContentLength(request) > ceiling) {
+            rejectOversizedReservedBody(ctx, ceiling, "declared-content-length");
+            return;
+        }
+        AtomicBoolean bodyDone = new AtomicBoolean();
+        Buffer accumulated = Buffer.buffer();
         long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(RESERVED_BODY_READ_TIMEOUT_SECONDS), id -> {
             if (bodyDone.compareAndSet(false, true)) {
-                if (bodyFuture.succeeded() && bodyFuture.result() != null) {
-                    // The body actually arrived; only its completion callback had not yet drained from
-                    // this (contention-starved) event loop's queue. Honour it rather than falsely reject.
-                    ctx.put(RESERVED_BODY_KEY, bodyFuture.result());
+                if (request.isEnded()) {
+                    // The body actually arrived; only the end callback had not yet drained from this
+                    // (contention-starved) event loop's queue. Honour it rather than falsely reject.
+                    ctx.put(RESERVED_BODY_KEY, accumulated);
                 } else {
                     // A body that truly never completed within the deadline — leave RESERVED_BODY_KEY
                     // unset so the receiver fails closed to 400 rather than pinning on it indefinitely.
@@ -415,21 +440,54 @@ public class GatewayEdgeRoute {
                 dispatchProcessing(ctx, admissionReleased);
             }
         });
-        bodyFuture.onComplete(result -> {
+        // Bound 1b — actual size. Count cumulatively as the chunks land and abort the moment the next
+        // chunk would cross the ceiling, so a chunked (or lying-Content-Length) body is bounded by what
+        // it really sends rather than by what it claimed.
+        request.handler(chunk -> {
+            if (bodyDone.get()) {
+                return;
+            }
+            if (accumulated.length() + (long) chunk.length() > ceiling) {
+                bodyDone.set(true);
+                ctx.vertx().cancelTimer(timer);
+                rejectOversizedReservedBody(ctx, ceiling, "streamed-body");
+                return;
+            }
+            accumulated.appendBuffer(chunk);
+        });
+        request.exceptionHandler(cause -> {
             if (bodyDone.compareAndSet(false, true)) {
                 ctx.vertx().cancelTimer(timer);
-                if (result.succeeded() && result.result() != null) {
-                    ctx.put(RESERVED_BODY_KEY, result.result());
-                } else {
-                    // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
-                    LOGGER.debug(result.cause(), "Reserved form body read failed — failing closed");
-                }
+                // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
+                LOGGER.debug(cause, "Reserved form body read failed — failing closed");
                 dispatchProcessing(ctx, admissionReleased);
             }
         });
-        // body() registers the collector but the inbound request stream arrives in fetch/paused mode;
-        // resume() (on this event loop) re-arms it so the buffered body is delivered.
+        request.endHandler(end -> {
+            if (bodyDone.compareAndSet(false, true)) {
+                ctx.vertx().cancelTimer(timer);
+                ctx.put(RESERVED_BODY_KEY, accumulated);
+                dispatchProcessing(ctx, admissionReleased);
+            }
+        });
+        // The inbound request stream arrives in fetch/paused mode; resume() (on this event loop)
+        // re-arms it so the body is delivered to the handlers registered above.
         request.resume();
+    }
+
+    /**
+     * Fails an over-ceiling reserved-path body closed with {@code 413}, the honest status for a payload
+     * the gateway refuses on size. The pipeline never runs for such a request, so this meters and
+     * renders directly rather than raising a {@link GatewayException}; the WARN records the ceiling and
+     * a fixed disposition only — never the offending body.
+     */
+    private void rejectOversizedReservedBody(RoutingContext ctx, long ceiling, String disposition) {
+        LOGGER.warn(ApiSheriffLogMessages.WARN.RESERVED_BODY_TOO_LARGE, ceiling, disposition);
+        gatewayEventCounter.increment(EventType.RESERVED_BODY_TOO_LARGE);
+        recordError(ctx, EventType.RESERVED_BODY_TOO_LARGE);
+        // Ending the response releases the admission permit through the end handler registered in
+        // handle(), exactly like every other terminal path.
+        renderProblem(ctx, null, EventType.RESERVED_BODY_TOO_LARGE);
     }
 
     /**
@@ -671,9 +729,10 @@ public class GatewayEdgeRoute {
     /**
      * Returns the raw {@code application/x-www-form-urlencoded} body of a reserved POST path (the OIDC
      * {@code response_mode=form_post} callback and back-channel logout), buffered on the event loop in
-     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout stashed the
-     * {@link #RESERVED_BODY_FAILED} sentinel, so this returns {@code null} — the fail-closed default a
-     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token).
+     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout leaves
+     * {@link #RESERVED_BODY_KEY} unset, so this returns {@code null} — the fail-closed default a
+     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token). An
+     * over-ceiling body never reaches here at all: it is refused {@code 413} at the read itself.
      */
     private static @Nullable String readFormBody(RoutingContext ctx) {
         Buffer body = ctx.get(RESERVED_BODY_KEY);

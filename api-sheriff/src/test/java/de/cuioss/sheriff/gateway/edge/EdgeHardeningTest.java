@@ -110,6 +110,24 @@ class EdgeHardeningTest {
     }
 
     @Test
+    @DisplayName("bounds a reserved-path body at the same 16 KiB inbound unit as the header block")
+    void exposesReservedBodyCeilingDerivedFromHeaderBound() {
+        // Arrange
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions();
+        HttpServerOptions options = new HttpServerOptions();
+        hardening.customizeHttpServer(options);
+
+        // Act
+        long reservedBodyMax = hardening.reservedBodyMaxBytes();
+
+        // Assert — the ceiling is DERIVED from the header-block bound rather than restated as its own
+        // literal, so the gateway's single 16 KiB inbound-unit bound cannot drift into two constants.
+        assertEquals(options.getMaxHeaderSize(), reservedBodyMax,
+                "The reserved-body ceiling is derived from the 16 KiB header-block bound, not a second literal");
+        assertTrue(reservedBodyMax > 0L, "The reserved-body ceiling must be a positive bound");
+    }
+
+    @Test
     @DisplayName("bounds the graceful-drain wait below the Quarkus shutdown window")
     void exposesBoundedDrainTimeout() {
         // Arrange

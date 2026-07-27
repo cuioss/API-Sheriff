@@ -29,12 +29,16 @@ import jakarta.enterprise.context.ApplicationScoped;
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
  * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
- * cannot pin connection slots. Two further limits are consumed by {@link GatewayEdgeRoute} rather
+ * cannot pin connection slots. Three further limits are consumed by {@link GatewayEdgeRoute} rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
- * dispatched, so a flood cannot spawn unbounded virtual threads), and the
+ * dispatched, so a flood cannot spawn unbounded virtual threads), the
  * {@linkplain #drainTimeoutMillis() drain timeout} bounds the graceful-shutdown wait for in-flight
- * requests to complete on {@code SIGTERM}.
+ * requests to complete on {@code SIGTERM}, and the
+ * {@linkplain #reservedBodyMaxBytes() reserved-body ceiling} bounds the cumulative bytes the edge
+ * will buffer for a gateway-terminated reserved POST path (rejected with {@code 413}), so an
+ * unauthenticated caller cannot exhaust heap through the pre-authentication callback / back-channel
+ * logout paths that never reach the per-route body cap.
  * <p>
  * The values are deliberate secure defaults chosen to keep the abuse surface bounded while
  * comfortably serving ordinary API traffic; the drain timeout is kept below the Quarkus default
@@ -60,6 +64,23 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
 
     /** Maximum number of requests permitted in flight at once before a virtual thread is dispatched. */
     private static final int ADMISSION_CAP = 2048;
+
+    /**
+     * Ceiling in bytes for a gateway-terminated reserved-path request body (the OIDC
+     * {@code response_mode=form_post} callback and the back-channel logout receiver).
+     * <p>
+     * <strong>Derivation — deliberately not a second independent number.</strong> Both payloads are
+     * small, gateway-terminated inbound units of exactly the same class as the request header block
+     * this file already bounds: a form_post callback carries a urlencoded {@code code}/{@code state}
+     * pair (hundreds of bytes in practice) and a back-channel logout carries a single compact
+     * {@code logout_token} JWT (low single-digit KiB even with a large signing certificate chain).
+     * The ceiling is therefore <em>defined as</em> {@link #MAX_HEADER_SIZE_BYTES} rather than
+     * restated as its own literal, so the gateway's single 16 KiB inbound-unit bound cannot drift
+     * into two contradicting constants. It leaves roughly an order of magnitude of headroom over a
+     * real payload while bounding the worst case at the {@link #ADMISSION_CAP admission cap} to
+     * ~32 MiB — comfortably inside the deployed container memory limit.
+     */
+    private static final int RESERVED_BODY_MAX_BYTES = MAX_HEADER_SIZE_BYTES;
 
     /** Bounded graceful-drain wait for in-flight requests on shutdown (below the Quarkus default). */
     private static final long DRAIN_TIMEOUT_MILLIS = 25_000L;
@@ -95,5 +116,15 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      */
     public long drainTimeoutMillis() {
         return DRAIN_TIMEOUT_MILLIS;
+    }
+
+    /**
+     * @return the byte ceiling the edge enforces on a gateway-terminated reserved-path request body
+     *         (form_post callback / back-channel logout). A request declaring more, or actually
+     *         streaming more, is rejected {@code 413} — see {@link #RESERVED_BODY_MAX_BYTES} for the
+     *         derivation
+     */
+    public long reservedBodyMaxBytes() {
+        return RESERVED_BODY_MAX_BYTES;
     }
 }

@@ -217,7 +217,7 @@ public class BffRuntimeProducer {
         SessionBinding sessionBinding = isCookieMode(session)
                 ? cookieSessionBinding(session, cookieName, sessionTtl)
                 : new ServerSessionBinding(new InMemorySessionStore(maxSessions),
-                        new SessionCookieCodec(cookieName, sessionTtl));
+                new SessionCookieCodec(cookieName, sessionTtl));
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
