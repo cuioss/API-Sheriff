@@ -211,13 +211,13 @@ public class BffRuntimeProducer {
         RefreshFlow refreshFlow = new RefreshFlow(clientConfiguration, tokenEndpointClient, tokenBridge,
                 clientAuthentication);
 
-        SessionCookieCodec sessionCookieCodec = new SessionCookieCodec(cookieName, sessionTtl);
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
         // selects only which implementation is assembled — everything below is mode-independent.
         SessionBinding sessionBinding = isCookieMode(session)
                 ? cookieSessionBinding(session, cookieName, sessionTtl)
-                : new ServerSessionBinding(new InMemorySessionStore(maxSessions), sessionCookieCodec);
+                : new ServerSessionBinding(new InMemorySessionStore(maxSessions),
+                        new SessionCookieCodec(cookieName, sessionTtl));
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
