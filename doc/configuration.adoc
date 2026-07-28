@@ -262,8 +262,13 @@ oidc:                              # only used by the BFF variants (2 and 3)
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
                                    #   sessions -- a DoS guard on the in-memory store
     cookie_name: __Host-sheriff
-    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM)
-    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation
+    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
+                                   #   generate a key on startup (sessions die on restart)
+    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation;
+                                   #   requires encryption_key
+    max_cookie_size: 4096          # cookie mode only: sealed cookie-value size budget in bytes.
+                                   #   40..8192, default 4096. Drives BOTH the seal budget and the
+                                   #   gateway's pre-route Cookie header-value cap
     ttl_seconds: 3600              # absolute session lifetime from login
     csrf:
       trusted_origins: [https://app.example.com]   # app origins allowed on unsafe methods;
@@ -1190,9 +1195,52 @@ ignored when no route's effective auth is `require: session`.
   and recommended.
 
 | `session.encryption_key` / `session.previous_key`
-| `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. `previous_key` is optional
-  and *decrypt-only*: during key rotation, cookies sealed with the old key are still accepted
-  (and re-sealed with the new key on next write) for a grace window.
+| `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
+  fully supported production options:
+
+  * *Passed key* -- `encryption_key` is set. Sessions survive a restart and the key can be shared
+    across replicas. This is the mode a multi-replica deployment must use.
+  * *Generate on startup* -- `encryption_key` is omitted. A fresh AES-256 key is generated at boot.
+    Two consequences the operator must accept: *all sessions are dropped on every restart*, and
+    *the key cannot be shared across replicas*, so a load-balanced deployment would reject every
+    cookie sealed by another instance.
+
+  `previous_key` is optional and *decrypt-only*: during key rotation, cookies sealed with the old
+  key are still accepted (and re-sealed with the current key on next write) for a grace window; it
+  is never used to seal, so a rollover is one-way. It composes with the passed-key mode only, and
+  supplying it without an `encryption_key` is rejected at boot.
+
+| `session.max_cookie_size`
+| *Cookie mode only.* The sealed cookie-value size budget in bytes. Optional; range `40`--`8192`,
+  default `4096` (browsers are only required to accept 4096 bytes per cookie, so the default sits
+  there rather than at the gateway's transport ceiling). A value outside the range fails the boot
+  with a message naming this key: below the floor no structurally valid sealed value could ever be
+  emitted, and above the ceiling the derived header cap would exceed what the inbound
+  request-header block (16 KiB, shared with every other header) will carry.
+
+  This is *one declared number driving two limits*. It is both the seal-time budget -- a sealed
+  value over it fails the seal with a logged warning, never a silent truncation -- *and* the source
+  of the gateway's pre-route `Cookie` header-value cap (the budget plus a fixed 512-byte headroom
+  for the cookie name and any co-resident cookies). Encoding the two limits independently is what
+  previously made cookie mode unusable: the pre-route filter rejected every request carrying a live
+  sealed cookie with `400` before any BFF logic ran.
+
+  The raised cap is scoped twice, and is *not* a general widening of inbound header validation:
+
+  * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it. A bearer-only or
+    `session.mode: server` gateway keeps the 2048-character default on every header, unchanged.
+  * *By header* -- within a cookie-mode gateway only `Cookie` and `Set-Cookie` header *values* use
+    the raised cap. Every other header keeps the default, and every non-length validator
+    (null-byte, control-character, injection-pattern) still applies to the cookie value.
+
+  [IMPORTANT]
+  ====
+  *Enforcement is gateway-wide, not per-anchor.* The key sits on the global `oidc.session` block,
+  but the cap it drives is applied by the pre-route stage that runs *before* route selection --
+  at which point no anchor is resolved. Do not read the key's placement as per-anchor scoping;
+  a cookie-mode gateway raises the `Cookie` cap for every route it serves. The per-anchor
+  `security_filter.max_header_value_length` knob is a different control, applied post-route.
+  ====
 
 | `session.ttl_seconds`
 | *Absolute* session lifetime, counted from a login timestamp stored inside the session record
@@ -1564,9 +1612,12 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   restriction, which existed only for the `cui-http` `HttpHandler` builder).
 * Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
   literals.
-* `session.mode: cookie` requires `session.encryption_key`; `previous_key` is optional and
-  decrypt-only. `session.mode: server` requires an explicit `session.store` (only `memory` is
-  valid) and uses neither encryption key.
+* `session.mode: cookie` does *not* require `session.encryption_key` -- omitting it selects the
+  generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
+  across replicas). `previous_key` is optional and decrypt-only, and *requires* an
+  `encryption_key`: `previous_key` without `encryption_key` is rejected, because a decrypt-only
+  rotation key with no current key to roll onto is nonsensical. `session.mode: server` requires an
+  explicit `session.store` (only `memory` is valid) and uses neither encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
   *non-empty* link:#_allowed_origins[`allowed_origins`] list; an absent or empty allowlist *fails

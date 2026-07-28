@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -123,13 +124,26 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
      * Session settings. The exhibited fields span both modes: {@code store} is
      * server-mode only, the encryption keys are cookie-mode only.
      *
-     * @param mode          the session mode ({@code cookie} / {@code server}), empty
-     *                      when omitted
+     * @param mode          the session mode, canonicalized to lower case by the
+     *                      canonical constructor ({@link Session#MODE_COOKIE} /
+     *                      {@link Session#MODE_SERVER}), empty when omitted. Compare it
+     *                      through {@link Session#isCookieMode()} /
+     *                      {@link Session#isServerMode()} — never against a
+     *                      locally-declared constant
      * @param store         the server-mode store, empty when omitted
      * @param cookieName    the session cookie name, empty when omitted
-     * @param encryptionKey the cookie-mode AES key ({@code ${ENV_VAR}} reference),
-     *                      empty when omitted
-     * @param previousKey   the optional decrypt-only rotation key, empty when omitted
+     * @param encryptionKey the cookie-mode AES-256 sealing key ({@code ${ENV_VAR}}
+     *                      reference). Present selects the <em>passed-key</em> mode;
+     *                      empty selects <em>generate-on-startup</em>, which is a
+     *                      fully supported production mode whose key is fresh per
+     *                      boot — so every session is dropped on restart and the key
+     *                      cannot be shared across replicas
+     * @param previousKey   the optional decrypt-only rotation key ({@code ${ENV_VAR}}
+     *                      reference), empty when no rotation is in progress. Values
+     *                      sealed under it still unseal, but nothing is ever sealed
+     *                      under it again. It composes with the passed-key mode only:
+     *                      supplying it without an {@code encryptionKey} is a
+     *                      configuration error the validator rejects
      * @param ttlSeconds    the absolute session lifetime in seconds, empty when
      *                      omitted
      * @param csrf          the CSRF settings, empty when omitted
@@ -137,19 +151,43 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
      * @param maxSessions   the server-mode upper bound on concurrently stored
      *                      sessions — a DoS guard on the in-memory store, empty
      *                      when omitted
+     * @param maxCookieSize the cookie-mode sealed cookie-value size budget in
+     *                      bytes, empty when omitted (the codec's
+     *                      {@code DEFAULT_COOKIE_VALUE_BUDGET} then applies). It is
+     *                      the single declared number driving BOTH the seal-time
+     *                      budget and the gateway's pre-route {@code Cookie}
+     *                      header-value cap
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
     public record Session(Optional<String> mode, Optional<String> store, Optional<String> cookieName,
     Optional<String> encryptionKey, Optional<String> previousKey, Optional<Integer> ttlSeconds,
-    Optional<Csrf> csrf, Optional<Refresh> refresh, Optional<Integer> maxSessions) {
+    Optional<Csrf> csrf, Optional<Refresh> refresh, Optional<Integer> maxSessions,
+    Optional<Integer> maxCookieSize) {
+
+        /** The stateless cookie session mode, in its one canonical spelling. */
+        public static final String MODE_COOKIE = "cookie";
+
+        /** The server-side store session mode, in its one canonical spelling. */
+        public static final String MODE_SERVER = "server";
 
         /**
-         * Canonical constructor normalizing absent components to {@link Optional#empty()}.
+         * Canonical constructor normalizing absent components to {@link Optional#empty()} and
+         * canonicalizing {@link #mode()} to its lower-case, trimmed spelling.
+         * <p>
+         * The mode is canonicalized <em>here, once</em>, so every downstream consumer compares the
+         * same spelling. Leaving it raw let a value like {@code Cookie} be read case-sensitively by
+         * boot validation (which then silently skipped both the cookie and server companion rules)
+         * and case-insensitively by the edge (which relaxed the pre-route {@code Cookie}
+         * header-value cap) — a validated-but-wrong runtime mode with a weakened inbound control.
+         * Consumers MUST use {@link #isCookieMode()} / {@link #isServerMode()} rather than
+         * re-deriving a comparison against a locally-declared constant.
          */
         public Session {
-            mode = Objects.requireNonNullElse(mode, Optional.empty());
+            mode = Objects.requireNonNullElse(mode, Optional.<String>empty())
+                    .map(value -> value.trim().toLowerCase(Locale.ROOT))
+                    .filter(value -> !value.isEmpty());
             store = Objects.requireNonNullElse(store, Optional.empty());
             cookieName = Objects.requireNonNullElse(cookieName, Optional.empty());
             encryptionKey = Objects.requireNonNullElse(encryptionKey, Optional.empty());
@@ -158,6 +196,34 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
             csrf = Objects.requireNonNullElse(csrf, Optional.empty());
             refresh = Objects.requireNonNullElse(refresh, Optional.empty());
             maxSessions = Objects.requireNonNullElse(maxSessions, Optional.empty());
+            maxCookieSize = Objects.requireNonNullElse(maxCookieSize, Optional.empty());
+        }
+
+        /**
+         * The single cookie-mode predicate every consumer shares — boot validation, the edge's
+         * pre-route {@code Cookie} header-value cap, and the runtime session-binding selection.
+         *
+         * @return {@code true} when the declared mode is the stateless cookie mode
+         */
+        public boolean isCookieMode() {
+            return mode.filter(MODE_COOKIE::equals).isPresent();
+        }
+
+        /**
+         * The single server-mode predicate every consumer shares (see {@link #isCookieMode()}).
+         *
+         * @return {@code true} when the declared mode is the server-side store mode
+         */
+        public boolean isServerMode() {
+            return mode.filter(MODE_SERVER::equals).isPresent();
+        }
+
+        /**
+         * @return {@code true} when the declared mode is one of the two recognised session modes;
+         *         an unrecognised or absent mode leaves the gateway bearer-only
+         */
+        public boolean isRecognisedMode() {
+            return isCookieMode() || isServerMode();
         }
 
         /**
@@ -170,9 +236,9 @@ Optional<StepUp> stepUp, Optional<UserInfo> userInfo, Optional<Login> login) {
          */
         @Override
         public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s]"
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s]"
                     .formatted(mode, store, cookieName, redact(encryptionKey), redact(previousKey), ttlSeconds, csrf,
-                            refresh, maxSessions);
+                            refresh, maxSessions, maxCookieSize);
         }
     }
 

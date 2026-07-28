@@ -17,8 +17,10 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,9 +29,8 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.CallbackParameters;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -74,10 +75,11 @@ import org.jspecify.annotations.Nullable;
  * runtime binds it to {@link AuthorizationCodeFlow#exchange}, so the engine owns the code
  * exchange, PKCE, and {@code state}/{@code nonce}/{@code iss} validation (fail-closed). The seam
  * keeps the endpoint decoupled from the confidential-client wiring (discovery metadata, client
- * authentication) and unit-testable without a live token endpoint. On success the endpoint creates
- * the server-side {@link SessionRecord}, sets the opaque {@code __Host-} session cookie, clears the
- * now-consumed binding cookie (single-use), and redirects the browser to the record's
- * same-origin-validated return URL.
+ * authentication) and unit-testable without a live token endpoint. On success the endpoint builds
+ * the {@link SessionRecord} and binds it to the browser through the mode-neutral
+ * {@link SessionBinding} seam — emitting whatever {@code Set-Cookie} that binding produces rather
+ * than building one itself — clears the now-consumed binding cookie (single-use), and redirects the
+ * browser to the record's same-origin-validated return URL.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -88,6 +90,7 @@ public final class CallbackEndpoint {
 
     private static final int BAD_REQUEST = 400;
     private static final int FORBIDDEN = 403;
+    private static final int INTERNAL_ERROR = 500;
     private static final int FOUND = 302;
 
     private static final String CLAIM_SID = "sid";
@@ -97,28 +100,24 @@ public final class CallbackEndpoint {
     private final CodeExchange codeExchange;
     private final PendingAuthorizationStore pendingStore;
     private final BindingCookieCodec bindingCookieCodec;
-    private final SessionStore sessionStore;
-    private final SessionCookieCodec sessionCookieCodec;
+    private final SessionBinding sessionBinding;
     private final Duration sessionTtl;
 
     /**
-     * Assembles the callback endpoint with the exchange seam and the gateway-side stores it drives.
+     * Assembles the callback endpoint with the exchange seam and the gateway-side collaborators it drives.
      *
      * @param codeExchange       the engine code-exchange seam (bound to {@link AuthorizationCodeFlow#exchange})
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
-     * @param sessionStore       the server-side session store
-     * @param sessionCookieCodec the opaque session-cookie codec
+     * @param sessionBinding     the mode-neutral session binding the new session is bound through
      * @param sessionTtl         the absolute session lifetime from login
      */
     public CallbackEndpoint(CodeExchange codeExchange, PendingAuthorizationStore pendingStore,
-            BindingCookieCodec bindingCookieCodec, SessionStore sessionStore, SessionCookieCodec sessionCookieCodec,
-            Duration sessionTtl) {
+            BindingCookieCodec bindingCookieCodec, SessionBinding sessionBinding, Duration sessionTtl) {
         this.codeExchange = Objects.requireNonNull(codeExchange, "codeExchange");
         this.pendingStore = Objects.requireNonNull(pendingStore, "pendingStore");
         this.bindingCookieCodec = Objects.requireNonNull(bindingCookieCodec, "bindingCookieCodec");
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
-        this.sessionCookieCodec = Objects.requireNonNull(sessionCookieCodec, "sessionCookieCodec");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.sessionTtl = Objects.requireNonNull(sessionTtl, "sessionTtl");
     }
 
@@ -131,7 +130,9 @@ public final class CallbackEndpoint {
      *                      POST callback (never map-collapsed — BFF-13)
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now         the reference instant (TTL anchor for pending resolution and session expiry)
-     * @return the redirect outcome on success, or a {@code 400}/{@code 403} error outcome
+     * @return the redirect outcome on success, a {@code 400}/{@code 403} error outcome when the
+     *         callback is rejected, or a {@code 500} error outcome when the validated session could
+     *         not be bound (e.g. the sealed cookie-mode value exceeds the cookie-size budget)
      */
     public CallbackOutcome handle(String rawParameters, @Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(rawParameters, "rawParameters");
@@ -192,9 +193,8 @@ public final class CallbackEndpoint {
             return CallbackOutcome.error(BAD_REQUEST);
         }
 
-        String sessionId = SessionRecord.newSessionId();
         SessionRecord session = SessionRecord.builder()
-                .sessionId(sessionId)
+                .sessionId(SessionRecord.newSessionId())
                 .accessToken(accessToken.getRawToken())
                 .refreshToken(Optional.empty())
                 .idToken(idToken.getRawToken())
@@ -204,11 +204,23 @@ public final class CallbackEndpoint {
                 .acr(claim(idToken, CLAIM_ACR))
                 .authTime(claimEpochSeconds(idToken, CLAIM_AUTH_TIME))
                 .build();
-        sessionStore.create(session);
+        SessionBinding.BoundSession bound;
+        try {
+            bound = sessionBinding.bind(session, now);
+        } catch (IllegalStateException bindFailure) {
+            // bind() is documented to throw when the binding cannot hold the session: the stateless
+            // cookie binding refuses a sealed value beyond the browser-safe cookie-size budget (a
+            // realistic outcome for a large ID token or claim set), and the server binding refuses at
+            // store capacity. The exchange itself succeeded and the caller did nothing wrong, so this
+            // is an honest gateway-side 500 rather than a 4xx — and it must not escape handle() as an
+            // unhandled exception. Only the binding's own bounded reason is logged; the session's
+            // token material never reaches the log or the response.
+            LOGGER.debug(bindFailure, "OIDC callback could not bind the new session — login not completed");
+            return CallbackOutcome.error(INTERNAL_ERROR);
+        }
 
-        List<String> setCookies = List.of(
-                sessionCookieCodec.toSetCookieHeader(sessionId),
-                bindingCookieCodec.toClearingSetCookieHeader());
+        List<String> setCookies = new ArrayList<>(bound.setCookieHeaders());
+        setCookies.add(bindingCookieCodec.toClearingSetCookieHeader());
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 
@@ -225,7 +237,10 @@ public final class CallbackEndpoint {
         return claim(token, name).flatMap(raw -> {
             try {
                 return Optional.of(Instant.ofEpochSecond(Long.parseLong(raw.trim())));
-            } catch (NumberFormatException _) {
+            } catch (NumberFormatException | DateTimeException _) {
+                // An IdP-supplied auth_time is external input: it may not parse as a long, and a value
+                // that does parse can still exceed Instant's range (DateTimeException is NOT a
+                // NumberFormatException). Either way the claim is simply absent, never a 500.
                 return Optional.empty();
             }
         });
@@ -305,7 +320,7 @@ public final class CallbackEndpoint {
         /**
          * An error outcome carrying no redirect and no cookies.
          *
-         * @param status the {@code 4xx} status
+         * @param status the error status ({@code 400} / {@code 403} rejected, {@code 500} unbindable)
          * @return the error outcome
          */
         public static CallbackOutcome error(int status) {

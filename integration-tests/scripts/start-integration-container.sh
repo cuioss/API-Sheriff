@@ -205,6 +205,36 @@ for i in {1..30}; do
     sleep 1
 done
 
+# Wait for the two dedicated cookie-mode gateway instances (api-sheriff-cookie on 10445 /
+# management 19002, and its key-sharing peer api-sheriff-cookie-2 on 10446 / management 19003).
+# Both reuse the same native image and reach readiness offline (static-file JWKS). The Bff*Cookie*IT
+# suites drive their TLS ports directly — and BffCookieStatelessnessIT drives BOTH in one test — so
+# an unwaited instance is a race that surfaces as a connection refusal in the IT phase, not as a
+# start-up failure here. Mirrors the mTLS block above exactly.
+for cookie_instance in "api-sheriff-cookie:19002" "api-sheriff-cookie-2:19003"; do
+    COOKIE_SERVICE="${cookie_instance%%:*}"
+    COOKIE_MGMT_PORT="${cookie_instance##*:}"
+    echo "⏳ Waiting for the ${COOKIE_SERVICE} gateway instance to be ready..."
+    for i in {1..30}; do
+        if curl -skf "https://localhost:${COOKIE_MGMT_PORT}/q/health/live" > /dev/null 2>&1; then
+            echo "✅ ${COOKIE_SERVICE} gateway instance is ready!"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            echo "❌ ${COOKIE_SERVICE} gateway instance failed to start within 30 seconds"
+            DIAG_DIR="target/failsafe-reports"
+            mkdir -p "$DIAG_DIR"
+            echo "----- $COMPOSE_BASE logs ${COOKIE_SERVICE} -----"
+            $COMPOSE_BASE logs --no-color "${COOKIE_SERVICE}" 2>&1 | tee "$DIAG_DIR/${COOKIE_SERVICE}-app.log"
+            curl -sk "https://localhost:${COOKIE_MGMT_PORT}/q/health" 2>&1 | tee "$DIAG_DIR/${COOKIE_SERVICE}-health.json"
+            echo ""
+            exit 1
+        fi
+        echo "⏳ Waiting for ${COOKIE_SERVICE} gateway... (attempt $i/30)"
+        sleep 1
+    done
+done
+
 # Extract native startup time from logs
 NATIVE_STARTUP=$($COMPOSE_BASE logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
 if [ ! -z "$NATIVE_STARTUP" ]; then

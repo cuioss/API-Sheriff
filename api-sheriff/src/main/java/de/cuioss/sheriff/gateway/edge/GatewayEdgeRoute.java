@@ -45,12 +45,14 @@ import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -82,7 +84,6 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
 import io.smallrye.faulttolerance.api.Guard;
-import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -121,7 +122,8 @@ import org.jspecify.annotations.Nullable;
  * dispatched (a flood is rejected {@code 503} rather than spawning unbounded virtual threads), then
  * the request stream is paused and the whole pipeline runs on a virtual thread (a reserved POST path —
  * the form_post callback and back-channel logout — instead has its small body read on the event loop
- * first, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
+ * first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body byte
+ * ceiling}, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
  *   <li>stage 0 — response-header preparation + CORS preflight (short-circuits a preflight here);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
@@ -148,10 +150,21 @@ public class GatewayEdgeRoute {
 
     private static final String PROBLEM_JSON = "application/problem+json";
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
+
+    /**
+     * Headroom added to the configured sealed-cookie budget when deriving the pre-route
+     * {@code Cookie} header-value cap. The header value carries {@code <name>=<value>} and may carry
+     * co-resident cookies (the short-lived binding cookie) alongside the session cookie, so the cap
+     * cannot be the bare value budget. The sum stays far below the gateway's 16 KiB inbound
+     * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
+     */
+    private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
     private static final String REQUIRE_SESSION = "session";
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
+    private static final String CONNECTION_HEADER = "Connection";
+    private static final String CONNECTION_CLOSE = "close";
     private static final String CLAIMS_PARAM = "claims";
     private static final String RETURN_TO_PARAM = "return_to";
     private static final String STATE_PARAM = "state";
@@ -274,7 +287,8 @@ public class GatewayEdgeRoute {
         this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
-                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent());
+                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent(),
+                cookieHeaderConfigurationFor(gatewayConfig, bffRuntime));
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
@@ -374,23 +388,48 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Reads the reserved-POST body on the event loop, stashes it under {@link #RESERVED_BODY_KEY}, then
-     * dispatches processing exactly once. The request is NOT paused: {@code body()} drains the stream on
-     * its own event loop, fully asynchronously — no virtual-thread {@code .get()} blocks on a contended
-     * event loop. A bounded deadline guards a body that truly never completes, but the deadline handler
-     * still honours a body that has already fully arrived (it inspects the read future), so a legitimate
-     * body delayed only by event-loop scheduling under CPU contention is never falsely rejected.
+     * Reads the reserved-POST body on the event loop under a byte ceiling, stashes it under
+     * {@link #RESERVED_BODY_KEY}, then dispatches processing exactly once. The request is NOT paused:
+     * the stream drains on its own event loop, fully asynchronously — no virtual-thread {@code .get()}
+     * blocks on a contended event loop.
+     * <p>
+     * <strong>Two bounds, both mandatory.</strong> These two reserved paths are read
+     * <em>pre-authentication</em> and <em>before</em> {@code basicChecksStage} /
+     * {@code thoroughChecksStage} run, so the per-route {@link SecurityConfiguration#maxBodySize()} cap
+     * that bounds every ordinary proxied route can never apply here, and the transport's
+     * {@link EdgeHardeningOptions} chunk bound caps only one chunk, not the cumulative body:
+     * <ol>
+     *   <li><strong>Byte ceiling</strong> ({@link EdgeHardeningOptions#reservedBodyMaxBytes()}),
+     *       enforced twice — a {@code Content-Length} pre-check that refuses before a single body byte
+     *       is buffered, and a streaming cumulative counter that aborts mid-read. The pre-check alone
+     *       is not sufficient: {@code Content-Length} is attacker-controlled and is absent entirely
+     *       under chunked transfer-encoding. Either breach is rejected {@code 413}
+     *       ({@link EventType#RESERVED_BODY_TOO_LARGE}) — never a {@code 500}, and never by silently
+     *       truncating the body into the handler.</li>
+     *   <li><strong>Wall-clock deadline</strong> ({@value #RESERVED_BODY_READ_TIMEOUT_SECONDS}s),
+     *       guarding a body that truly never completes. The deadline handler still honours a body that
+     *       has already fully arrived (it inspects {@link HttpServerRequest#isEnded()}), so a
+     *       legitimate body delayed only by event-loop scheduling under CPU contention is never falsely
+     *       rejected.</li>
+     * </ol>
      */
     private void readReservedBodyThenDispatch(RoutingContext ctx, AtomicBoolean admissionReleased) {
-        AtomicBoolean bodyDone = new AtomicBoolean();
         HttpServerRequest request = ctx.request();
-        Future<Buffer> bodyFuture = request.body();
+        long ceiling = hardening.reservedBodyMaxBytes();
+        // Bound 1a — declared size. Refuse before the stream is ever resumed, so an oversized declared
+        // body costs the gateway zero heap.
+        if (parseContentLength(request) > ceiling) {
+            rejectOversizedReservedBody(ctx, ceiling, "declared-content-length");
+            return;
+        }
+        AtomicBoolean bodyDone = new AtomicBoolean();
+        Buffer accumulated = Buffer.buffer();
         long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(RESERVED_BODY_READ_TIMEOUT_SECONDS), id -> {
             if (bodyDone.compareAndSet(false, true)) {
-                if (bodyFuture.succeeded() && bodyFuture.result() != null) {
-                    // The body actually arrived; only its completion callback had not yet drained from
-                    // this (contention-starved) event loop's queue. Honour it rather than falsely reject.
-                    ctx.put(RESERVED_BODY_KEY, bodyFuture.result());
+                if (request.isEnded()) {
+                    // The body actually arrived; only the end callback had not yet drained from this
+                    // (contention-starved) event loop's queue. Honour it rather than falsely reject.
+                    ctx.put(RESERVED_BODY_KEY, accumulated);
                 } else {
                     // A body that truly never completed within the deadline — leave RESERVED_BODY_KEY
                     // unset so the receiver fails closed to 400 rather than pinning on it indefinitely.
@@ -400,21 +439,79 @@ public class GatewayEdgeRoute {
                 dispatchProcessing(ctx, admissionReleased);
             }
         });
-        bodyFuture.onComplete(result -> {
+        // Bound 1b — actual size. Count cumulatively as the chunks land and abort the moment the next
+        // chunk would cross the ceiling, so a chunked (or lying-Content-Length) body is bounded by what
+        // it really sends rather than by what it claimed.
+        request.handler(chunk -> {
+            if (bodyDone.get()) {
+                return;
+            }
+            if (accumulated.length() + (long) chunk.length() > ceiling) {
+                bodyDone.set(true);
+                ctx.vertx().cancelTimer(timer);
+                rejectOversizedReservedBody(ctx, ceiling, "streamed-body");
+                return;
+            }
+            accumulated.appendBuffer(chunk);
+        });
+        request.exceptionHandler(cause -> {
             if (bodyDone.compareAndSet(false, true)) {
                 ctx.vertx().cancelTimer(timer);
-                if (result.succeeded() && result.result() != null) {
-                    ctx.put(RESERVED_BODY_KEY, result.result());
-                } else {
-                    // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
-                    LOGGER.debug(result.cause(), "Reserved form body read failed — failing closed");
-                }
+                // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
+                LOGGER.debug(cause, "Reserved form body read failed — failing closed");
                 dispatchProcessing(ctx, admissionReleased);
             }
         });
-        // body() registers the collector but the inbound request stream arrives in fetch/paused mode;
-        // resume() (on this event loop) re-arms it so the buffered body is delivered.
+        request.endHandler(end -> {
+            if (bodyDone.compareAndSet(false, true)) {
+                ctx.vertx().cancelTimer(timer);
+                ctx.put(RESERVED_BODY_KEY, accumulated);
+                dispatchProcessing(ctx, admissionReleased);
+            }
+        });
+        // The inbound request stream arrives in fetch/paused mode; resume() (on this event loop)
+        // re-arms it so the body is delivered to the handlers registered above.
         request.resume();
+    }
+
+    /**
+     * Fails an over-ceiling reserved-path body closed with {@code 413}, the honest status for a payload
+     * the gateway refuses on size. The pipeline never runs for such a request, so this meters and
+     * renders directly rather than raising a {@link GatewayException}; the WARN records the ceiling and
+     * a fixed disposition only — never the offending body.
+     */
+    private void rejectOversizedReservedBody(RoutingContext ctx, long ceiling, String disposition) {
+        LOGGER.warn(ApiSheriffLogMessages.WARN.RESERVED_BODY_TOO_LARGE, ceiling, disposition);
+        gatewayEventCounter.increment(EventType.RESERVED_BODY_TOO_LARGE);
+        recordError(ctx, EventType.RESERVED_BODY_TOO_LARGE);
+        closeAfterOversizedReservedBody(ctx);
+        // Ending the response releases the admission permit through the end handler registered in
+        // handle(), exactly like every other terminal path.
+        renderProblem(ctx, null, EventType.RESERVED_BODY_TOO_LARGE);
+    }
+
+    /**
+     * Retires the connection a {@code 413} reserved-body rejection was served on, on BOTH rejection
+     * paths (the pre-read {@code Content-Length} refusal and the mid-stream ceiling abort).
+     * <p>
+     * The request body is deliberately left <em>unconsumed</em> — reading an attacker-supplied
+     * oversized body to completion is exactly the work the ceiling exists to avoid, so draining it is
+     * not an option. But unread bytes left pending on a reused HTTP/1.1 keep-alive connection desync
+     * the next request framed on that connection, or pin the connection until the idle timeout — which
+     * would leave the reserved-body DoS guard only half-effective, since an attacker could still tie up
+     * connections by repeatedly tripping the {@code 413}. Retiring the connection closes that gap: the
+     * response advertises {@code Connection: close} (HTTP/1.x only — the header is forbidden in
+     * HTTP/2), and the connection is closed once the response has been written.
+     */
+    private static void closeAfterOversizedReservedBody(RoutingContext ctx) {
+        HttpServerResponse response = ctx.response();
+        HttpVersion version = ctx.request().version();
+        if (!response.headWritten() && (version == HttpVersion.HTTP_1_0 || version == HttpVersion.HTTP_1_1)) {
+            response.putHeader(CONNECTION_HEADER, CONNECTION_CLOSE);
+        }
+        // addEndHandler is additive, so this composes with the admission-release handler handle()
+        // registered rather than replacing it.
+        ctx.addEndHandler(result -> ctx.request().connection().close());
     }
 
     /**
@@ -633,6 +730,7 @@ public class GatewayEdgeRoute {
     private void renderReserved(RoutingContext ctx, PipelineRequest request,
             BffRuntime.ReservedHttpResponse response) {
         Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse httpResponse = ctx.response();
             if (httpResponse.ended()) {
@@ -640,12 +738,23 @@ public class GatewayEdgeRoute {
             }
             httpResponse.setStatusCode(response.status());
             stageHeaders.forEach(httpResponse::putHeader);
+            applyStageSetCookies(httpResponse, stageSetCookies);
             response.headers().forEach(httpResponse::putHeader);
             response.locationOptional().ifPresent(location -> httpResponse.putHeader(LOCATION_HEADER, location));
             // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
             response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
             response.jsonBodyOptional().ifPresentOrElse(httpResponse::end, httpResponse::end);
         });
+    }
+
+    /**
+     * Writes the pipeline's accumulated {@code Set-Cookie} values as distinct header lines.
+     * {@code Set-Cookie} is legitimately multi-valued (RFC 6265 §3) — the session runtime can emit a
+     * clearing cookie and a login-binding cookie on the same response — so each value gets its own
+     * line and is never comma-joined into, or overwritten in, the single-valued stage-header map.
+     */
+    private static void applyStageSetCookies(HttpServerResponse response, List<String> setCookieHeaders) {
+        setCookieHeaders.forEach(cookie -> response.headers().add(SET_COOKIE_HEADER, cookie));
     }
 
     private static @Nullable String firstQueryParam(PipelineRequest request, String name) {
@@ -656,9 +765,10 @@ public class GatewayEdgeRoute {
     /**
      * Returns the raw {@code application/x-www-form-urlencoded} body of a reserved POST path (the OIDC
      * {@code response_mode=form_post} callback and back-channel logout), buffered on the event loop in
-     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout stashed the
-     * {@link #RESERVED_BODY_FAILED} sentinel, so this returns {@code null} — the fail-closed default a
-     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token).
+     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout leaves
+     * {@link #RESERVED_BODY_KEY} unset, so this returns {@code null} — the fail-closed default a
+     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token). An
+     * over-ceiling body never reaches here at all: it is refused {@code 413} at the read itself.
      */
     private static @Nullable String readFormBody(RoutingContext ctx) {
         Buffer body = ctx.get(RESERVED_BODY_KEY);
@@ -694,9 +804,12 @@ public class GatewayEdgeRoute {
         // virtual thread. Hop back onto the event loop exactly like every other terminal path
         // (renderProblem / writeShortCircuit / failRelay); doing the relay off-loop races the
         // response object and corrupts / truncates the streamed body.
-        ctx.vertx().runOnContext(v ->
-                responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
-                        .onFailure(failure -> failRelay(ctx, failure)));
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            applyStageSetCookies(ctx.response(), stageSetCookies);
+            responseStage.relay(upstream, ctx.response(), route.isNotModifiedEnabled(), request.responseHeaders())
+                    .onFailure(failure -> failRelay(ctx, failure));
+        });
     }
 
     /**
@@ -717,6 +830,7 @@ public class GatewayEdgeRoute {
         ResolvedUpstream upstreamTarget = route.getUpstream()
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
+        applyStageSetCookies(ctx.response(), request.responseSetCookies());
         webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri);
     }
 
@@ -746,10 +860,13 @@ public class GatewayEdgeRoute {
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
         // like the HTTP relay path.
-        ctx.vertx().runOnContext(v ->
-                responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
-                        request.responseHeaders())
-                        .onFailure(failure -> failRelay(ctx, failure)));
+        List<String> stageSetCookies = request.responseSetCookies();
+        ctx.vertx().runOnContext(v -> {
+            applyStageSetCookies(ctx.response(), stageSetCookies);
+            responseStage.relayWithTrailers(upstream, ctx.response(), route.isNotModifiedEnabled(),
+                    request.responseHeaders())
+                    .onFailure(failure -> failRelay(ctx, failure));
+        });
     }
 
     /**
@@ -768,12 +885,14 @@ public class GatewayEdgeRoute {
 
     private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served) {
         Map<String, String> stageHeaders = Map.copyOf(request.responseHeaders());
+        List<String> stageSetCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
                 return;
             }
             response.setStatusCode(served.status());
+            applyStageSetCookies(response, stageSetCookies);
             // The stage-0 security headers (HSTS, frame options, …) apply to every response; the
             // envelope's governed headers (fixed Content-Type, nosniff, no-store) are written last
             // so they win any name collision.
@@ -804,6 +923,7 @@ public class GatewayEdgeRoute {
     private void writeShortCircuit(RoutingContext ctx, PipelineRequest request) {
         int status = request.shortCircuitStatus().orElse(204);
         Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
+        List<String> setCookies = request.responseSetCookies();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
@@ -811,6 +931,7 @@ public class GatewayEdgeRoute {
             }
             response.setStatusCode(status);
             responseHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, setCookies);
             response.end();
         });
     }
@@ -825,7 +946,11 @@ public class GatewayEdgeRoute {
         RouteRuntime selected = request != null ? request.selectedRoute() : null;
         if (selected != null && selected.getProtocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = Map.copyOf(request.responseHeaders());
-            ctx.vertx().runOnContext(v -> grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders));
+            List<String> setCookies = request.responseSetCookies();
+            ctx.vertx().runOnContext(v -> {
+                applyStageSetCookies(ctx.response(), setCookies);
+                grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders);
+            });
             return;
         }
         renderProblem(ctx, request, eventType);
@@ -847,6 +972,9 @@ public class GatewayEdgeRoute {
         }
         String body = "{\"type\":\"" + type + "\",\"title\":\"" + title + "\",\"status\":" + status + "}";
         Map<String, String> responseHeaders = request != null ? Map.copyOf(request.responseHeaders()) : Map.of();
+        // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
+        // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
+        List<String> setCookies = request != null ? request.responseSetCookies() : List.of();
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
@@ -854,6 +982,7 @@ public class GatewayEdgeRoute {
             }
             response.setStatusCode(status);
             responseHeaders.forEach(response::putHeader);
+            applyStageSetCookies(response, setCookies);
             response.putHeader("Content-Type", PROBLEM_JSON);
             response.end(body);
         });
@@ -992,6 +1121,51 @@ public class GatewayEdgeRoute {
             options.setHttp2ClearTextUpgrade(false);
         }
         return vertx.createHttpClient(options);
+    }
+
+    /**
+     * Derives the pre-route {@code Cookie} header-value policy from the gateway document, returning
+     * {@code null} for every gateway that is not an active cookie-mode BFF.
+     * <p>
+     * <strong>Why this exists.</strong> Stage 1 validates every inbound header value against the
+     * cui-http default {@code maxHeaderValueLength} of 2048 characters, while a cookie-mode BFF's
+     * sealed session cookie is designed to a multi-kilobyte budget. Encoded as two independent
+     * constants, the two limits contradicted each other inside the same product: every request
+     * carrying a live sealed cookie was rejected {@code 400} at the edge before any BFF logic ran.
+     * The single declared budget ({@code oidc.session.max_cookie_size}, defaulting to
+     * {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) now drives BOTH ends of the round
+     * trip — the codec's seal-time budget and this pre-route cap.
+     * <p>
+     * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only or server-mode gateway
+     * gets {@code null} and keeps the 2048 default on every header, exactly as before. By HEADER:
+     * within a cookie-mode gateway the raised cap applies to the {@code Cookie} / {@code Set-Cookie}
+     * values only — {@link BasicChecksStage} keeps the default policy for every other header, and
+     * every non-length validator (null-byte, control-character, injection-pattern) still applies to
+     * the cookie value. It remains a deliberate relaxation of an inbound hardening control, held as
+     * narrow as the pre-route position allows.
+     * <p>
+     * <strong>Recorded constraint — enforcement is gateway-wide, not per-anchor.</strong> Stage 1
+     * runs BEFORE route selection and this bean holds the whole route table, so no anchor exists at
+     * that point. The configuration key lives on the global {@code oidc.session} block for exactly
+     * that reason; its placement must not be read as per-anchor enforcement.
+     */
+    private static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
+            BffRuntime bffRuntime) {
+        Optional<OidcConfig.Session> session = gatewayConfig.oidc().flatMap(OidcConfig::session);
+        // The SHARED cookie-mode predicate on the config model — never a locally-declared constant
+        // compared here. A private constant plus a local comparison is what let this cap relax for a
+        // mode spelling boot validation had already skipped.
+        boolean cookieMode = bffRuntime.isActive() && session.map(OidcConfig.Session::isCookieMode).orElse(false);
+        if (!cookieMode) {
+            return null;
+        }
+        int budget = session.flatMap(OidcConfig.Session::maxCookieSize)
+                .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        // SecurityConfiguration.builder() with no overrides IS SecurityConfiguration.defaults(), so
+        // this differs from the gateway default in maxHeaderValueLength and nothing else.
+        return SecurityConfiguration.builder()
+                .maxHeaderValueLength(budget + COOKIE_HEADER_OVERHEAD_BYTES)
+                .build();
     }
 
     /**

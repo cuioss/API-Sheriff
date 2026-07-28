@@ -23,9 +23,8 @@ import java.util.Optional;
 
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.tools.logging.CuiLogger;
 
 import org.jspecify.annotations.Nullable;
@@ -56,7 +55,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>Already-authenticated behaviour (explicitly defined).</strong> A caller that already
  * holds a live session MUST NOT be silently re-driven through a fresh auth-code flow: the endpoint
  * short-circuits straight to the same-origin-validated return URL ({@link #initiate} resolves the
- * live session through the {@link SessionCookieCodec}/{@link SessionStore} seam, exactly as
+ * live session through the mode-neutral {@link SessionBinding} seam, exactly as
  * {@link UserInfoEndpoint} and {@link LogoutEndpoint} do). No pending record is created and no
  * binding cookie is set on this path — there is no new login transaction to bind.
  * <p>
@@ -74,24 +73,20 @@ public final class LoginInitiationEndpoint {
     private static final int FOUND = 302;
 
     private final LoginFlow loginFlow;
-    private final SessionStore sessionStore;
-    private final SessionCookieCodec sessionCookieCodec;
+    private final SessionBinding sessionBinding;
     private final String gatewayOrigin;
 
     /**
      * Assembles the login-initiation endpoint with the D5 login flow and the session-resolution seam.
      *
-     * @param loginFlow          the D5 auth-code login initiation reused on the unauthenticated path
-     * @param sessionStore       the server-side session store resolving the opaque session id
-     * @param sessionCookieCodec the opaque session-cookie codec reading the request cookie
-     * @param gatewayOrigin      the gateway's own origin (the {@code redirect_uri} origin) used to
-     *                           same-origin-validate the return URL on the already-authenticated path
+     * @param loginFlow      the D5 auth-code login initiation reused on the unauthenticated path
+     * @param sessionBinding the mode-neutral session binding resolving the request's live session
+     * @param gatewayOrigin  the gateway's own origin (the {@code redirect_uri} origin) used to
+     *                       same-origin-validate the return URL on the already-authenticated path
      */
-    public LoginInitiationEndpoint(LoginFlow loginFlow, SessionStore sessionStore,
-            SessionCookieCodec sessionCookieCodec, String gatewayOrigin) {
+    public LoginInitiationEndpoint(LoginFlow loginFlow, SessionBinding sessionBinding, String gatewayOrigin) {
         this.loginFlow = Objects.requireNonNull(loginFlow, "loginFlow");
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
-        this.sessionCookieCodec = Objects.requireNonNull(sessionCookieCodec, "sessionCookieCodec");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.gatewayOrigin = Objects.requireNonNull(gatewayOrigin, "gatewayOrigin");
     }
 
@@ -112,8 +107,7 @@ public final class LoginInitiationEndpoint {
             Instant now) {
         Objects.requireNonNull(now, "now");
 
-        Optional<SessionRecord> session = sessionCookieCodec.readSessionId(cookieHeader)
-                .flatMap(sessionId -> sessionStore.resolve(sessionId, now));
+        Optional<SessionRecord> session = sessionBinding.resolve(cookieHeader, now);
         if (session.isPresent()) {
             String returnUrl = requestedReturnUrl != null
                     && PendingAuthorizationRecord.sameOrigin(requestedReturnUrl, gatewayOrigin)

@@ -32,6 +32,7 @@ import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.LoginInitiationEndpoint.LoginInitiationOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -91,7 +92,8 @@ class LoginInitiationEndpointTest {
 
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
-        endpoint = new LoginInitiationEndpoint(loginFlow, sessionStore, sessionCodec, GATEWAY_ORIGIN);
+        endpoint = new LoginInitiationEndpoint(loginFlow, new ServerSessionBinding(sessionStore, sessionCodec),
+                GATEWAY_ORIGIN);
     }
 
     /** Creates a live session and returns the request {@code Cookie} header that resolves it. */

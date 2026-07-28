@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=../../../../main/resources/schema/gateway.schema.json
+# Cookie-mode boot configuration for CookieModeBootTest (D6).
+#
+# Deliberately declares NO session.encryption_key: that selects the
+# generate-on-startup key mode, which is a fully supported production mode (the
+# key is fresh per boot, so sessions do not survive a restart). This fixture is
+# what proves the gateway BOOTS in that mode rather than refusing to start.
+#
+# The sibling endpoints/bff-cookie.yaml + topology.properties add the single
+# require: session route under the 'bff-session' anchor, so the session floor is
+# real; ConfigValidator rejects a session floor that has no global oidc block.
+# Nothing here is ever dialled: OIDC discovery is lazy (first engine use), so the
+# boot needs no live IdP, no container, and no network.
+version: 1
+metadata:
+  config_version: "cookie-boot"
+# The BFF runtime resolves the gateway's shared @GatewayValidator TokenValidator at
+# boot, and that validator is built from THIS block — so an active BFF mode needs it
+# declared or startup aborts. The offline static JWKS file needs no IdP and no egress;
+# the relative path mirrors the test certificates application.properties already
+# reaches for. Nothing in this test validates a token; the issuer only has to assemble.
+token_validation:
+  issuers:
+    - name: cookie-boot-static
+      issuer: https://idp.example.com/realms/cookie
+      jwks:
+        source: file
+        file: ../integration-tests/src/main/docker/certificates/test-jwks.json
+anchors:
+  # type: bff forces access: authenticated (ADR-0013). The session floor lives on
+  # the anchor so the endpoint below inherits it.
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+oidc:
+  issuer: https://idp.example.com/realms/cookie
+  client_id: cookie-client
+  # A secret-classified field must be a bare ${VAR} reference (the D4 secrets rule
+  # refuses a literal), and the confidential-client engine refuses a blank secret, so
+  # the boot needs one. The variable is supplied by the surefire environment in
+  # api-sheriff/pom.xml and authenticates to nothing — this fixture reaches no IdP.
+  client_secret: ${COOKIE_BOOT_CLIENT_SECRET}
+  scopes: ["openid"]
+  # The host of redirect_uri is the oidc host every reserved path binds to; its
+  # origin is the gateway origin used for same-origin return-URL validation and
+  # as the default CSRF trusted origin.
+  redirect_uri: https://localhost:8443/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:8443/auth/logout/return
+    final_redirect: /
+    # Registered in cookie mode too — the endpoint's capability gate answers a
+    # deliberate 404 there, so the reserved path never falls through to the
+    # proxy route table.
+    backchannel_path: /auth/backchannel
+  session:
+    mode: cookie
+    ttl_seconds: 3600
+    # NO encryption_key on purpose — this is the generate-on-startup path.
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub"]
+    default_view: ["sub"]
+  login:
+    path: /auth/login

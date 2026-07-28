@@ -82,7 +82,8 @@ public class GatewayReadinessCheck implements HealthCheck {
     private static final String DATA_OIDC = "oidc";
     private static final String DATA_ISSUER_REACHABILITY = "issuer_reachability";
 
-    private static final String MODE_SERVER = "server";
+    /** The readiness payload's mode label — the same canonical spelling the config model owns. */
+    private static final String MODE_SERVER = OidcConfig.Session.MODE_SERVER;
     private static final String ISSUER_REACHABLE = "reachable";
     private static final String ISSUER_UNREACHABLE = "unreachable";
     private static final String ISSUER_UNVERIFIED = "unverified";
@@ -155,10 +156,11 @@ public class GatewayReadinessCheck implements HealthCheck {
      *         so issuer reachability is reported as part of readiness
      */
     private boolean isServerSessionMode() {
+        // The SHARED predicate on the config model, identical to the one boot validation, the edge
+        // cap and the runtime binding selection read — never a locally-declared constant.
         return gatewayConfig.oidc()
                 .flatMap(OidcConfig::session)
-                .flatMap(OidcConfig.Session::mode)
-                .filter(MODE_SERVER::equalsIgnoreCase)
-                .isPresent();
+                .map(OidcConfig.Session::isServerMode)
+                .orElse(false);
     }
 }

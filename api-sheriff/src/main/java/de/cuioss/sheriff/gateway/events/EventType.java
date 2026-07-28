@@ -50,7 +50,7 @@ public enum EventType {
     /** A route weakens an authentication default via an explicit override. */
     AUTH_WEAKENED(EventCategory.CONFIGURATION, 0),
 
-    // --- Input validation (400 / 404 / 405) ---
+    // --- Input validation (400 / 404 / 405 / 413) ---
 
     /** A cui-http security filter rejected the request. */
     SECURITY_FILTER_VIOLATION(EventCategory.INPUT_VALIDATION, 400),
@@ -69,6 +69,14 @@ public enum EventType {
     PASSTHROUGH_HOST_SMUGGLED(EventCategory.INPUT_VALIDATION, 404),
     /** The request method is outside the route's effective {@code allowed_methods}. */
     METHOD_NOT_ALLOWED(EventCategory.INPUT_VALIDATION, 405),
+    /**
+     * A gateway-terminated reserved POST path (the OIDC {@code response_mode=form_post} callback or
+     * the back-channel logout receiver) declared or streamed a body beyond the edge's
+     * {@code reserved_body_max_bytes} ceiling. These paths are read before the pipeline's per-route
+     * body cap can apply, so the ceiling is enforced at the read itself and the request is rejected
+     * {@code 413} without the oversized body ever being buffered.
+     */
+    RESERVED_BODY_TOO_LARGE(EventCategory.INPUT_VALIDATION, 413),
 
     // --- Authentication (401) ---
 

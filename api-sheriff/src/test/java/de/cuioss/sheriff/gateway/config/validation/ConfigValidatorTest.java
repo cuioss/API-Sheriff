@@ -626,8 +626,8 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject cookie session mode without an encryption_key")
-        void shouldRejectCookieSessionWithoutEncryptionKey() {
+        @DisplayName("Should accept cookie session mode without an encryption_key (generate-on-startup)")
+        void shouldAcceptCookieSessionWithoutEncryptionKey() {
             GatewayConfig gateway = validGateway()
                     .oidc(Optional.of(OidcConfig.builder()
                             .session(Optional.of(OidcConfig.Session.builder()
@@ -639,7 +639,47 @@ class ConfigValidatorTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/oidc/session/encryption_key", "cookie session mode requires an encryption_key");
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
+                    () -> "omitting encryption_key selects the generate-on-startup key mode, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject previous_key without encryption_key")
+        void shouldRejectPreviousKeyWithoutEncryptionKey() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("cookie"))
+                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/previous_key",
+                    "cookie session mode with a previous_key requires an encryption_key");
+        }
+
+        @Test
+        @DisplayName("Should accept cookie session mode with both an encryption_key and a previous_key")
+        void shouldAcceptCookieSessionWithRotationKeys() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("cookie"))
+                                    .encryptionKey(Optional.of("${SHERIFF_SESSION_KEY}"))
+                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
+                    () -> "rotation composes with the passed-key mode, got: " + errors);
         }
 
         @Test
@@ -649,6 +689,42 @@ class ConfigValidatorTest {
                     .oidc(Optional.of(OidcConfig.builder()
                             .session(Optional.of(OidcConfig.Session.builder()
                                     .mode(Optional.of("server"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/store", "server session mode requires a store");
+        }
+
+        @Test
+        @DisplayName("Should apply the cookie-mode companion rule to a mixed-case mode value")
+        void shouldApplyCookieRuleToMixedCaseMode() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("  CoOkIe "))
+                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
+                                    .build()))
+                            .build()))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/previous_key",
+                    "cookie session mode with a previous_key requires an encryption_key");
+        }
+
+        @Test
+        @DisplayName("Should apply the server-mode companion rule to a mixed-case mode value")
+        void shouldApplyServerRuleToMixedCaseMode() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of("SERVER"))
                                     .build()))
                             .build()))
                     .build();
@@ -1387,6 +1463,38 @@ class ConfigValidatorTest {
         void shouldAcceptPositiveMaxSessions() {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
                     .session(Optional.of(OidcConfig.Session.builder().maxSessions(Optional.of(10000)).build()))
+                    .build());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "max_cookie_size = {0} is rejected")
+        @ValueSource(ints = {0, -1, 39, 8193, 65536})
+        @DisplayName("Should reject a session max_cookie_size outside the viable budget bounds")
+        void shouldRejectOutOfBoundsMaxCookieSize(int maxCookieSize) {
+            // Arrange — below the floor no sealed value could ever be emitted; above the ceiling the
+            // derived pre-route Cookie cap would exceed what the transport carries.
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(Optional.of(OidcConfig.Session.builder()
+                            .maxCookieSize(Optional.of(maxCookieSize)).build()))
+                    .build());
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            // Assert
+            assertHasError(errors, "/oidc/session/max_cookie_size", "must be between");
+        }
+
+        @ParameterizedTest(name = "max_cookie_size = {0} is accepted")
+        @ValueSource(ints = {40, 4096, 8192})
+        @DisplayName("Should accept a session max_cookie_size on and inside the viable budget bounds")
+        void shouldAcceptInBoundsMaxCookieSize(int maxCookieSize) {
+            GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
+                    .session(Optional.of(OidcConfig.Session.builder()
+                            .maxCookieSize(Optional.of(maxCookieSize)).build()))
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());

@@ -31,7 +31,7 @@ import lombok.experimental.UtilityClass;
  * {@code 103-106}) and the configuration subsystem
  * ({@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}: {@code 2-3} / {@code 101-102} /
  * {@code 200-201}), which share the same {@code ApiSheriff} prefix — this BFF catalogue owns
- * {@code 10-14} (INFO) and {@code 110-112} (WARN). Never renumber one catalogue without checking
+ * {@code 10-17} (INFO) and {@code 110-114} (WARN). Never renumber one catalogue without checking
  * the others for a collision.
  * <p>
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
@@ -51,7 +51,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-14).
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-17).
      */
     @UtilityClass
     public static final class INFO {
@@ -97,10 +97,43 @@ public final class BffLogMessages {
                 .identifier(14)
                 .template("RP-initiated logout completed for a require:session route")
                 .build();
+
+        /**
+         * A cookie-mode session was sealed into its {@code Set-Cookie}. The template carries only
+         * the bounded sealed-value length — never the sealed value, the key, or any token material.
+         */
+        public static final LogRecord COOKIE_SESSION_SEALED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(15)
+                .template("Cookie-mode session sealed (%s bytes)")
+                .build();
+
+        /**
+         * No {@code encryption_key} was configured, so a cookie-mode sealing key was generated at
+         * startup. Records only the non-sensitive fact and the affected scope — never key material.
+         */
+        public static final LogRecord COOKIE_KEY_GENERATED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(16)
+                .template("Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart")
+                .build();
+
+        /**
+         * A cookie still sealed under the decrypt-only {@code previous_key} was observed, so a key
+         * rotation is in progress: each such session is re-sealed under the current key on its next
+         * write. Recorded once per process — the condition is gateway-wide, and the detection recurs
+         * on every request for an unrotated session. Records only the bounded disposition.
+         */
+        public static final LogRecord COOKIE_ROLLOVER_IN_PROGRESS = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(17)
+                .template("Cookie-mode previous-key rotation in progress (%s) — affected sessions "
+                        + "re-seal under the current key on their next write")
+                .build();
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-112).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114).
      */
     @UtilityClass
     public static final class WARN {
@@ -135,6 +168,28 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(112)
                 .template("Back-channel logout token rejected: %s")
+                .build();
+
+        /**
+         * A sealed session cookie failed to unseal and was treated as "no session". Records the
+         * non-sensitive rejection disposition ({@code malformed} / {@code unknown-version} /
+         * {@code unknown-key-id} / {@code authentication-tag} / {@code payload-format}) only —
+         * never the offending cookie value or any key material.
+         */
+        public static final LogRecord COOKIE_UNSEAL_REJECTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(113)
+                .template("Sealed session cookie rejected: %s")
+                .build();
+
+        /**
+         * A sealed session cookie exceeded the browser-safe size budget, so the seal failed rather
+         * than emitting a value the browser would silently drop. Records only the bounded length.
+         */
+        public static final LogRecord COOKIE_SIZE_BUDGET_EXCEEDED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(114)
+                .template("Sealed session cookie exceeds the size budget (%s bytes) — seal refused")
                 .build();
     }
 }

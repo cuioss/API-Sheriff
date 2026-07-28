@@ -25,9 +25,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.tools.logging.CuiLogger;
 
 import org.jspecify.annotations.Nullable;
@@ -95,24 +94,21 @@ public final class UserInfoEndpoint {
     private static final String AUTH_TIME = "auth_time";
     private static final String ACR = "acr";
 
-    private final SessionStore sessionStore;
-    private final SessionCookieCodec sessionCookieCodec;
+    private final SessionBinding sessionBinding;
     private final ClaimAllowlistFilter claimFilter;
     private final ClaimSource claimSource;
 
     /**
-     * Assembles the user-info endpoint with the session stores, the operator claim allowlist, and the
+     * Assembles the user-info endpoint with the session binding, the operator claim allowlist, and the
      * validated-claim resolution seam.
      *
-     * @param sessionStore       the server-side session store resolving the opaque session id
-     * @param sessionCookieCodec the opaque session-cookie codec reading the request cookie
-     * @param claimFilter        the operator-owned claim allowlist capping every disclosure
-     * @param claimSource        the validated ID-token claim-resolution seam (never raw tokens)
+     * @param sessionBinding the mode-neutral session binding resolving the request's live session
+     * @param claimFilter    the operator-owned claim allowlist capping every disclosure
+     * @param claimSource    the validated ID-token claim-resolution seam (never raw tokens)
      */
-    public UserInfoEndpoint(SessionStore sessionStore, SessionCookieCodec sessionCookieCodec,
-            ClaimAllowlistFilter claimFilter, ClaimSource claimSource) {
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
-        this.sessionCookieCodec = Objects.requireNonNull(sessionCookieCodec, "sessionCookieCodec");
+    public UserInfoEndpoint(SessionBinding sessionBinding, ClaimAllowlistFilter claimFilter,
+            ClaimSource claimSource) {
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.claimFilter = Objects.requireNonNull(claimFilter, "claimFilter");
         this.claimSource = Objects.requireNonNull(claimSource, "claimSource");
     }
@@ -134,8 +130,7 @@ public final class UserInfoEndpoint {
     public UserInfoOutcome handle(@Nullable String cookieHeader, @Nullable String claimsParam, Instant now) {
         Objects.requireNonNull(now, "now");
 
-        Optional<SessionRecord> session = sessionCookieCodec.readSessionId(cookieHeader)
-                .flatMap(sessionId -> sessionStore.resolve(sessionId, now));
+        Optional<SessionRecord> session = sessionBinding.resolve(cookieHeader, now);
         if (session.isEmpty()) {
             LOGGER.debug("user-info request without a live session — 401 problem+json (never a redirect)");
             return UserInfoOutcome.unauthenticated();

@@ -29,6 +29,9 @@ import java.util.function.Supplier;
 
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.cookie.CookieKeyMaterial;
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
@@ -48,8 +51,9 @@ import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
@@ -79,11 +83,18 @@ import jakarta.inject.Singleton;
  * CDI producer of the server-mode {@link BffRuntime} — the D16 edge wiring that makes the D1–D12 BFF
  * components reachable at the live gateway edge.
  * <p>
- * The producer builds the active runtime <strong>only when a global {@code oidc} block with
- * {@code session.mode=server} and a {@code redirect_uri} is configured</strong>; otherwise it produces
- * the {@linkplain BffRuntime#inert() inert} runtime, so a bearer-only gateway (or a cookie-mode BFF)
- * is unchanged and never touches the confidential-client engine. On the active path it assembles the
- * server-side stores, cookie codecs, the CSRF defence, the token-refresh / step-up coordinators, the
+ * The producer builds the active runtime <strong>only when a global {@code oidc} block with a
+ * {@code redirect_uri} and a recognised {@code session.mode} — {@code server} or {@code cookie} —
+ * is configured</strong>; otherwise it produces the {@linkplain BffRuntime#inert() inert} runtime,
+ * so a bearer-only gateway is unchanged and never touches the confidential-client engine.
+ * <p>
+ * <strong>Both modes drive the same wiring.</strong> The only thing the mode selects is which
+ * {@link SessionBinding} is assembled — the store-backed {@link ServerSessionBinding} or the
+ * stateless {@link CookieSessionBinding} over the AES-256-GCM sealed-cookie codec. Every other
+ * collaborator (login flow, CSRF defence, step-up, refresh, and all reserved endpoints) is
+ * identical, and cookie mode reaches the confidential-client engine exactly as server mode does.
+ * On the active path the producer assembles the session binding, the cookie codecs, the CSRF
+ * defence, the token-refresh / step-up coordinators, the
  * reserved-endpoint handlers, and the {@code require: session} stage-4 runtime, and binds the
  * {@code token-sheriff-client} engine seams — {@code AuthorizationCodeFlow#authorize} /
  * {@code #exchange} for login and callback, {@code RefreshFlow#refresh} for transparent refresh, and
@@ -102,7 +113,6 @@ public class BffRuntimeProducer {
 
     private static final CuiLogger LOGGER = new CuiLogger(BffRuntimeProducer.class);
 
-    private static final String SESSION_MODE_SERVER = "server";
     private static final int DEFAULT_SESSION_TTL_SECONDS = 3600;
     private static final int DEFAULT_MAX_SESSIONS = 10_000;
     private static final int DEFAULT_MAX_PENDING = 10_000;
@@ -132,24 +142,36 @@ public class BffRuntimeProducer {
      * class ArC cannot subclass to build a normal-scope proxy. The runtime is immutable and assembled
      * once at boot, so a single instance is exact.
      *
-     * @return the active server-mode runtime, or the inert runtime for a bearer-only / cookie-mode gateway
+     * @return the active runtime for a recognised {@code session.mode}, or the inert runtime for a
+     *         bearer-only gateway
      */
     @Produces
     @Singleton
     public BffRuntime bffRuntime() {
         Optional<OidcConfig> oidc = gatewayConfig.oidc();
-        if (!isServerModeBff(oidc)) {
-            LOGGER.debug("No server-mode oidc block — BFF runtime inert (bearer-only proxy path unchanged)");
+        if (!isBffMode(oidc)) {
+            LOGGER.debug("No BFF-mode oidc block — BFF runtime inert (bearer-only proxy path unchanged)");
             return BffRuntime.inert();
         }
         return build(oidc.orElseThrow());
     }
 
-    private static boolean isServerModeBff(Optional<OidcConfig> oidc) {
-        boolean serverMode = oidc.flatMap(OidcConfig::session).flatMap(OidcConfig.Session::mode)
-                .filter(SESSION_MODE_SERVER::equalsIgnoreCase).isPresent();
+    /**
+     * The mode-aware activation predicate: a BFF runtime is built for either recognised
+     * {@code session.mode} — {@code server} or {@code cookie} — provided a {@code redirect_uri} is
+     * configured. An unrecognised or absent mode leaves the gateway bearer-only.
+     */
+    private static boolean isBffMode(Optional<OidcConfig> oidc) {
+        boolean recognisedMode = oidc.flatMap(OidcConfig::session)
+                .map(OidcConfig.Session::isRecognisedMode).orElse(false);
         boolean hasRedirect = oidc.flatMap(OidcConfig::redirectUri).isPresent();
-        return serverMode && hasRedirect;
+        return recognisedMode && hasRedirect;
+    }
+
+    private static boolean isCookieMode(Optional<OidcConfig.Session> session) {
+        // The SHARED predicate on the config model, identical to the one boot validation and the
+        // edge's pre-route Cookie header-value cap read — never a locally-declared constant.
+        return session.map(OidcConfig.Session::isCookieMode).orElse(false);
     }
 
     private BffRuntime build(OidcConfig oidc) {
@@ -187,9 +209,13 @@ public class BffRuntimeProducer {
         RefreshFlow refreshFlow = new RefreshFlow(clientConfiguration, tokenEndpointClient, tokenBridge,
                 clientAuthentication);
 
-        SessionCookieCodec sessionCookieCodec = new SessionCookieCodec(cookieName, sessionTtl);
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        SessionStore sessionStore = new InMemorySessionStore(maxSessions);
+        // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
+        // selects only which implementation is assembled — everything below is mode-independent.
+        SessionBinding sessionBinding = isCookieMode(session)
+                ? cookieSessionBinding(session, cookieName, sessionTtl)
+                : new ServerSessionBinding(new InMemorySessionStore(maxSessions),
+                new SessionCookieCodec(cookieName, sessionTtl));
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING);
         Clock clock = Clock.systemUTC();
 
@@ -201,18 +227,29 @@ public class BffRuntimeProducer {
         CallbackEndpoint callbackEndpoint = new CallbackEndpoint(
                 (context, params) -> authorizationCodeFlow.exchange(metadata.get(), context, params,
                         clientAuthentication),
-                pendingStore, bindingCookieCodec, sessionStore, sessionCookieCodec, sessionTtl);
+                pendingStore, bindingCookieCodec, sessionBinding, sessionTtl);
 
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
         TokenRefreshCoordinator refreshCoordinator = new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
-                sessionStore);
+                sessionBinding);
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
-        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionStore, sessionCookieCodec,
-                (sessionRecord, now) -> refreshCoordinator.refresh(sessionRecord, now).session().orElse(sessionRecord),
+        SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
+                (sessionRecord, cookieHeader, now) -> {
+                    TokenRefreshCoordinator.RefreshOutcome outcome =
+                            refreshCoordinator.refresh(sessionRecord, cookieHeader, now);
+                    if (outcome.isFailure()) {
+                        // The coordinator already destroyed the session — signal it so the stage
+                        // re-drives the unauthenticated negotiation instead of mediating the
+                        // pre-refresh token of a session the gateway just revoked.
+                        return Optional.empty();
+                    }
+                    return Optional.of(new SessionBinding.BoundSession(outcome.session().orElse(sessionRecord),
+                            outcome.setCookieHeaders()));
+                },
                 (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
                         .providesScopes(requiredScopes),
                 (returnUrl, now) -> {
@@ -234,35 +271,74 @@ public class BffRuntimeProducer {
         ClaimAllowlistFilter claimFilter = new ClaimAllowlistFilter(
                 oidc.userInfo().map(OidcConfig.UserInfo::allowedClaims).orElse(List.of()),
                 oidc.userInfo().map(OidcConfig.UserInfo::defaultView).orElse(List.of()));
-        UserInfoEndpoint userInfoEndpoint = new UserInfoEndpoint(sessionStore, sessionCookieCodec, claimFilter,
+        UserInfoEndpoint userInfoEndpoint = new UserInfoEndpoint(sessionBinding, claimFilter,
                 sessionRecord -> toClaimMap(idBridge.validateRefreshedIdToken(sessionRecord.idToken()).getClaims()));
 
         // D12 login-initiation fold — the browser-facing start mirror of the callback.
-        LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionStore,
-                sessionCookieCodec, gatewayOrigin);
+        LoginInitiationEndpoint loginInitiationEndpoint = new LoginInitiationEndpoint(loginFlow, sessionBinding,
+                gatewayOrigin);
 
         // D2c back-channel logout — JWKS signature verification through the engine, then the claim residual.
+        // The endpoint stays wired in both modes: it is gated on the binding's IdP-destruction
+        // capability, so a stateless binding answers a deliberate 404 on the reserved path rather than
+        // letting that path fall through to the proxy route table.
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
                 idBridge::validateRefreshedIdToken,
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
-                sessionStore);
-        BackchannelLogoutEndpoint backchannelLogoutEndpoint = new BackchannelLogoutEndpoint(backchannelReceiver);
+                sessionBinding);
+        BackchannelLogoutEndpoint backchannelLogoutEndpoint =
+                new BackchannelLogoutEndpoint(backchannelReceiver, sessionBinding);
 
         // D5 RP-initiated logout — lazy so the discovery-sourced end_session_endpoint is resolved on
         // first logout, not at boot. Revocation at the IdP is best-effort; the authoritative logout is
         // the local session destruction the LogoutEndpoint performs.
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata.get(), sessionStore, sessionCookieCodec));
+                metadata.get(), sessionBinding));
 
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
 
-        LOGGER.debug("Server-mode BFF runtime assembled for origin %s (issuer %s)", gatewayOrigin, issuer);
+        // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
+        // resolved — this is the line an operator greps to confirm which binding came up.
+        LOGGER.debug("%s-mode BFF runtime assembled for origin %s (issuer %s)",
+                isCookieMode(session) ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
+                gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
     }
 
+    /**
+     * Assembles the stateless cookie-mode binding from the resolved {@link CookieKeyMaterial}: the
+     * AES-256-GCM sealed-cookie codec (with the decrypt-only {@code previous_key} wired in when a
+     * rotation is in progress), plus the per-gateway salt that keys the derived, never-emitted
+     * session identity. The salt is derived from the sealing key rather than configured separately,
+     * so it needs no operator input and cannot be recomputed off-gateway.
+     * <p>
+     * Per ADR-0011 the configuration stays neutral — the keys are {@code ${ENV_VAR}} references
+     * carrying no material — so the concrete runtime choice is named by a startup diagnostic
+     * reporting the active key mode and rotation state, never any key bytes. The
+     * generate-on-startup mode additionally raises the catalogued INFO
+     * {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
+     * sessions-die-on-restart consequence is operationally notable rather than merely diagnostic.
+     * <p>
+     * The codec's seal-time size budget comes from {@code oidc.session.max_cookie_size} — the single
+     * declared number that also drives the edge's pre-route {@code Cookie} header-value cap, so the
+     * two ends of the round trip cannot drift apart.
+     */
+    private static SessionBinding cookieSessionBinding(Optional<OidcConfig.Session> session, String cookieName,
+            Duration sessionTtl) {
+        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(
+                session.flatMap(OidcConfig.Session::encryptionKey),
+                session.flatMap(OidcConfig.Session::previousKey));
+        int maxCookieSize = session.flatMap(OidcConfig.Session::maxCookieSize)
+                .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s, maxCookieSize=%s",
+                keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey(), maxCookieSize);
+        return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
+                keyMaterial.identitySalt());
+    }
+
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,
-            SessionStore sessionStore, SessionCookieCodec sessionCookieCodec) {
+            SessionBinding sessionBinding) {
         Optional<OidcConfig.Logout> logout = oidc.logout();
         String postLogoutRedirectUri = logout.flatMap(OidcConfig.Logout::postLogoutRedirectUri)
                 .orElse(gatewayOrigin + "/");
@@ -276,7 +352,7 @@ public class BffRuntimeProducer {
                     // Best-effort by design: the authoritative logout is the local session destruction.
                 },
                 endSessionEndpoint, postLogoutRedirectUri, finalRedirect, LOGOUT_STATE_TTL);
-        return new LogoutEndpoint(rpInitiatedLogout, sessionStore, sessionCookieCodec);
+        return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);
     }
 
     private static Map<String, Object> toClaimMap(Map<String, ClaimValue> claims) {

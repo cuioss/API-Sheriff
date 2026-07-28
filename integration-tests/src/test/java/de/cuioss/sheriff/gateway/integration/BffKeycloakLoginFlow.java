@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 
+import io.restassured.http.Cookies;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 import java.util.HashMap;
@@ -49,13 +50,41 @@ import java.util.regex.Pattern;
  * Keycloak {@code AUTH_SESSION_ID} ({@code localhost:1443}). The helper therefore keeps the gateway
  * jar and the Keycloak jar separate and replays only the gateway jar on the returned session.
  * <p>
+ * <strong>Origin-parameterized.</strong> The flow is identical for every gateway instance, so the
+ * browser-facing origin is a parameter: {@link #login(String)} drives the primary server-mode
+ * instance ({@link #GATEWAY_ORIGIN}) and {@link #login(String, String)} drives any other — notably
+ * the dedicated cookie-mode instance ({@link #COOKIE_GATEWAY_ORIGIN}), since the session mode is a
+ * property of the whole gateway and cannot be flipped per request.
+ * <p>
  * This helper is a test-support class (no {@code *IT} suffix), so Failsafe does not run it as a
- * suite; the six {@code Bff*IT} classes call {@link #login(String)} to establish a live session.
+ * suite; the {@code Bff*IT} classes call {@link #login(String)} / {@link #login(String, String)} to
+ * establish a live session.
  */
 final class BffKeycloakLoginFlow {
 
     /** Browser-facing gateway origin: published host port {@code 10443 -> } container {@code 8443}. */
     static final String GATEWAY_ORIGIN = "https://localhost:10443";
+
+    /**
+     * Browser-facing origin of the dedicated <em>cookie-mode</em> gateway instance
+     * ({@code api-sheriff-cookie}, published host port {@code 10445 -> } container {@code 8443}).
+     * <p>
+     * The session mode is a property of the whole gateway, so Variant 3 cannot share the primary
+     * instance: {@link #GATEWAY_ORIGIN} stays server-mode for the landed {@code Bff*IT} suite while
+     * the {@code Bff*Cookie*IT} suite drives this origin.
+     */
+    static final String COOKIE_GATEWAY_ORIGIN = "https://localhost:10445";
+
+    /**
+     * Browser-facing origin of the <em>second</em> cookie-mode gateway instance
+     * ({@code api-sheriff-cookie-2}, published host port {@code 10446 -> } container {@code 8443}).
+     * <p>
+     * A separate process sharing nothing with {@link #COOKIE_GATEWAY_ORIGIN} but the AES sealing key
+     * — no session store, no volume, no sticky routing. It is never logged into: it exists so
+     * {@code BffCookieStatelessnessIT} can replay a cookie sealed by the first instance against it
+     * and prove portability as an observed two-instance fact rather than an inference.
+     */
+    static final String COOKIE_GATEWAY_PEER_ORIGIN = "https://localhost:10446";
 
     /** The container-internal Keycloak authority the {@code integration} realm frontendUrl pins. */
     static final String KEYCLOAK_INTERNAL_AUTHORITY = "keycloak:8443";
@@ -96,16 +125,20 @@ final class BffKeycloakLoginFlow {
 
     /**
      * The gateway session established by a completed login: the cookies to replay on subsequent
-     * protected requests (the session cookie plus any residual gateway cookies).
+     * protected requests (the session cookie plus any residual gateway cookies), plus the callback
+     * response's cookies with their attributes intact.
      *
      * @param gatewayCookies the gateway cookie jar carrying the live session cookie
+     * @param callbackCookies the cookies the callback response set, with {@code Secure} /
+     *                        {@code HttpOnly} / {@code SameSite} / {@code Path} / {@code Domain}
+     *                        attributes preserved — the flat {@code gatewayCookies} map drops them,
+     *                        and the sealed-cookie hardening contract is asserted on these
      */
-    record Session(Map<String, String> gatewayCookies) {
+    record Session(Map<String, String> gatewayCookies, Cookies callbackCookies) {
     }
 
     /**
-     * Runs the full auth-code flow starting from a require:session navigation on {@code startPath}
-     * and returns the gateway session cookies established by the callback.
+     * Runs the full auth-code flow against the primary (server-mode) gateway origin.
      *
      * @param startPath the gateway path to navigate to (a require:session route such as
      *                  {@code /bff-session/get}); the unauthenticated navigation triggers the login
@@ -113,12 +146,31 @@ final class BffKeycloakLoginFlow {
      * @return the established gateway {@link Session}
      */
     static Session login(String startPath) {
+        return login(startPath, GATEWAY_ORIGIN);
+    }
+
+    /**
+     * Runs the full auth-code flow starting from a require:session navigation on {@code startPath}
+     * against the given gateway origin, and returns the gateway session cookies established by the
+     * callback.
+     * <p>
+     * The origin is a parameter because the session mode is a property of the whole gateway: the
+     * cookie-mode variant runs on its own instance ({@link #COOKIE_GATEWAY_ORIGIN}), and the flow
+     * itself — the {@code 302} chain, the {@code response_mode=form_post} scrape, and the callback
+     * replay — is identical for both. Only the browser-facing origin differs; the callback action
+     * is an absolute URL taken from the auto-submit form, so it already targets the right instance.
+     *
+     * @param startPath     the gateway path to navigate to (a require:session route)
+     * @param gatewayOrigin the browser-facing gateway origin to drive
+     * @return the established gateway {@link Session}
+     */
+    static Session login(String startPath, String gatewayOrigin) {
         Map<String, String> gatewayCookies = new HashMap<>();
         Map<String, String> keycloakCookies = new HashMap<>();
 
         // Step 1 — navigate onto the require:session route: the gateway sets the pending-auth binding
         // cookie and 302s the browser to the IdP authorization endpoint.
-        Response initiation = gateway(gatewayCookies)
+        Response initiation = gateway(gatewayCookies, gatewayOrigin)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(startPath)
@@ -154,7 +206,7 @@ final class BffKeycloakLoginFlow {
         // gateway parses the code from the BODY, exchanges it for tokens, creates the server-side session,
         // and sets the session cookie on a 302 back to the original path. The binding cookie from Step 1
         // rides the gateway jar.
-        Response callback = gateway(gatewayCookies)
+        Response callback = gateway(gatewayCookies, gatewayOrigin)
                 .contentType("application/x-www-form-urlencoded")
                 .formParams(callbackFields)
                 .redirects().follow(false)
@@ -162,22 +214,33 @@ final class BffKeycloakLoginFlow {
                 .then().statusCode(302).extract().response();
         gatewayCookies.putAll(callback.getCookies());
 
-        return new Session(gatewayCookies);
+        return new Session(gatewayCookies, callback.getDetailedCookies());
     }
 
     /**
-     * A request spec bound to the gateway origin with relaxed HTTPS and the supplied cookie jar.
+     * A request spec bound to the primary (server-mode) gateway origin.
      *
      * @param cookies the gateway cookie jar
      * @return the configured request specification
      */
     static RequestSpecification gateway(Map<String, String> cookies) {
+        return gateway(cookies, GATEWAY_ORIGIN);
+    }
+
+    /**
+     * A request spec bound to the given gateway origin with relaxed HTTPS and the supplied cookie jar.
+     *
+     * @param cookies       the gateway cookie jar
+     * @param gatewayOrigin the browser-facing gateway origin to bind
+     * @return the configured request specification
+     */
+    static RequestSpecification gateway(Map<String, String> cookies, String gatewayOrigin) {
         // Default URL encoding stays ON here: the gateway spec only issues a plain require:session GET
         // (Step 1, no query) and the callback POST (Step 4). The callback carries the authorization
         // code/state/iss as x-www-form-urlencoded body params whose raw values (e.g. the issuer URL's
         // ':' and '/') MUST be percent-encoded by REST Assured — disabling encoding here corrupts the
         // body and the gateway rejects it with 400. Only keycloak() replays a pre-encoded URL.
-        return given().relaxedHTTPSValidation().baseUri(GATEWAY_ORIGIN).cookies(cookies);
+        return given().relaxedHTTPSValidation().baseUri(gatewayOrigin).cookies(cookies);
     }
 
     /**

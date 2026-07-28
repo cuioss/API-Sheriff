@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Value-object contract test suite for the immutable configuration model records
@@ -858,6 +859,49 @@ class ConfigModelContractTest {
     }
 
     // --- BFF OIDC/session fold records (D1) --------------------------------
+
+    @Nested
+    @DisplayName("Session mode canonicalization — one spelling, one predicate")
+    class SessionModeCanonicalization {
+
+        private static OidcConfig.Session sessionWithMode(String mode) {
+            return OidcConfig.Session.builder().mode(Optional.of(mode)).build();
+        }
+
+        @ParameterizedTest(name = "mode ''{0}'' canonicalizes to cookie mode")
+        @ValueSource(strings = {"cookie", "Cookie", "COOKIE", "  CoOkIe  "})
+        @DisplayName("Should read every spelling of the cookie mode as cookie mode")
+        void shouldCanonicalizeCookieMode(String declared) {
+            OidcConfig.Session session = sessionWithMode(declared);
+
+            assertEquals(Optional.of(OidcConfig.Session.MODE_COOKIE), session.mode(),
+                    "the mode is canonicalized once, at construction");
+            assertTrue(session.isCookieMode());
+            assertFalse(session.isServerMode());
+            assertTrue(session.isRecognisedMode());
+        }
+
+        @ParameterizedTest(name = "mode ''{0}'' canonicalizes to server mode")
+        @ValueSource(strings = {"server", "Server", "SERVER", " sErVeR "})
+        @DisplayName("Should read every spelling of the server mode as server mode")
+        void shouldCanonicalizeServerMode(String declared) {
+            OidcConfig.Session session = sessionWithMode(declared);
+
+            assertEquals(Optional.of(OidcConfig.Session.MODE_SERVER), session.mode());
+            assertTrue(session.isServerMode());
+            assertFalse(session.isCookieMode());
+            assertTrue(session.isRecognisedMode());
+        }
+
+        @Test
+        @DisplayName("Should treat an absent, blank or unrecognised mode as no recognised mode")
+        void shouldRejectUnrecognisedModes() {
+            assertTrue(sessionWithMode("   ").mode().isEmpty(), "a blank mode is an absent mode");
+            assertFalse(sessionWithMode("   ").isRecognisedMode());
+            assertFalse(sessionWithMode("stateless").isRecognisedMode());
+            assertFalse(OidcConfig.Session.builder().build().isRecognisedMode());
+        }
+    }
 
     @Nested
     @DisplayName("BFF OIDC/session fold records (D1)")

@@ -41,9 +41,18 @@ echo "📝 Output file: $KEYCLOAK_LOG_FILE_PATH"
 # Best-effort dump of the api-sheriff app containers into failsafe-reports (uploaded as a CI
 # artifact) so a TEST failure — not just a startup failure — is diagnosable from the app's stdout.
 # Never fail the build on a dump problem.
+#
+# The list MUST name every gateway instance docker-compose.yml starts, not just the primary and the
+# mTLS peer: the Bff*Cookie*IT suites drive the two dedicated cookie-mode instances, and a CI-only
+# failure on those instances previously produced NO uploaded log at all, forcing a local repro to
+# see the gateway's own rejection reason. Keep this list in lockstep with the api-sheriff* services
+# in integration-tests/docker-compose.yml.
 FAILSAFE_DIR="${TARGET_ABS_PATH}/failsafe-reports"
 mkdir -p "$FAILSAFE_DIR" || true
-for app in integration-tests-api-sheriff-1 integration-tests-api-sheriff-mtls-1; do
+for app in integration-tests-api-sheriff-1 \
+           integration-tests-api-sheriff-mtls-1 \
+           integration-tests-api-sheriff-cookie-1 \
+           integration-tests-api-sheriff-cookie-2-1; do
     if docker ps -a --format "{{.Names}}" | grep -q "^${app}$"; then
         echo "📥 Dumping app logs: ${app} -> ${FAILSAFE_DIR}/${app}.log"
         docker logs "$app" > "${FAILSAFE_DIR}/${app}.log" 2>&1 || true

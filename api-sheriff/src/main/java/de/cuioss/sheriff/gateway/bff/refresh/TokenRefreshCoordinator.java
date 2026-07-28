@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -24,11 +25,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Transparent, single-flight token refresh for a {@code require: session} route (D7/D9) — the
@@ -36,8 +40,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * <p>
  * When the mediated access token is within {@code leeway} of expiry the coordinator refreshes it
  * <strong>through the engine</strong> ({@code token-sheriff-client}'s {@code RefreshFlow}, reached
- * via the {@link RefreshExchange} seam) and persists the rotated token material to the session
- * store, so the browser never sees a token and never drives a leg. The gateway re-implements
+ * via the {@link RefreshExchange} seam) and persists the rotated token material through the
+ * mode-neutral {@link SessionBinding} seam — a store write in server mode, a re-bound cookie in a
+ * stateless mode — so the browser never sees a token and never drives a leg. The gateway re-implements
  * <strong>no</strong> OAuth leg: the engine owns the refresh grant, refresh-token rotation, and —
  * inside its own refresh-token-family primitive — the <em>reuse detection</em> that revokes a
  * family when a superseded refresh token is replayed (a stolen-token signal, RFC 9700). The engine
@@ -47,12 +52,13 @@ import de.cuioss.tools.logging.CuiLogger;
  * <p>
  * <strong>Single-flight per session.</strong> Concurrent requests on one session share one
  * refresh: the first request to observe near-expiry becomes the in-flight leader (registered
- * atomically in {@link #inFlight} — the check-then-act TOCTOU window is closed by the map's
- * atomic {@code putIfAbsent}, the per-session mutual-exclusion primitive); every concurrent
- * request on the same session joins the leader's result instead of launching its own refresh. The
- * leader re-resolves the session from the store under this exclusion and re-checks near-expiry, so
- * a request that arrives just after a refresh completed observes the already-rotated token and
- * makes no engine call.
+ * atomically in {@link #inFlight}, keyed on {@link SessionRecord#sessionId()} — the stable
+ * per-session identity every binding populates — so the check-then-act TOCTOU window is closed by
+ * the map's atomic {@code putIfAbsent}, the per-session mutual-exclusion primitive); every
+ * concurrent request on the same session joins the leader's result instead of launching its own
+ * refresh. The leader re-resolves the session through the binding under this exclusion and
+ * re-checks near-expiry, so a request that arrives just after a refresh completed observes the
+ * already-rotated token and makes no engine call.
  * <p>
  * <strong>On-failure semantics.</strong> A {@link RefreshOutcome#failed() failed} outcome means the
  * session has already been destroyed and the caller MUST treat the request as
@@ -69,14 +75,22 @@ public final class TokenRefreshCoordinator {
 
     private static final CuiLogger LOGGER = new CuiLogger(TokenRefreshCoordinator.class);
 
+    /**
+     * The bounded, non-sensitive reason recorded on a refresh failure. Engine rejection and
+     * engine-detected refresh-token reuse are deliberately reported as one disposition: both end the
+     * session identically, and distinguishing them in a log line would tell an attacker whether a
+     * replayed token was recognised as reuse.
+     */
+    private static final String REFRESH_FAILURE_REASON = "engine rejection or refresh-token reuse";
+
     private final Duration leeway;
     private final AccessTokenExpiry accessTokenExpiry;
     private final RefreshExchange refreshExchange;
-    private final SessionStore sessionStore;
+    private final SessionBinding sessionBinding;
     private final ConcurrentMap<String, CompletableFuture<RefreshOutcome>> inFlight = new ConcurrentHashMap<>();
 
     /**
-     * Assembles the coordinator with the refresh leeway, the engine seams, and the session store.
+     * Assembles the coordinator with the refresh leeway, the engine seams, and the session binding.
      *
      * @param leeway            how long before access-token expiry a refresh is triggered
      *                          ({@code session.refresh.leeway_seconds})
@@ -84,28 +98,31 @@ public final class TokenRefreshCoordinator {
      *                          parsing; a test binds a fixed instant)
      * @param refreshExchange   the engine refresh seam (bound to {@code RefreshFlow#refresh}; a test
      *                          binds a stubbed rotation or a throwing stub)
-     * @param sessionStore      the server-side session store the rotated record is persisted to and
-     *                          the failed session is destroyed from
+     * @param sessionBinding    the mode-neutral session binding the rotated record is persisted
+     *                          through and the failed session is destroyed through
      */
     public TokenRefreshCoordinator(Duration leeway, AccessTokenExpiry accessTokenExpiry,
-            RefreshExchange refreshExchange, SessionStore sessionStore) {
+            RefreshExchange refreshExchange, SessionBinding sessionBinding) {
         this.leeway = Objects.requireNonNull(leeway, "leeway");
         this.accessTokenExpiry = Objects.requireNonNull(accessTokenExpiry, "accessTokenExpiry");
         this.refreshExchange = Objects.requireNonNull(refreshExchange, "refreshExchange");
-        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
+        this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
     }
 
     /**
      * Returns the session to mediate from, refreshing its mediated token when within {@code leeway}
      * of expiry. Concurrent calls for the same session share one refresh.
      *
-     * @param session the resolved live session
-     * @param now     the reference instant
+     * @param session      the resolved live session
+     * @param cookieHeader the raw request {@code Cookie} header value the session was resolved
+     *                     from — the leader re-resolves through it under single-flight exclusion;
+     *                     may be absent
+     * @param now          the reference instant
      * @return {@link RefreshOutcome#current(SessionRecord) current} when no refresh was needed,
-     *         {@link RefreshOutcome#refreshed(SessionRecord) refreshed} carrying the rotated
+     *         {@link RefreshOutcome#refreshed(SessionRecord, List) refreshed} carrying the rotated
      *         session, or {@link RefreshOutcome#failed() failed} when the session was destroyed
      */
-    public RefreshOutcome refresh(SessionRecord session, Instant now) {
+    public RefreshOutcome refresh(SessionRecord session, @Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(now, "now");
         if (session.refreshToken().isEmpty() || !nearExpiry(session, now)) {
@@ -119,7 +136,7 @@ public final class TokenRefreshCoordinator {
             return existing.join();
         }
         try {
-            RefreshOutcome outcome = performRefresh(sessionId, now);
+            RefreshOutcome outcome = performRefresh(cookieHeader, now);
             leader.complete(outcome);
             return outcome;
         } finally {
@@ -131,8 +148,8 @@ public final class TokenRefreshCoordinator {
         }
     }
 
-    private RefreshOutcome performRefresh(String sessionId, Instant now) {
-        Optional<SessionRecord> resolved = sessionStore.resolve(sessionId, now);
+    private RefreshOutcome performRefresh(@Nullable String cookieHeader, Instant now) {
+        Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
         if (resolved.isEmpty()) {
             // Destroyed or expired between the near-expiry check and acquiring the lead — unauthenticated.
             return RefreshOutcome.failed();
@@ -147,18 +164,18 @@ public final class TokenRefreshCoordinator {
         try {
             RotationResult rotation = refreshExchange.exchange(presentedRefreshToken);
             SessionRecord rotated = rotate(latest, rotation);
-            // create() upserts by session id (SessionStore contract; InMemorySessionStore is a keyed
-            // map put), so no pre-create destroy is needed on the success path. Destroying first would
-            // open a window where a concurrent resolve() misses the rotating session.
-            sessionStore.create(rotated);
-            LOGGER.debug("Refreshed the mediated tokens for a require:session route (single-flight)");
-            return RefreshOutcome.refreshed(rotated);
+            // persist() re-binds in place (an upsert in server mode, a re-seal in a stateless mode), so
+            // no pre-persist destroy is needed on the success path. Destroying first would open a
+            // window where a concurrent resolve() misses the rotating session.
+            SessionBinding.BoundSession bound = sessionBinding.persist(rotated, now);
+            LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
+            return RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders());
         } catch (TokenSheriffException refreshFailure) {
             // Engine failure OR refresh-token reuse (the engine revoked the family) — the session can no
             // longer be sustained. Destroy it so the caller re-drives login / returns 401.
-            sessionStore.destroyById(sessionId);
-            LOGGER.debug(refreshFailure,
-                    "Token refresh failed (IdP rejection or refresh-token reuse) — session destroyed");
+            sessionBinding.destroy(latest);
+            // Bounded, non-sensitive reason only — never the presented refresh token or session id.
+            LOGGER.warn(refreshFailure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, REFRESH_FAILURE_REASON);
             return RefreshOutcome.failed();
         }
     }
@@ -228,17 +245,19 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * The framework-agnostic result of a refresh attempt. Token material never crosses to the
-     * browser — the rotated {@link SessionRecord} stays server-side and only its opaque session
-     * cookie is carried.
+     * The framework-agnostic result of a refresh attempt. Token material is never disclosed to the
+     * browser — the rotated {@link SessionRecord} crosses only inside the binding's own cookie
+     * representation, which is opaque in server mode and authenticated-encrypted in a stateless mode.
      *
-     * @param kind    which of the three refresh outcomes occurred
-     * @param session the session to mediate from, present for {@link Kind#CURRENT} and
-     *                {@link Kind#REFRESHED}, empty for {@link Kind#FAILED}
+     * @param kind             which of the three refresh outcomes occurred
+     * @param session          the session to mediate from, present for {@link Kind#CURRENT} and
+     *                         {@link Kind#REFRESHED}, empty for {@link Kind#FAILED}
+     * @param setCookieHeaders the {@code Set-Cookie} header values the re-bind produced, empty when
+     *                         the binding needs no new cookie
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record RefreshOutcome(Kind kind, Optional<SessionRecord> session) {
+    public record RefreshOutcome(Kind kind, Optional<SessionRecord> session, List<String> setCookieHeaders) {
 
         /**
          * The three terminal states of a refresh attempt.
@@ -261,29 +280,31 @@ public final class TokenRefreshCoordinator {
         public RefreshOutcome {
             Objects.requireNonNull(kind, "kind");
             session = Objects.requireNonNullElse(session, Optional.empty());
+            setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
             if (kind != Kind.FAILED && session.isEmpty()) {
                 throw new IllegalArgumentException("a " + kind + " outcome must carry a session");
             }
         }
 
         /**
-         * A no-refresh-needed outcome carrying the unchanged session.
+         * A no-refresh-needed outcome carrying the unchanged session and no new cookie.
          *
          * @param session the live session, unchanged
          * @return the current outcome
          */
         public static RefreshOutcome current(SessionRecord session) {
-            return new RefreshOutcome(Kind.CURRENT, Optional.of(session));
+            return new RefreshOutcome(Kind.CURRENT, Optional.of(session), List.of());
         }
 
         /**
-         * A successful-refresh outcome carrying the rotated session.
+         * A successful-refresh outcome carrying the rotated session and the re-bind's cookies.
          *
-         * @param session the session with the rotated token material
+         * @param session          the session with the rotated token material
+         * @param setCookieHeaders the {@code Set-Cookie} header values the re-bind produced
          * @return the refreshed outcome
          */
-        public static RefreshOutcome refreshed(SessionRecord session) {
-            return new RefreshOutcome(Kind.REFRESHED, Optional.of(session));
+        public static RefreshOutcome refreshed(SessionRecord session, List<String> setCookieHeaders) {
+            return new RefreshOutcome(Kind.REFRESHED, Optional.of(session), setCookieHeaders);
         }
 
         /**
@@ -294,7 +315,7 @@ public final class TokenRefreshCoordinator {
          * @return the failed outcome
          */
         public static RefreshOutcome failed() {
-            return new RefreshOutcome(Kind.FAILED, Optional.empty());
+            return new RefreshOutcome(Kind.FAILED, Optional.empty(), List.of());
         }
 
         /**

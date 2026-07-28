@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.bff.reserved;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -22,17 +23,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CallbackOutcome;
 import de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint.CodeExchange;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
@@ -71,6 +78,7 @@ class CallbackEndpointTest {
     private BindingCookieCodec bindingCodec;
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
+    private SessionBinding sessionBinding;
     private CallbackEndpoint endpoint;
 
     private String state;
@@ -83,8 +91,8 @@ class CallbackEndpointTest {
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionStore = new InMemorySessionStore(16);
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
-        endpoint = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec, sessionStore, sessionCodec,
-                SESSION_TTL);
+        sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
+        endpoint = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec, sessionBinding, SESSION_TTL);
 
         FlowContext flow = FlowContext.create("https://gw.example.com/auth/callback");
         state = flow.state();
@@ -108,6 +116,35 @@ class CallbackEndpointTest {
 
         AuthorizationCodeFlow.AuthenticationResult result = new AuthorizationCodeFlow.AuthenticationResult(access, id);
         return (context, params) -> result;
+    }
+
+    /**
+     * An exchange whose validated ID token is far larger than the browser-safe cookie budget — the
+     * realistic driver of the documented {@code bind()} failure in stateless cookie mode.
+     */
+    private static CodeExchange oversizedExchange() {
+        Map<String, ClaimValue> accessClaims = new HashMap<>();
+        accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+        AccessTokenContent access = new AccessTokenContent(accessClaims, RAW_ACCESS_TOKEN);
+
+        Map<String, ClaimValue> idClaims = new HashMap<>();
+        idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+        IdTokenContent id = new IdTokenContent(idClaims, "x".repeat(16_384));
+
+        AuthorizationCodeFlow.AuthenticationResult result = new AuthorizationCodeFlow.AuthenticationResult(access, id);
+        return (context, params) -> result;
+    }
+
+    /** The stateless cookie binding — {@code bind()} refuses a session past the cookie-size budget. */
+    private static SessionBinding cookieBinding() {
+        byte[] key = new byte[32];
+        Arrays.fill(key, (byte) 0x11);
+        byte[] salt = new byte[32];
+        Arrays.fill(salt, (byte) 0x22);
+        return new CookieSessionBinding(
+                new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                        SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"), (byte) 1),
+                salt);
     }
 
     @Nested
@@ -204,12 +241,29 @@ class CallbackEndpointTest {
             CodeExchange failing = (context, params) -> {
                 throw new ClientProtocolException("token endpoint rejected the code");
             };
-            CallbackEndpoint failingEndpoint = new CallbackEndpoint(failing, pendingStore, bindingCodec, sessionStore,
-                    sessionCodec, SESSION_TTL);
+            CallbackEndpoint failingEndpoint = new CallbackEndpoint(failing, pendingStore, bindingCodec, sessionBinding,
+                    SESSION_TTL);
 
             CallbackOutcome outcome = failingEndpoint.handle("code=abc&state=" + state, bindingCookieHeader, T0);
 
             assertEquals(400, outcome.status());
+        }
+
+        @Test
+        @DisplayName("Should map a binding failure to 500 rather than letting IllegalStateException escape handle()")
+        void shouldMapBindFailureTo500() {
+            CallbackEndpoint bindFailingEndpoint = new CallbackEndpoint(oversizedExchange(), pendingStore, bindingCodec,
+                    cookieBinding(), SESSION_TTL);
+
+            CallbackOutcome outcome = assertDoesNotThrow(
+                    () -> bindFailingEndpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0),
+                    "a session the binding cannot hold is a clean outcome, never an escaping IllegalStateException");
+
+            assertEquals(500, outcome.status(),
+                    "the exchange succeeded and the caller did nothing wrong — an unbindable session is a "
+                            + "gateway-side 500, not a 4xx");
+            assertFalse(outcome.isRedirect());
+            assertTrue(outcome.setCookieHeaders().isEmpty(), "a failed binding emits no session cookie");
         }
     }
 

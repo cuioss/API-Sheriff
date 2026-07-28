@@ -29,6 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -114,6 +115,7 @@ public final class ConfigValidator {
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
+    private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -134,6 +136,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
@@ -731,18 +734,34 @@ public final class ConfigValidator {
         });
     }
 
+    /**
+     * Rule: the session mode's mandatory companions (D1/D2b).
+     * <p>
+     * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require an
+     * {@code encryption_key} — omitting it selects the generate-on-startup key mode, a first-class
+     * production option (at the cost of dropping every session on restart and being unshareable
+     * across replicas). Its companion rule survives the relaxation: a {@code previous_key} present
+     * <em>without</em> an {@code encryption_key} is still invalid, because a decrypt-only rotation
+     * key with no current key to roll onto is semantically nonsensical and rotation composes with
+     * the passed-key mode only.
+     */
     private static void validateSessionMode(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.oidc().flatMap(OidcConfig::session).ifPresent(session ->
-                session.mode().ifPresent(mode -> {
-                    if ("cookie".equals(mode) && session.encryptionKey().isEmpty()) {
-                        errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/encryption_key",
-                                "cookie session mode requires an encryption_key"));
-                    }
-                    if ("server".equals(mode) && session.store().isEmpty()) {
-                        errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",
-                                "server session mode requires a store"));
-                    }
-                }));
+        // isCookieMode() / isServerMode() are the SHARED predicates over the mode value the
+        // OidcConfig.Session canonical constructor already canonicalized. Comparing against a
+        // literal here is what previously let 'Cookie' skip both rules while the edge still read it
+        // as active cookie mode and relaxed the pre-route Cookie header-value cap.
+        gateway.oidc().flatMap(OidcConfig::session).ifPresent(session -> {
+            if (session.isCookieMode() && session.encryptionKey().isEmpty()
+                    && session.previousKey().isPresent()) {
+                errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/previous_key",
+                        "cookie session mode with a previous_key requires an encryption_key — "
+                                + "the decrypt-only rotation key composes with the passed-key mode only"));
+            }
+            if (session.isServerMode() && session.store().isEmpty()) {
+                errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",
+                        "server session mode requires a store"));
+            }
+        });
     }
 
     /**
@@ -757,6 +776,31 @@ public final class ConfigValidator {
             if (max <= 0) {
                 errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_POINTER,
                         "oidc session max_sessions must be a positive integer, but was %d".formatted(max)));
+            }
+        });
+    }
+
+    /**
+     * Rule: the cookie-mode sealed-cookie size budget (D1). When
+     * {@code oidc.session.max_cookie_size} is present it must lie between
+     * {@link SealedSessionCookieCodec#COOKIE_VALUE_BUDGET_FLOOR} and
+     * {@link SealedSessionCookieCodec#COOKIE_VALUE_BUDGET_CEILING} inclusive.
+     * <p>
+     * The floor is the encoded length of a structurally minimal sealed value — below it no sealed
+     * cookie could ever be emitted, so the boot fails with a clear message rather than every seal
+     * failing at runtime. The ceiling keeps the budget below what the transport will carry: the same
+     * number also raises the gateway's pre-route {@code Cookie} header-value cap, and a budget at or
+     * above the inbound header-block limit would produce a value the seal accepts but the transport
+     * rejects with {@code 431}. A no-op when the key is omitted (the codec default applies).
+     */
+    private static void validateSessionMaxCookieSize(GatewayConfig gateway, List<ConfigError> errors) {
+        gateway.oidc().flatMap(OidcConfig::session).flatMap(OidcConfig.Session::maxCookieSize).ifPresent(size -> {
+            if (size < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
+                    || size > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING) {
+                errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_SIZE_POINTER,
+                        "oidc session max_cookie_size must be between %d and %d bytes, but was %d"
+                                .formatted(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR,
+                                        SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
             }
         });
     }

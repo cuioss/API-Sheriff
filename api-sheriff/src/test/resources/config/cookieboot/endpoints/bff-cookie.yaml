@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=../../../../../main/resources/schema/endpoint.schema.json
+# The single require: session endpoint of the cookie-mode boot configuration.
+#
+# It sits inside the 'bff-session' anchor namespace and inherits that anchor's
+# session floor, so the gateway boots with a real session route rather than an
+# oidc block no route uses. The upstream is the UPSTREAM topology alias; the
+# route is never driven by CookieModeBootTest, which asserts the assembled
+# BffRuntime rather than a proxied request.
+endpoint:
+  id: bff-cookie
+  base_url: UPSTREAM
+  anchor: bff-session
+  routes:
+    - id: bff-cookie-all
+      match:
+        path_prefix: /bff-session

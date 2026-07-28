@@ -27,6 +27,8 @@ import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.TokenRevocation;
 import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint.LogoutOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
@@ -53,7 +55,7 @@ class LogoutEndpointTest {
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
 
     private InMemorySessionStore store;
-    private SessionCookieCodec cookieCodec;
+    private SessionBinding binding;
     private EndSessionFlow endSessionFlow;
     private String sessionId;
     private String cookieHeader;
@@ -61,7 +63,8 @@ class LogoutEndpointTest {
     @BeforeEach
     void setUp() {
         store = new InMemorySessionStore(16);
-        cookieCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8));
+        binding = new ServerSessionBinding(store,
+                new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8)));
         endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(REGISTERED_RETURN)));
         sessionId = SessionRecord.newSessionId();
         SessionRecord session = SessionRecord.builder()
@@ -80,7 +83,7 @@ class LogoutEndpointTest {
         };
         RpInitiatedLogout logout = new RpInitiatedLogout(endSessionFlow, revocation, END_SESSION,
                 postLogoutRedirectUri, FINAL_REDIRECT, STATE_TTL);
-        return new LogoutEndpoint(logout, store, cookieCodec);
+        return new LogoutEndpoint(logout, binding);
     }
 
     @Test

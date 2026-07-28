@@ -54,7 +54,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link #dispatch(ReservedEndpoint, ReservedHttpRequest, Instant)} — the framework-agnostic
  *       fan-out that routes each matched reserved kind (callback, logout, logout-return, back-channel
  *       logout, user-info, login) to its already-wired handler and normalizes the heterogeneous
- *       handler outcomes into one {@link ReservedHttpResponse} the edge renders verbatim.</li>
+ *       handler outcomes into one {@link ReservedHttpResponse} the edge renders verbatim. The
+ *       back-channel arm stays wired in both session modes — the endpoint's own capability gate
+ *       answers {@code 404} where IdP-driven destruction is unsupported, so the reserved path never
+ *       falls through to the proxy route table.</li>
  * </ol>
  * The runtime is framework-agnostic (raw request pieces in, a {@link ReservedHttpResponse} out — no
  * JAX-RS / Vert.x coupling), so it is unit-testable without a container. The engine-dependent
@@ -239,7 +242,9 @@ public final class BffRuntime {
     }
 
     private static ReservedHttpResponse render(BackchannelLogoutEndpoint.BackchannelLogoutOutcome outcome) {
-        // The OIDC back-channel logout response — success and error alike — must be served uncacheable.
+        // The OIDC back-channel logout response is served uncacheable whatever its status: the 200
+        // accepted and 400 rejected outcomes per the spec, and the 404 the endpoint's capability gate
+        // returns for a session binding that cannot honour IdP-driven destruction.
         return new ReservedHttpResponse(outcome.status(), null, null, Map.of(CACHE_CONTROL, NO_STORE), List.of());
     }
 
@@ -280,6 +285,11 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
+    // The component layout below — the line breaks between each @Nullable annotation and its
+    // component — is what the formatter inherited from de.cuioss:cui-java-parent produces. It is
+    // deliberately accepted rather than fought: this project declares no formatter plugin of its own,
+    // and adding one to change this is out of scope. Do NOT hand-reflow the header; the next
+    // format-check would simply undo it. ReservedHttpResponse below carries the identical note.
     public record ReservedHttpRequest(String rawQuery, @Nullable
             String cookieHeader,
     @Nullable
@@ -323,6 +333,11 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
+    // The component layout below — the line breaks between each @Nullable annotation and its
+    // component — is what the formatter inherited from de.cuioss:cui-java-parent produces. It is
+    // deliberately accepted rather than fought: this project declares no formatter plugin of its own,
+    // and adding one to change this is out of scope. Do NOT hand-reflow the header; the next
+    // format-check would simply undo it. ReservedHttpRequest above carries the identical note.
     public record ReservedHttpResponse(int status, @Nullable
             String location, @Nullable
             String jsonBody,
