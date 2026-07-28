@@ -132,14 +132,18 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
 2. Commit changes: `git add <files> && git commit -m "<message>"`
 3. Push the branch: `git push -u origin <branch-name>`
 4. Create a PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
-5. Wait for CI + Gemini review (waits until checks complete): `gh pr checks --watch`
-6. **Handle Gemini review comments** — fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each:
+5. Wait for CI and the three automated reviewers — CodeRabbit, Sourcery and PR-Agent (waits until checks complete): `gh pr checks --watch`
+6. **Handle the automated review comments from all three reviewers** — CodeRabbit, Sourcery and PR-Agent each comment independently, so treat the union of their comments as the work list. Fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each comment, whichever bot authored it:
    - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment
    - If disagree or out of scope: reply explaining why, then resolve the comment
    - If uncertain (not 100% confident): **ask the user** before acting
    - Every comment MUST get a reply (reason for fix or reason for not fixing) and MUST be resolved
+   - **Re-review after pushing fixes is not uniform**: CodeRabbit and Sourcery re-review automatically on push; PR-Agent deliberately does **not** (`.github/workflows/pr-agent.yml` triggers only on `opened`/`reopened`/`ready_for_review` plus on-demand `issue_comment` commands). Re-request a PR-Agent pass explicitly by posting a `/review` comment on the PR after the fix push.
 7. Do **NOT** enable auto-merge unless explicitly instructed. Wait for user approval.
-8. Return to main: `git checkout main && git pull`
+8. **After the merge lands, verify the post-merge state**:
+   - Re-check the PR's post-merge checks. The only genuinely post-merge workflow in this repository is `.github/workflows/benchmark.yml` (`pull_request: types: [closed]` gated on `merged == true`, plus tag pushes and `workflow_dispatch`); because it is `pull_request`-triggered, its run stays attached to the PR and remains visible through the CI abstraction after the merge.
+   - Assert zero unresolved review threads: `python3 .plan/execute-script.py plan-marshall:tools-integration-ci:ci pr comments --pr-number <n> --unresolved-only`. Route any straggler into a follow-up issue or plan rather than leaving it unresolved.
+9. Return to main: `git checkout main && git pull`
 
 ## Temporary Files
 
