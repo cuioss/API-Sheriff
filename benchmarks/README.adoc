@@ -145,6 +145,53 @@ management interface has exactly one port — its config declares no `ssl-port` 
 `insecure-requests` — so activating management TLS converted port 9000 itself to HTTPS. No
 plain-HTTP surface remains anywhere in the stack.
 
+=== Which goals actually run
+
+The CI baseline lane declares twelve goals. Until PLAN-25 it had never executed all of them: the
+job died at goal 4 (`passthroughRelay`, whose target hostname resolved nowhere) and Maven's
+fail-fast discarded goals 5-12, which had therefore never run in CI even once. Being declared in
+`pom.xml` is not evidence that a goal produces a number.
+
+Current disposition — the CI end-of-job coverage step (see `.github/workflows/benchmark.yml`)
+enforces this table, so a goal that silently stops running fails the job:
+
+[cols="2,1,4", options="header"]
+|===
+|Benchmark |State |Notes
+
+|`healthLiveCheck`, `gatewayHealth`, `proxiedStatic`
+|runs
+|Already executing before PLAN-25.
+
+|`passthroughRelay`, `passthroughRelayEmpty`
+|runs
+|Repaired by PLAN-25: the relay target now resolves, and the `mapped`/`empty` selector actually
+ reaches the container, so the two modes are genuinely distinct runs.
+
+|`bearerProxied`, `http2`, `graphql`, `uploadSmall`, `grpcUnary`
+|runs
+|First execution in CI under PLAN-25. Their trend series start empty here.
+
+|`uploadLarge`
+|*skipped*
+|The gateway rejects the 50MB body with `413`. The `upload` anchor declares
+ `max_body_bytes: 67108864`, but the Quarkus HTTP body limit is not derived from it, so the
+ declared 64 MiB cap is unreachable and the body is refused before the security filter runs.
+ Blocked on a gateway-side fix.
+
+|`websocketEcho`
+|*skipped*
+|Each WebSocket upgrade leaks an edge admission permit. Once they are exhausted the gateway rejects
+ *all* traffic with `503` until restarted, which also poisons every goal sequenced after it.
+ Blocked on a gateway-side fix.
+
+|`sessionMediated`
+|*unwired*
+|Backs no Maven goal on purpose — see below.
+|===
+
+A skipped goal is named in every job summary with its reason. Silence is never the signal.
+
 === Deliberately unwired scripts
 
 `session_mediated.js` (benchmark name `sessionMediated`) is present in `k6-scripts/` but is wired to
@@ -351,7 +398,7 @@ scripts/run-comparison.sh --target apisix
 |`api-sheriff` (default), `apisix`, or `both`.
 
 |`--aspects`
-|Comma-separated subset of the six matrix aspects. Default: all six. An unknown aspect fails
+|Comma-separated subset of the eight matrix aspects. Default: all eight. An unknown aspect fails
  before any run starts.
 
 |`--output`
@@ -439,8 +486,10 @@ know:
 . *Post-processing*: `WrkBenchmarkConverter` / `WrkResultPostProcessor` are replaced by
   `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
   10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
-. *Coverage*: the lane grew from three wired executions to eight. `bearer` is genuinely new CI
+. *Coverage*: the lane grew from three wired executions to twelve. `bearer` is genuinely new CI
   coverage — the wrk-era bearer runner existed on disk but was registered in no Maven execution.
+  Being *wired* is not the same as *executing*: until PLAN-25 the job died at the fourth goal and
+  goals 5-12 had never run in CI even once. See _Which goals actually run_ below.
 
 === One-time gh-pages baseline restart
 
@@ -453,8 +502,20 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
   discontinuity* at the swap commit that is a toolchain artifact, not a regression.
 * The `error` / variability / confidence-band columns go permanently zero-width from that point
   (see the `latency_ms.stdev` limit above).
-* The four new matrix aspects begin with no history and need ten runs before their trend series is
-  meaningful.
+* Every benchmark executing for the first time begins with *no history* and needs ten runs before
+  its trend series is meaningful. Under PLAN-25 that is most of the lane: eight of the twelve goals
+  had never executed in CI, so their series start empty at this commit. A flat or short trend line
+  on those names is an absence of history, not a regression.
+
+*Two further discontinuities are coming, and they are distinct causes — do not conflate them:*
+
+. *First execution under PLAN-25* (this commit): goals that had never run begin their series here.
+  The cause is coverage — data that never existed now exists.
+. *PLAN-31 D6/D7 (`%it` elimination)*: that work will change the measured configuration itself, so
+  the numbers before and after are measurements of different things on the *same* names. The cause
+  is configuration, not coverage, and it will break continuity again at a later commit.
+
+A reader comparing across either boundary is comparing incomparable eras. Compare only within one.
 
 ==== A second, target-change discontinuity
 
