@@ -148,6 +148,7 @@ jobs:
           expected="healthLiveCheck gatewayHealth proxiedStatic passthroughRelay passthroughRelayEmpty bearerProxied http2 graphql uploadSmall grpcUnary"
 
           missing=0
+          missing_names=""
           {
             echo "## Benchmark coverage"
             echo
@@ -161,6 +162,7 @@ jobs:
             else
               echo "| \`${name}\` | **DID NOT RUN** |" >> "$GITHUB_STEP_SUMMARY"
               missing=$((missing + 1))
+              missing_names="${missing_names:+${missing_names}, }${name}"
             fi
           done
 
@@ -188,12 +190,6 @@ jobs:
           # State it. This path never exits non-zero: the benchmark step's own failure already fails
           # the job, and duplicating that here would only bury the real error.
           if [ "${BENCHMARK_OUTCOME}" != "success" ]; then
-            missing_names=""
-            for name in ${expected}; do
-              if [ ! -f "${results_dir}/${name}-summary.json" ]; then
-                missing_names="${missing_names:+${missing_names}, }${name}"
-              fi
-            done
             {
               echo
               if [ "${missing}" -gt 0 ]; then
