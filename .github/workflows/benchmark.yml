@@ -24,11 +24,24 @@ jobs:
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     # Add timeout to prevent long-running jobs (increased for integration benchmarks).
-    # Raised 45 -> 75 for the k6 aspect matrix: the lane went from three wired 60-second runs to
-    # eight (the six matrix aspects plus the two retained health benchmarks). The dominant
-    # contributor beyond the old budget is the upload-50MB aspect, which is transfer-bound and
-    # runs at reduced concurrency, so it does not finish in the same wall time as a request-rate
-    # run. The five additional runs land inside this cap.
+    # The -Pbenchmark profile wires TWELVE k6 goals: the eight cross-gateway matrix aspects, the two
+    # retained non-matrix health benchmarks (healthLiveCheck, gatewayHealth), and the two
+    # API-Sheriff-only passthrough-relay executions (mapped relay throughput and the empty-mode
+    # no-regression run).
+    #
+    # Budget, measured locally 2026-07-28 rather than estimated:
+    #   * goal execution   ~14 min -- 12 goals x (60s k6 window + ~10s compose/k6 start and summary
+    #                      write). upload-50MB is transfer-bound at reduced concurrency, so it does
+    #                      not finish in the same wall time as a request-rate run.
+    #   * stack startup    ~90 s -- since #118 the lane boots FOUR native gateway instances
+    #                      (api-sheriff, api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2)
+    #                      alongside Keycloak, go-httpbin, nginx-static, passthrough-backend,
+    #                      grpc-echo, toxiproxy, asset-origin and prometheus, because
+    #                      start-integration-container.sh runs a bare `up -d`.
+    #   * native compile   the dominant and most variable term on a cold cache.
+    #
+    # 75 minutes holds with headroom for the cold native compile; it is kept unchanged because the
+    # measured run does not approach the cap.
     timeout-minutes: 75
     permissions:
       # Needed to upload artifacts
@@ -87,9 +100,12 @@ jobs:
         id: run-benchmarks
         run: |
           # Run k6-based integration benchmarks with native image. The -Pbenchmark profile wires
-          # eight executions: the six matrix aspects (unauth, bearer, http2, graphql, upload-1MB,
-          # upload-50MB) plus the two retained non-matrix health benchmarks (healthLiveCheck,
-          # gatewayHealth). The on-demand APISIX comparison lane is deliberately NOT run here.
+          # twelve executions: the eight cross-gateway matrix aspects (unauth, bearer, http2,
+          # graphql, upload-1MB, upload-50MB, ws, grpc), the two retained non-matrix health
+          # benchmarks (healthLiveCheck, gatewayHealth), and the two API-Sheriff-only
+          # passthrough-relay executions (mapped and empty). The on-demand APISIX comparison lane is
+          # deliberately NOT run here. Maven fails fast, so the coverage step below is what proves
+          # which goals actually produced a result.
           echo "Running k6 integration benchmarks with native Quarkus..."
           ./mvnw --no-transfer-progress clean verify -pl benchmarks -Pbenchmark \
             -Dbenchmark.history.dir="${GITHUB_WORKSPACE}/benchmark-history/integration"
