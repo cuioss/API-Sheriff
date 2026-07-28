@@ -1,0 +1,168 @@
+= Cookie-Based BFF -- Operator Setup
+:toc:
+:toclevels: 3
+:sectnums:
+
+A task-oriented guide for operators standing up the *cookie-based BFF* (Variant 3): API Sheriff as
+an OIDC confidential client that keeps no server-side session store and hands the browser a sealed
+cookie that *is* the session. It tells you *how* to configure and run the variant; the field-by-field
+contract lives in the link:../configuration.adoc#_oidc[Configuration Reference (`oidc`)] and the
+design rationale in link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based].
+
+== When to choose this variant
+
+Choose the cookie-based BFF when you need a *stateless* gateway: multiple replicas with no shared
+session store and no sticky routing for ordinary traffic. Tokens still never reach the browser in
+readable form -- they are sealed with AES-256-GCM and the cookie is `HttpOnly`.
+
+Choose the link:../variants/02-bff-session.adoc[server-session variant] instead when server-side-only
+token custody is a hard requirement (the token must never leave the gateway, not even encrypted), or
+when you need IdP-driven back-channel logout.
+
+== Prerequisites
+
+* An OIDC provider (IdP) where you can register a *confidential client* and obtain a
+  `client_id` / `client_secret`.
+* A registered *redirect URI* pointing at the gateway's own callback path (`oidc.redirect_uri`),
+  matched exactly at the IdP.
+* The client secret and any session keys available as environment variables (never written inline --
+  secrets in `oidc` must be `${ENV_VAR}` references).
+
+== Configure the confidential client
+
+Add an `oidc` block to `gateway.yaml` and set at least one route's effective auth to
+`require: session`. A minimal cookie-based configuration:
+
+[source,yaml]
+----
+# gateway.yaml
+oidc:
+  issuer: https://idp.example.com/realms/main
+  client_id: api-sheriff
+  client_secret: ${SHERIFF_CLIENT_SECRET}     # must be an ${ENV_VAR} reference
+  redirect_uri: https://gw.example.com/auth/callback   # registered exactly at the IdP
+  scopes: [openid, profile, orders.read]      # include every scope a route requires
+  session:
+    mode: cookie                              # sealed cookie, no store (this variant)
+    cookie_name: __Host-sheriff
+    encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
+    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only (rotation)
+    max_cookie_size: 4096                     # seal-time budget; see "Cookie size budget"
+    ttl_seconds: 3600                         # absolute lifetime from login
+    csrf:
+      trusted_origins: [https://app.example.com]
+    refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
+----
+
+The gateway ignores the `oidc` block entirely unless a route's effective auth is `require: session`,
+so a bearer-only deployment is unaffected by its presence.
+
+== Key material
+
+The sealing key has *two modes*, selected by whether you declare `session.encryption_key`.
+
+[cols="1,2,2"]
+|===
+| Mode | How to select | Trade-off
+
+| Passed key
+| Declare `session.encryption_key` as an `${ENV_VAR}` reference holding an AES-256 key.
+| Sessions survive a gateway restart and are shareable across replicas. Requires you to generate,
+  distribute and safeguard the key.
+
+| Generate on startup
+| Omit `session.encryption_key` entirely.
+| No operator input at all -- the gateway mints a key at boot. But *sessions are dropped on every
+  restart* (users re-authenticate) and the key *cannot be shared* with another replica, so each
+  replica can only unseal its own cookies.
+|===
+
+Use generate-on-startup for a single-replica deployment or a development environment. Use a passed
+key for anything multi-replica or restart-sensitive. The gateway raises a startup diagnostic naming
+the active key mode and rotation state -- it never logs key bytes.
+
+=== Rotating the key
+
+`session.previous_key` is *decrypt-only*: a cookie still sealed under it keeps resolving, and the
+session's next write re-seals it under the current key. Sealing is always done with
+`encryption_key`, never with `previous_key`.
+
+`previous_key` *requires* an `encryption_key` -- declaring it alone is rejected at boot, because a
+decrypt-only rotation key with no current key to roll onto is nonsensical. Rotation therefore
+composes only with the passed-key mode; generate-on-startup has no previous key by construction.
+
+Withdraw `previous_key` once the rotation window has passed; cookies still carrying the retired key
+id are then refused as "no session" and those users log in again.
+
+== Cookie size budget
+
+Because the session travels in the cookie, its sealed value has a size budget --
+`session.max_cookie_size`, defaulting to 4096 bytes. Browsers are only required to accept 4 KB per
+cookie, so a larger value risks being *silently dropped* by the browser, leaving a session that can
+never be resolved.
+
+The gateway therefore refuses to seal an over-budget session rather than truncating it, and logs a
+warning naming the offending length. If you hit the budget, *reduce the token set* -- trim `scopes`
+so the IdP issues a smaller access token, and cut `user_info.allowed_claims` -- or *run the
+link:../variants/02-bff-session.adoc[server-session variant]*, where token size is irrelevant
+because nothing crosses to the browser.
+
+== What is unavailable in this variant
+
+A stateless gateway holds no session index and cannot reach another browser's cookie, so
+IdP-driven destruction is *unsupported*:
+
+* *Back-channel logout answers `404`.* The reserved path stays wired and deliberately returns `404`
+  rather than falling through to the proxy route table -- it never claims a destruction that did not
+  happen.
+* *No destroy-by-`sid` / destroy-by-`sub`.* Nothing can be revoked centrally mid-session.
+
+RP-initiated logout (the user logging themselves out) works normally: the browser's cookie is
+cleared, and an expired cookie the browser keeps anyway is still refused server-side by the absolute
+TTL check. Where instant central revocation is a hard requirement, use the server-session variant.
+Mitigate in this variant with a short `ttl_seconds` and short access-token lifetimes.
+
+== Session affinity for the login leg
+
+The variant is stateless once a session is *established*, but not during the login exchange. The
+pending authorization held between the login redirect and the OIDC callback is per-instance and
+never shared, so a login *begun* on one replica must *complete* on that replica.
+
+*Configure session affinity for the login leg only* -- the redirect through to the callback. Once
+the session cookie is issued, requests may be balanced freely across replicas with no affinity.
+
+== Upgrading: forced re-login on a format bump
+
+The sealed-cookie format carries a version that is bound into the cookie's authenticated data. When
+that version is bumped, cookies in the previous format fail to unseal rather than being mis-parsed,
+and there is deliberately no backward-compatible acceptance path.
+
+*Plan for it*: on an upgrade that bumps the format version, all existing cookie-mode sessions are
+invalidated at deploy time and users must log in again. There is no rolling migration -- schedule
+the deploy accordingly. The most recent bump added the per-session identity nonce.
+
+== Operate
+
+* *Absolute TTL.* `ttl_seconds` is counted from login and is never extended by a refresh; the
+  deadline is recomputed from the original login on every re-seal, so an endlessly-refreshed session
+  still dies on time.
+* *Refresh re-seals the cookie.* A transparent token refresh emits a new `Set-Cookie` -- that is the
+  whole of "persisting" in this variant.
+* *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
+  without the IdP -- but logins fail until the issuer is reachable.
+
+== Private-CA / self-signed IdP
+
+If your IdP presents a certificate from a *private CA* (or a self-signed cert), add that CA to the
+*JVM default truststore* -- the confidential-client engine uses it for outbound OIDC calls
+(discovery, token, refresh, logout), and the per-issuer `tls_profile` that validates JWKS does not
+cover those calls. See link:bff-session.adoc#_private_ca_self_signed_idp[the server-session guide]
+for the exact system properties; the requirement is identical in both variants.
+
+== See also
+
+* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract.
+* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- design and flow rationale.
+* link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF architecture] -- why the variant is shaped this way.
+* link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- BFF security relaxations] -- the accepted trade-offs.
+* link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- building and extending it.

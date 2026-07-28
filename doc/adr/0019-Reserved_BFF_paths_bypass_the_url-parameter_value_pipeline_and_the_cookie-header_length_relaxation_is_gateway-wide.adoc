@@ -1,0 +1,183 @@
+= ADR-0019: Reserved BFF paths bypass the url-parameter value pipeline and the cookie-header length relaxation is gateway-wide
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Two deliberate inbound-validation relaxations the BFF requires — the url-parameter value pipeline is not applied to matched reserved paths, and the cookie-header value-length raise is necessarily gateway-wide
+// tags: security, bff, reserved-paths, input-validation, cookie-header, relaxation, blast-radius
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The gateway applies an inbound security-validation pipeline to every request before any routing
+decision: path canonicalisation, url-parameter validation, and header validation, each fail-closed
+and each refusing to echo an offending value. The pipeline is tuned for its primary job — defending
+an *upstream* against traffic the gateway forwards.
+
+The BFF introduces two request shapes that pipeline does not fit, and both create the same kind of
+choice point: relax the default policy for a narrow case, or leave a legitimate request permanently
+rejected at the edge.
+
+*Gateway-terminated requests are not forwarded traffic.* The url-parameter value pipeline is an
+anti-injection defence for parameters the gateway passes to an upstream — its threat model is a
+value that means one thing to the gateway and another to the backend. A reserved BFF path is not
+forwarded anywhere: it terminates at the gateway and is consumed by a handler the gateway itself
+owns. Worse, some of its parameters legitimately carry structure the pipeline is designed to reject.
+A same-origin post-login return target is a path, so it contains separators the anti-injection
+policy treats as suspicious in a value destined for an upstream. Applying an upstream-oriented
+policy to a request that has no upstream rejects correct traffic while defending nothing.
+
+*Validation runs before route selection.* The cookie-mode BFF's sealed session cookie is designed to
+a multi-kilobyte budget, well past the default header-value length cap, so an authenticated request
+in that mode fails the header check every single time. The obvious containment — raise the cap only
+for the routes that need it — is not available at this position in the pipeline: the stage runs
+*before* any route or anchor is resolved, so at the moment the header must be validated there is no
+per-anchor context in existence to scope the relaxation to. This is a structural property of where
+inbound validation has to sit (it must precede routing so routing decides on canonicalised,
+validated input), not an implementation shortcut that could be tightened later.
+
+Both cases pose the same question: when a defence does not fit a legitimate request class, is the
+correct answer to weaken the defence globally, to carve out the narrowest possible exception, or to
+reject the request class? Answering it once, explicitly, and bounding what each relaxation gives up
+is what this record exists to do.
+
+== Decision
+
+*Both relaxations are granted, each scoped as narrowly as its position in the pipeline permits, and
+each leaves every other validator untouched.*
+
+=== (a) The url-parameter value pipeline is not applied to matched reserved paths
+
+The inbound stage takes a reserved-path predicate over host and canonical path. When a request
+matches a reserved gateway path, the url-parameter *value* pipeline is not applied to it.
+
+The justification is that a matched reserved path is *terminated at the gateway and never proxied*,
+so the threat the value pipeline addresses — a parameter reinterpreted by an upstream — does not
+exist for it. Validation of those parameters is not skipped; it *moves to the reserved handler*,
+which is the component that actually knows each parameter's grammar. The handler validates a return
+target as a same-origin path, a state parameter as an opaque correlator, and so on — checks that are
+strictly more precise than a generic value policy, because they are type-aware.
+
+What still constrains a reserved path is everything else: path canonicalisation still runs and still
+yields the single canonical path every later stage consumes, the parameter- and header-*count* caps
+still apply, and every other header validator still applies. The relaxation is confined to
+url-parameter *values*, on *matched reserved paths only*. A gateway with no BFF configured matches
+no reserved path and is byte-for-byte unaffected.
+
+=== (b) The cookie-header value-length relaxation is gateway-wide
+
+The stage accepts an optional cookie-header policy whose *only* difference from the default is a
+raised maximum header-value length, and applies it to the `Cookie` and `Set-Cookie` header values
+only. It is supplied only by a cookie-mode BFF gateway; a bearer-only or server-mode gateway
+supplies nothing and is byte-for-byte unaffected.
+
+The relaxation is gateway-wide rather than per-anchor because, as established above, no anchor is
+resolved at this pipeline position. The configuration key that supplies the budget sits on the
+global session block for exactly that reason, and its placement must not be read as per-anchor
+enforcement — it is global because the enforcement point is global.
+
+The blast radius is bounded on three independent axes:
+
+* *By header.* Only `Cookie` and `Set-Cookie` values are affected. Every other header keeps the
+  default cap.
+* *By validator.* Only the length cap changes. The null-byte, control-character, and
+  injection-pattern validators apply to the cookie header unchanged, so the relaxation admits a
+  *longer* value, never a *differently-shaped* one.
+* *By deployment.* Only a cookie-mode gateway supplies the policy at all.
+
+The residual exposure is therefore precisely: on a cookie-mode gateway, a client may send a longer
+`Cookie` header value than the default policy would accept, subject to every other content check and
+to the gateway's own transport limits. A value that is not a resolvable sealed session is refused by
+the session binding fail-closed as "no session".
+
+== Consequences
+
+=== Positive
+
+* Legitimate BFF traffic is not rejected at the edge: a login return leg carrying a path-shaped
+  target, and an authenticated cookie-mode request carrying a multi-kilobyte sealed cookie, both
+  pass validation.
+* Reserved-path parameters end up *better* validated, not less: a type-aware handler check is
+  stricter than a generic value policy.
+* Each relaxation is inert on deployments that do not use the feature — a bearer-only gateway's
+  inbound validation is unchanged in both respects.
+* The residual exposure of each relaxation is explicitly enumerable rather than emergent, which is
+  what makes it reviewable.
+
+=== Negative
+
+* Reserved-path parameter validation is now the reserved handlers' responsibility, so a new reserved
+  handler that neglects to validate its own parameters has no generic backstop behind it.
+* The cookie-header length relaxation cannot be scoped to the routes that need it, so on a
+  cookie-mode gateway it applies to every request including ones that will never carry a session
+  cookie.
+* Two documented exceptions now exist to what was a uniform inbound policy, which is a cost in
+  comprehensibility for anyone reasoning about the pipeline.
+
+=== Risks
+
+* *A reserved handler forgetting its own validation.* The relaxation moves a check rather than
+  removing it, so the guarantee holds only while every reserved handler upholds its half. Adding a
+  reserved endpoint therefore carries an obligation to validate its parameters explicitly.
+* *Relaxation creep.* Each carve-out makes the next easier to justify. The bounding described above
+  — one header pair, one validator, one deployment mode — is the limit, not a starting point; a
+  future request to relax a *different* validator for the same convenience is a separate decision
+  requiring its own record.
+* *Misreading the configuration key's placement.* The budget key sitting on the global session block
+  can be misread as per-anchor enforcement; it is global because the enforcement point precedes
+  routing.
+
+== Alternatives Considered
+
+*Apply the url-parameter value pipeline to reserved paths unchanged.* This would keep one uniform
+inbound policy with no exceptions to reason about. Rejected because it rejects correct traffic while
+protecting nothing: a legitimately path-shaped return target fails a policy whose threat model
+(reinterpretation by an upstream) does not apply to a request that is never forwarded. The result
+would be a BFF whose login return leg cannot function.
+
+*Loosen the url-parameter value policy globally so reserved paths pass.* This would need no
+predicate and no per-request branch. Rejected because it weakens the defence exactly where it is
+load-bearing — on parameters actually forwarded to an upstream — in order to accommodate requests
+that are not forwarded at all. It inverts the scoping: the narrow case should be the exception, not
+the new global baseline.
+
+*Raise the header-value cap globally for all headers.* This is the simplest change and needs no
+optional policy. Rejected because it discards the cap's protection on every other header to solve a
+problem confined to one. The relaxation must name the header it applies to, or it is not a
+relaxation but a removal.
+
+*Make the cookie-header cap per-anchor.* This is the natural containment and would confine the
+raised cap to routes that need it. Rejected because it is not achievable at this pipeline position:
+inbound validation must precede route selection so routing decides on canonicalised, validated
+input, and therefore no anchor exists to scope against at the moment of the check. Deferring the
+header check until after routing would mean routing on unvalidated input — a strictly worse exposure
+than the raised cap it would contain.
+
+*Reject the cookie-mode variant instead of relaxing anything.* This would preserve a uniform policy
+absolutely. Rejected because the stateless variant answers a real deployment need, and the
+relaxation it requires is bounded and reviewable — the trade is a longer permitted cookie value
+against a gateway that scales out without shared session state.
+
+The alternatives fall into two classes, and both are rejected for the same reason: one class widens
+a relaxation past the case that motivates it, and the other refuses a bounded relaxation at the cost
+of a legitimate capability. The chosen position is the narrowest scoping each relaxation's
+enforcement point actually permits — and where that scoping is coarser than one would like, the
+limit is structural and is stated as such rather than left to be discovered.
+
+== References
+
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode and the reserved-path model] -- the architecture these relaxations serve.
+* link:../architecture.adoc[Architecture] -- the inbound pipeline's position ahead of routing.
+* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the session block carrying the cookie-size budget.
+* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the variant whose sealed cookie motivates the length relaxation.
+* link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the sealed-cookie format the budget bounds.

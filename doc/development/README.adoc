@@ -59,6 +59,13 @@ This tree is seeded here and grows as contributor-facing material lands.
   how to build and test it, the engine-boundary rule (drive the `token-sheriff-client` engine, never
   re-implement an OAuth leg), the integration-test and benchmark entry points, and how to add a new
   reserved endpoint.
+
+| link:bff-cookie.adoc[Cookie-Based BFF -- Contributor Guide]
+| Where the cookie-mode code lives (the `bff.cookie` types), the `SessionBinding` seam that keeps
+  every reserved endpoint mode-neutral, the sealed-cookie wire format and the rule that a format
+  change requires a `FORMAT_VERSION` bump, the derived session identity with its
+  stability-and-uniqueness constraints, the engine-boundary rule, and the unit/integration test
+  entry points.
 |===
 
 == Scope of This Layer

@@ -105,6 +105,11 @@ configuration. Each has its own design section:
 | Task-oriented companions to the Variant 2 design section above:
   link:user/bff-session.adoc[operator setup] (configure and run the server-session BFF) and
   link:development/bff-session.adoc[contributor guide] (build, test, and extend it).
+
+| Variant 3 -- three-layer guides
+| Task-oriented companions to the Variant 3 design section above:
+  link:user/bff-cookie.adoc[operator setup] (configure and run the cookie-based BFF) and
+  link:development/bff-cookie.adoc[contributor guide] (build, test, and extend it).
 |===
 
 == Implementation Plans
@@ -170,6 +175,26 @@ implementing it.
   of alias-resolvability violations.
   *(Status: accepted.)*
 
+| link:adr/0010-YAML_expansion_limits_enforced_in_a_compose-only_pre-pass_before_bind.adoc[ADR-0010]
+| YAML alias-expansion and nesting-bomb caps are enforced in a dedicated SnakeYAML compose-only
+  pre-pass before Jackson binds a config document, because Jackson's `YAMLParser` consumes the
+  event stream directly and never runs the Composer that counts collection aliases.
+  *(Status: proposed.)*
+
+| link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+| `gateway.yaml` is API Sheriff's own configuration language, so the JWKS issuer surface exposes
+  egress and TLS trust as framework-neutral names (`allowed_egress_hosts`, `tls_profile`) that carry
+  no trust material; exactly one mapping component binds a logical trust-profile name to concrete
+  runtime trust anchors, and config stays neutral while startup diagnostics name the concrete
+  runtime key. *(Status: accepted.)*
+
+| link:adr/0012-Comparative_cross-gateway_benchmarking_runs_on-demand_and_stays_segregated_from_the_CI_baseline.adoc[ADR-0012]
+| Cross-gateway comparison benchmarking is a target-neutral, on-demand-only lane whose results stay
+  strictly segregated from the authoritative CI baseline and its published pages; one target
+  parameter switches the whole matrix between gateways, and fairness parity (identical upstreams,
+  auth realm, TLS material and resource limits) is a precondition of any comparison.
+  *(Status: proposed.)*
+
 | link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]
 | Anchor type/access axes: two required, orthogonal classification axes on every anchor --
   `type` (`proxy`/`bff`/`asset`) and `access` (`public`/`authenticated`) -- validated
@@ -194,6 +219,24 @@ implementing it.
 | gRPC gateway rejections are emitted as trailers-only gRPC responses (a gRPC client cannot
   consume `application/problem+json`), with a canonical status mapping and h2-negotiation-failure
   to `UNAVAILABLE`. *(Status: accepted.)*
+
+| link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+| A dedicated raw-TCP front listener owns the public TLS port, reassembles the ClientHello, and by
+  SNI either opaquely L4-relays a passthrough match to its resolved backend or hands the
+  still-encrypted connection to an internal terminating HTTPS listener that solely owns TLS
+  termination and mTLS. *(Status: proposed.)*
+
+| link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+| Session mode selects only which `SessionBinding` is assembled; reserved paths, CSRF and session
+  identity are fixed, mode-neutral models behind that one seam -- including the cookie-mode
+  two-mode key material and the per-session identity nonce whose format bump forces a re-login.
+  *(Status: proposed.)*
+
+| link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]
+| Two deliberate inbound-validation relaxations the BFF requires: the url-parameter value pipeline
+  is not applied to matched reserved paths (they terminate at the gateway and their handlers
+  validate their own parameters), and the cookie-header value-length raise is necessarily
+  gateway-wide because inbound validation precedes route selection. *(Status: proposed.)*
 |===
 
 == Reading Order

@@ -44,6 +44,13 @@ layer.
   confidential client, protecting a route with `require: session`, the gateway-owned reserved
   paths, serving a curated user-info view, CSRF for a cross-origin SPA, and operating the in-memory
   session store. Links to the Configuration Reference for the `oidc` key contract.
+
+| link:bff-cookie.adoc[Cookie-Based BFF -- Operator Setup]
+| A task-oriented guide for standing up the cookie-based BFF (Variant 3): registering the OIDC
+  confidential client, selecting `session.mode: cookie`, the two key-material modes and their
+  trade-off, decrypt-only key rotation, the cookie size budget, what IdP-driven destruction cannot
+  do in this variant, the login-leg session affinity, and the forced re-login on a sealed-cookie
+  format bump. Links to the Configuration Reference for the `oidc` key contract.
 |===
 
 == Scope of This Layer
