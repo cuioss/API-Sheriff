@@ -269,9 +269,16 @@ services:
     # the application port 8443 via /dev/tcp and never touches 9000, so it is unaffected by the
     # management-TLS switch.
 
-    # Network isolation (production pattern)
+    # Network isolation (production pattern). The alias is what lets a passthrough client reach
+    # this gateway under a tls.passthrough_sni name: the benchmark's ClientHello carries
+    # passthrough.test.example, so that name must resolve to THIS container for the accept-time
+    # SNI front listener to see a match and L4-relay to PASSTHROUGH_BACKEND. Map form is required
+    # here — the short-form list carries no aliases. The backend certificate already covers the
+    # name (SAN DNS:passthrough.test.example on the passthrough-backend service).
     networks:
-      - api-sheriff
+      api-sheriff:
+        aliases:
+          - passthrough.test.example
 
     # Production restart policy
     restart: unless-stopped
@@ -562,11 +569,17 @@ services:
     # user is not an option because the uid is not known to compose, so it runs as root and
     # the result files stay removable by `mvn clean` (the parent directory is host-owned).
     user: "0:0"
+    # Value-less entries pass the host variable through only when it is set, so an unset
+    # variable stays unset in the container rather than becoming an empty string. PASSTHROUGH_SNI
+    # selects the passthrough_relay.js mode (mapped | empty) and is set per benchmark execution in
+    # benchmarks/pom.xml; without it here the selector never reaches k6 and both executions would
+    # run the same mode.
     environment:
       - BENCHMARK_VUS
       - BENCHMARK_DURATION
       - BENCHMARK_MAX_ERROR_RATE
       - GATEWAY_TARGET
+      - PASSTHROUGH_SNI
 
 networks:
   api-sheriff:

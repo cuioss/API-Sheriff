@@ -34,7 +34,7 @@ const MODE = (__ENV.PASSTHROUGH_SNI || 'mapped').toLowerCase();
  * container and be listed in `tls.passthrough_sni`; the benchmark compose overlay (D4) provides that
  * mapping and the TLS-enabled backend behind it. Overridable so a run can target a different edge.
  */
-const PASSTHROUGH_TARGET_URL = __ENV.PASSTHROUGH_TARGET_URL || 'https://passthrough.api-sheriff:8443/get';
+const PASSTHROUGH_TARGET_URL = __ENV.PASSTHROUGH_TARGET_URL || 'https://passthrough.test.example:8443/get';
 
 /**
  * Resolves the (benchmarkName, url) pair for the selected mode. An unknown mode is fatal at module
