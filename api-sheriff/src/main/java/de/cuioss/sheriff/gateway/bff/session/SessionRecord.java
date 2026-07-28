@@ -44,11 +44,20 @@ import lombok.Builder;
  *       is itself a bearer credential;</li>
  *   <li><strong>cookie mode</strong>: the minted id is <em>discarded</em> — it is not among the
  *       fields sealed into the cookie. The binding replaces it with an identity <em>derived</em>
- *       from the sealed payload (a salted digest over the login instant and {@code sub}), so it is
+ *       from the sealed payload (a salted digest over the login instant, {@code sub} and the
+ *       per-session {@link #sessionNonce()}), so it is
  *       stable across re-seals, un-recomputable outside this gateway, and never emitted to the
  *       browser.</li>
  * </ul>
  * It is redacted from {@link #toString()} either way.
+ * <p>
+ * <strong>The session nonce is cookie-mode-only.</strong> {@link #sessionNonce()} is
+ * {@link Optional#empty()} for every server-mode record — that mode's identity is the minted opaque
+ * id, which is already unique, so it needs no additional entropy. Only the cookie-mode binding
+ * populates it, minting it once at login and re-sealing it verbatim on every refresh; without it,
+ * two logins by the same subject inside one clock second would derive the same identity and
+ * cross-wire the refresh coordinator's single-flight keying. It is redacted from
+ * {@link #toString()} because it keys the derived identity.
  * <p>
  * {@link #sid()} and {@link #sub()} back a server-mode store's secondary index for O(1)
  * back-channel logout destruction.
@@ -62,12 +71,15 @@ import lombok.Builder;
  * @param expiresAt    the absolute session expiry (from login), independent of activity
  * @param acr          the authentication context class, empty when absent
  * @param authTime     the IdP authentication instant, empty when absent
+ * @param sessionNonce the per-session nonce keying the cookie-mode derived identity; always empty in
+ *                     server mode (see the mode split above)
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
 public record SessionRecord(String sessionId, String accessToken, Optional<String> refreshToken, String idToken,
-String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optional<Instant> authTime) {
+String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optional<Instant> authTime,
+Optional<String> sessionNonce) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -87,6 +99,7 @@ String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optio
         sid = Objects.requireNonNullElse(sid, Optional.empty());
         acr = Objects.requireNonNullElse(acr, Optional.empty());
         authTime = Objects.requireNonNullElse(authTime, Optional.empty());
+        sessionNonce = Objects.requireNonNullElse(sessionNonce, Optional.empty());
     }
 
     /**
@@ -116,7 +129,8 @@ String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optio
     }
 
     /**
-     * Overridden to redact every credential — the session id and all three tokens. The default
+     * Overridden to redact every credential — the session id, all three tokens, and the session
+     * nonce that keys the cookie-mode derived identity. The default
      * record {@code toString()} would otherwise print the bearer session id and the raw token
      * material into any log line, exception message, or debugger view.
      *
@@ -124,8 +138,9 @@ String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optio
      */
     @Override
     public String toString() {
-        return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s]"
+        return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s, sessionNonce=%s]"
                 .formatted(REDACTED, REDACTED, refreshToken.isPresent() ? "Optional[" + REDACTED + "]" : "Optional.empty",
-                        REDACTED, sub, sid, expiresAt, acr, authTime);
+                        REDACTED, sub, sid, expiresAt, acr, authTime,
+                        sessionNonce.isPresent() ? "Optional[" + REDACTED + "]" : "Optional.empty");
     }
 }

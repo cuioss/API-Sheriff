@@ -368,6 +368,31 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
+        @DisplayName("Should propagate the session nonce from the previous record onto the rotated one")
+        void shouldPropagateSessionNonceAcrossRotate() {
+            // rotate() rebuilds the record component-by-component, so an uncopied component is
+            // silently dropped. Dropping the nonce would make persist() refuse the re-seal outright —
+            // this asserts the copy directly rather than inferring it from identity stability.
+            assertTrue(cookieSession.sessionNonce().isPresent(),
+                    "a resolved cookie-mode record always carries the nonce sealed at login");
+            TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
+
+            RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
+
+            assertEquals(cookieSession.sessionNonce(), outcome.session().orElseThrow().sessionNonce(),
+                    "the rotated record carries the previous record's nonce verbatim — never a fresh one");
+        }
+
+        @Test
+        @DisplayName("Should leave a server-mode record's session nonce empty")
+        void shouldLeaveServerModeNonceEmpty() {
+            SessionRecord serverModeRecord = session(CURRENT_REFRESH);
+
+            assertTrue(serverModeRecord.sessionNonce().isEmpty(),
+                    "the nonce is cookie-mode-only; server mode's minted opaque id is already unique");
+        }
+
+        @Test
         @DisplayName("Should keep the derived identity stable across the re-seal, so single-flight keys the same")
         void shouldKeepTheSingleFlightKeyStable() {
             TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());

@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.cookie;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
@@ -102,6 +103,28 @@ class CookieSessionBindingTest {
                 .sub(SUB)
                 .sid(Optional.of(SID))
                 .expiresAt(expiresAt)
+                .build();
+    }
+
+    /**
+     * A record that is legal to re-seal: bound then resolved, so it carries the session nonce minted
+     * at login. {@code persist} refuses a record without one rather than re-minting, so a re-seal
+     * test must start from a resolved record exactly as the refresh coordinator does.
+     */
+    private SessionRecord resealable(String rotatedAccessToken) {
+        BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+        SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+        return SessionRecord.builder()
+                .sessionId(resolved.sessionId())
+                .accessToken(rotatedAccessToken)
+                .refreshToken(resolved.refreshToken())
+                .idToken(resolved.idToken())
+                .sub(resolved.sub())
+                .sid(resolved.sid())
+                .expiresAt(resolved.expiresAt())
+                .acr(resolved.acr())
+                .authTime(resolved.authTime())
+                .sessionNonce(resolved.sessionNonce())
                 .build();
     }
 
@@ -193,6 +216,7 @@ class CookieSessionBindingTest {
                     .sub(resolved.sub())
                     .sid(resolved.sid())
                     .expiresAt(resolved.expiresAt())
+                    .sessionNonce(resolved.sessionNonce())
                     .build();
 
             BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
@@ -206,7 +230,7 @@ class CookieSessionBindingTest {
         @DisplayName("Should carry the remaining, not the reset, lifetime in Max-Age on a re-seal")
         void shouldNotExtendTheSessionOnReseal() {
             Instant halfway = LOGIN.plus(TTL.dividedBy(2));
-            SessionRecord rotated = session("rotated-access-token", LOGIN.plus(TTL));
+            SessionRecord rotated = resealable("rotated-access-token");
 
             BoundSession reBound = binding.persist(rotated, halfway);
 
@@ -219,7 +243,7 @@ class CookieSessionBindingTest {
         @DisplayName("Should keep the absolute deadline anchored across a re-seal")
         void shouldKeepDeadlineAnchoredAcrossReseal() {
             Instant halfway = LOGIN.plus(TTL.dividedBy(2));
-            BoundSession reBound = binding.persist(session("rotated-access-token", LOGIN.plus(TTL)), halfway);
+            BoundSession reBound = binding.persist(resealable("rotated-access-token"), halfway);
             String cookieHeader = cookieHeaderOf(reBound);
 
             assertTrue(binding.resolve(cookieHeader, LOGIN.plus(TTL).minusSeconds(1)).isPresent());
@@ -318,12 +342,50 @@ class CookieSessionBindingTest {
             BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
             SessionRecord first = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
 
-            BoundSession reBound = binding.persist(session("rotated-access-token", LOGIN.plus(TTL)),
-                    LOGIN.plusSeconds(60));
+            // The re-seal carries the resolved record's nonce forward, exactly as the refresh
+            // coordinator's rotate() does — the nonce is an identity input, never re-minted.
+            SessionRecord rotated = SessionRecord.builder()
+                    .sessionId(first.sessionId())
+                    .accessToken("rotated-access-token")
+                    .refreshToken(first.refreshToken())
+                    .idToken(first.idToken())
+                    .sub(first.sub())
+                    .sid(first.sid())
+                    .expiresAt(first.expiresAt())
+                    .acr(first.acr())
+                    .authTime(first.authTime())
+                    .sessionNonce(first.sessionNonce())
+                    .build();
+            BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
             SessionRecord second = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow();
 
             assertEquals(first.sessionId(), second.sessionId(),
-                    "the identity is derived from the login instant and sub, both fixed for the session's life");
+                    "the identity is derived from the login instant, sub and session nonce — all three fixed "
+                            + "for the session's life, so a re-seal reproduces it byte-identically");
+        }
+
+        @Test
+        @DisplayName("Should derive distinct identities for two logins by the same subject in one clock second")
+        void shouldSeparateIdentitiesForSameSubjectWithinOneSecond() {
+            // Same subject, same login instant — before the per-session nonce these two collided,
+            // cross-wiring the refresh coordinator's single-flight keying between distinct sessions.
+            String first = binding.resolve(cookieHeaderOf(binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN)),
+                    LOGIN).orElseThrow().sessionId();
+            String second = binding.resolve(cookieHeaderOf(binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN)),
+                    LOGIN).orElseThrow().sessionId();
+
+            assertNotEquals(first, second,
+                    "two logins by the same sub inside one clock second must not share a session identity");
+        }
+
+        @Test
+        @DisplayName("Should refuse to re-seal a record carrying no session nonce rather than re-mint one")
+        void shouldRefuseReSealWithoutNonce() {
+            // A record reconstructed without the nonce would otherwise silently acquire a new identity.
+            SessionRecord nonceless = session(ACCESS_TOKEN, LOGIN.plus(TTL));
+
+            assertThrows(IllegalStateException.class, () -> binding.persist(nonceless, LOGIN),
+                    "re-minting here would change the derived identity mid-session");
         }
 
         @Test

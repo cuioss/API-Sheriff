@@ -185,6 +185,17 @@ public final class TokenRefreshCoordinator {
         return !now.isBefore(expiry.minus(leeway));
     }
 
+    /**
+     * Rebuilds the session with the rotated token material, carrying every non-token component over
+     * from {@code previous} unchanged.
+     * <p>
+     * Because this reconstructs the record component-by-component, any component NOT copied here is
+     * silently dropped from the rotated session. That is load-bearing for
+     * {@link SessionRecord#sessionNonce()}: dropping it would make the cookie-mode binding re-seal
+     * without a nonce — changing the derived session identity mid-session and breaking the
+     * single-flight coalescing this coordinator depends on. Add a copy line here for every component
+     * added to {@link SessionRecord}.
+     */
     private static SessionRecord rotate(SessionRecord previous, RotationResult rotation) {
         String rotatedIdToken = rotation.idToken();
         return SessionRecord.builder()
@@ -197,6 +208,7 @@ public final class TokenRefreshCoordinator {
                 .expiresAt(previous.expiresAt())
                 .acr(previous.acr())
                 .authTime(previous.authTime())
+                .sessionNonce(previous.sessionNonce())
                 .build();
     }
 
