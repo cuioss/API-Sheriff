@@ -506,6 +506,42 @@
                                 </configuration>
                             </execution>
 
+                            <!-- Run k6 gRPC unary echo benchmark (forced-h2 relay through the
+                                 gateway to the in-repo grpc-echo service — again not the static
+                                 fairness backend, which speaks no gRPC; see README fairness). -->
+                            <execution>
+                                <id>run-k6-grpc-unary-benchmark</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>docker</executable>
+                                    <arguments>
+                                        <argument>compose</argument>
+                                        <argument>run</argument>
+                                        <argument>--rm</argument>
+                                        <argument>k6</argument>
+                                        <argument>run</argument>
+                                        <argument>/scripts/grpc_unary.js</argument>
+                                    </arguments>
+                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
+                                    <timeout>240000</timeout>
+                                    <environmentVariables>
+                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
+                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
+                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+
+                            <!-- The two executions below are settled as visibly skipped against open
+                                 gateway defects: websocketEcho leaks an edge admission permit in
+                                 GatewayEdgeRoute, and uploadLarge is capped at the Quarkus 10 MiB
+                                 default instead of the anchor's max_body_bytes. Maven runs same-phase
+                                 executions in declaration order, so they are ordered LAST — their
+                                 fail-fast abort must not mask goals that would otherwise pass. -->
+
                             <!-- Run k6 50MB upload benchmark at REDUCED concurrency
                                  (k6.vus.upload.large, not k6.vus) — see the property comment. -->
                             <execution>
@@ -552,35 +588,6 @@
                                         <argument>k6</argument>
                                         <argument>run</argument>
                                         <argument>/scripts/websocket_echo.js</argument>
-                                    </arguments>
-                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
-                                    <timeout>240000</timeout>
-                                    <environmentVariables>
-                                        <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
-                                        <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
-                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
-                                    </environmentVariables>
-                                </configuration>
-                            </execution>
-
-                            <!-- Run k6 gRPC unary echo benchmark (forced-h2 relay through the
-                                 gateway to the in-repo grpc-echo service — again not the static
-                                 fairness backend, which speaks no gRPC; see README fairness). -->
-                            <execution>
-                                <id>run-k6-grpc-unary-benchmark</id>
-                                <phase>integration-test</phase>
-                                <goals>
-                                    <goal>exec</goal>
-                                </goals>
-                                <configuration>
-                                    <executable>docker</executable>
-                                    <arguments>
-                                        <argument>compose</argument>
-                                        <argument>run</argument>
-                                        <argument>--rm</argument>
-                                        <argument>k6</argument>
-                                        <argument>run</argument>
-                                        <argument>/scripts/grpc_unary.js</argument>
                                     </arguments>
                                     <workingDirectory>${integration.compose.dir}</workingDirectory>
                                     <timeout>240000</timeout>

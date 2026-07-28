@@ -486,10 +486,14 @@ know:
 . *Post-processing*: `WrkBenchmarkConverter` / `WrkResultPostProcessor` are replaced by
   `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
   10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
-. *Coverage*: the lane grew from three wired executions to twelve. `bearer` is genuinely new CI
+. *Coverage*: the lane grew from three wired executions to twelve *declared* goals, ten of which are
+  expected to produce a CI result — `uploadLarge` and `websocketEcho` are declared but settled as
+  deliberately skipped against open gateway defects. `bearer` is genuinely new CI
   coverage — the wrk-era bearer runner existed on disk but was registered in no Maven execution.
-  Being *wired* is not the same as *executing*: until PLAN-25 the job died at the fourth goal and
-  goals 5-12 had never run in CI even once. See _Which goals actually run_ below.
+  Being *wired* is not the same as *executing*, and *executing* is not the same as *producing a
+  result*: until PLAN-25 the job died at the fourth goal and goals 5-12 had never run in CI even
+  once, and the two skipped goals still execute and consume wall time but write no summary
+  document. See _Which goals actually run_ below.
 
 === One-time gh-pages baseline restart
 
@@ -502,15 +506,19 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
   discontinuity* at the swap commit that is a toolchain artifact, not a regression.
 * The `error` / variability / confidence-band columns go permanently zero-width from that point
   (see the `latency_ms.stdev` limit above).
-* Every benchmark executing for the first time begins with *no history* and needs ten runs before
-  its trend series is meaningful. Under PLAN-25 that is most of the lane: eight of the twelve goals
-  had never executed in CI, so their series start empty at this commit. A flat or short trend line
-  on those names is an absence of history, not a regression.
+* Every benchmark that writes a summary document for the first time begins with *no history* and
+  needs ten runs before its trend series is meaningful. Under PLAN-25 that is most of the lane:
+  eight of the twelve declared goals had never executed in CI, and six of those eight are expected
+  to produce a result and so start their series empty at this commit. `uploadLarge` and
+  `websocketEcho` start *no* series at all — only a goal that actually writes a summary document
+  opens one, and both are settled as deliberately skipped. The workflow's end-of-job coverage step
+  (`.github/workflows/benchmark.yml`) is the record of which goals produced a result in a given run.
+  A flat or short trend line on a name that *did* run is an absence of history, not a regression.
 
 *Two further discontinuities are coming, and they are distinct causes — do not conflate them:*
 
-. *First execution under PLAN-25* (this commit): goals that had never run begin their series here.
-  The cause is coverage — data that never existed now exists.
+. *First execution under PLAN-25* (this commit): goals that had never run and now produce a result
+  begin their series here. The cause is coverage — data that never existed now exists.
 . *PLAN-31 D6/D7 (`%it` elimination)*: that work will change the measured configuration itself, so
   the numbers before and after are measurements of different things on the *same* names. The cause
   is configuration, not coverage, and it will break continuity again at a later commit.

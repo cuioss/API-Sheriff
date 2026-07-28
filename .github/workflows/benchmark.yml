@@ -24,15 +24,22 @@ jobs:
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     # Add timeout to prevent long-running jobs (increased for integration benchmarks).
-    # The -Pbenchmark profile wires TWELVE k6 goals: the eight cross-gateway matrix aspects, the two
-    # retained non-matrix health benchmarks (healthLiveCheck, gatewayHealth), and the two
+    # The -Pbenchmark profile DECLARES TWELVE k6 goals: the eight cross-gateway matrix aspects, the
+    # two retained non-matrix health benchmarks (healthLiveCheck, gatewayHealth), and the two
     # API-Sheriff-only passthrough-relay executions (mapped relay throughput and the empty-mode
-    # no-regression run).
+    # no-regression run). Being wired as a Maven execution is not the same as being
+    # result-producing: uploadLarge and websocketEcho are declared but settled as deliberately
+    # skipped against open gateway defects (see the "Deliberately skipped" table in the coverage
+    # step below), so the coverage step gates on TEN goals, not twelve. Both are ordered last in the
+    # profile so their fail-fast abort cannot mask a goal that would otherwise produce a result.
     #
     # Budget, measured locally 2026-07-28 rather than estimated:
-    #   * goal execution   ~14 min -- 12 goals x (60s k6 window + ~10s compose/k6 start and summary
-    #                      write). upload-50MB is transfer-bound at reduced concurrency, so it does
-    #                      not finish in the same wall time as a request-rate run.
+    #   * goal execution   ~14 min -- deliberately sized on all TWELVE WIRED goals rather than on the
+    #                      ten expected to produce a result, because a goal skipped by disposition is
+    #                      still a wired Maven execution that consumes wall time before it fails:
+    #                      12 goals x (60s k6 window + ~10s compose/k6 start and summary write).
+    #                      upload-50MB is transfer-bound at reduced concurrency, so it does not
+    #                      finish in the same wall time as a request-rate run.
     #   * stack startup    ~90 s -- since #118 the lane boots FOUR native gateway instances
     #                      (api-sheriff, api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2)
     #                      alongside Keycloak, go-httpbin, nginx-static, passthrough-backend,
@@ -99,11 +106,14 @@ jobs:
       - name: Run Integration Benchmarks with k6
         id: run-benchmarks
         run: |
-          # Run k6-based integration benchmarks with native image. The -Pbenchmark profile wires
-          # twelve executions: the eight cross-gateway matrix aspects (unauth, bearer, http2,
+          # Run k6-based integration benchmarks with native image. The -Pbenchmark profile declares
+          # twelve goals: the eight cross-gateway matrix aspects (unauth, bearer, http2,
           # graphql, upload-1MB, upload-50MB, ws, grpc), the two retained non-matrix health
           # benchmarks (healthLiveCheck, gatewayHealth), and the two API-Sheriff-only
-          # passthrough-relay executions (mapped and empty). The on-demand APISIX comparison lane is
+          # passthrough-relay executions (mapped and empty). Ten of the twelve are expected to
+          # produce a CI result; upload-50MB (uploadLarge) and ws (websocketEcho) are declared but
+          # settled as deliberately skipped against open gateway defects, and are sequenced last so
+          # their failure cannot mask a goal ahead of them. The on-demand APISIX comparison lane is
           # deliberately NOT run here. Maven fails fast, so the coverage step below is what proves
           # which goals actually produced a result.
           echo "Running k6 integration benchmarks with native Quarkus..."
