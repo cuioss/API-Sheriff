@@ -84,6 +84,7 @@ jobs:
             --output-dir "${GITHUB_WORKSPACE}/benchmark-history"
 
       - name: Run Integration Benchmarks with k6
+        id: run-benchmarks
         run: |
           # Run k6-based integration benchmarks with native image. The -Pbenchmark profile wires
           # eight executions: the six matrix aspects (unauth, bearer, http2, graphql, upload-1MB,
@@ -96,6 +97,62 @@ jobs:
           # Verify artifacts were generated
           echo "Integration benchmark artifacts generated:"
           ls -la benchmarks/target/benchmark-results/
+
+      # Maven fails fast, so a goal that errors aborts every goal after it and a goal that is never
+      # reached leaves no trace in the job output — a suite that ran 3 of 12 goals renders exactly
+      # like one that ran all 12. This step diffs the goals that MUST produce a summary document
+      # against the documents k6 actually wrote, so a partial suite is visibly partial and a goal
+      # that silently vanished fails the job. Deliberately skipped goals are named with their reason
+      # rather than omitted, so "not run" is never indistinguishable from "forgotten".
+      - name: Summarise benchmark coverage
+        if: always()
+        env:
+          BENCHMARK_OUTCOME: ${{ steps.run-benchmarks.outcome }}
+        run: |
+          set -uo pipefail
+          results_dir=benchmarks/target/benchmark-results/k6
+
+          # Goals expected to write a summary. A goal settled as deliberately skipped is NOT listed
+          # here — it belongs in the skip table below, which is what keeps the two states distinct.
+          expected="healthLiveCheck gatewayHealth proxiedStatic passthroughRelay passthroughRelayEmpty bearerProxied http2 graphql uploadSmall grpcUnary"
+
+          missing=0
+          {
+            echo "## Benchmark coverage"
+            echo
+            echo "| Benchmark | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for name in ${expected}; do
+            if [ -f "${results_dir}/${name}-summary.json" ]; then
+              echo "| \`${name}\` | ran |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`${name}\` | **DID NOT RUN** |" >> "$GITHUB_STEP_SUMMARY"
+              missing=$((missing + 1))
+            fi
+          done
+
+          {
+            echo
+            echo "### Deliberately skipped"
+            echo
+            echo "| Benchmark | Reason |"
+            echo "| --- | --- |"
+            echo "| \`uploadLarge\` | The gateway rejects the 50MB body with 413: the Quarkus HTTP body limit is not derived from the upload anchor's 64 MiB \`max_body_bytes\`, so the declared cap is unreachable. Needs a gateway-side fix. |"
+            echo "| \`websocketEcho\` | Each WebSocket upgrade leaks an edge admission permit; once exhausted the gateway rejects all traffic with 503 until restarted, which also poisons every goal after it. Needs a gateway-side fix. |"
+            echo "| \`sessionMediated\` | Wired to no Maven goal on purpose — BFF session mediation belongs to PLAN-07A. |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Only fail on a missing summary when Maven itself reported success: when the benchmark
+          # step already failed, its own error is the actionable signal and this step must not
+          # mask it with a derived one.
+          if [ "${missing}" -gt 0 ] && [ "${BENCHMARK_OUTCOME}" = "success" ]; then
+            echo "::error::${missing} expected benchmark summary document(s) absent although the benchmark step succeeded."
+            exit 1
+          fi
+
+          echo "Benchmark coverage: ${missing} expected summary document(s) absent (benchmark step outcome: ${BENCHMARK_OUTCOME})."
 
       - name: Assemble benchmark artifacts for deployment
         run: |
