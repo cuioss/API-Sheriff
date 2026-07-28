@@ -80,7 +80,7 @@ import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 
 /**
- * CDI producer of the server-mode {@link BffRuntime} — the D16 edge wiring that makes the D1–D12 BFF
+ * CDI producer of the {@link BffRuntime} — the D16 edge wiring that makes the D1–D12 BFF
  * components reachable at the live gateway edge.
  * <p>
  * The producer builds the active runtime <strong>only when a global {@code oidc} block with a
@@ -101,9 +101,9 @@ import jakarta.inject.Singleton;
  * {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is reached at runtime.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
- * on first engine use, not at boot: a server-mode gateway therefore boots (and is unit-testable)
- * without a live IdP, and the discovery-dependent {@code end_session_endpoint} the logout leg needs is
- * materialized only when the first logout arrives.
+ * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
+ * unit-testable) without a live IdP, and the discovery-dependent {@code end_session_endpoint} the
+ * logout leg needs is materialized only when the first logout arrives.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -127,7 +127,8 @@ public class BffRuntimeProducer {
     /**
      * @param gatewayConfig  the bound global gateway document carrying the {@code oidc} block
      * @param tokenValidator a lazy handle to the gateway's shared offline validator, resolved only on
-     *                       the active server-mode path (a bearer-only gateway never triggers it)
+     *                       the active BFF path in either session mode (a bearer-only gateway never
+     *                       triggers it)
      */
     public BffRuntimeProducer(GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator) {

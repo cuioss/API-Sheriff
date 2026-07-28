@@ -35,12 +35,13 @@ import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The assembled server-mode BFF runtime (D16 edge wiring) — the single collaborator the gateway edge
+ * The assembled BFF runtime (D16 edge wiring) — the single collaborator the gateway edge
  * consults to serve the {@code require: session} stage-4 runtime and to dispatch a matched reserved
  * OIDC path to its handler.
  * <p>
  * The runtime is built once at boot by {@code BffRuntimeProducer} <strong>only when a global
- * {@code oidc} block with {@code session.mode=server} is configured</strong>; a gateway without such
+ * {@code oidc} block with a {@code redirect_uri} and a recognised {@code session.mode} —
+ * {@code server} or {@code cookie} — is configured</strong>; a gateway without such
  * a block gets the {@linkplain #inert() inert} instance, which reports {@link #isActive()}
  * {@code false} and dispatches nothing (the bearer-only proxy path is unchanged, and the
  * {@code ReservedPathRegistry} carries no reserved paths to dispatch anyway).
@@ -102,8 +103,9 @@ public final class BffRuntime {
     }
 
     /**
-     * Assembles an active server-mode runtime with every reserved-endpoint handler and the session
-     * stage-4 runtime wired.
+     * Assembles an active runtime with every reserved-endpoint handler and the session
+     * stage-4 runtime wired. The same wiring serves both session modes — {@code server} and
+     * {@code cookie} — which differ only in the {@code SessionBinding} the producer supplies.
      *
      * @param sessionStage              the {@code require: session} stage-4 runtime
      * @param csrfDefence               the fixed CSRF defence for unsafe-method session requests
@@ -132,7 +134,7 @@ public final class BffRuntime {
     }
 
     /**
-     * @return the inert runtime — a gateway serving no server-mode BFF variant. It reports
+     * @return the inert runtime — a gateway serving no BFF variant in either session mode. It reports
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
@@ -142,7 +144,7 @@ public final class BffRuntime {
     /**
      * @return the RFC 9470 step-up coordinator (D7) that handles an upstream
      *         {@code insufficient_user_authentication} challenge for a {@code require: session} route
-     * @throws IllegalStateException when this runtime is inert (no server-mode BFF variant)
+     * @throws IllegalStateException when this runtime is inert (no BFF variant is configured)
      */
     public StepUpCoordinator stepUpCoordinator() {
         if (stepUpCoordinator == null) {
@@ -152,8 +154,10 @@ public final class BffRuntime {
     }
 
     /**
-     * @return {@code true} when the gateway serves a server-mode BFF variant (an {@code oidc} block
-     *         with {@code session.mode=server} was configured); {@code false} for a bearer-only gateway
+     * @return {@code true} when the gateway serves a BFF variant in either session mode (an
+     *         {@code oidc} block with a {@code redirect_uri} and a recognised {@code session.mode} —
+     *         {@code server} or {@code cookie} — was configured); {@code false} for a bearer-only
+     *         gateway
      */
     public boolean isActive() {
         return active;
@@ -162,7 +166,7 @@ public final class BffRuntime {
     /**
      * @return the {@code require: session} stage-4 runtime the edge wires into the session-aware
      *         {@code AuthenticationStage}
-     * @throws IllegalStateException when this runtime is inert (no server-mode BFF variant)
+     * @throws IllegalStateException when this runtime is inert (no BFF variant is configured)
      */
     public SessionAuthenticationStage sessionStage() {
         if (sessionStage == null) {
@@ -174,7 +178,7 @@ public final class BffRuntime {
     /**
      * @return the fixed CSRF defence the edge enforces on unsafe-method {@code require: session}
      *         requests
-     * @throws IllegalStateException when this runtime is inert (no server-mode BFF variant)
+     * @throws IllegalStateException when this runtime is inert (no BFF variant is configured)
      */
     public CsrfDefence csrfDefence() {
         if (csrfDefence == null) {
