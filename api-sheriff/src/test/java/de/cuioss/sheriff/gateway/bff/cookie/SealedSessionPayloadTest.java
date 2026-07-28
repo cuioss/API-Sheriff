@@ -206,7 +206,7 @@ class SealedSessionPayloadTest {
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
                     ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), null, SESSION_NONCE));
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
-                    ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, null),
+                            ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, null),
                     "the session nonce is mandatory — it keys the derived session identity");
         }
 

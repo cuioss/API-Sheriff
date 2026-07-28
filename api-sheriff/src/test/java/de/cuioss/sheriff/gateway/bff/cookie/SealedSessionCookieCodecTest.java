@@ -135,7 +135,7 @@ class SealedSessionCookieCodecTest {
         @Test
         @DisplayName("Should stamp format version 2 — the nine-field payload shape")
         void shouldStampFormatVersionTwo() {
-            assertEquals((byte) 2, SealedSessionCookieCodec.FORMAT_VERSION,
+            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, (byte) 2,
                     "the per-session nonce raised the payload to nine fields, which is a wire-format break");
         }
     }
