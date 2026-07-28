@@ -145,6 +145,18 @@ management interface has exactly one port — its config declares no `ssl-port` 
 `insecure-requests` — so activating management TLS converted port 9000 itself to HTTPS. No
 plain-HTTP surface remains anywhere in the stack.
 
+=== Deliberately unwired scripts
+
+`session_mediated.js` (benchmark name `sessionMediated`) is present in `k6-scripts/` but is wired to
+*no* Maven execution, **on purpose**: BFF session mediation belongs to PLAN-07A, which shipped the
+server-session variant and explicitly deferred its per-variant benchmark additions because
+`benchmarks/**` is PLAN-25's surface. The script is therefore ready but unclaimed, not forgotten.
+
+It is listed in the CI end-of-job coverage summary under its own skip section, so its absence from a
+run is stated in every job rather than reading as a silent omission. Do not treat a missing
+`sessionMediated-summary.json` as a regression, and do not wire the script to a Maven goal without
+the owning plan.
+
 == Running the CI baseline lane
 
 [source,bash]
