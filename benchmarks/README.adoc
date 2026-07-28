@@ -145,6 +145,80 @@ management interface has exactly one port — its config declares no `ssl-port` 
 `insecure-requests` — so activating management TLS converted port 9000 itself to HTTPS. No
 plain-HTTP surface remains anywhere in the stack.
 
+=== Which goals actually run
+
+The CI baseline lane declares twelve goals. Until PLAN-25 it had never executed all of them: the
+job died at goal 4 (`passthroughRelay`, whose target hostname resolved nowhere) and Maven's
+fail-fast discarded goals 5-12, which had therefore never run in CI even once. Being declared in
+`pom.xml` is not evidence that a goal produces a number.
+
+Current disposition — the CI end-of-job coverage step (see `.github/workflows/benchmark.yml`)
+enforces this table, so a goal that silently stops running fails the job:
+
+[cols="2,1,4", options="header"]
+|===
+|Benchmark |State |Notes
+
+|`healthLiveCheck`, `gatewayHealth`, `proxiedStatic`
+|runs
+|Already executing before PLAN-25.
+
+|`passthroughRelay`, `passthroughRelayEmpty`
+|runs
+|Repaired by PLAN-25: the relay target now resolves, and the `mapped`/`empty` selector actually
+ reaches the container, so the two modes are genuinely distinct runs.
+
+|`bearerProxied`, `http2`, `graphql`, `uploadSmall`, `grpcUnary`
+|runs
+|First execution in CI under PLAN-25. Their trend series start empty here.
+
+|`uploadLarge`
+|*skipped*
+|Skipped by `skip.benchmark.upload.large`, which defaults to `true`. The gateway rejects the 50MB
+ body with `413`: the `upload` anchor declares `max_body_bytes: 67108864`, but the Quarkus HTTP body
+ limit is not derived from it, so the declared 64 MiB cap is unreachable and the body is refused
+ before the security filter runs. Blocked on a gateway-side fix.
+
+|`websocketEcho`
+|*skipped*
+|Skipped by `skip.benchmark.websocket.echo`, which defaults to `true`. Each WebSocket upgrade leaks
+ an edge admission permit; once they are exhausted the gateway rejects *all* traffic with `503`
+ until restarted, which would also poison every goal sequenced after it. Blocked on a gateway-side
+ fix.
+
+|`sessionMediated`
+|*unwired*
+|Backs no Maven goal on purpose — see below.
+|===
+
+*Skipped means not executed.* Each skipped goal carries a `<skip>` element in `benchmarks/pom.xml`
+bound to its own property, declared there with the id of the finding that blocks it and defaulting
+to `true` — so Maven does not run the goal, it consumes no wall time, and it cannot abort the suite.
+The two states are kept distinct rather than collapsed: the CI coverage step gates on the ten goals
+that execute and names each skipped goal, its skip property and its reason in the job summary. When
+Maven fails, that step also states in words whether the failure truncated the suite. Silence is
+never the signal.
+
+Re-enable a goal once its gateway defect is fixed by flipping its property, which is also how you
+reproduce the defect through the harness:
+
+[source,bash]
+----
+./mvnw clean verify -pl benchmarks -Pbenchmark -Dskip.benchmark.upload.large=false
+----
+
+=== Deliberately unwired scripts
+
+`session_mediated.js` (benchmark name `sessionMediated`) is present in `k6-scripts/` but is wired to
+*no* Maven execution, **on purpose**: BFF session mediation belongs to PLAN-07A, which shipped the
+server-session variant and explicitly deferred its per-variant benchmark additions because
+`benchmarks/**` is PLAN-25's surface. The script is therefore ready but unclaimed, not forgotten.
+
+It is listed in the CI end-of-job coverage summary under its own skip section, so its absence from a
+run is stated in every job rather than reading as a silent omission. Do not treat a missing
+`sessionMediated-summary.json` as a regression, and do not wire the script to a Maven goal without
+the owning plan.
+
 == Running the CI baseline lane
 
 [source,bash]
@@ -339,7 +413,7 @@ scripts/run-comparison.sh --target apisix
 |`api-sheriff` (default), `apisix`, or `both`.
 
 |`--aspects`
-|Comma-separated subset of the six matrix aspects. Default: all six. An unknown aspect fails
+|Comma-separated subset of the eight matrix aspects. Default: all eight. An unknown aspect fails
  before any run starts.
 
 |`--output`
@@ -427,8 +501,13 @@ know:
 . *Post-processing*: `WrkBenchmarkConverter` / `WrkResultPostProcessor` are replaced by
   `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
   10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
-. *Coverage*: the lane grew from three wired executions to eight. `bearer` is genuinely new CI
-  coverage — the wrk-era bearer runner existed on disk but was registered in no Maven execution.
+. *Coverage*: the lane grew from three wired executions to twelve *declared* goals, ten of which
+  execute and are expected to produce a CI result — `uploadLarge` and `websocketEcho` are declared
+  but skipped by property against open gateway defects, so Maven does not run them at all. `bearer`
+  is genuinely new CI coverage — the wrk-era bearer runner existed on disk but was registered in no
+  Maven execution. Being *wired* is not the same as *executing*, and *executing* is not the same as
+  *producing a result*: until PLAN-25 the job died at the fourth goal and goals 5-12 had never run
+  in CI even once. See _Which goals actually run_ above.
 
 === One-time gh-pages baseline restart
 
@@ -441,8 +520,24 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
   discontinuity* at the swap commit that is a toolchain artifact, not a regression.
 * The `error` / variability / confidence-band columns go permanently zero-width from that point
   (see the `latency_ms.stdev` limit above).
-* The four new matrix aspects begin with no history and need ten runs before their trend series is
-  meaningful.
+* Every benchmark that writes a summary document for the first time begins with *no history* and
+  needs ten runs before its trend series is meaningful. Under PLAN-25 that is most of the lane:
+  eight of the twelve declared goals had never executed in CI, and six of those eight are expected
+  to produce a result and so start their series empty at this commit. `uploadLarge` and
+  `websocketEcho` start *no* series at all — only a goal that actually writes a summary document
+  opens one, and both are skipped by property rather than executed. The workflow's end-of-job coverage step
+  (`.github/workflows/benchmark.yml`) is the record of which goals produced a result in a given run.
+  A flat or short trend line on a name that *did* run is an absence of history, not a regression.
+
+*Two further discontinuities are coming, and they are distinct causes — do not conflate them:*
+
+. *First execution under PLAN-25* (this commit): goals that had never run and now produce a result
+  begin their series here. The cause is coverage — data that never existed now exists.
+. *PLAN-31 D6/D7 (`%it` elimination)*: that work will change the measured configuration itself, so
+  the numbers before and after are measurements of different things on the *same* names. The cause
+  is configuration, not coverage, and it will break continuity again at a later commit.
+
+A reader comparing across either boundary is comparing incomparable eras. Compare only within one.
 
 ==== A second, target-change discontinuity
 

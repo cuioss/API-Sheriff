@@ -30,11 +30,19 @@ import { targetUrl } from './lib/target.js';
 const MODE = (__ENV.PASSTHROUGH_SNI || 'mapped').toLowerCase();
 
 /**
- * The mapped SNI host the passthrough run's ClientHello carries. It must both resolve to the gateway
- * container and be listed in `tls.passthrough_sni`; the benchmark compose overlay (D4) provides that
- * mapping and the TLS-enabled backend behind it. Overridable so a run can target a different edge.
+ * The mapped SNI host the passthrough run's ClientHello carries. Three separate pieces must line up,
+ * and all three live in the BASE integration-test configuration -- not in the benchmark overlay:
+ *
+ *   * `integration-tests/docker-compose.yml` puts `passthrough.test.example` in the `api-sheriff`
+ *     service's network `aliases`, which is what makes the name resolve to the gateway container;
+ *   * `integration-tests/src/main/docker/sheriff-config/gateway.yaml` lists it under
+ *     `tls.passthrough_sni`, mapping it to the `PASSTHROUGH_BACKEND` topology alias;
+ *   * the `passthrough-backend` service in that same base compose file is the TLS-enabled backend
+ *     the relay dials, and its certificate carries the name as a SAN.
+ *
+ * Overridable so a run can target a different edge.
  */
-const PASSTHROUGH_TARGET_URL = __ENV.PASSTHROUGH_TARGET_URL || 'https://passthrough.api-sheriff:8443/get';
+const PASSTHROUGH_TARGET_URL = __ENV.PASSTHROUGH_TARGET_URL || 'https://passthrough.test.example:8443/get';
 
 /**
  * Resolves the (benchmarkName, url) pair for the selected mode. An unknown mode is fatal at module

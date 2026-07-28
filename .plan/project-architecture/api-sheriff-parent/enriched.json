@@ -4,7 +4,8 @@
   ],
   "insights": [
     "CI aggregation gates (build/conclusion, integration-tests/conclusion) fail only as derivatives of their upstream jobs, and a red build/sonar-build with successful scanner auth means a genuine server-side SonarCloud new-code quality-gate verdict (fetchable without credentials via the public sonarcloud.io API) \u2014 triage the upstream cause, never the aggregation gate.",
-    "CI rollup 'conclusion' gate jobs (build / conclusion, integration-tests / conclusion) fail solely as mirrors of their failing child job; the project treats them as carrying no independent root cause and dispositions them taken_into_account, triaging only the child job's failure."
+    "CI rollup 'conclusion' gate jobs (build / conclusion, integration-tests / conclusion) fail solely as mirrors of their failing child job; the project treats them as carrying no independent root cause and dispositions them taken_into_account, triaging only the child job's failure.",
+    "Verify a review bot's reported diff range before trusting a re-review verdict. CodeRabbit re-reviews on this repo have re-reported the ORIGINAL commit range (e.g. base..first-head) on a later sweep, so the bot graded code it never saw and raised a Major-severity finding against an already-fixed defect. Ground-truth every bot claim against the current HEAD before opening a fix task. Related: a plan's own batched triage-reply comment is re-fetched as a new pr-comment finding on the next sweep, so a review sweep never reaches a clean zero \u2014 expect one no-op self-ingested finding per pass."
   ],
   "internal_dependencies": [
     "api-sheriff",
