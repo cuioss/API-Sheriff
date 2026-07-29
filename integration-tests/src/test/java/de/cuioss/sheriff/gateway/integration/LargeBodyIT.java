@@ -156,9 +156,13 @@ class LargeBodyIT extends BaseIntegrationTest {
         JsonPath problem = JsonPath.from(response.body());
         assertTrue(contentType.contains(PROBLEM_JSON),
                 "the gateway must render its own RFC 9457 envelope, Content-Type was: " + contentType);
-        assertTrue(String.valueOf(problem.get("type")).contains(INPUT_VALIDATION_TYPE),
-                "an oversize body is an input-validation rejection, type was: " + problem.get("type"));
-        assertEquals("Input Validation", problem.get("title"));
+        // Use the typed getString accessor rather than the generic get(): inside String.valueOf(...)
+        // javac resolves JsonPath's <T> T get(String) against the most specific overload,
+        // String.valueOf(char[]), inferring T = char[] and failing with a ClassCastException at runtime.
+        String problemType = problem.getString("type");
+        assertTrue(String.valueOf(problemType).contains(INPUT_VALIDATION_TYPE),
+                "an oversize body is an input-validation rejection, type was: " + problemType);
+        assertEquals("Input Validation", problem.getString("title"));
         assertNull(problem.get("method"), "a rejected request must not reach the go-httpbin upstream");
         assertEquals(0L, body.producedBytes(),
                 "the rejection must land on the declared Content-Length, before the 100-continue invite —"
