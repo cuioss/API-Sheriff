@@ -1,0 +1,187 @@
+= ADR-0018: WebSocket relays hold their admission permit for the connection lifetime and are bounded by a derived sub-budget
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A WebSocket relay holds its general admission permit for the connection's entire lifetime and additionally acquires a dedicated websocket_relay_cap sub-budget, both operator-configurable through the edge_hardening block; an omitted relay cap derives as a quarter of the effective admission cap so a partially declared block can never resolve to a self-rejecting pair.
+// tags: edge, admission-control, websocket, denial-of-service, resource-accounting, configuration-surface, defaulting
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+The edge admits work through a single counting semaphore: a request acquires one permit
+before a virtual thread is dispatched, and a request that cannot acquire one is refused
+`503` at the cheapest possible point. The permit is released from the request's completion
+hook. That accounting is exact for the request/response shape the semaphore was designed
+around — acquire on arrival, release on completion, occupancy tracks concurrency.
+
+A WebSocket upgrade breaks the shape's central assumption. The upgrade takes the
+connection over: the HTTP exchange the permit was acquired for never completes in the
+sense the completion hook understands, and the connection outlives it by an unbounded
+interval — minutes, hours, or the process lifetime. Two structurally different failure
+modes follow, and any admission design has to choose which side of them to land on:
+
+* If the permit is released when the upgrade succeeds, occupancy *under-counts*. An
+  established relay consumes a real connection, a real virtual thread, and real buffers,
+  yet is invisible to the admission counter. The gateway's own measure of how loaded it is
+  becomes systematically wrong, and the cap stops bounding the resource it exists to bound.
+* If the permit is held for the connection's lifetime, occupancy is exact but the permit is
+  held for an *unbounded* duration. A modest population of long-lived relays then occupies
+  a large share of a pool sized for short request/response turns, and ordinary HTTP traffic
+  is starved out of a budget it was meant to share.
+
+There is no release point that avoids both. The architectural question this ADR settles is
+therefore not *when* to release the permit but *what kind of thing a relay is* with respect
+to admission — and, once that is answered, what second bound has to exist so that the
+answer does not convert a correctness fix into a starvation vector.
+
+A second question rides along. A cap that has to be sized against a deployment's memory
+limit, traffic mix, and — for relays specifically — connection lifetime distribution cannot
+be a compile-time constant, because none of those are knowable at build time.
+
+== Decision
+
+*A WebSocket relay holds its general admission permit for the connection's entire lifetime,
+and additionally acquires a dedicated relay sub-budget. Both budgets are operator-facing
+configuration, and the relay budget's implicit value is derived from the general budget
+rather than fixed.*
+
+Three mechanisms realise this.
+
+* *Lifetime-scoped release.* The permit acquired for the upgrade request is released when
+  the relay closes, not when the upgrade completes. Release travels through the same
+  single-shot CAS guard the HTTP path uses, so it happens exactly once regardless of which
+  teardown path runs, and it covers *both* terminal paths — the established-relay teardown
+  funnel and the client-upgrade-failure branch that never constructs a relay session at
+  all. The guard is threaded to the relay stage rather than duplicated, so there is one
+  release primitive in the edge, not two that can drift.
+
+* *A sub-budget acquired in addition, never instead.* `websocket_relay_cap` bounds how
+  many of the in-flight requests may be established relays. A relay therefore holds two
+  permits: the general one (which keeps occupancy exact) and the relay one (which keeps
+  relay pressure from consuming the general pool). An upgrade beyond the relay cap is
+  refused `503` on the same fail-closed terms as an over-cap request. Because the sub-budget
+  is strictly additive, a relay cap above the admission cap can never bind, and the config
+  validator refuses that pair at boot rather than letting a meaningless configuration run.
+
+* *Proportional, not constant, defaulting.* Both members of the `edge_hardening` block are
+  independently omissible. An omitted block resolves to the documented defaults. An omitted
+  `websocket_relay_cap` resolves to a quarter of the *effective* admission cap, floored at
+  one — the ratio is what the default preserves, not the literal. This is what makes a
+  partially declared block safe: declaring only a small `admission_cap` yields a
+  correspondingly small relay cap instead of an implicit constant that overshoots its own
+  pool and is then refused at boot by the very validator that is supposed to protect the
+  operator. At the shipped admission default the derived quarter is exactly the documented
+  relay default, so the derivation is behaviour-preserving where it overlaps a constant.
+
+An explicitly declared relay cap is honoured verbatim, including one above the admission
+cap — which stays a boot-time error. Derivation fills a gap; it never overrides an operator.
+
+== Consequences
+
+=== Positive
+
+* Admission occupancy is exact for every shape of work the edge admits. The counter means
+  what its name says, so the cap bounds the resource it is meant to bound.
+* WebSocket pressure and HTTP pressure are bounded independently. Relay saturation refuses
+  further upgrades while leaving the remaining general headroom to ordinary traffic, so a
+  WebSocket-heavy workload degrades the WebSocket lane rather than the whole gateway.
+* The budget is sized where the knowledge lives — in the deployment — instead of at build
+  time, and an operator who never writes the block keeps the shipped behaviour.
+* A partially declared block is always internally consistent by construction. There is no
+  configuration an operator can write that the documentation promises is valid and the boot
+  validator then refuses.
+
+=== Negative
+
+* A relay occupies a general permit for its whole life, so the general cap must be sized
+  with the deployment's relay population in mind; it is no longer purely a request-rate
+  bound. This is the honest cost of exact accounting and is the reason the cap became
+  configurable in the same decision.
+* Two budgets exist where one did, and an upgrade acquires and releases two permits. The
+  release path must stay single-shot across both teardown routes; that invariant is carried
+  by one shared guard rather than by convention.
+* The derived relay default couples the two members: changing `admission_cap` silently
+  changes the implicit relay cap. This is deliberate — the coupling is what keeps the pair
+  consistent — but it means the relay bound is not independently stable unless declared.
+
+=== Risks
+
+* A future change that releases the general permit at upgrade time to "free the pool"
+  would restore the under-counting failure mode with no compiler or test signal beyond the
+  admission-exhaustion regression coverage. The regression that pins this runs against the
+  deployed container with a deliberately low cap, so it exercises the real accounting rather
+  than a handler in isolation.
+* A relay that leaks its close signal now leaks two permits instead of one. The single-shot
+  guard bounds double-release, not non-release; non-release remains bounded only by the
+  transport's own idle reaping.
+
+== Alternatives Considered
+
+*Release the admission permit when the upgrade succeeds.* The minimal shape: treat the
+upgrade as the end of the HTTP exchange and hand the permit back immediately. Rejected
+because it makes the counter lie in the direction that matters. Established relays consume
+connections, threads and buffers while being invisible to admission, so the cap no longer
+bounds concurrency and an operator reading the gauge is misled about how loaded the gateway
+is. It converts an over-counting bug into an under-counting one and calls it a fix.
+
+*Hold the permit but add no second bound.* Keep accounting exact and let relays draw from
+the general pool alone. Rejected because it trades a WebSocket-triggered accounting defect
+for a WebSocket-triggered starvation defect: long-lived relays would occupy a pool sized for
+short turns and refuse HTTP traffic that has nothing to do with them. Exactness without a
+sub-budget is exactly the failure the sub-budget exists to prevent.
+
+*Clamp the implicit relay cap at `min(fixed_default, admission_cap)`.* An obvious way to
+stop a partially declared block from resolving to a self-rejecting pair. Rejected because
+the clamp collapses the two budgets into one at any admission cap below the fixed default:
+the relay cap equals the admission cap, the sub-budget can never bind, and relays may again
+consume the entire pool — reintroducing the starvation the sub-budget exists to prevent,
+precisely in the small-deployment configurations that can least absorb it. A proportional
+derivation preserves the *separation* the clamp destroys.
+
+*Move the cap accessors onto the route that consumes them.* The caps are read by the
+route that opens the semaphores, so hosting them there would shorten the path from
+configuration to use. Rejected because the caps do not travel alone: the reserved-body
+ceiling derives its worst-case bound from the admission cap, and the drain timeout is
+sized against the same in-flight population. Splitting the group would put a derived bound
+in one owner and its input in another, and the derivation — the thing that must not drift —
+would span a seam. The inbound-bound group stays under one owner precisely because its
+members are defined in terms of each other.
+
+The unifying principle: an admission counter must count the resource it claims to count,
+for the whole time that resource is held. Where holding a permit for its true lifetime makes
+one class of work able to monopolise a shared budget, the answer is a second bound on that
+class — not a shorter, dishonest lifetime. And where a bound's implicit value must stay
+consistent with another bound, derive it from that bound rather than restating it as a
+constant that can contradict it.
+
+== References
+
+* link:0008-data-plane-transport.adoc[ADR-0008] — the data-plane transport the edge admits
+  work onto; admission runs ahead of the transport hand-off.
+* link:0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] — fail-closed Origin
+  admission for WebSocket upgrades. That decision governs *whether* an upgrade is allowed;
+  this one governs *what it costs* once allowed.
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+  — listener topology; passthrough L4 relays bypass the terminating listener and therefore
+  this admission budget entirely.
+* link:../configuration.adoc[configuration.adoc] — the `edge_hardening` block's
+  authoritative per-key reference and its boot-validation contract.
+* `api-sheriff` edge admission (`de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions`,
+  `de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig`) — the two caps, their
+  derivation, and the reserved-body ceiling that shares their owner.
