@@ -1,0 +1,112 @@
+= API Sheriff -- Integration-Test Topology
+:toc:
+:toclevels: 2
+:sectnums:
+
+The *contributor* view of the stack `integration-tests` brings up: which containers run, which
+ports each one publishes, what talks to what, and where trust changes. It exists so a contributor
+reading a failing integration test can see the shape of the thing under test without
+reverse-engineering `integration-tests/docker-compose.yml`.
+
+[IMPORTANT]
+====
+This is the *integration-test* topology. It is not a production deployment and not a recommended
+one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend and the four variant gateway
+instances exist to make specific tests possible. Production and Kubernetes topologies are defined by
+PLAN-27 and are deliberately not drawn here or anywhere else yet.
+====
+
+== The Topology
+
+image::../resources/diagrams/integration-test-topology.svg[Integration-test topology: the Docker Compose stack used by the integration-tests module, align=center]
+
+The diagram is drawn to the link:diagram-type-deployment.md[deployment diagram-type standard]. Every
+port, protocol and service name in it traces to a line in `integration-tests/docker-compose.yml` or
+the mounted `integration-tests/src/main/docker/sheriff-config/gateway.yaml` -- nothing is inferred
+and nothing is invented. Those two files are the authoritative sources; when they change, the
+diagram is stale and gets redrawn rather than annotated.
+
+== Reading the Diagram
+
+=== Trust boundaries
+
+Two boundaries are drawn, both as heavy dashed lines with a small open circle at each crossing:
+
+* *Published host ports* -- the only surface reachable from outside the Compose network. Everything
+  below the line is internal, addressed by Compose service name.
+* *Gateway egress* -- every outbound leg the gateway makes. The JWKS fetches are constrained by a
+  host-exact SSRF allowlist (`allowed_egress_hosts: ["keycloak"]`) and verified against a named TLS
+  trust profile rather than the JVM default store, because Keycloak serves a self-signed certificate
+  here.
+
+=== The primary gateway instance
+
+The `api-sheriff` container is drawn in full because it is the one instance that exercises the
+accept-time SNI split:
+
+* the *SNI front listener* -- a plain-TCP Vert.x `NetServer` -- owns the public port `8443`;
+* a matched passthrough SNI is relayed opaquely at L4 to `passthrough-backend` and is *never
+  terminated*, which is why `TlsPassthroughIT` observes the backend's own certificate through the
+  relay;
+* every other connection is handed to the internal terminating Quarkus HTTPS listener on `8444`;
+* the management interface is HTTPS-only on `9000`, published as `19000`.
+
+The front-listener architecture itself -- the ClientHello reassembly, the fail-closed selection
+rule, and the internal-handoff loopback -- is documented in
+link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
+
+=== The collapsed variant group
+
+Four further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
+overlaid `gateway.yaml` and their published ports. Drawing all five in full would bury the
+affordances the diagram exists to show, so they are collapsed into one annotated group that still
+names every instance and every port pair:
+
+[cols="2,1,1,3"]
+|===
+| Instance | App port | Mgmt port | Why it is separate
+
+| `api-sheriff-mtls`
+| 10444
+| 19001
+| mTLS is a property of the single terminated listener, so it cannot coexist with the primary
+  instance's non-client-cert path.
+
+| `api-sheriff-cookie`
+| 10445
+| 19002
+| Session mode is a property of the whole gateway; this instance runs the stateless sealed-cookie
+  mode.
+
+| `api-sheriff-cookie-2`
+| 10446
+| 19003
+| A peer sharing nothing with `api-sheriff-cookie` but the sealing key, so cookie portability is
+  proved as a two-instance fact rather than an inference.
+
+| `api-sheriff-ws-admission`
+| 10447
+| 19004
+| The admission budget is process-wide; this instance shrinks the caps to single digits so
+  permit exhaustion is reachable in a handful of connections.
+|===
+
+=== Mounted material
+
+Three read-only volumes are mounted into every gateway instance and are drawn as pills rather than
+boxes, because they are inert material rather than components: `certificates/`, `sheriff-config/`
+and `assets/`. The variant instances additionally overlay a single file --
+`sheriff-config-<variant>/gateway.yaml` on top of the shared `sheriff-config/` mount -- which is the
+whole mechanism by which they differ.
+
+== Keeping the Diagram Honest
+
+The diagram is hand-authored SVG, so it does not regenerate itself and CI does not check it. Two
+consequences:
+
+* *When `docker-compose.yml` or the mounted `gateway.yaml` changes, redraw the diagram in the same
+  change.* A stale topology diagram is worse than none, because it is believed.
+* *Re-render and read back before committing.* The verification recipe -- including the two ways it
+  is commonly got wrong -- is in the
+  link:diagram-type-deployment.md[deployment diagram-type standard]. Rendered PNGs are verification
+  artifacts and are never committed.

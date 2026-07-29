@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Integration-test topology — the Docker Compose stack the integration-tests module
+  brings up. NOT a production or recommended deployment.
+  Every port, protocol and service name traces to integration-tests/docker-compose.yml
+  or integration-tests/src/main/docker/sheriff-config/gateway.yaml.
+  theme-handling: A (theme-neutral)
+  see  doc/development/diagram-type-deployment.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">API Sheriff integration-test topology, the Docker Compose stack used by the integration-tests module</title>
+  <desc id="desc">The integration-test deployment topology, not a production deployment. A host runs a single Docker Compose bridge network named api-sheriff. Crossing from the host into the network are the published ports: the primary api-sheriff gateway on 10443 mapped to container 8443, and Keycloak on 1443 mapped to container 8443. Inside the gateway container a Vert.x SNI front listener owns the public port 8443; a matched passthrough SNI is relayed opaquely at layer 4 to the passthrough-backend and is never terminated, while every other connection is handed to the internal terminating Quarkus HTTPS listener on 8444. The management interface serves HTTPS only, on 9000. Three read-only volumes are mounted: certificates, sheriff-config and assets. The four variant gateway instances are collapsed into one annotated group; their members are api-sheriff-mtls on 10444 and 19001, api-sheriff-cookie on 10445 and 19002, api-sheriff-cookie-2 on 10446 and 19003, and api-sheriff-ws-admission on 10447 and 19004, each the same api-sheriff:distroless image with an overlaid gateway.yaml. Gateway egress crosses a second trust boundary governed by a host-exact SSRF allowlist and a named TLS trust profile, reaching Keycloak on 8443, the go-httpbin echo upstream on 8080, the asset-origin static origin on 80, and the in-repo grpc-echo upstream on 9000. Toxiproxy fronts the passthrough backend on its published admin port 8474 for mid-stream fault injection. Prometheus is published on 9090 and scrapes the management ports; k6 runs only under the benchmark compose profile. The management ports of the primary gateway, 19000, and of each variant instance are published but are not drawn as separate arrows; they are recorded in the boxes.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .stroke      { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .encl        { font-size: 13px; font-weight: 600; fill: #6e7681; }
+      .encl-sub    { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .item        { font-size: 11px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .own-bar     { stroke: #6e7681; stroke-width: 3; }
+      .trust       { stroke: #6e7681; stroke-width: 2; stroke-dasharray: 8 4; fill: none; }
+      .trust-lbl   { font-size: 11px; font-weight: 600; fill: #6e7681; }
+      .trust-cross { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow       { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill  { fill: #6e7681; }
+      .edge-lbl    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .edge-lbl-l  { font-size: 11px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .mount-stem  { stroke: #6e7681; stroke-width: 1; stroke-dasharray: 2 2; fill: none; }
+      .mount       { font-size: 10px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .caption     { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+    </style>
+  </defs>
+
+  <!-- ===================== depth 1 — host ===================== -->
+  <rect class="stroke" x="24" y="64" width="1152" height="788" rx="8"/>
+  <text x="36" y="88"  class="encl">host — developer machine or CI runner</text>
+  <text x="36" y="104" class="encl-sub">only published ports are reachable from outside</text>
+
+  <!-- entry points on the host side -->
+  <circle class="stroke" cx="400" cy="124" r="4"/>
+  <circle class="stroke" cx="840" cy="124" r="4"/>
+
+  <!-- trust boundary 1 — the published-port surface -->
+  <line class="trust" x1="40" y1="148" x2="1160" y2="148"/>
+  <text x="40" y="140" class="trust-lbl">trust boundary — published host ports</text>
+
+  <!-- ===================== depth 2 — compose network ===================== -->
+  <rect class="stroke" x="40" y="176" width="1120" height="660" rx="6"/>
+  <text x="52" y="200" class="encl">network: api-sheriff (bridge)</text>
+
+  <!-- trust boundary 2 — gateway egress -->
+  <line class="trust" x1="584" y1="236" x2="584" y2="820"/>
+  <text x="596" y="228" class="trust-lbl">trust boundary — gateway egress</text>
+
+  <!-- inbound crossings -->
+  <line class="arrow" x1="400" y1="128" x2="400" y2="248" marker-end="url(#arrow)"/>
+  <text x="408" y="200" class="edge-lbl-l">HTTPS :10443 &#8594; :8443</text>
+  <circle class="trust-cross" cx="400" cy="148" r="3.5"/>
+
+  <line class="arrow" x1="840" y1="128" x2="840" y2="248" marker-end="url(#arrow)"/>
+  <text x="848" y="200" class="edge-lbl-l">HTTPS :1443 &#8594; :8443</text>
+  <circle class="trust-cross" cx="840" cy="148" r="3.5"/>
+
+  <!-- ===================== depth 3 — primary gateway instance ===================== -->
+  <rect class="stroke" x="64" y="248" width="480" height="288" rx="4"/>
+  <line class="own-bar" x1="64" y1="256" x2="64" y2="528"/>
+  <text x="76" y="272" class="encl">api-sheriff</text>
+  <text x="76" y="288" class="encl-sub">image api-sheriff:distroless — primary instance</text>
+
+  <!-- depth 4 — listeners and management -->
+  <rect class="stroke" x="80" y="304" width="208" height="72" rx="4"/>
+  <text x="92" y="326" class="encl">SNI front listener</text>
+  <text x="92" y="346" class="item">:8443 public</text>
+  <text x="92" y="364" class="encl-sub">Vert.x NetServer</text>
+
+  <rect class="stroke" x="304" y="304" width="224" height="72" rx="4"/>
+  <text x="316" y="326" class="encl">terminated listener</text>
+  <text x="316" y="346" class="item">:8444 internal</text>
+  <text x="316" y="364" class="encl-sub">Quarkus HTTPS</text>
+
+  <rect class="stroke" x="80" y="392" width="208" height="64" rx="4"/>
+  <text x="92" y="414" class="encl">management</text>
+  <text x="92" y="434" class="item">:9000 HTTPS &#8594; 19000</text>
+
+  <text x="304" y="414" class="encl-sub">matched passthrough SNI &#8594; L4 relay,</text>
+  <text x="304" y="432" class="encl-sub">every other connection &#8594; :8444</text>
+
+  <text x="92" y="486" class="encl-sub">route anchors: /proxy · /bff · /bff-session · /secure · /assets</text>
+  <text x="92" y="504" class="encl-sub">/secure-assets · /graphql · /upload · /ws · /grpc</text>
+
+  <!-- mounted material — read-only volumes -->
+  <line class="mount-stem" x1="112" y1="536" x2="112" y2="548"/>
+  <rect class="stroke" x="64" y="548" width="96" height="18" rx="4"/>
+  <text x="72" y="561" class="mount">certificates/</text>
+
+  <line class="mount-stem" x1="232" y1="536" x2="232" y2="548"/>
+  <rect class="stroke" x="176" y="548" width="112" height="18" rx="4"/>
+  <text x="184" y="561" class="mount">sheriff-config/</text>
+
+  <line class="mount-stem" x1="340" y1="536" x2="340" y2="548"/>
+  <rect class="stroke" x="304" y="548" width="72" height="18" rx="4"/>
+  <text x="312" y="561" class="mount">assets/</text>
+
+  <!-- ===================== depth 3 — collapsed variant group ===================== -->
+  <rect class="stroke" x="64" y="600" width="480" height="136" rx="4"/>
+  <line class="own-bar" x1="64" y1="608" x2="64" y2="728"/>
+  <text x="76" y="624" class="encl">variant instances (4)</text>
+  <text x="76" y="640" class="encl-sub">same image, overlaid gateway.yaml, own published ports</text>
+  <text x="76" y="668" class="item">api-sheriff-mtls</text>
+  <text x="76" y="686" class="item">api-sheriff-cookie</text>
+  <text x="76" y="704" class="item">api-sheriff-cookie-2</text>
+  <text x="76" y="722" class="item">api-sheriff-ws-admission</text>
+  <text x="264" y="668" class="item">10444 · 19001</text>
+  <text x="264" y="686" class="item">10445 · 19002</text>
+  <text x="264" y="704" class="item">10446 · 19003</text>
+  <text x="264" y="722" class="item">10447 · 19004</text>
+
+  <!-- ===================== depth 3 — gateway egress targets ===================== -->
+  <rect class="stroke" x="680" y="248" width="216" height="64" rx="4"/>
+  <text x="692" y="270" class="encl">keycloak</text>
+  <text x="692" y="290" class="item">:8443 &#8594; 1443 · :9000 &#8594; 1090</text>
+
+  <rect class="stroke" x="680" y="324" width="216" height="64" rx="4"/>
+  <text x="692" y="346" class="encl">go-httpbin</text>
+  <text x="692" y="366" class="item">:8080 &#8594; 18080</text>
+
+  <rect class="stroke" x="680" y="400" width="216" height="64" rx="4"/>
+  <text x="692" y="422" class="encl">asset-origin</text>
+  <text x="692" y="442" class="item">:80 · not published</text>
+
+  <rect class="stroke" x="680" y="476" width="216" height="64" rx="4"/>
+  <line class="own-bar" x1="680" y1="484" x2="680" y2="532"/>
+  <text x="692" y="498" class="encl">grpc-echo</text>
+  <text x="692" y="518" class="item">:9000 · not published</text>
+
+  <!-- egress edges, each crossing trust boundary 2 -->
+  <line class="arrow" x1="544" y1="280" x2="680" y2="280" marker-end="url(#arrow)"/>
+  <text x="632" y="272" class="edge-lbl">HTTPS :8443</text>
+  <circle class="trust-cross" cx="584" cy="280" r="3.5"/>
+
+  <line class="arrow" x1="544" y1="356" x2="680" y2="356" marker-end="url(#arrow)"/>
+  <text x="632" y="348" class="edge-lbl">HTTP :8080</text>
+  <circle class="trust-cross" cx="584" cy="356" r="3.5"/>
+
+  <line class="arrow" x1="544" y1="432" x2="680" y2="432" marker-end="url(#arrow)"/>
+  <text x="632" y="424" class="edge-lbl">HTTP :80</text>
+  <circle class="trust-cross" cx="584" cy="432" r="3.5"/>
+
+  <line class="arrow" x1="544" y1="508" x2="680" y2="508" marker-end="url(#arrow)"/>
+  <text x="632" y="500" class="edge-lbl">gRPC :9000</text>
+  <circle class="trust-cross" cx="584" cy="508" r="3.5"/>
+
+  <!-- ===================== depth 3 — observability ===================== -->
+  <rect class="stroke" x="680" y="560" width="216" height="72" rx="4"/>
+  <text x="692" y="584" class="encl">prometheus</text>
+  <text x="692" y="604" class="item">:9090 &#8594; 9090</text>
+  <text x="692" y="622" class="encl-sub">scrapes the management ports</text>
+
+  <rect class="stroke" x="992" y="560" width="152" height="72" rx="4"/>
+  <text x="1004" y="584" class="encl">k6</text>
+  <text x="1004" y="604" class="item">benchmark</text>
+  <text x="1004" y="622" class="encl-sub">opt-in profile</text>
+
+  <!-- ===================== depth 3 — passthrough relay path ===================== -->
+  <rect class="stroke" x="680" y="740" width="216" height="80" rx="4"/>
+  <text x="692" y="764" class="encl">passthrough-backend</text>
+  <text x="692" y="784" class="item">:8443 · self-signed cert</text>
+  <text x="692" y="802" class="encl-sub">relayed, never terminated</text>
+
+  <rect class="stroke" x="992" y="740" width="152" height="80" rx="4"/>
+  <text x="1004" y="764" class="encl">toxiproxy</text>
+  <text x="1004" y="784" class="item">:8474 admin</text>
+  <text x="1004" y="802" class="encl-sub">fault injection</text>
+
+  <!-- opaque L4 relay leg out of the SNI front listener -->
+  <polyline class="arrow" points="544,528 600,528 600,780 680,780" marker-end="url(#arrow)"/>
+  <text x="608" y="654" class="edge-lbl-l">TCP :8443 · L4 relay</text>
+  <circle class="trust-cross" cx="584" cy="528" r="3.5"/>
+
+  <!-- toxiproxy fronts the same backend for the fault SNI -->
+  <line class="arrow" x1="992" y1="780" x2="896" y2="780" marker-end="url(#arrow)"/>
+  <text x="944" y="772" class="edge-lbl">TCP :8443</text>
+
+  <!-- ===================== footer ===================== -->
+  <text x="600" y="880" class="caption">Integration-test stack only. Toxiproxy, go-httpbin, grpc-echo and the variant instances exist to make tests possible and are not a production pattern.</text>
+</svg>
