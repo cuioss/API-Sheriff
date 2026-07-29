@@ -1026,7 +1026,12 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
   supported; the validator selects by the token's `iss`.
 
 | `issuers[].audience`
-| The expected `aud` claim (maps to `IssuerConfig.expectedAudience`).
+| The expected `aud` claim (maps to `IssuerConfig.expectedAudience`). *The `aud` claim is
+  required once an audience is configured*: as of token-sheriff 0.9.3
+  `IssuerConfig.azpAudienceFallbackEnabled` defaults to `false`, so a matching `azp` no longer
+  substitutes for a missing `aud`. A token that previously passed on `azp` alone is now
+  rejected. If your IdP issues `azp`-only tokens, either configure it to emit `aud`, or omit
+  the `audience` key entirely -- omitting it disables audience validation wholesale.
 
 | `issuers[].jwks`
 | Key material for signature verification: `source: http` with a `url` (cached, periodically

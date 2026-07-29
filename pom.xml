@@ -81,10 +81,13 @@
                 <scope>import</scope>
             </dependency>
             <!-- Token Sheriff BOM: supplies token-sheriff-client / -client-quarkus / -validation-quarkus
-                 versions. Declared after quarkus-bom on purpose: quarkus-bom is first, so it wins the
-                 smallrye-config convergence to Quarkus 3.37.2's native 3.17.2. (cui-java-parent otherwise
-                 bumps smallrye-config to 3.18.0; the token-sheriff modules pull smallrye-config at compile
-                 scope, and the resulting 3.17.2/3.18.0 split breaks Quarkus config-mapping augmentation.) -->
+                 versions. Declared after quarkus-bom on purpose: quarkus-bom is imported first, so it wins
+                 every artifact the two BOMs both manage. Verified against the resolved dependency graph at
+                 token-sheriff 0.9.3 / Quarkus 3.37.4: token-sheriff-bom declares its Quarkus artifacts
+                 (quarkus-config-yaml, quarkus-hibernate-validator) at 3.38.0 and the quarkus-bom import pins
+                 them back to 3.37.4, after which io.smallrye.config converges on a single 3.17.2 across the
+                 whole reactor at compile scope. Reordering these two imports would pull a second Quarkus line
+                 into the build and split smallrye-config, which breaks Quarkus config-mapping augmentation. -->
             <dependency>
                 <groupId>de.cuioss.sheriff.token</groupId>
                 <artifactId>token-sheriff-bom</artifactId>
