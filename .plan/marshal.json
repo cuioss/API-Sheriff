@@ -160,7 +160,8 @@
     }
   },
   "orchestrator": {
-    "auto_emit": false
+    "auto_emit": true,
+    "parallelization_scope": 2
   },
   "build": {
     "queue": {
