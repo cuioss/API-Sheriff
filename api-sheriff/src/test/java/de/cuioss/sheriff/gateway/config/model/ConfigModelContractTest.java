@@ -469,6 +469,25 @@ class ConfigModelContractTest {
         }
 
         @Test
+        void edgeHardeningConfigDerivesAbsentRelayCapFromDeclaredAdmissionCap() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(64), Optional.empty());
+            assertEquals(64, cfg.effectiveAdmissionCap());
+            assertEquals(16, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
+        void edgeHardeningConfigFloorsDerivedRelayCapAtOne() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(1), Optional.empty());
+            assertEquals(1, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
+        void edgeHardeningConfigKeepsExplicitRelayCapAboveAdmissionCap() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(4), Optional.of(16));
+            assertEquals(16, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
         void edgeHardeningConfigDefaultsCarryBothCaps() {
             EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
             assertEquals(Optional.of(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), defaults.admissionCap());

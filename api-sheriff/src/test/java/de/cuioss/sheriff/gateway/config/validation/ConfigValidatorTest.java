@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.config.validation;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -427,6 +428,21 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertHasError(errors, "/edge_hardening/websocket_relay_cap", "must not exceed admission_cap");
+        }
+
+        @Test
+        @DisplayName("Should accept a lowered admission_cap with websocket_relay_cap omitted")
+        void shouldAcceptLoweredAdmissionCapWithoutRelayCap() {
+            GatewayConfig gateway = validGateway()
+                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(64), Optional.empty()))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(),
+                    "A partially declared edge_hardening block must not self-reject, but got: " + errors);
+            assertEquals(16, gateway.edgeHardening().orElseThrow().effectiveWebsocketRelayCap(),
+                    "The implicit relay sub-budget stays a quarter of the effective admission cap");
         }
 
         @Test

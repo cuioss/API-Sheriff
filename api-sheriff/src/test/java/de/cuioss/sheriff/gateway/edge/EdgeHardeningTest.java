@@ -136,18 +136,38 @@ class EdgeHardeningTest {
     }
 
     @Test
-    @DisplayName("falls back per member, so a half-declared block keeps the default for the omitted cap")
+    @DisplayName("falls back per member, deriving an omitted relay cap from the declared admission cap")
     void fallsBackPerOmittedMember() {
-        // Arrange — only the admission cap is declared
+        // Arrange — only the admission cap is declared, and it is raised above the default
         EdgeHardeningConfig partial = new EdgeHardeningConfig(Optional.of(4096), Optional.empty());
 
         // Act
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(partial);
 
-        // Assert — the omitted member resolves to its documented default rather than to zero
+        // Assert — the omitted member resolves to a quarter of the effective admission cap, so the
+        // documented three-quarters-for-HTTP reservation scales with the pool instead of staying
+        // pinned to DEFAULT_WEBSOCKET_RELAY_CAP
         assertEquals(4096, hardening.admissionCap(), "The declared admission_cap is carried through");
-        assertEquals(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP, hardening.webSocketRelayCap(),
-                "An omitted websocket_relay_cap resolves to the documented default");
+        assertEquals(1024, hardening.webSocketRelayCap(),
+                "An omitted websocket_relay_cap resolves to a quarter of the effective admission_cap");
+    }
+
+    @Test
+    @DisplayName("keeps a lowered admission cap valid, deriving a relay sub-budget that stays inside it")
+    void derivesRelayCapBelowALoweredAdmissionCap() {
+        // Arrange — the operator lowers only the admission cap, well below the shipped relay default
+        EdgeHardeningConfig partial = new EdgeHardeningConfig(Optional.of(64), Optional.empty());
+
+        // Act
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(partial);
+
+        // Assert — the derived sub-budget must never exceed the pool it draws from, otherwise the
+        // boot-time validator would refuse a block the configuration contract documents as valid
+        assertEquals(64, hardening.admissionCap(), "The declared admission_cap is carried through");
+        assertEquals(16, hardening.webSocketRelayCap(),
+                "An omitted websocket_relay_cap resolves to a quarter of the lowered admission_cap");
+        assertTrue(hardening.webSocketRelayCap() <= hardening.admissionCap(),
+                "The relay sub-budget must stay within the admission pool it draws from");
     }
 
     @Test

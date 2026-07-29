@@ -98,7 +98,11 @@ The defaults reserve three quarters of the pool for HTTP on that reasoning.
 
 Two boot-time rules bound the pair: each cap must be at least `1`, and `websocket_relay_cap` must not
 exceed `admission_cap` — a larger sub-budget could never bind, so it is refused rather than silently
-ignored. Both keys are optional and resolve to the defaults shown above.
+ignored. Both keys are optional. An omitted `admission_cap` is `2048`; an omitted
+`websocket_relay_cap` is a *quarter of the effective* `admission_cap` (never below `1`), which is the
+`512` shown above at the default pool size. Lowering `admission_cap` on its own therefore lowers the
+relay budget with it — the three-quarters-for-HTTP reservation is preserved instead of being turned
+into a boot-time rejection.
 
 == Configuring a gRPC route
 

@@ -228,8 +228,10 @@ edge_hardening:                    # OPTIONAL admission budget for the public da
                                    #   instead of it, because a relay holds its permit for the
                                    #   connection's whole lifetime rather than one round-trip.
                                    #   Minimum 1, and must not exceed admission_cap -- a larger
-                                   #   value could never bind. See "Sizing the WebSocket relay
-                                   #   budget" in the protocol-routes guide.
+                                   #   value could never bind. Omitting this key alone takes a
+                                   #   QUARTER of the effective admission_cap (>= 1), so lowering
+                                   #   admission_cap alone stays valid. See "Sizing the WebSocket
+                                   #   relay budget" in the protocol-routes guide.
 
 token_validation:                  # offline bearer validation (routes with auth.require: bearer)
   issuers:                         # one entry per accepted identity provider
@@ -651,13 +653,15 @@ deployment that never writes it keeps the behaviour shown here.
 
 | WebSocket relay cap (established relays) +
   [`edge_hardening.websocket_relay_cap`]
-| 512
+| 512 +
+  (a quarter of the effective `admission_cap`)
 | A sub-budget acquired *in addition to* the general admission permit, never instead of it. An
   established relay holds both permits for the connection's whole lifetime rather than for one
   round-trip, so without this second bound a modest number of long-lived relays would consume the
   general pool and starve ordinary HTTP traffic. An upgrade beyond the cap is refused `503` and
   releases the general permit on the way out. Operator-configurable; minimum 1, and must not exceed
-  `admission_cap`.
+  `admission_cap`. Omitting it takes a quarter of the *effective* `admission_cap` rather than a fixed
+  `512`, so the three-quarters-for-HTTP reservation holds at every admission cap.
 
 | Graceful-drain timeout
 | 25 s
@@ -1421,7 +1425,8 @@ link:#_edge_hardening_defaults[Edge hardening defaults] for the full table.
   refuses traffic the gateway could have served.
 
 | `websocket_relay_cap`
-| The maximum number of concurrently *established* WebSocket relays (default `512`, minimum `1`).
+| The maximum number of concurrently *established* WebSocket relays (minimum `1`; when omitted, a
+  quarter of the effective `admission_cap` — `512` at the default `admission_cap` of `2048`).
   This is a *sub-budget acquired in addition to* the general permit, never instead of it, because an
   established relay holds its permit for the connection's whole lifetime rather than for one
   request/response round-trip. Without the second bound, a modest number of long-lived relays would
@@ -1692,12 +1697,14 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   fails the boot.
 * `websocket.idle_timeout_seconds`, when declared, must be a *positive integer* (default `300`
   when omitted); it is valid only on a `protocol: websocket` route.
-* The `edge_hardening` block is optional, and so is each of its members; an omission resolves to the
-  documented default (`admission_cap` `2048`, `websocket_relay_cap` `512`). When declared, each cap
-  must be at least `1` -- a cap of zero would refuse every request (or every relay) and is always a
-  misconfiguration rather than a deliberate posture.
+* The `edge_hardening` block is optional, and so is each of its members. An omitted `admission_cap`
+  resolves to `2048`; an omitted `websocket_relay_cap` resolves to a *quarter of the effective*
+  `admission_cap` (never below `1`), which is `512` at the default `admission_cap` -- so an operator
+  who lowers `admission_cap` alone gets a proportionally lowered relay sub-budget rather than a
+  boot-time rejection. When declared, each cap must be at least `1` -- a cap of zero would refuse
+  every request (or every relay) and is always a misconfiguration rather than a deliberate posture.
 * `edge_hardening.websocket_relay_cap` must not exceed `edge_hardening.admission_cap`. The relay
   budget is a *sub-budget of* the admission pool -- a relay takes a permit from both -- so a larger
   value could never bind and would silently disable the sub-cap the operator meant to impose. The
-  comparison uses the *effective* values, so it holds when one member is omitted and takes its
-  default.
+  comparison uses the *effective* values; because an omitted relay cap is derived from the admission
+  cap it can only be tripped by an *explicitly declared* relay cap.
