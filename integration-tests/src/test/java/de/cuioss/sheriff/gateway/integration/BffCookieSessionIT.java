@@ -131,8 +131,8 @@ class BffCookieSessionIT {
                     "the sealed cookie must carry no readable segment of the mediated access token");
         }
         byte[] raw = Base64.getUrlDecoder().decode(sealed);
-        assertEquals((byte) 1, raw[0],
-                "the cookie value must be the version-1 sealed layout, not an opaque server-side handle");
+        assertEquals((byte) 2, raw[0],
+                "the cookie value must be the version-2 sealed layout, not an opaque server-side handle");
     }
 
     @Test
@@ -202,15 +202,23 @@ class BffCookieSessionIT {
     }
 
     /**
-     * Flips the final character of the sealed value, which sits inside the authentication tag.
+     * Flips a bit inside the trailing 16-byte GCM authentication tag.
+     * <p>
+     * The mutation is applied to the <em>decoded</em> bytes rather than to the final base64url
+     * character, because editing that character is not reliably a mutation at all: when the sealed
+     * length is not a multiple of three, the final character carries 2 or 4 unused padding bits that
+     * {@link Base64#getUrlDecoder()} discards without validating. Flipping only those bits — which is
+     * what {@code 'A' -> 'B'} does — re-decodes to the identical ciphertext and tag, so the peer
+     * unseals it successfully and answers 200. Mutating a decoded tag byte is unambiguous.
      *
      * @param sealed the sealed cookie value
      * @return the tampered value, still in the base64url alphabet
      */
     private static String tamper(String sealed) {
         assertNotNull(sealed, "the login must establish a sealed session cookie");
-        char last = sealed.charAt(sealed.length() - 1);
-        return sealed.substring(0, sealed.length() - 1) + (last == 'A' ? 'B' : 'A');
+        byte[] raw = Base64.getUrlDecoder().decode(sealed);
+        raw[raw.length - 1] ^= 0x01;
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
     }
 
     /**
