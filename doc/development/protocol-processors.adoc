@@ -87,6 +87,42 @@ upstream, completes the client upgrade, relays frames opaquely in both direction
 established relay that idles past the route's `idle_timeout_seconds` (closing both legs with
 WebSocket code `1001`). No HTTP `ResponseStage` relay runs for a WebSocket route.
 
+==== The admission-permit lifecycle
+
+The WebSocket arm is the one dispatch path where the edge's ordinary permit-release site does not
+work, and getting this wrong is not a leak that shows up in a test — it shows up as a gateway that
+`503`s everything after enough upgrades.
+
+Every request acquires an *admission permit* at the top of `handle()`, and the HTTP paths return it
+from `ctx.addEndHandler`, which fires when the HTTP response ends. A *completed upgrade takes the
+connection over*, so for a relayed WebSocket that handler never fires: the response never ends in the
+HTTP sense. The end handler therefore cannot be the release site here, and the permit must be held
+across the upgrade anyway — an established relay occupies edge capacity for its whole lifetime, so
+releasing it at upgrade completion would under-count exactly the connections that cost the most.
+
+`dispatchWebSocket` hands `WebSocketRelayStage` its own release callback instead, and the relay owns
+the release from that point. The contract, in full:
+
+* *Acquired* at admission in `handle()`, before the pipeline runs, and *held across the upgrade* for
+  the relay's whole lifetime.
+* An upgrade additionally acquires the *relay sub-permit* (`edge_hardening.websocket_relay_cap`)
+  before the hand-off — taken *in addition to* the general permit, not instead of it, so long-lived
+  relays cannot squeeze HTTP out of the admission pool. An upgrade beyond that cap is refused `503`
+  and releases the general permit on the way out.
+* *Released exactly once*, from whichever terminal path is reached first: `RelaySession.closeBoth`
+  — the single idempotent teardown funnel every established-relay terminal path converges on (client
+  close, upstream close, idle reclaim, relay error) — or the *client-upgrade-failure* branch, where
+  the upstream connected but the client upgrade did not complete, so no session exists to tear down.
+  `closeBoth` releases *before* it closes either leg, which is what lets an integration test treat an
+  observed close frame as proof the permit is already back.
+* Both permits are returned *together*, each behind its own idempotence latch, so an upstream-dial
+  failure — which *does* end the HTTP response, and so does reach the end handler — cannot strand the
+  sub-permit while the general one is released by a different site.
+
+The double-release risk is real and is handled by construction rather than by convention: the release
+routes through the same CAS-guarded callback the end handler and the executor-rejection rollback use,
+so every path can call it and only the first call counts.
+
 === gRPC -- forced-h2 dispatch and trailer relay
 
 `dispatchGrpc` streams the request opaquely to the forced-HTTP/2 upstream via `GrpcDispatchStage`,
