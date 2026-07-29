@@ -56,7 +56,11 @@
           "skill": "pm-dev-java:java-maintenance"
         },
         "pm-dev-java-cui:cui-logging",
-        "pm-dev-java-cui:cui-http"
+        "pm-dev-java-cui:cui-http",
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 build-dispatch routes builds through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
       ]
     },
     "module_testing": {
@@ -103,7 +107,11 @@
         },
         "pm-dev-java-cui:cui-logging",
         "pm-dev-java-cui:cui-testing",
-        "pm-dev-java-cui:cui-http-testing"
+        "pm-dev-java-cui:cui-http-testing",
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 test-run dispatch routes through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
       ]
     },
     "quality": {

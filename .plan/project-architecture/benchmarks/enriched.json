@@ -33,7 +33,11 @@
           "description": "Core Java patterns including modern features and performance optimization",
           "skill": "pm-dev-java:java-core"
         },
-        "pm-dev-java-cui:cui-logging"
+        "pm-dev-java-cui:cui-logging",
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 build-dispatch routes builds through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
       ]
     },
     "module_testing": {
@@ -58,7 +62,11 @@
           "description": "JUnit 5 testing patterns with AAA structure, coverage analysis, and assertion standards",
           "skill": "pm-dev-java:junit-core"
         },
-        "pm-dev-java-cui:cui-logging"
+        "pm-dev-java-cui:cui-logging",
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 test-run dispatch routes through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
       ]
     },
     "quality": {
