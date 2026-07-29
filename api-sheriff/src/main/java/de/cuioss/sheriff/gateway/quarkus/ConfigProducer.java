@@ -249,9 +249,9 @@ public class ConfigProducer {
      */
     private static long maxDeclaredBodyBytes(GatewayConfig gateway, List<EndpointConfig> enabled) {
         return Stream.concat(
-                        gateway.anchors().values().stream().map(AnchorConfig::securityFilter),
-                        enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
-                                .map(RouteConfig::securityFilter))
+                gateway.anchors().values().stream().map(AnchorConfig::securityFilter),
+                enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
+                        .map(RouteConfig::securityFilter))
                 .flatMap(Optional::stream)
                 .map(SecurityFilterConfig::maxBodyBytes)
                 .flatMap(Optional::stream)
