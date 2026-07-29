@@ -1,0 +1,142 @@
+= ADR-0021: Quarkus platform BOM is imported first and owns the Quarkus and smallrye-config version line
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: The quarkus-bom import is declared first in dependencyManagement so the Quarkus platform owns the Quarkus and smallrye-config version line; every later BOM import is a subordinate that may only contribute versions the platform does not already pin.
+// tags: build, dependencies, maven, bom, quarkus, smallrye-config
+// affects: api-sheriff-parent
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+API Sheriff is a Quarkus application that imports more than one third-party BOM
+into `dependencyManagement`. Quarkus is not an ordinary dependency: the platform
+BOM pins a large, internally-consistent version line covering the Quarkus
+extensions and their shared runtime libraries, of which `io.smallrye.config` is
+the load-bearing one — the Quarkus build step that augments `@ConfigMapping`
+interfaces at build time is compiled against a specific smallrye-config API.
+
+Any other BOM the project imports may itself have been built against a
+*different* Quarkus release and therefore declares its own versions for the same
+coordinates. Maven's `dependencyManagement` resolves an import collision by
+**declaration order** — the first import to pin a coordinate wins — so the
+relative order of two BOM imports silently decides which Quarkus line the reactor
+resolves.
+
+That creates a structural choice point with a sharp failure mode. When a
+subordinate BOM wins a Quarkus coordinate, the reactor can end up resolving two
+different smallrye-config versions: one reaching compile scope through the
+Quarkus extensions, another through the subordinate BOM's own transitives. A
+smallrye-config split breaks Quarkus config-mapping augmentation, and it breaks
+it at build time with an error that names neither BOM. The failure is not
+proportional to its cause: a one-line reordering, or the addition of a new BOM
+import in the wrong position, produces a build failure whose diagnosis requires
+reconstructing the whole resolved dependency graph.
+
+The question worth settling is therefore not "which versions are correct today"
+— those move on every upstream release — but **which BOM is the authority** when
+two of them disagree.
+
+== Decision
+
+**The Quarkus platform BOM (`quarkus-bom`) is declared first in
+`dependencyManagement`, and it owns the Quarkus and `io.smallrye.config` version
+line for the whole reactor.** Every other BOM import is declared after it and is
+a subordinate: it may contribute versions for coordinates the platform does not
+already pin, and it may not override one that the platform does.
+
+Two obligations follow from the decision and are part of it:
+
+* **Import position is a contract, not formatting.** A new BOM import is added
+  *after* the `quarkus-bom` import. Reordering the existing imports is a
+  behavioural change to dependency resolution and is treated as such.
+* **Convergence is verified against the resolved graph, not asserted in prose.**
+  When a dependency floor moves, the actual resolved `io.smallrye.config` version
+  is re-derived from the reactor (`dependency:tree` scoped to the coordinate)
+  and the recorded rationale is updated to name the versions that genuinely
+  resolve. A comment describing a convergence is evidence only for as long as
+  someone has re-run the check.
+
+The mechanism realising the decision is the ordering of the `<dependencyManagement>`
+import block in the root `pom.xml`, together with the comment adjacent to the
+subordinate import that records the resolved outcome and the reason the ordering
+matters.
+
+== Consequences
+
+=== Positive
+
+* A single Quarkus line, and therefore a single `io.smallrye.config` version,
+  reaches compile scope across the reactor — config-mapping augmentation resolves
+  against the API it was compiled for.
+* A subordinate BOM built against a newer Quarkus release can be adopted for the
+  artifacts it actually provides without dragging its Quarkus line into the
+  build.
+* The rule is checkable mechanically: the resolved coordinate is a single value
+  or it is not, and the check is one `dependency:tree` invocation.
+
+=== Negative
+
+* A subordinate BOM's own Quarkus expectations are silently overridden. If that
+  BOM genuinely requires a newer Quarkus API at runtime, the failure surfaces as
+  a `NoSuchMethodError` at execution rather than as a resolution conflict at
+  build time.
+* The project cannot adopt a newer Quarkus line piecemeal for one subordinate's
+  benefit; moving the Quarkus version is a whole-reactor decision.
+
+=== Risks
+
+* **Ordering is invisible at the point of change.** Nothing in Maven's output
+  reports which BOM won a coordinate, so an incorrectly-positioned new import
+  looks like a clean build until the augmentation step fails. The residual
+  mitigation is the recorded rationale adjacent to the import block plus the
+  re-derivation obligation on every floor move — both are conventions, not
+  enforced gates.
+* **The recorded convergence goes stale silently.** A comment naming concrete
+  versions is correct only until either BOM moves. It is treated as a claim to
+  re-verify, never as a fact to trust.
+
+== Alternatives Considered
+
+**Import the subordinate BOM first and let it own the shared coordinates.**
+This would honour the subordinate's own build-time expectations exactly, which is
+attractive when the subordinate is the component under active development. It is
+rejected because it inverts the dependency: the platform that defines the
+application's runtime becomes subordinate to a library that merely runs on it.
+The resulting split reaches compile scope and breaks config-mapping augmentation
+— a whole-application failure traded for one library's version preference.
+
+**Pin `io.smallrye.config` explicitly in `dependencyManagement` and leave the
+BOM order unconstrained.** This makes the converged version explicit and immune
+to import order, which is genuinely more legible. It is rejected as the primary
+mechanism because it fixes one symptom of the ordering question rather than the
+question: the same collision recurs for every other coordinate the two BOMs
+share, and each recurrence needs its own explicit pin. An explicit pin remains
+available as a targeted correction when a real split is demonstrated, but it is
+not the governing rule.
+
+**Import only one BOM and manage the second BOM's artifacts by explicit
+version.** This removes the collision entirely at the cost of hand-maintaining
+every version the dropped BOM would have supplied, forfeiting exactly the
+internal consistency a BOM exists to provide. It is rejected as a maintenance
+burden disproportionate to the problem.
+
+The alternatives fall in one class: each accepts an ambiguous or hand-maintained
+authority over the shared version line. The decision instead names a single
+authority — the platform — and makes every other BOM subordinate to it.
+
+== References
+
+* `pom.xml` — the `<dependencyManagement>` import block whose declaration order
+  realises this decision, and the adjacent comment recording the resolved
+  convergence.
+* link:0001-java25-runtime-baseline.adoc[ADR-0001: Java 25 runtime baseline] —
+  the sibling build-baseline decision; the Quarkus line this ADR governs is what
+  supplies that baseline's platform support.
