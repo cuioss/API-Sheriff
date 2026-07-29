@@ -98,10 +98,13 @@ public final class SealedSessionCookieCodec {
      * The current sealed-cookie format version, bound into the GCM associated data.
      * <p>
      * Version {@code 2} carries the nine-field payload that added the per-session nonce keying the
-     * derived session identity. The bump is a clean break with no migration path: because the
-     * version byte is bound into the associated data, a version-1 cookie fails GCM authentication
-     * outright rather than being mis-parsed against the nine-field shape, so pre-existing cookie
-     * sessions are refused fail-closed and the browser simply re-logs in.
+     * derived session identity. The bump is a clean break with no migration path: {@link #unseal}
+     * reads the leading version byte and rejects anything other than {@code FORMAT_VERSION} at an
+     * explicit gate, before a {@link Cipher} is even constructed — so a version-1 cookie is refused
+     * outright rather than being mis-parsed against the nine-field shape, and decryption is never
+     * attempted for it. The version byte is additionally bound into the GCM associated data, so it
+     * cannot be forged onto a value sealed under a different version either. Pre-existing cookie
+     * sessions are therefore refused fail-closed and the browser simply re-logs in.
      */
     public static final byte FORMAT_VERSION = 2;
 

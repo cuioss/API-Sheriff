@@ -69,6 +69,14 @@ String sessionNonce) {
     /**
      * Canonical constructor rejecting absent mandatory components and normalizing absent optionals
      * to {@link Optional#empty()}.
+     * <p>
+     * {@code sessionNonce} is additionally rejected when blank: it keys the derived session
+     * identity, so an empty value would silently degrade that identity back to the colliding
+     * pre-nonce shape instead of failing. The nonce value itself never reaches the exception
+     * message.
+     *
+     * @throws NullPointerException     when a mandatory component is {@code null}
+     * @throws IllegalArgumentException when {@code sessionNonce} is blank
      */
     public SealedSessionPayload {
         Objects.requireNonNull(accessToken, "accessToken");
@@ -76,6 +84,9 @@ String sessionNonce) {
         Objects.requireNonNull(sub, "sub");
         Objects.requireNonNull(loginInstant, "loginInstant");
         Objects.requireNonNull(sessionNonce, "sessionNonce");
+        if (sessionNonce.isBlank()) {
+            throw new IllegalArgumentException("sessionNonce must not be blank");
+        }
         refreshToken = Objects.requireNonNullElse(refreshToken, Optional.empty());
         sid = Objects.requireNonNullElse(sid, Optional.empty());
         acr = Objects.requireNonNullElse(acr, Optional.empty());
@@ -111,8 +122,9 @@ String sessionNonce) {
      * silently change the derived session identity.
      *
      * @param encoded the UTF-8 bytes produced by {@link #encode()}
-     * @return the decoded payload; empty when the bytes do not carry the expected field shape
-     *         (a defensive guard against a key that authenticates a foreign format)
+     * @return the decoded payload; empty when the bytes do not carry the expected field shape or
+     *         carry a blank session nonce (a defensive guard against a key that authenticates a
+     *         foreign format)
      */
     public static Optional<SealedSessionPayload> decode(byte[] encoded) {
         Objects.requireNonNull(encoded, "encoded");
@@ -132,8 +144,9 @@ String sessionNonce) {
                     Instant.ofEpochSecond(Long.parseLong(decodeField(fields[7]))),
                     decodeField(fields[8])));
         } catch (IllegalArgumentException | DateTimeException _) {
-            // Base64 decode failure, epoch-second parse failure, or an epoch second that parses as a
-            // long but lies outside Instant's supported range, on bytes that authenticated: a
+            // Base64 decode failure, epoch-second parse failure, an epoch second that parses as a
+            // long but lies outside Instant's supported range, or a blank session nonce rejected by
+            // the canonical constructor, on bytes that authenticated: a
             // foreign payload format under the same key. DateTimeException is NOT an
             // IllegalArgumentException, so it must be caught explicitly or it escapes unseal() as an
             // unhandled request error. Report "no session" rather than propagating.

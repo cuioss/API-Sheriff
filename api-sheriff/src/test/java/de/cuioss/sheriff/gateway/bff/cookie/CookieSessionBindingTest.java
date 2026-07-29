@@ -41,6 +41,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link CookieSessionBinding} — the stateless seam implementation. Covers the
@@ -49,7 +51,9 @@ import org.junit.jupiter.api.Test;
  * than the reset lifetime on a re-seal, the {@code previous_key} rotation (a retired-key cookie
  * resolves and its next write is sealed under the current key, while withdrawing the retired key
  * makes it no session), the stable-but-never-emitted session identity, and the
- * {@code UNSUPPORTED} IdP-driven destruction capability, and the once-per-process rotation record.
+ * {@code UNSUPPORTED} IdP-driven destruction capability, the once-per-process rotation record, and
+ * the {@link SessionRecord} session-nonce contract (absent is the valid server-mode shape; a
+ * present-but-blank value is refused because it would degrade the derived identity).
  */
 @EnableTestLogger
 class CookieSessionBindingTest {
@@ -407,6 +411,65 @@ class CookieSessionBindingTest {
                     .orElseThrow().sessionId();
 
             assertNotEquals(first, second);
+        }
+    }
+
+    @Nested
+    @DisplayName("Session-record nonce contract")
+    class SessionRecordNonceContract {
+
+        private static SessionRecord.SessionRecordBuilder record() {
+            return SessionRecord.builder()
+                    .sessionId("ignored-on-bind")
+                    .accessToken(ACCESS_TOKEN)
+                    .idToken(ID_TOKEN)
+                    .sub(SUB)
+                    .expiresAt(LOGIN.plus(TTL));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"", " ", "\t", "\n", "   "})
+        @DisplayName("Should reject a present-but-blank session nonce")
+        void shouldRejectPresentButBlankNonce(String blank) {
+            SessionRecord.SessionRecordBuilder builder = record().sessionNonce(Optional.of(blank));
+
+            assertThrows(IllegalArgumentException.class, builder::build,
+                    "a blank nonce would silently degrade the derived identity to the colliding pre-nonce shape");
+        }
+
+        @Test
+        @DisplayName("Should keep the rejected nonce out of the exception message")
+        void shouldNotLeakNonceIntoRejectionMessage() {
+            SessionRecord.SessionRecordBuilder builder = record().sessionNonce(Optional.of("   "));
+
+            IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, builder::build);
+
+            assertEquals("sessionNonce must not be blank when present", rejection.getMessage());
+        }
+
+        @Test
+        @DisplayName("Should accept an absent session nonce — that is the server-mode shape")
+        void shouldAcceptAbsentNonce() {
+            SessionRecord serverMode = record().build();
+
+            assertTrue(serverMode.sessionNonce().isEmpty(),
+                    "server-mode records carry no nonce and must stay constructible");
+        }
+
+        @Test
+        @DisplayName("Should normalize a null session nonce to empty rather than reject it")
+        void shouldNormalizeNullNonceToEmpty() {
+            SessionRecord serverMode = record().sessionNonce(null).build();
+
+            assertTrue(serverMode.sessionNonce().isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should accept a non-blank session nonce")
+        void shouldAcceptNonBlankNonce() {
+            SessionRecord cookieMode = record().sessionNonce(Optional.of("session-nonce-material")).build();
+
+            assertEquals(Optional.of("session-nonce-material"), cookieMode.sessionNonce());
         }
     }
 

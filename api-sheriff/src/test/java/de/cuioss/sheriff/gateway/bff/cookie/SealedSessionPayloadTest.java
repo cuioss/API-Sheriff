@@ -31,6 +31,8 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link SealedSessionPayload} — the plaintext the cookie-mode codec seals. Covers the
@@ -208,6 +210,36 @@ class SealedSessionPayloadTest {
             assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
                             ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, null),
                     "the session nonce is mandatory — it keys the derived session identity");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"", " ", "\t", "\n", "   "})
+        @DisplayName("Should reject a blank session nonce")
+        void shouldRejectBlankSessionNonce(String blank) {
+            assertThrows(IllegalArgumentException.class, () -> new SealedSessionPayload(ACCESS_TOKEN,
+                            Optional.empty(), ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(),
+                            LOGIN, blank),
+                    "a blank nonce would silently degrade the derived identity to the colliding pre-nonce shape");
+        }
+
+        @Test
+        @DisplayName("Should keep the rejected nonce out of the exception message")
+        void shouldNotLeakNonceIntoRejectionMessage() {
+            IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                    () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(), ID_TOKEN, SUB, Optional.empty(),
+                            Optional.empty(), Optional.empty(), LOGIN, "   "));
+
+            assertEquals("sessionNonce must not be blank", rejection.getMessage());
+        }
+
+        @Test
+        @DisplayName("Should decode nothing from authenticated bytes carrying a blank session nonce")
+        void shouldDecodeNothingFromBlankNonce() {
+            byte[] blankNonce = wireForm(ACCESS_TOKEN, "", ID_TOKEN, SUB, "", "", "",
+                    Long.toString(LOGIN.getEpochSecond()), "");
+
+            assertTrue(SealedSessionPayload.decode(blankNonce).isEmpty(),
+                    "the constructor rejection surfaces as no session, never as an escaping exception");
         }
 
         @Test

@@ -72,7 +72,7 @@ import lombok.Builder;
  * @param acr          the authentication context class, empty when absent
  * @param authTime     the IdP authentication instant, empty when absent
  * @param sessionNonce the per-session nonce keying the cookie-mode derived identity; always empty in
- *                     server mode (see the mode split above)
+ *                     server mode (see the mode split above), and never blank when present
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -88,6 +88,15 @@ Optional<String> sessionNonce) {
     /**
      * Canonical constructor rejecting absent mandatory components and normalizing absent
      * optionals to {@link Optional#empty()}.
+     * <p>
+     * {@code sessionNonce} stays optional — an <em>absent</em> nonce is valid and is the normal
+     * server-mode shape. Only a <em>present but blank</em> value is rejected: it keys the
+     * cookie-mode derived identity, so an empty string would silently degrade that identity back to
+     * the colliding pre-nonce shape instead of failing. The nonce value itself never reaches the
+     * exception message.
+     *
+     * @throws NullPointerException     when a mandatory component is {@code null}
+     * @throws IllegalArgumentException when {@code sessionNonce} is present but blank
      */
     public SessionRecord {
         Objects.requireNonNull(sessionId, "sessionId");
@@ -100,6 +109,9 @@ Optional<String> sessionNonce) {
         acr = Objects.requireNonNullElse(acr, Optional.empty());
         authTime = Objects.requireNonNullElse(authTime, Optional.empty());
         sessionNonce = Objects.requireNonNullElse(sessionNonce, Optional.empty());
+        if (sessionNonce.filter(String::isBlank).isPresent()) {
+            throw new IllegalArgumentException("sessionNonce must not be blank when present");
+        }
     }
 
     /**
