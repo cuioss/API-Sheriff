@@ -1,0 +1,165 @@
+= Cookie-Based BFF -- Contributor Guide
+:toc:
+:toclevels: 3
+:sectnums:
+
+A contributor-facing guide to the *cookie-based BFF* implementation (Variant 3): where its code
+lives, how the sealed cookie is put together, and the rules that keep it correct. It describes how to
+*work in* the code; the design rationale is in
+link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] and the architectural decision in
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018].
+
+== The engine boundary rule (read first)
+
+*The gateway re-implements no OAuth leg.* The confidential-client *engine* (`token-sheriff-client`)
+owns retrieval and flow -- auth-code + PKCE, `state`/`nonce`/exact `redirect_uri`, mix-up defence,
+refresh-with-rotation, RP-initiated logout, RFC 9470 step-up. The *BFF* (this code) owns only the
+browser-facing part: the binding/session cookies, CSRF, request proxying, the curated user-info view,
+logout receivers, and RFC 9457 rendering.
+
+This rule is identical in both BFF variants -- cookie mode reaches the engine exactly as server mode
+does. When you add or change a reserved handler, drive an engine seam; never hand-roll an OAuth
+request, a token exchange, or a JWKS fetch inside the gateway.
+
+== Where the code lives
+
+The cookie-specific code is in the `api-sheriff` module under
+`de.cuioss.sheriff.gateway.bff.cookie`:
+
+[cols="1,2"]
+|===
+| Type | Responsibility
+
+| `SealedSessionPayload`
+| The plaintext that gets sealed: the mediated tokens, the identity/session claims, the login instant
+  anchoring the TTL, and the per-session identity nonce. Owns the inner wire format (`encode()` /
+  `decode(...)`) and redacts every credential from `toString()`.
+
+| `SealedSessionCookieCodec`
+| The AES-256-GCM seal/unseal, the outer value layout, the `FORMAT_VERSION` stamp, deterministic
+  key selection by key id, the `Set-Cookie` hardening, and the seal-time size budget.
+
+| `CookieSessionBinding`
+| The `SessionBinding` implementation: `bind` (seal on login, mint the nonce), `resolve` (unseal,
+  enforce the absolute TTL server-side), `persist` (re-seal a refresh), and the derived session
+  identity. Reports `IdpDestruction.UNSUPPORTED`.
+
+| `CookieKeyMaterial`
+| Resolves the key material -- passed `encryption_key` versus generate-on-startup -- plus the
+  decrypt-only `previous_key` and the derived per-gateway identity salt.
+|===
+
+Everything else is shared with the server-session variant; see
+link:bff-session.adoc#_where_the_code_lives[the server-session guide] for the `bff.*` package map.
+
+== The SessionBinding seam
+
+`SessionBinding` is the seam the whole BFF foundation binds to -- never a store directly. The
+configured `session.mode` selects only *which implementation* `BffRuntimeProducer` assembles:
+`ServerSessionBinding` over the in-memory store, or `CookieSessionBinding` over the sealing codec.
+
+Every reserved endpoint, the CSRF defence, the refresh and step-up coordinators, and the
+`require: session` stage-4 runtime are consequently *mode-neutral*: they are written against the
+seam and are unaware of which binding is in force. That is why adding a cookie-mode capability
+almost never means touching a reserved endpoint.
+
+The one place the modes genuinely differ is capability: `idpDestruction()` reports `UNSUPPORTED`
+for the cookie binding, and the back-channel logout endpoint is *gated on that signal* rather than
+on the mode name -- it answers a deliberate `404` instead of claiming a destruction that never
+happened.
+
+== The sealed-cookie wire format
+
+The cookie value is a base64url-encoded *outer envelope*:
+
+[source]
+----
+version(1B) | key-id(1B) | GCM nonce(12B) | ciphertext | GCM tag(16B)
+----
+
+The `version` and `key-id` bytes are bound into the GCM *associated data*, so tampering with either
+fails the tag check rather than silently selecting a different parse. Key selection is deterministic
+by the stamped key id -- never a try-every-key decrypt.
+
+The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is nine newline-separated
+fields in record-declaration order, each URL-safe base64 of its UTF-8 bytes so no value can collide
+with the separator; an empty field stands for an absent optional. It is read only *after* the GCM
+tag has authenticated the bytes -- `decode(...)` is never a parser for untrusted input.
+
+[IMPORTANT]
+====
+*Any change to the inner field set requires a `FORMAT_VERSION` bump.* The field-count guard is
+strict and there is no legacy-shape acceptance path: a cookie in the previous format must fail to
+unseal, not be admitted with a synthesized value. Bumping the version is what makes that failure
+clean, since the version byte is authenticated. A bump forces every existing cookie-mode session to
+re-login -- call that out in the operator documentation when you make one.
+====
+
+== The derived session identity
+
+`SessionRecord.sessionId()` is the one identity model the seam defines, and it is the key the refresh
+coordinator uses for single-flight coalescing. Cookie mode *discards* the id minted at login and
+derives its own instead: a salted digest over the login instant, `sub`, and the per-session nonce.
+
+Two constraints hold it together:
+
+* *Stable across re-seals.* All three digest inputs are fixed for the life of the session, so a
+  refresh reproduces the identity byte-identically. `persist` re-seals the nonce *verbatim* and
+  fails loud rather than re-minting; `TokenRefreshCoordinator.rotate()` must copy the nonce onto the
+  rotated record. `rotate()` rebuilds the record component-by-component, so *any component you add to
+  `SessionRecord` needs a copy line there* or it is silently dropped.
+* *Unique.* The nonce is what makes two logins by the same subject inside one clock second resolve to
+  distinct identities; without it they collided and cross-wired the single-flight keying.
+
+The identity is never emitted to the browser -- only the sealed value crosses -- and the raw nonce is
+never used as, or substituted for, the session id. Single-flight coalescing is necessarily *per
+instance* here; a cross-instance duplicate refresh is this variant's documented, accepted trade-off.
+
+== Build and test
+
+The canonical build commands are the ones in the repository `CLAUDE.md` (invoked through the build
+executor, never a raw `mvn`). Both the quality gate and full verify must pass with zero findings
+before a commit.
+
+Unit-test entry points:
+
+* `SealedSessionPayloadTest` -- the inner wire format: round trips, absent optionals,
+  separator-bearing values, the strict field-count guard, and credential redaction.
+* `SealedSessionCookieCodecTest` -- seal/unseal, the version and key-id header, fail-closed rejection
+  of a tampered nonce/ciphertext/tag, unknown version or key id, `previous_key` rotation, and the
+  size budget.
+* `CookieSessionBindingTest` -- bind/resolve/persist, the server-side TTL enforcement, rotation
+  re-seal, and the identity properties (stability across a re-seal, uniqueness within a clock
+  second).
+* `TokenRefreshCoordinatorTest` -- its `CookieMode` group covers the stateless refresh: re-seal into
+  a new `Set-Cookie` and nonce propagation across `rotate()`.
+
+Integration tests live in the `integration-tests` module and run against the native image on the
+Docker compose stack under the integration-tests Maven profile:
+
+* `BffCookieSessionIT` -- the full login -> mediated call -> logout round trip through a real IdP.
+* `BffCookieStatelessnessIT` -- the two-instance topology (ports `10445` and `10446`) sharing only
+  the sealing key. It logs in against the *first* instance only, then exercises the second, which
+  is what makes "the peer held no record of this session" the evidence rather than an assumption.
+  That asymmetry is deliberate: it also documents the login-leg affinity boundary.
+
+Both IT suites are behaviour-level and are *not* bound to the inner wire form, so a format change
+should leave them untouched and green.
+
+== How to extend
+
+* *A new sealed field* -- add the record component, append it in `encode()` in declaration order,
+  read it back in `decode(...)`, raise the field count, and *bump `FORMAT_VERSION`*. If it
+  participates in identity, mind the stability constraint above.
+* *A new session-runtime capability* -- write it against the `SessionBinding` seam so it stays
+  mode-neutral; if it genuinely cannot work statelessly, gate it on a capability signal (as
+  back-channel logout does) rather than on the mode name.
+* *Anything touching an OAuth leg* -- drive an engine seam, per the boundary rule.
+
+== See also
+
+* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the design.
+* link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF architecture] -- the decision record.
+* link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- BFF security relaxations] -- the accepted trade-offs.
+* link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF] -- how it is configured and run.
+* link:bff-session.adoc[Contributor guide -- server-session BFF] -- the shared package map.

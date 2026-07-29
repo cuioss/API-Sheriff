@@ -172,40 +172,57 @@ the engine wires it internally. The engine's API surface is specified in
 ====
 
 [[_bff_session_runtime]]
-==== Server-session BFF runtime (edge wiring)
+==== BFF runtime (edge wiring)
 
-The *server-session* variant realizes the BFF side of that seam as four structural pieces, all
+The BFF realizes its side of that seam as four structural pieces, all
 framework-agnostic (raw request pieces in, a rendered response out -- no JAX-RS/Vert.x coupling)
-so each is unit-testable without a container:
+so each is unit-testable without a container. The decisions behind this shape -- the reserved-path
+model, the fixed CSRF model, the one `SessionBinding` seam the two session modes sit behind, the
+cookie-mode key material, and the session-identity contract -- are recorded in
+link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018];
+the two inbound-validation relaxations the BFF requires are recorded in
+link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019].
 
-* *Session-resolution seam.* The opaque session-id cookie is the only browser-held state. A
-  `SessionCookieCodec` reads the id out of the request `Cookie` header and a `SessionStore`
-  (the in-memory `InMemorySessionStore`, bounded by `oidc.session.max_sessions`) resolves it to
-  the server-held `SessionRecord` carrying the tokens. A `require: session` route is served by a
+* *Session-resolution seam.* Every collaborator binds to `SessionBinding`, never to a store; the
+  configured `session.mode` selects only which implementation is assembled (ADR-0018). In
+  *server* mode a `SessionCookieCodec` reads an opaque session id out of the request `Cookie`
+  header and a `SessionStore` (the in-memory `InMemorySessionStore`, bounded by
+  `oidc.session.max_sessions`) resolves it to the server-held `SessionRecord` carrying the tokens;
+  in *cookie* mode the sealed cookie itself carries that state and is unsealed per request, with no
+  *session* store at all -- the in-memory `PendingAuthorizationStore` that holds the login leg
+  between redirect and callback is assembled in *both* modes
+  (link:variants/03-bff-cookie.adoc#_stateless_after_login_not_during_it[stateless after login, not
+  during it]). Either way a `require: session` route is served by a
   `SessionAuthenticationStage` injected into the session-aware authentication stage -- so the
-  route is *mediated* (the stored access token injected upstream) rather than rejected.
+  route is *mediated* (the resolved access token injected upstream) rather than rejected.
 
 * *Reserved-path registry + live-edge dispatch.* The `ReservedPathRegistry` classifies each of the
   up-to-six gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout,
   user-info, login-initiation) by *exact* host+path match. The gateway edge consults it *before*
   the proxy route table, so a matched reserved path is dispatched to its handler and a proxy route
-  such as `path_prefix: /auth` can never swallow `/auth/callback`. The
-  link:configuration.adoc#_oidc[`oidc`] block is the single source of the registered paths.
+  such as `path_prefix: /auth` can never swallow `/auth/callback` (ADR-0018). The
+  link:configuration.adoc#_oidc[`oidc`] block is the single source of the registered paths. Because
+  a matched reserved path terminates at the gateway rather than being proxied, the inbound
+  url-parameter *value* pipeline is deliberately not applied to it -- its parameters are validated
+  by the reserved handler itself, which knows their grammar (ADR-0019).
 
 * *Engine boundary.* The gateway re-implements no OAuth leg. Every reserved handler (login
   initiation, callback code-exchange, RP-initiated + back-channel logout, transparent refresh,
   RFC 9470 step-up) drives the `token-sheriff-client` engine across a small set of seams and adds
   only the browser-facing concern on top (binding/session cookies, CSRF, curated user-info view,
-  RFC 9457 rendering). The BFF never holds token material outside the `SessionStore`.
+  RFC 9457 rendering). The BFF never holds token material outside the binding in force -- the
+  `SessionStore` in server mode, the sealed cookie in cookie mode.
 
 * *`BffRuntime` / `BffRuntimeProducer` CDI wiring.* `BffRuntime` is the single collaborator the
   edge consults: it carries the `SessionAuthenticationStage` + fixed `CsrfDefence` and a
   `dispatch(...)` fan-out that routes each matched reserved kind to its wired handler and
   normalizes the outcomes into one response the edge renders verbatim. `BffRuntimeProducer` builds
-  it once at boot *only when a global `oidc` block with `session.mode=server` and a `redirect_uri`
-  is configured*; otherwise it produces the *inert* runtime, so a bearer-only gateway (or a
-  cookie-mode BFF) is unchanged and never touches the confidential-client engine. Provider-metadata
-  discovery is resolved lazily on first engine use, so a server-mode gateway boots without a live IdP.
+  it once at boot *only when a global `oidc` block with a `redirect_uri` and a recognised
+  `session.mode` -- `server` or `cookie` -- is configured*; otherwise it produces the *inert*
+  runtime, so a bearer-only gateway is unchanged and never touches the confidential-client engine.
+  Both modes drive the same wiring and both reach the engine; the mode selects only which
+  `SessionBinding` is assembled. Provider-metadata
+  discovery is resolved lazily on first engine use, so a BFF gateway boots without a live IdP.
 
 === Forward Policy (Zero-Trust)
 

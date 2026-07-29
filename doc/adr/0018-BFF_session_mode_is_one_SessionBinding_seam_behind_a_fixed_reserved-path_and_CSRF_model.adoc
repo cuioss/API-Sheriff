@@ -1,0 +1,221 @@
+= ADR-0018: BFF session mode is one SessionBinding seam behind a fixed reserved-path and CSRF model
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam
+// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A Backend-For-Frontend gateway that acts as an OIDC confidential client has to answer four
+structural questions at once, and each of them admits a tempting per-deployment or per-route answer
+that fragments the security model.
+
+*Gateway-owned paths versus proxied namespaces.* The BFF must serve its own OIDC endpoints — the
+auth-code callback, login initiation, logout and its return leg, the back-channel logout receiver,
+and a curated user-info view. Those paths live on the same host as proxied traffic. If they are
+resolved by the ordinary route table, a proxy prefix can swallow them: a route matching a broad
+prefix silently captures the callback, and a login that appears to be misconfigured is in fact
+being forwarded upstream. The failure is silent and configuration-dependent, which is the worst
+combination for a security-critical path.
+
+*CSRF as a knob versus a fixed property.* A cookie-authenticated session is inherently exposed to
+cross-site request forgery. Making the defence configurable creates a deployment in which it is
+off, and the class of gateway most likely to turn it off is the one that least understands the
+exposure.
+
+*Two session modes with one feature surface.* Token custody has two legitimate shapes: hold tokens
+server-side and give the browser an opaque id, or seal the tokens into the cookie itself and hold
+nothing. These differ in state, in failure modes, and in which capabilities are achievable — but
+they do *not* differ in what the login flow, the refresh path, the CSRF defence, or the reserved
+endpoints have to do. Implementing them as two parallel stacks would double the surface on which a
+security defect can appear, and guarantee the two drift.
+
+*Key material for the stateless mode.* Sealing requires a key. Demanding one unconditionally makes
+the simplest deployment impossible without key management; generating one silently makes a
+multi-replica deployment fail in a way that looks like an unrelated session bug.
+
+*Session identity under a derived-identity scheme.* Any session needs a stable identity to key
+per-session coordination — most importantly single-flight coalescing of token refresh, so
+concurrent requests for one session do not each drive a refresh. A stateless mode has no store to
+mint an id in, so identity must be *derived* from the sealed material. A derived identity creates
+a constraint that a minted one does not: the derivation inputs must be simultaneously stable across
+re-seals and unique across sessions. Choosing inputs that are merely stable produces collisions
+between distinct sessions, which cross-wires precisely the coordination the identity exists to key.
+
+Decisions (i) through (iv) below originate in the earlier BFF implementation work and are recorded
+here *retroactively* — they were made and implemented before this record was written, and this ADR
+captures them rather than proposing them. Decision (v) is recorded as it was made.
+
+== Decision
+
+*Session mode selects only which `SessionBinding` is assembled. Everything else — reserved-path
+resolution, CSRF, and the session-identity contract — is a fixed, mode-neutral model behind that one
+seam.*
+
+=== (i) Reserved paths resolve before the proxy route table
+
+The gateway carves out its own exact paths on the OIDC host and resolves them *ahead of* the proxy
+route table, via a `ReservedPathRegistry` the edge consults first. A matched reserved path is
+terminated at the gateway and dispatched to its handler; it can never be captured by a proxy prefix,
+whatever the route configuration says.
+
+The set is closed and each entry is configuration-driven, so operators can move a reserved path out
+of a namespace they need — but they cannot make a reserved path proxyable, and no route ordering
+can shadow one.
+
+=== (ii) The CSRF model is fixed, not a knob
+
+Origin verification on unsafe methods, plus a `SameSite=Lax` cookie, applies to every
+`require: session` route as a fixed property. There is no switch to disable it. The only
+configuration is the *allowlist* of trusted origins a cross-origin SPA is served from — that is, the
+operator declares who may call, never whether the check happens.
+
+=== (iii) Server and cookie mode sit behind one `SessionBinding` seam
+
+The whole BFF foundation binds to a `SessionBinding` abstraction, never to a store. The configured
+mode selects only which implementation is assembled: a store-backed binding, or a stateless binding
+over the sealed-cookie codec. The login flow, CSRF defence, refresh and step-up coordinators, the
+reserved endpoints, and the session-authentication runtime are written against the seam and are
+unaware of which binding is in force.
+
+Where the modes genuinely differ, they differ by *declared capability*, not by mode name. A binding
+reports whether it supports IdP-driven destruction; the back-channel logout endpoint is gated on
+that signal and answers a deliberate `404` when unsupported, rather than claiming a destruction that
+did not happen or letting the reserved path fall through to the proxy route table.
+
+=== (iv) Cookie-mode key material has two modes, and the key is optional
+
+Cookie mode accepts an explicitly supplied sealing key or, when none is configured, generates one at
+startup. Boot does *not* require a configured key — the relaxed rule is deliberate, so the simplest
+deployment needs no key management at all.
+
+The trade-off is made explicit rather than hidden: a generated key cannot be shared with another
+replica and does not survive a restart, so sessions are dropped on restart and cannot be served by a
+peer. A decrypt-only previous key supports rotation and requires a current key to roll onto;
+declaring it alone is rejected at boot, because a rotation key with nothing to roll onto is
+meaningless.
+
+=== (v) Cookie-mode session identity is a keyed digest including a per-session nonce
+
+The derived cookie-mode identity is a salted digest over the session's fixed material *plus a
+per-session random nonce* minted once at login. The nonce is sealed with the session, re-sealed
+verbatim on every refresh, and never re-minted; the identity remains a digest, and the raw nonce is
+never used as or substituted for the session id. The identity is never emitted to the browser.
+
+This satisfies both halves of the derived-identity constraint: stable, because every input is fixed
+for the session's life, so a re-seal reproduces the identity exactly; and unique, because the nonce
+separates two sessions that would otherwise share every other input — notably two logins by the same
+subject within one clock granule.
+
+Adding the nonce changed the sealed payload's field set and the session record's shape. Because the
+sealed-cookie format version is bound into the cookie's authenticated data, the version was bumped
+and there is deliberately no acceptance path for the previous format: admitting an older cookie
+would require synthesizing the missing nonce, which would silently change the derived identity —
+exactly the defect the nonce exists to prevent.
+
+== Consequences
+
+=== Positive
+
+* A security-critical path cannot be shadowed by configuration: reserved-path precedence is
+  structural, not an ordering convention.
+* There is no deployment of this gateway with CSRF defence disabled, because there is no way to
+  express one.
+* A capability added to the BFF is written once, against the seam, and is available in both session
+  modes without a second implementation — so the two modes cannot drift apart in behaviour.
+* Mode-specific limitations surface as an explicit capability signal with a defined response, rather
+  than as a silently missing behaviour.
+* The stateless mode is usable with no key management at all, while the multi-replica case remains
+  fully supported by supplying a key.
+* Single-flight refresh coalescing keys correctly in both modes, including for concurrent logins by
+  one subject.
+
+=== Negative
+
+* Reserved paths permanently occupy their configured paths on the OIDC host; an operator who wants
+  those namespaces proxied must relocate the reserved paths instead.
+* A truly cross-site SPA cannot be supported, because the fixed cookie policy will not attach the
+  session cookie cross-site — such an SPA must be hosted under the gateway's site.
+* Any change to the sealed payload's field set forces a format-version bump, which invalidates every
+  existing cookie-mode session and forces re-login on deploy. There is no rolling migration.
+* The session record carries a component that is meaningful in only one mode, and it must be
+  explicitly propagated wherever the record is rebuilt field-by-field.
+
+=== Risks
+
+* *Silent identity drift.* Any code path that reconstructs the session record component-by-component
+  and omits the nonce would change the derived identity mid-session, breaking refresh coalescing.
+  The re-seal path fails loud rather than re-minting a nonce, which converts this from a silent
+  corruption into an immediate error.
+* *Operator misreading of the key default.* Omitting the key is easy and works perfectly on one
+  replica, so a deployment can scale out and only then discover its sessions are not portable. The
+  trade-off is therefore documented at the point of configuration rather than only in reference
+  material.
+* *Cookie size ceiling.* Sealing tokens into the cookie makes session size a function of token size,
+  which is bounded by what browsers accept. The gateway refuses to seal an over-budget session
+  rather than emitting a cookie the browser would silently drop.
+
+== Alternatives Considered
+
+*Resolve reserved paths through the ordinary route table.* This would need no separate registry and
+no precedence rule, letting one mechanism resolve every path. Rejected because it makes the
+correctness of a security-critical endpoint depend on route ordering and prefix breadth: a
+legitimate broad proxy prefix silently captures the callback, and the resulting failure is
+configuration-dependent and hard to attribute. Precedence must be structural to be trustworthy.
+
+*Make CSRF defence configurable, with a secure default.* This would accommodate deployments that
+believe they do not need it, while defaulting to protection. Rejected because the option's existence
+is the vulnerability: a defence that can be switched off will be switched off in the deployment that
+understands the exposure least, and a secure default provides no protection against a deliberate
+override.
+
+*Implement the two session modes as independent stacks.* Each mode could then be optimised for its
+own shape without abstraction overhead. Rejected because it doubles the surface where a
+security-relevant defect can occur and guarantees divergence: a fix or hardening applied to one
+stack does not reach the other, and the two slowly acquire different behaviour for what operators
+reasonably read as one feature.
+
+*Require a sealing key unconditionally in cookie mode.* This would remove the weaker generated-key
+mode and the possibility of an operator being surprised by non-portable sessions. Rejected because
+it imposes key management on every deployment including single-node and development ones, which
+pushes operators toward checked-in or trivially-derived keys — a worse security outcome than an
+explicitly documented, deliberately-scoped generated key.
+
+*Derive the cookie-mode identity from the session's fixed material alone, without a nonce.* This
+would need no extra sealed field and no format bump. Rejected because stability and uniqueness are
+independent requirements and this satisfies only the first: two sessions sharing the same subject
+and login granule derive the same identity, which cross-wires the per-session coordination the
+identity exists to key. The defect is silent, load-dependent, and appears only under concurrency.
+
+*Accept the previous sealed-cookie format alongside the new one.* This would avoid forcing every
+user to log in again on upgrade. Rejected because accepting an older cookie means supplying the
+absent identity input, and any value chosen changes the derived identity for that session —
+reintroducing exactly the collision class the nonce removes. A clean break with a forced re-login is
+the honest cost.
+
+The alternatives fall into one class: each trades a structural guarantee for local convenience —
+configurability, less abstraction, an easier upgrade — and each pays for it with a failure mode that
+is silent and surfaces only in the deployments least equipped to diagnose it.
+
+== References
+
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved-path and cookie-header relaxations] -- the inbound-validation relaxations this architecture requires.
+* link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] -- the server-side-custody realisation.
+* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the stateless realisation.
+* link:../architecture.adoc[Architecture] -- the seam statement in context.
+* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract, including the relaxed cookie-mode key rule.
+* link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF] -- the key-material trade-off and upgrade consequence as operators meet them.
+* link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the wire format and identity constraints as implementers meet them.

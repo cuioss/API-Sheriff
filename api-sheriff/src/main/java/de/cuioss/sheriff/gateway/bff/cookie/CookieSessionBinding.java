@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.cookie;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
@@ -63,8 +64,9 @@ import org.jspecify.annotations.Nullable;
  * construction no previous key, so no cookie can carry a retired key id and this path never fires.
  * <p>
  * <strong>Session identity.</strong> Per the seam's single identity model, the reconstructed
- * {@link SessionRecord#sessionId()} is a keyed digest over the sealed payload's login instant and
- * {@code sub}. It is stable for the life of the session — so the refresh coordinator's single-flight
+ * {@link SessionRecord#sessionId()} is a keyed digest over the sealed payload's login instant,
+ * {@code sub} and the per-session nonce minted once at login. It is stable for the life of the
+ * session — so the refresh coordinator's single-flight
  * coalescing behaves exactly as in server mode — and is <strong>never emitted to the browser</strong>:
  * only the sealed value crosses. Single-flight is necessarily <em>per instance</em> here; a
  * cross-instance duplicate refresh cannot be prevented without shared state and is this variant's
@@ -79,6 +81,14 @@ public final class CookieSessionBinding implements SessionBinding {
 
     private static final String DIGEST_ALGORITHM = "SHA-256";
     private static final int IDENTITY_BYTES = 16;
+
+    /**
+     * The per-session nonce width, matched to {@code SessionRecord.newSessionId()}'s 32 bytes so the
+     * cookie-mode nonce carries the same entropy as the server-mode session id it stands in for.
+     */
+    private static final int SESSION_NONCE_BYTES = 32;
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     /** The bounded, non-sensitive disposition recorded when a retired-key session is rolled over. */
     private static final String RESEAL_DISPOSITION = "previous-key rollover";
@@ -110,8 +120,10 @@ public final class CookieSessionBinding implements SessionBinding {
     public BoundSession bind(SessionRecord session, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(now, "now");
-        // A fresh login anchors the absolute lifetime at this instant.
-        return seal(payloadOf(session, now), now);
+        // A fresh login anchors the absolute lifetime at this instant and mints the session's one
+        // nonce. Minting here — once, on the login path only — is what makes two logins by the same
+        // subject within a single clock second resolve to distinct identities.
+        return seal(payloadOf(session, now, newSessionNonce()), now);
     }
 
     @Override
@@ -131,6 +143,11 @@ public final class CookieSessionBinding implements SessionBinding {
      * the new sealed value. The original login instant is re-derived from the record's absolute
      * deadline rather than taken from {@code now}, so an endlessly-refreshed session still dies at
      * its original absolute deadline: a refresh rotates the tokens, never the session's lifetime.
+     * <p>
+     * The session nonce is re-sealed <strong>verbatim</strong> and never re-minted, for the same
+     * reason the login instant is re-derived rather than refreshed: both are identity inputs, so
+     * minting a new nonce here would change the derived {@link SessionRecord#sessionId()} mid-session
+     * and break the refresh coordinator's single-flight coalescing.
      *
      * @param rotated the session carrying the rotated token material
      * @param now     the reference instant, used only for the cookie's remaining {@code Max-Age}
@@ -141,7 +158,13 @@ public final class CookieSessionBinding implements SessionBinding {
         Objects.requireNonNull(rotated, "rotated");
         Objects.requireNonNull(now, "now");
         Instant loginInstant = rotated.expiresAt().minus(codec.sessionTtl());
-        return seal(payloadOf(rotated, loginInstant), now);
+        // Fail loud rather than mint a replacement: a cookie-mode record always carries the nonce
+        // sealed at login, so an absent one means a caller reconstructed the record and dropped it —
+        // silently re-minting would change the session's identity mid-flight.
+        String sessionNonce = rotated.sessionNonce().orElseThrow(() -> new IllegalStateException(
+                "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
+                        + "the derived session identity"));
+        return seal(payloadOf(rotated, loginInstant, sessionNonce), now);
     }
 
     @Override
@@ -217,14 +240,26 @@ public final class CookieSessionBinding implements SessionBinding {
         return toSessionRecord(unsealed.payload());
     }
 
-    private static SealedSessionPayload payloadOf(SessionRecord session, Instant loginInstant) {
+    private static SealedSessionPayload payloadOf(SessionRecord session, Instant loginInstant,
+            String sessionNonce) {
         return new SealedSessionPayload(session.accessToken(), session.refreshToken(), session.idToken(),
-                session.sub(), session.sid(), session.acr(), session.authTime(), loginInstant);
+                session.sub(), session.sid(), session.acr(), session.authTime(), loginInstant, sessionNonce);
+    }
+
+    /**
+     * Mints one session nonce: {@link #SESSION_NONCE_BYTES} secure-random bytes, base64url-encoded so
+     * it survives the payload's base64 field encoding unchanged.
+     */
+    private static String newSessionNonce() {
+        byte[] bytes = new byte[SESSION_NONCE_BYTES];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private SessionRecord toSessionRecord(SealedSessionPayload payload) {
         return SessionRecord.builder()
                 .sessionId(derivedIdentity(payload))
+                .sessionNonce(Optional.of(payload.sessionNonce()))
                 .accessToken(payload.accessToken())
                 .refreshToken(payload.refreshToken())
                 .idToken(payload.idToken())
@@ -238,9 +273,15 @@ public final class CookieSessionBinding implements SessionBinding {
 
     /**
      * Derives this binding's stable per-session identity: a salted digest over the sealed payload's
-     * login instant and {@code sub}. Both inputs are fixed for the life of the session, so the
-     * identity is stable across re-seals; the salt keeps it un-recomputable outside this gateway;
-     * and it is never emitted to the browser.
+     * login instant, {@code sub} and per-session nonce. All three inputs are fixed for the life of
+     * the session, so the identity is stable across re-seals; the salt keeps it un-recomputable
+     * outside this gateway; and it is never emitted to the browser.
+     * <p>
+     * The nonce is what makes the identity <em>unique</em> rather than merely stable: login instant
+     * and {@code sub} alone collide for two logins by the same subject inside one clock second, which
+     * would cross-wire the refresh coordinator's single-flight keying between two distinct sessions.
+     * The identity remains a digest — the raw nonce is never used as, or substituted for, the
+     * session id.
      */
     private String derivedIdentity(SealedSessionPayload payload) {
         MessageDigest digest;
@@ -253,6 +294,7 @@ public final class CookieSessionBinding implements SessionBinding {
         digest.update(identitySalt);
         digest.update(Long.toString(payload.loginInstant().getEpochSecond()).getBytes(StandardCharsets.UTF_8));
         digest.update(payload.sub().getBytes(StandardCharsets.UTF_8));
+        digest.update(payload.sessionNonce().getBytes(StandardCharsets.UTF_8));
         byte[] identity = new byte[IDENTITY_BYTES];
         System.arraycopy(digest.digest(), 0, identity, 0, IDENTITY_BYTES);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(identity);

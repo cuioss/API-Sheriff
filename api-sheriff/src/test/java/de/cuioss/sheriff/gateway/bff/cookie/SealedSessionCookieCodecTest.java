@@ -65,6 +65,7 @@ class SealedSessionCookieCodecTest {
     private static final String REFRESH_TOKEN = "raw-refresh-token-SECRET-material";
     private static final String ID_TOKEN = "raw-id-token-SECRET-material";
     private static final String SUB = "user-sub-1";
+    private static final String SESSION_NONCE = "session-nonce-SECRET-material";
 
     private SecretKey key;
     private SealedSessionCookieCodec codec;
@@ -84,7 +85,7 @@ class SealedSessionCookieCodecTest {
     private static SealedSessionPayload payload() {
         return new SealedSessionPayload(ACCESS_TOKEN, Optional.of(REFRESH_TOKEN), ID_TOKEN, SUB,
                 Optional.of("idp-sid-9"), Optional.of("urn:acr:silver"),
-                Optional.of(Instant.parse("2026-07-27T09:59:00Z")), LOGIN);
+                Optional.of(Instant.parse("2026-07-27T09:59:00Z")), LOGIN, SESSION_NONCE);
     }
 
     private static String flipByteAt(String sealedValue, int index) {
@@ -129,6 +130,13 @@ class SealedSessionCookieCodecTest {
 
             assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, raw[0]);
             assertEquals(KEY_ID, raw[1]);
+        }
+
+        @Test
+        @DisplayName("Should stamp format version 2 — the nine-field payload shape")
+        void shouldStampFormatVersionTwo() {
+            assertEquals(SealedSessionCookieCodec.FORMAT_VERSION, (byte) 2,
+                    "the per-session nonce raised the payload to nine fields, which is a wire-format break");
         }
     }
 
@@ -182,6 +190,18 @@ class SealedSessionCookieCodecTest {
 
             assertTrue(codec.unseal(Base64.getUrlEncoder().withoutPadding().encodeToString(raw)).isEmpty(),
                     "an unknown format version is refused before any decrypt attempt");
+        }
+
+        @Test
+        @DisplayName("Should reject a cookie stamped with the retired version 1 format")
+        void shouldRejectLegacyFormatVersionOne() throws Exception {
+            String sealed = codec.seal(payload());
+            byte[] raw = Base64.getUrlDecoder().decode(sealed);
+            raw[0] = 1;
+
+            assertTrue(codec.unseal(Base64.getUrlEncoder().withoutPadding().encodeToString(raw)).isEmpty(),
+                    "the version bump to 2 is a clean break: a v1 cookie is refused outright rather than "
+                            + "parsed against the nine-field payload shape");
         }
 
         @Test
@@ -290,7 +310,7 @@ class SealedSessionCookieCodecTest {
         void shouldRefuseOversizedPayload() {
             String huge = "x".repeat(BUDGET * 2);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, Optional.empty(), ID_TOKEN, SUB,
-                    Optional.empty(), Optional.empty(), Optional.empty(), LOGIN);
+                    Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE);
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));
@@ -396,7 +416,7 @@ class SealedSessionCookieCodecTest {
         void shouldNotLeakKeyMaterialIntoTheOverBudgetMessage() {
             String huge = "x".repeat(BUDGET * 2);
             SealedSessionPayload oversized = new SealedSessionPayload(huge, Optional.empty(), ID_TOKEN, SUB,
-                    Optional.empty(), Optional.empty(), Optional.empty(), LOGIN);
+                    Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE);
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));

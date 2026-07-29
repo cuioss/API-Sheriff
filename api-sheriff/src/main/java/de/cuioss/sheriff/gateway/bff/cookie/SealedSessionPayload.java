@@ -51,25 +51,42 @@ import java.util.Optional;
  * @param acr          the authentication context class, empty when absent
  * @param authTime     the IdP authentication instant, empty when absent
  * @param loginInstant the absolute login instant anchoring the server-enforced session TTL
+ * @param sessionNonce the per-session random nonce minted once at login, folded into the derived
+ *                     session identity so two logins by the same subject within one clock second
+ *                     cannot collide. Re-sealed verbatim — never re-minted — so the identity is
+ *                     stable for the life of the session
  * @author API Sheriff Team
  * @since 1.0
  */
 public record SealedSessionPayload(String accessToken, Optional<String> refreshToken, String idToken,
-String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTime, Instant loginInstant) {
+String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTime, Instant loginInstant,
+String sessionNonce) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final char FIELD_SEPARATOR = '\n';
-    private static final int FIELD_COUNT = 8;
+    private static final int FIELD_COUNT = 9;
 
     /**
      * Canonical constructor rejecting absent mandatory components and normalizing absent optionals
      * to {@link Optional#empty()}.
+     * <p>
+     * {@code sessionNonce} is additionally rejected when blank: it keys the derived session
+     * identity, so an empty value would silently degrade that identity back to the colliding
+     * pre-nonce shape instead of failing. The nonce value itself never reaches the exception
+     * message.
+     *
+     * @throws NullPointerException     when a mandatory component is {@code null}
+     * @throws IllegalArgumentException when {@code sessionNonce} is blank
      */
     public SealedSessionPayload {
         Objects.requireNonNull(accessToken, "accessToken");
         Objects.requireNonNull(idToken, "idToken");
         Objects.requireNonNull(sub, "sub");
         Objects.requireNonNull(loginInstant, "loginInstant");
+        Objects.requireNonNull(sessionNonce, "sessionNonce");
+        if (sessionNonce.isBlank()) {
+            throw new IllegalArgumentException("sessionNonce must not be blank");
+        }
         refreshToken = Objects.requireNonNullElse(refreshToken, Optional.empty());
         sid = Objects.requireNonNullElse(sid, Optional.empty());
         acr = Objects.requireNonNullElse(acr, Optional.empty());
@@ -91,6 +108,7 @@ String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTi
         appendField(encoded, acr.orElse(""));
         appendField(encoded, authTime.map(instant -> Long.toString(instant.getEpochSecond())).orElse(""));
         appendField(encoded, Long.toString(loginInstant.getEpochSecond()));
+        appendField(encoded, sessionNonce);
         return encoded.toString().getBytes(StandardCharsets.UTF_8);
     }
 
@@ -98,9 +116,15 @@ String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTi
      * Reads a payload back from the wire form. The input MUST already have been authenticated by the
      * codec's GCM tag — this method is not a parser for untrusted input.
      *
+     * The field-count guard is strict: only the current nine-field shape is accepted. There is no
+     * legacy eight-field (pre-nonce) acceptance path — a clean break, so a payload predating the
+     * session nonce is rejected outright rather than admitted with a synthesized nonce that would
+     * silently change the derived session identity.
+     *
      * @param encoded the UTF-8 bytes produced by {@link #encode()}
-     * @return the decoded payload; empty when the bytes do not carry the expected field shape
-     *         (a defensive guard against a key that authenticates a foreign format)
+     * @return the decoded payload; empty when the bytes do not carry the expected field shape or
+     *         carry a blank session nonce (a defensive guard against a key that authenticates a
+     *         foreign format)
      */
     public static Optional<SealedSessionPayload> decode(byte[] encoded) {
         Objects.requireNonNull(encoded, "encoded");
@@ -117,10 +141,12 @@ String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTi
                     optionalField(fields[4]),
                     optionalField(fields[5]),
                     optionalField(fields[6]).map(seconds -> Instant.ofEpochSecond(Long.parseLong(seconds))),
-                    Instant.ofEpochSecond(Long.parseLong(decodeField(fields[7])))));
+                    Instant.ofEpochSecond(Long.parseLong(decodeField(fields[7]))),
+                    decodeField(fields[8])));
         } catch (IllegalArgumentException | DateTimeException _) {
-            // Base64 decode failure, epoch-second parse failure, or an epoch second that parses as a
-            // long but lies outside Instant's supported range, on bytes that authenticated: a
+            // Base64 decode failure, epoch-second parse failure, an epoch second that parses as a
+            // long but lies outside Instant's supported range, or a blank session nonce rejected by
+            // the canonical constructor, on bytes that authenticated: a
             // foreign payload format under the same key. DateTimeException is NOT an
             // IllegalArgumentException, so it must be caught explicitly or it escapes unseal() as an
             // unhandled request error. Report "no session" rather than propagating.
@@ -143,7 +169,8 @@ String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTi
     }
 
     /**
-     * Overridden to redact every credential — the three tokens. The default record
+     * Overridden to redact every credential — the three tokens — plus the session nonce, which keys
+     * the derived session identity and so is treated as secret material. The default record
      * {@code toString()} would otherwise print the raw token material into any log line, exception
      * message, or debugger view.
      *
@@ -151,9 +178,9 @@ String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTi
      */
     @Override
     public String toString() {
-        return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s]"
+        return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s, sessionNonce=%s]"
                 .formatted(REDACTED, refreshToken.isPresent() ? "Optional[" + REDACTED + "]" : "Optional.empty",
-                        REDACTED, sub, sid, acr, authTime, loginInstant);
+                        REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED);
     }
 
     private static void appendField(StringBuilder target, String value) {

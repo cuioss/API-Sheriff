@@ -132,14 +132,19 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
 2. Commit changes: `git add <files> && git commit -m "<message>"`
 3. Push the branch: `git push -u origin <branch-name>`
 4. Create a PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
-5. Wait for CI + Gemini review (waits until checks complete): `gh pr checks --watch`
-6. **Handle Gemini review comments** — fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each:
-   - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment
+5. Wait for CI and the three automated reviewers — CodeRabbit, Sourcery and PR-Agent (waits until checks complete): `gh pr checks --watch`
+6. **Handle the automated review comments from all three reviewers** — CodeRabbit, Sourcery and PR-Agent each comment independently, so treat the union of their comments as the work list. Fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each comment, whichever bot authored it:
+   - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment — a bot-fix commit is a commit, so the **Pre-Commit Process** section above applies unchanged
    - If disagree or out of scope: reply explaining why, then resolve the comment
    - If uncertain (not 100% confident): **ask the user** before acting
    - Every comment MUST get a reply (reason for fix or reason for not fixing) and MUST be resolved
+   - **Re-review after pushing fixes is not uniform**: CodeRabbit and Sourcery re-review automatically on push; PR-Agent deliberately does **not** (`.github/workflows/pr-agent.yml` triggers only on `opened`/`reopened`/`ready_for_review` plus on-demand `issue_comment` commands). Re-request a PR-Agent pass explicitly by posting a `/review` comment on the PR after the fix push.
 7. Do **NOT** enable auto-merge unless explicitly instructed. Wait for user approval.
-8. Return to main: `git checkout main && git pull`
+8. **After the merge lands, verify the post-merge state**:
+   - Re-check the **PR-attached** post-merge run. `.github/workflows/benchmark.yml` is `pull_request: types: [closed]` gated on `merged == true`, so its run stays attached to the PR and remains visible through the CI abstraction after the merge.
+   - Also check the **main-branch** post-merge run, which is *not* attached to the PR. `maven.yml` triggers on `push: branches: [main]`, and its `deploy-snapshot` job is skipped on pull requests but runs on that push — so a snapshot-deployment failure appears only in the Maven Build run for the merge commit on `main`, never on the PR. Look it up by the merge commit rather than by PR number.
+   - Assert zero unresolved review threads: `python3 .plan/execute-script.py plan-marshall:tools-integration-ci:ci pr comments --pr-number <n> --unresolved-only`. Route any straggler into a follow-up issue or plan rather than leaving it unresolved.
+9. Return to main: `git checkout main && git pull`
 
 ## Temporary Files
 

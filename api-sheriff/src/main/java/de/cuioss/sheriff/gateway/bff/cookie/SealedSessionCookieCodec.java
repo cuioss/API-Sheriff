@@ -94,8 +94,19 @@ public final class SealedSessionCookieCodec {
 
     private static final CuiLogger LOGGER = new CuiLogger(SealedSessionCookieCodec.class);
 
-    /** The current sealed-cookie format version, bound into the GCM associated data. */
-    public static final byte FORMAT_VERSION = 1;
+    /**
+     * The current sealed-cookie format version, bound into the GCM associated data.
+     * <p>
+     * Version {@code 2} carries the nine-field payload that added the per-session nonce keying the
+     * derived session identity. The bump is a clean break with no migration path: {@link #unseal}
+     * reads the leading version byte and rejects anything other than {@code FORMAT_VERSION} at an
+     * explicit gate, before a {@link Cipher} is even constructed — so a version-1 cookie is refused
+     * outright rather than being mis-parsed against the nine-field shape, and decryption is never
+     * attempted for it. The version byte is additionally bound into the GCM associated data, so it
+     * cannot be forged onto a value sealed under a different version either. Pre-existing cookie
+     * sessions are therefore refused fail-closed and the browser simply re-logs in.
+     */
+    public static final byte FORMAT_VERSION = 2;
 
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
     private static final int NONCE_BYTES = 12;

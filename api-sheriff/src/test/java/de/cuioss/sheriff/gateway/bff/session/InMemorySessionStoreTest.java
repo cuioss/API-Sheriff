@@ -238,18 +238,19 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should normalize absent optionals and reject null mandatory components")
         void shouldNormalizeAndReject() {
-            SessionRecord sparse = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null);
+            SessionRecord sparse = new SessionRecord("s", "at", null, "it", "sub", null, FUTURE, null, null, null);
             assertTrue(sparse.refreshToken().isEmpty());
             assertTrue(sparse.sid().isEmpty());
             assertTrue(sparse.acr().isEmpty());
             assertTrue(sparse.authTime().isEmpty());
+            assertTrue(sparse.sessionNonce().isEmpty(), "an absent session nonce normalizes to empty");
 
             assertThrows(NullPointerException.class,
                     () -> new SessionRecord(null, "at", Optional.empty(), "it", "sub", Optional.empty(), FUTURE,
-                            Optional.empty(), Optional.empty()));
+                            Optional.empty(), Optional.empty(), Optional.empty()));
             assertThrows(NullPointerException.class,
                     () -> new SessionRecord("s", "at", Optional.empty(), "it", null, Optional.empty(), FUTURE,
-                            Optional.empty(), Optional.empty()));
+                            Optional.empty(), Optional.empty(), Optional.empty()));
         }
     }
 }
