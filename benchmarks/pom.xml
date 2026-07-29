@@ -28,11 +28,10 @@
         <!-- Skip benchmarks by default (enable with -Pbenchmark) -->
         <skip.benchmark>true</skip.benchmark>
 
-        <!-- Per-aspect skips for k6 goals blocked by an open gateway defect. Both default to
-             true, so -Pbenchmark runs the ten aspects that can pass and genuinely does not
-             execute these two. Flip an individual goal back on with
-             -Dskip.benchmark.upload.large=false (likewise .websocket.echo) once its finding
-             below is fixed; that is also how you reproduce the defect through the harness. -->
+        <!-- Per-aspect skip for a k6 goal blocked by an open gateway defect. It defaults to
+             true, so -Pbenchmark runs the eleven aspects that can pass and genuinely does not
+             execute this one. Flip it back on with -Dskip.benchmark.upload.large=false once its
+             finding below is fixed; that is also how you reproduce the defect through the harness. -->
 
         <!-- uploadLarge: the upload anchor's max_body_bytes (64 MiB) is silently capped at the
              Quarkus default quarkus.http.limits.max-body-size (10 MiB), so the 50MB body is
@@ -42,11 +41,15 @@
              derives the HTTP limit from the anchor. -->
         <skip.benchmark.upload.large>true</skip.benchmark.upload.large>
 
-        <!-- websocketEcho: each WebSocket upgrade leaks an edge admission permit — the permit
-             is released via ctx.addEndHandler, which a WS upgrade never fires — so once the
-             permits are exhausted the gateway 503s all traffic until it is restarted.
-             Finding 218b5c. Flip to false once the permit is released on the upgrade path. -->
-        <skip.benchmark.websocket.echo>true</skip.benchmark.websocket.echo>
+        <!-- websocketEcho ran skipped while each WebSocket upgrade leaked an edge admission
+             permit (finding 218b5c): the permit was released via ctx.addEndHandler, which a
+             completed upgrade never fires, so a sustained load run exhausted the pool and the
+             gateway 503'd all traffic until it was restarted. The relay now releases its permit
+             from its own teardown funnel and takes a bounded sub-budget on top, so the aspect
+             measures relay throughput instead of the exhaustion path. The property is kept
+             rather than deleted so the goal stays individually suppressible without editing the
+             execution. -->
+        <skip.benchmark.websocket.echo>false</skip.benchmark.websocket.echo>
 
         <!-- Skip container lifecycle management (useful when containers are already running) -->
         <skip.container.lifecycle>false</skip.container.lifecycle>
@@ -555,15 +558,15 @@
                                 </configuration>
                             </execution>
 
-                            <!-- The two executions below are genuinely skipped against open gateway
-                                 defects: uploadLarge is capped at the Quarkus 10 MiB default instead
-                                 of the anchor's max_body_bytes, and websocketEcho leaks an edge
-                                 admission permit in GatewayEdgeRoute. Each carries a <skip> bound to
-                                 its own property, both declared true in this pom's properties block
-                                 with the blocking finding id — so neither goal runs and neither can
-                                 abort the suite. They are also ordered LAST as defense-in-depth: if a
-                                 skip property is ever flipped to false, Maven runs same-phase
-                                 executions in declaration order, so the resulting fail-fast abort
+                            <!-- The executions below carry a <skip> bound to their own property. Only
+                                 uploadLarge is still genuinely skipped, against an open gateway defect:
+                                 it is capped at the Quarkus 10 MiB default instead of the anchor's
+                                 max_body_bytes (finding 0562be, declared true in this pom's properties
+                                 block), so that goal does not run and cannot abort the suite.
+                                 websocketEcho's blocking defect — the leaked edge admission permit in
+                                 GatewayEdgeRoute — is fixed, and its property is now false, so it does
+                                 run. Both stay ordered LAST as defense-in-depth: Maven runs same-phase
+                                 executions in declaration order, so a fail-fast abort from a goal here
                                  still cannot discard goals that would otherwise pass. -->
 
                             <!-- Run k6 50MB upload benchmark at REDUCED concurrency
@@ -606,7 +609,8 @@
                                     <goal>exec</goal>
                                 </goals>
                                 <configuration>
-                                    <!-- Blocked by finding 218b5c — see skip.benchmark.websocket.echo -->
+                                    <!-- Runs: finding 218b5c (the leaked admission permit) is fixed.
+                                         See skip.benchmark.websocket.echo to suppress this one goal. -->
                                     <skip>${skip.benchmark.websocket.echo}</skip>
                                     <executable>docker</executable>
                                     <arguments>
