@@ -67,15 +67,20 @@ and the gateway holds no per-user state.
   `__Host-` prefix.
 
 | Key management
-| A single server-side symmetric key, provided by environment indirection
-  (`${SHERIFF_SESSION_KEY}`), shared across all gateway instances. Key rotation is supported by
+| A single server-side symmetric key. `session.encryption_key` is *optional*: declared as an
+  environment indirection (`${SHERIFF_SESSION_KEY}`) it is shared across all gateway instances and
+  survives a restart; omitted, the gateway mints a key at boot, so sessions are dropped on every
+  restart and the key cannot be shared with another replica. Key rotation is supported by
   the optional, decrypt-only `session.previous_key`: during the grace window cookies sealed with
   the old key are still accepted and re-sealed with the new key on the next write.
 
 | Size
-| The cookie must stay within browser limits (~4 KB). If the token set exceeds the budget,
-  the refresh and/or ID token may be split into their own cookies; oversized IdPs are a
-  deployment consideration.
+| The cookie must stay within browser limits (~4 KB), enforced as a seal-time budget: an
+  over-budget seal *fails* rather than being silently truncated. Splitting the token set across
+  several cookies is a deliberate non-goal, so the two available remedies are to reduce the token
+  set (fewer scopes, a leaner IdP token shape) or to run the
+  link:02-bff-session.adoc[session-based variant]. Oversized IdP tokens are a deployment
+  consideration.
 |===
 
 == Statelessness
@@ -84,8 +89,10 @@ Because the encrypted cookie carries all session state:
 
 * No session store, no Redis, no database -- the manifest's self-contained requirement holds
   fully.
-* Any gateway instance can serve any request as long as it has the encryption key -- no sticky
-  sessions, no coordination.
+* Any gateway instance can serve any request *of an established session* as long as it has the
+  encryption key -- no sticky sessions, no coordination. The login leg is the one exception: it
+  holds per-instance pending state and requires affinity until the callback lands (see
+  <<_stateless_after_login_not_during_it,Stateless after login, not during it>>).
 * Horizontal scaling is linear; a node can be added or removed with no session migration.
 
 This is the property that distinguishes Variant A from Variant B and the reason it is the
@@ -192,6 +199,7 @@ link:../configuration.adoc[the configuration reference] for the authoritative va
 * *Self-contained* -- instances share only the encryption key.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
 
+[#_stateless_after_login_not_during_it]
 === Stateless after login, not during it
 
 The variant is stateless once a session is *established*, not for the whole login exchange. The

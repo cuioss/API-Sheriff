@@ -54,8 +54,10 @@ oidc:
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
 ----
 
-The gateway ignores the `oidc` block entirely unless a route's effective auth is `require: session`,
-so a bearer-only deployment is unaffected by its presence.
+The BFF runtime is built from exactly two inputs: a recognised `session.mode` (`server` or `cookie`)
+*and* a configured `redirect_uri`. Route auth is not part of that decision -- `require: session`
+routes are what *use* the runtime once it exists, not what turns it on. With no recognised
+`session.mode` the runtime stays inert, so a bearer-only deployment is unaffected.
 
 == Key material
 

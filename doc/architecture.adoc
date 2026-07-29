@@ -189,7 +189,10 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   header and a `SessionStore` (the in-memory `InMemorySessionStore`, bounded by
   `oidc.session.max_sessions`) resolves it to the server-held `SessionRecord` carrying the tokens;
   in *cookie* mode the sealed cookie itself carries that state and is unsealed per request, with no
-  store at all. Either way a `require: session` route is served by a
+  *session* store at all -- the in-memory `PendingAuthorizationStore` that holds the login leg
+  between redirect and callback is assembled in *both* modes
+  (link:variants/03-bff-cookie.adoc#_stateless_after_login_not_during_it[stateless after login, not
+  during it]). Either way a `require: session` route is served by a
   `SessionAuthenticationStage` injected into the session-aware authentication stage -- so the
   route is *mediated* (the resolved access token injected upstream) rather than rejected.
 

@@ -74,7 +74,7 @@ The cookie value is a base64url-encoded *outer envelope*:
 
 [source]
 ----
-version(1) | key-id(1) | GCM nonce(12) | ciphertext | GCM tag(16)
+version(1B) | key-id(1B) | GCM nonce(12B) | ciphertext | GCM tag(16B)
 ----
 
 The `version` and `key-id` bytes are bound into the GCM *associated data*, so tampering with either
