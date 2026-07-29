@@ -342,7 +342,7 @@ class GatewayEdgeRouteTest {
         for (int attempt = 0; attempt < 200; attempt++) {
             try {
                 return connectWs(client, port);
-            } catch (ExecutionException refused) {
+            } catch (ExecutionException _) {
                 Thread.sleep(25);
             }
         }
