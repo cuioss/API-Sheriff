@@ -107,25 +107,34 @@ class CookieSessionBindingTest {
     }
 
     /**
+     * Rebuilds {@code original} with a rotated access token, carrying every other component —
+     * notably the session nonce — over verbatim, exactly as the refresh coordinator's
+     * {@code rotate()} does. A re-seal test must carry the nonce forward this way: {@code persist}
+     * refuses a record without one rather than re-minting it.
+     */
+    private static SessionRecord withRotatedAccessToken(SessionRecord original, String rotatedAccessToken) {
+        return SessionRecord.builder()
+                .sessionId(original.sessionId())
+                .accessToken(rotatedAccessToken)
+                .refreshToken(original.refreshToken())
+                .idToken(original.idToken())
+                .sub(original.sub())
+                .sid(original.sid())
+                .expiresAt(original.expiresAt())
+                .acr(original.acr())
+                .authTime(original.authTime())
+                .sessionNonce(original.sessionNonce())
+                .build();
+    }
+
+    /**
      * A record that is legal to re-seal: bound then resolved, so it carries the session nonce minted
-     * at login. {@code persist} refuses a record without one rather than re-minting, so a re-seal
-     * test must start from a resolved record exactly as the refresh coordinator does.
+     * at login.
      */
     private SessionRecord resealable(String rotatedAccessToken) {
         BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
         SessionRecord resolved = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
-        return SessionRecord.builder()
-                .sessionId(resolved.sessionId())
-                .accessToken(rotatedAccessToken)
-                .refreshToken(resolved.refreshToken())
-                .idToken(resolved.idToken())
-                .sub(resolved.sub())
-                .sid(resolved.sid())
-                .expiresAt(resolved.expiresAt())
-                .acr(resolved.acr())
-                .authTime(resolved.authTime())
-                .sessionNonce(resolved.sessionNonce())
-                .build();
+        return withRotatedAccessToken(resolved, rotatedAccessToken);
     }
 
     private static String cookieHeaderOf(BoundSession bound) {
@@ -342,20 +351,7 @@ class CookieSessionBindingTest {
             BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
             SessionRecord first = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
 
-            // The re-seal carries the resolved record's nonce forward, exactly as the refresh
-            // coordinator's rotate() does — the nonce is an identity input, never re-minted.
-            SessionRecord rotated = SessionRecord.builder()
-                    .sessionId(first.sessionId())
-                    .accessToken("rotated-access-token")
-                    .refreshToken(first.refreshToken())
-                    .idToken(first.idToken())
-                    .sub(first.sub())
-                    .sid(first.sid())
-                    .expiresAt(first.expiresAt())
-                    .acr(first.acr())
-                    .authTime(first.authTime())
-                    .sessionNonce(first.sessionNonce())
-                    .build();
+            SessionRecord rotated = withRotatedAccessToken(first, "rotated-access-token");
             BoundSession reBound = binding.persist(rotated, LOGIN.plusSeconds(60));
             SessionRecord second = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow();
 
