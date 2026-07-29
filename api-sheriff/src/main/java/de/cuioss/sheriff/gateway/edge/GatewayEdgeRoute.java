@@ -195,6 +195,10 @@ public class GatewayEdgeRoute {
      * a completed upgrade takes the connection over, so the HTTP end handler never fires and
      * {@link #dispatchWebSocket} must hand the relay its own release callback. */
     private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
+    /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
+     * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
+     * release site knows there is no sub-permit to return. */
+    private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
 
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
@@ -223,6 +227,13 @@ public class GatewayEdgeRoute {
     private final GrpcStatusMapper grpcStatusMapper;
 
     private final Semaphore admission;
+    /**
+     * The WebSocket relay sub-budget: acquired <em>in addition to</em> {@link #admission}, never
+     * instead of it. A relay holds its general admission permit for the connection's whole lifetime,
+     * so without this second bound a handful of long-lived relays would consume the general pool and
+     * starve ordinary HTTP traffic — trading the permit leak for a slow squeeze.
+     */
+    private final Semaphore webSocketRelayAdmission;
     private final AtomicInteger inFlight = new AtomicInteger();
     private volatile boolean draining;
 
@@ -260,6 +271,7 @@ public class GatewayEdgeRoute {
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
         this.admission = new Semaphore(hardening.admissionCap());
+        this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
 
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
         SecurityConfiguration defaultConfiguration = SecurityConfiguration.defaults();
@@ -369,7 +381,7 @@ public class GatewayEdgeRoute {
         AtomicBoolean admissionReleased = new AtomicBoolean();
         ctx.put(ADMISSION_GUARD_KEY, admissionReleased);
         ctx.addEndHandler(result -> {
-            releaseAdmission(admissionReleased);
+            releaseAdmission(ctx, admissionReleased);
             recordRequestMetrics(ctx, startNanos);
         });
         if (needsReservedBodyRead(ctx)) {
@@ -543,21 +555,40 @@ public class GatewayEdgeRoute {
             // NullPointerException arm is unreachable), and process(ctx) runs on the virtual thread
             // rather than inline, so no pipeline exception can surface here.
             LOGGER.debug(rejected, "Virtual-thread dispatch rejected: %s", rejected.getMessage());
-            releaseAdmission(admissionReleased);
+            releaseAdmission(ctx, admissionReleased);
             reject(ctx, SERVICE_UNAVAILABLE);
         }
     }
 
     /**
-     * Releases one admission permit and decrements the in-flight counter exactly once, guarded by
-     * {@code released} so the normal end-handler path, the executor-rejection rollback path and the
-     * WebSocket relay-teardown callback (see {@link #dispatchWebSocket}) can all call it without
-     * double-counting.
+     * Releases this request's admission permits and decrements the in-flight counter exactly once,
+     * guarded by {@code released} so the normal end-handler path, the executor-rejection rollback
+     * path and the WebSocket relay-teardown callback (see {@link #dispatchWebSocket}) can all call it
+     * without double-counting.
+     * <p>
+     * The general permit and the WebSocket relay sub-permit are an ordered pair that must be returned
+     * together: a request that acquired both would otherwise strand the sub-permit whenever the
+     * general permit is released by a different site than the relay callback (the upstream-dial
+     * failure ends the HTTP response, so the end handler gets there first). Both are therefore
+     * released here, each behind its own idempotence latch.
      */
-    private void releaseAdmission(AtomicBoolean released) {
+    private void releaseAdmission(RoutingContext ctx, AtomicBoolean released) {
+        releaseWebSocketRelayPermit(ctx);
         if (released.compareAndSet(false, true)) {
             admission.release();
             inFlight.decrementAndGet();
+        }
+    }
+
+    /**
+     * Returns the WebSocket relay sub-permit exactly once, and only for a request that actually
+     * acquired one — the guard is stashed on the context by {@link #dispatchWebSocket} at acquisition,
+     * so an absent guard means an HTTP/gRPC request (or a refused upgrade) with nothing to return.
+     */
+    private void releaseWebSocketRelayPermit(RoutingContext ctx) {
+        AtomicBoolean relayReleased = ctx.get(WEBSOCKET_RELAY_GUARD_KEY);
+        if (relayReleased != null && relayReleased.compareAndSet(false, true)) {
+            webSocketRelayAdmission.release();
         }
     }
 
@@ -841,6 +872,13 @@ public class GatewayEdgeRoute {
      * callback, which the relay invokes on each of its teardown paths. Routing the release through the
      * same guard keeps it idempotent against the end handler and the executor-rejection rollback, so an
      * upstream-dial failure (which does end the response) can never double-release.
+     * <p>
+     * <strong>Relay sub-budget.</strong> Because that permit is held for the connection's lifetime, an
+     * upgrade must additionally acquire the {@linkplain EdgeHardeningOptions#webSocketRelayCap()
+     * WebSocket relay sub-budget} before the hand-off — a second permit taken <em>in addition to</em>
+     * the general one, so long-lived relays cannot squeeze ordinary HTTP traffic out of the admission
+     * pool. An upgrade beyond that cap is refused {@code 503}, releasing the general permit through
+     * the shared guard on the way out so a refusal strands nothing.
      */
     private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
@@ -852,11 +890,24 @@ public class GatewayEdgeRoute {
         ResolvedUpstream upstreamTarget = route.getUpstream()
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        applyStageSetCookies(ctx.response(), request.responseSetCookies());
         AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(ADMISSION_GUARD_KEY),
                 "admission guard missing — handle() must stash it before dispatch");
+        if (!webSocketRelayAdmission.tryAcquire()) {
+            // The relay sub-budget is exhausted. The general admission permit is still held and this
+            // request will never reach the relay teardown that would return it, so release it here —
+            // through the shared guard, so the 503 response's own end handler cannot double-release.
+            LOGGER.debug("WebSocket relay budget exhausted on route '%s' — refusing the upgrade",
+                    route.getId());
+            releaseAdmission(ctx, admissionGuard);
+            ctx.vertx().runOnContext(v -> reject(ctx, SERVICE_UNAVAILABLE));
+            return;
+        }
+        // Stashed only now, on the acquired path: every release site keys off its presence to decide
+        // whether there is a sub-permit to return.
+        ctx.put(WEBSOCKET_RELAY_GUARD_KEY, new AtomicBoolean());
+        applyStageSetCookies(ctx.response(), request.responseSetCookies());
         webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri,
-                () -> releaseAdmission(admissionGuard));
+                () -> releaseAdmission(ctx, admissionGuard));
     }
 
     /**

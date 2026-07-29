@@ -34,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -389,6 +390,55 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertHasError(errors, "/version", "unsupported config version");
+        }
+
+        @Test
+        @DisplayName("Should reject an edge_hardening admission_cap below 1")
+        void shouldRejectAdmissionCapBelowOne() {
+            GatewayConfig gateway = validGateway()
+                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(0), Optional.of(1)))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/edge_hardening/admission_cap", "admission_cap must be at least 1");
+        }
+
+        @Test
+        @DisplayName("Should reject an edge_hardening websocket_relay_cap below 1")
+        void shouldRejectWebsocketRelayCapBelowOne() {
+            GatewayConfig gateway = validGateway()
+                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(8), Optional.of(0)))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/edge_hardening/websocket_relay_cap",
+                    "websocket_relay_cap must be at least 1");
+        }
+
+        @Test
+        @DisplayName("Should reject a websocket_relay_cap exceeding admission_cap, which could never bind")
+        void shouldRejectInvertedCapPair() {
+            GatewayConfig gateway = validGateway()
+                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(4), Optional.of(16)))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/edge_hardening/websocket_relay_cap", "must not exceed admission_cap");
+        }
+
+        @Test
+        @DisplayName("Should accept a well-formed edge_hardening block")
+        void shouldAcceptValidEdgeHardeningBlock() {
+            GatewayConfig gateway = validGateway()
+                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(64), Optional.of(8)))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(), "A valid admission budget raises no violation, but got: " + errors);
         }
 
         @Test

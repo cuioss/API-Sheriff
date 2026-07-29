@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,6 +29,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -36,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -54,6 +57,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
@@ -65,6 +69,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.opentest4j.AssertionFailedError;
 
 /**
  * Boot-time and lifecycle contract of the public data-plane edge. The per-request serving behaviour
@@ -238,9 +243,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), stashed);
             WebSocketClient client = vertx.createWebSocketClient();
             try {
-                WebSocket socket = client.connect(new WebSocketConnectOptions()
-                                .setHost("localhost").setPort(front.actualPort()).setURI("/w/room"))
-                        .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                WebSocket socket = connectWs(client, front.actualPort());
                 AtomicBoolean guard = assertInstanceOf(AtomicBoolean.class, stashed.get(15, TimeUnit.SECONDS),
                         "the WebSocket request stashes the same release guard");
                 assertFalse(guard.get(),
@@ -260,6 +263,54 @@ class GatewayEdgeRouteTest {
             }
         }
 
+        @Test
+        @DisplayName("bounds concurrent relays by the sub-budget and returns both permits at teardown")
+        void boundsConcurrentRelaysByTheSubBudget() throws Exception {
+            // Arrange — admission_cap 2 with a websocket_relay_cap of 1, so a single established relay
+            // exhausts the sub-budget while leaving one general permit for ordinary traffic
+            HttpServer upstream = vertx.createHttpServer()
+                    .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
+                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            Router router = Router.router(vertx);
+            new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(new EdgeHardeningConfig(Optional.of(2), Optional.of(1))),
+                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
+            HttpServer front = vertx.createHttpServer().requestHandler(router)
+                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            WebSocketClient wsClient = vertx.createWebSocketClient();
+            HttpClient httpClient = vertx.createHttpClient();
+            try {
+                WebSocket held = connectWs(wsClient, front.actualPort());
+
+                // Act + Assert — further upgrades are refused while the one relay slot is occupied
+                for (int attempt = 0; attempt < 5; attempt++) {
+                    ExecutionException refused = assertThrows(ExecutionException.class,
+                            () -> connectWs(wsClient, front.actualPort()));
+                    assertEquals(503,
+                            assertInstanceOf(UpgradeRejectedException.class, refused.getCause()).getStatus(),
+                            "an upgrade beyond the relay sub-budget is refused 503");
+                }
+
+                // Assert — each refusal returned the general permit it had already taken; had it not,
+                // five refusals would have drained the two-permit pool and this would answer 503
+                assertEquals(404, statusOf(httpClient, front.actualPort()),
+                        "a refused upgrade releases the general admission permit it was holding");
+
+                // Act — tearing the relay down must return the sub-permit too
+                held.close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+
+                // Assert
+                connectWhenAdmitted(wsClient, front.actualPort())
+                        .close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            } finally {
+                httpClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                wsClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                upstream.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+
         private HttpServer startFront(RouteTable table, CompletableFuture<Object> stashed) throws Exception {
             Router router = Router.router(vertx);
             // Registered before the edge, which adds its catch-all last: ctx.next() runs handle()
@@ -272,6 +323,37 @@ class GatewayEdgeRouteTest {
             return vertx.createHttpServer().requestHandler(router)
                     .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
         }
+    }
+
+    private WebSocket connectWs(WebSocketClient client, int port) throws Exception {
+        return client.connect(new WebSocketConnectOptions()
+                        .setHost("localhost").setPort(port).setURI("/w/room"))
+                .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Retries the upgrade until the relay sub-permit released at teardown becomes visible. The release
+     * lands on the Vert.x event loop after the socket close round-trips, so the first attempt can
+     * legitimately still see the exhausted budget.
+     */
+    // NOSONAR java:S2925 - Thread.sleep is load-bearing: see awaitReleased.
+    @SuppressWarnings("java:S2925")
+    private WebSocket connectWhenAdmitted(WebSocketClient client, int port) throws Exception {
+        for (int attempt = 0; attempt < 200; attempt++) {
+            try {
+                return connectWs(client, port);
+            } catch (ExecutionException refused) {
+                Thread.sleep(25);
+            }
+        }
+        throw new AssertionFailedError(
+                "no upgrade was admitted after teardown — the relay sub-permit was never returned");
+    }
+
+    private static int statusOf(HttpClient client, int port) throws Exception {
+        return client.request(io.vertx.core.http.HttpMethod.GET, port, "localhost", "/unmatched")
+                .compose(HttpClientRequest::send)
+                .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS).statusCode();
     }
 
     // NOSONAR java:S2925 - Thread.sleep is load-bearing: relay teardown is a real socket round-trip on

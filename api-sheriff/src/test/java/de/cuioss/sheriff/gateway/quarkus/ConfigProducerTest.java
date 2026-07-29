@@ -28,10 +28,12 @@ import java.nio.file.Path;
 
 
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -102,6 +104,31 @@ class ConfigProducerTest {
                 access: public
             """;
 
+    /** A gateway declaring the operator-facing admission budget with both caps set. */
+    private static final String GATEWAY_WITH_EDGE_HARDENING = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            edge_hardening:
+              admission_cap: 64
+              websocket_relay_cap: 8
+            """;
+
+    /**
+     * A gateway whose WebSocket sub-budget exceeds the admission pool it draws from. The document is
+     * schema-valid — both members are integers at or above the schema minimum — so the violation is
+     * caught by {@code ConfigValidator} at boot, not by the schema, which is what makes it exercise
+     * the whole bind → validate chain for the new block.
+     */
+    private static final String GATEWAY_WITH_INVERTED_CAPS = """
+            version: 1
+            metadata:
+              config_version: "2026-07-13"
+            edge_hardening:
+              admission_cap: 4
+              websocket_relay_cap: 16
+            """;
+
     @TempDir
     Path configDir;
 
@@ -135,6 +162,38 @@ class ConfigProducerTest {
         assertEquals(1, gateway.version(), "the bound gateway should carry the configured version");
         assertNotNull(routeTable, "the route table bean should be produced");
         assertTrue(routeTable.routes().isEmpty(), "a config with no endpoints yields an empty route table");
+    }
+
+    @Test
+    void shouldProduceTheConfiguredAdmissionBudget() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_EDGE_HARDENING);
+
+        EdgeHardeningOptions hardening = producer.edgeHardeningOptions();
+
+        assertEquals(64, hardening.admissionCap(),
+                "the declared edge_hardening.admission_cap reaches the edge");
+        assertEquals(8, hardening.webSocketRelayCap(),
+                "the declared edge_hardening.websocket_relay_cap reaches the edge");
+    }
+
+    @Test
+    void shouldProduceTheDefaultAdmissionBudgetWhenTheBlockIsOmitted() throws Exception {
+        ConfigProducer producer = producerForValidConfig();
+
+        EdgeHardeningOptions hardening = producer.edgeHardeningOptions();
+
+        assertEquals(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP, hardening.admissionCap(),
+                "an omitted edge_hardening block preserves the documented default admission cap");
+        assertEquals(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP, hardening.webSocketRelayCap(),
+                "an omitted edge_hardening block preserves the documented default relay cap");
+    }
+
+    @Test
+    void shouldRefuseBootWhenTheRelayCapExceedsTheAdmissionCap() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_INVERTED_CAPS);
+
+        assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
+                "a relay sub-budget larger than the admission pool aborts boot rather than serving");
     }
 
     @Test

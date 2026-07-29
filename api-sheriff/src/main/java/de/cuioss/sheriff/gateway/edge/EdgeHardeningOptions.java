@@ -17,9 +17,10 @@ package de.cuioss.sheriff.gateway.edge;
 
 import java.util.concurrent.TimeUnit;
 
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
+
 import io.quarkus.vertx.http.HttpServerOptionsCustomizer;
 import io.vertx.core.http.HttpServerOptions;
-import jakarta.enterprise.context.ApplicationScoped;
 
 /**
  * Edge hardening for the public data-plane HTTP server. It is BOTH the carrier of the
@@ -29,25 +30,31 @@ import jakarta.enterprise.context.ApplicationScoped;
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
  * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
- * cannot pin connection slots. Three further limits are consumed by {@link GatewayEdgeRoute} rather
+ * cannot pin connection slots. Four further limits are consumed by {@link GatewayEdgeRoute} rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
  * dispatched, so a flood cannot spawn unbounded virtual threads), the
- * {@linkplain #drainTimeoutMillis() drain timeout} bounds the graceful-shutdown wait for in-flight
- * requests to complete on {@code SIGTERM}, and the
+ * {@linkplain #webSocketRelayCap() WebSocket relay cap} bounds how many of those in-flight requests
+ * may be established WebSocket relays, the {@linkplain #drainTimeoutMillis() drain timeout} bounds
+ * the graceful-shutdown wait for in-flight requests to complete on {@code SIGTERM}, and the
  * {@linkplain #reservedBodyMaxBytes() reserved-body ceiling} bounds the cumulative bytes the edge
  * will buffer for a gateway-terminated reserved POST path (rejected with {@code 413}), so an
  * unauthenticated caller cannot exhaust heap through the pre-authentication callback / back-channel
  * logout paths that never reach the per-route body cap.
  * <p>
- * The values are deliberate secure defaults chosen to keep the abuse surface bounded while
- * comfortably serving ordinary API traffic; the drain timeout is kept below the Quarkus default
+ * <strong>Transport bounds are fixed; the admission budget is operator-configurable.</strong> The
+ * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
+ * comfortably serving ordinary API traffic, and the drain timeout is kept below the Quarkus default
  * shutdown timeout so the drain completes within the shutdown window rather than being cut short.
+ * The two admission caps instead come from the {@code edge_hardening} block of {@code gateway.yaml}
+ * ({@link EdgeHardeningConfig}), because a deployment's viable concurrency depends on its container
+ * memory limit and its traffic mix — and, for the relay cap, on how long its WebSocket connections
+ * live. An omitted block resolves to {@link EdgeHardeningConfig#defaults()}, preserving the
+ * historical behaviour. The bean is produced (and its caps resolved) by {@code ConfigProducer}.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-@ApplicationScoped
 public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
 
     /** Maximum size of the whole request header block in bytes (default 16 KiB). */
@@ -62,9 +69,6 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     /** Idle-connection reap threshold in seconds — an idle connection is closed after this. */
     private static final int IDLE_TIMEOUT_SECONDS = 60;
 
-    /** Maximum number of requests permitted in flight at once before a virtual thread is dispatched. */
-    private static final int ADMISSION_CAP = 2048;
-
     /**
      * Ceiling in bytes for a gateway-terminated reserved-path request body (the OIDC
      * {@code response_mode=form_post} callback and the back-channel logout receiver).
@@ -77,13 +81,35 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * The ceiling is therefore <em>defined as</em> {@link #MAX_HEADER_SIZE_BYTES} rather than
      * restated as its own literal, so the gateway's single 16 KiB inbound-unit bound cannot drift
      * into two contradicting constants. It leaves roughly an order of magnitude of headroom over a
-     * real payload while bounding the worst case at the {@link #ADMISSION_CAP admission cap} to
-     * ~32 MiB — comfortably inside the deployed container memory limit.
+     * real payload while bounding the worst case at the {@linkplain #admissionCap() configured
+     * admission cap} to that cap times 16 KiB — ~32 MiB at the default cap of
+     * {@link EdgeHardeningConfig#DEFAULT_ADMISSION_CAP}, comfortably inside the deployed container
+     * memory limit. An operator who raises the admission cap raises that worst case proportionally.
      */
     private static final int RESERVED_BODY_MAX_BYTES = MAX_HEADER_SIZE_BYTES;
 
     /** Bounded graceful-drain wait for in-flight requests on shutdown (below the Quarkus default). */
     private static final long DRAIN_TIMEOUT_MILLIS = 25_000L;
+
+    private final int admissionCap;
+    private final int webSocketRelayCap;
+
+    /**
+     * Resolves the operator-configured admission budget, applying the documented defaults for any
+     * member the {@code edge_hardening} block leaves out.
+     *
+     * @param hardening the bound {@code edge_hardening} block; never {@code null} — a gateway that
+     *                  declares no block is supplied {@link EdgeHardeningConfig#defaults()}
+     */
+    public EdgeHardeningOptions(EdgeHardeningConfig hardening) {
+        this.admissionCap = hardening.effectiveAdmissionCap();
+        this.webSocketRelayCap = hardening.effectiveWebsocketRelayCap();
+    }
+
+    /** Creates the options carrying the documented default admission budget. */
+    public EdgeHardeningOptions() {
+        this(EdgeHardeningConfig.defaults());
+    }
 
     @Override
     public void customizeHttpServer(HttpServerOptions options) {
@@ -108,7 +134,19 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      *         virtual thread is dispatched; a request beyond the cap is rejected {@code 503}
      */
     public int admissionCap() {
-        return ADMISSION_CAP;
+        return admissionCap;
+    }
+
+    /**
+     * @return the maximum number of concurrently established WebSocket relays the edge admits. This
+     *         is a sub-budget acquired <em>in addition to</em> the general admission permit, never
+     *         instead of it: a relay holds its admission permit for the connection's whole lifetime,
+     *         so without a separate bound a handful of long-lived relays would consume the general
+     *         pool and starve ordinary HTTP traffic. An upgrade beyond the cap is rejected
+     *         {@code 503}
+     */
+    public int webSocketRelayCap() {
+        return webSocketRelayCap;
     }
 
     /**
