@@ -943,7 +943,9 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | `max_body_bytes`
 | *(gateway-enforced, under a framework floor)*
 | DoS guard, and the *effective* cap for the route: a request whose body exceeds it is rejected
-  *413* with an `application/problem+json` envelope. `cui-http` removed its BODY validation
+  *413*, carrying an `application/problem+json` envelope whenever the request reaches gateway
+  enforcement (see "Shadowing at the boundary" below -- a `Content-Length` breach of the framework
+  floor is answered by the framework with a bare `413` instead). `cui-http` removed its BODY validation
   pipeline ("body content validation should be handled at application layer"), so the gateway
   enforces the cap itself while reading the request body; `SecurityConfiguration.maxBodySize` is
   not wired. The cap only takes effect *below the framework floor* described immediately below.
