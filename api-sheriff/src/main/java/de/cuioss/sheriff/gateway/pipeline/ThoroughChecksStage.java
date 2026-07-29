@@ -44,8 +44,8 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
  *       whitelist, the canonical path must match one pattern, where a {@code {name}} segment matches
  *       exactly one path segment; a miss is a 400 {@link EventType#PATH_NOT_ALLOWED}.</li>
  *   <li><strong>{@code max_body_bytes} fast-reject.</strong> A declared {@code Content-Length}
- *       already exceeding the route config's {@code maxBodySize} is rejected 400
- *       ({@link EventType#PARAMETER_LIMIT_EXCEEDED}) before the body is read.</li>
+ *       already exceeding the route config's {@code maxBodySize} is rejected 413
+ *       ({@link EventType#CONTENT_TOO_LARGE}) before the body is read.</li>
  * </ul>
  *
  * @author API Sheriff Team
@@ -76,7 +76,7 @@ public final class ThoroughChecksStage {
      * @param allowedPaths the selected route's {@code allowed_paths} whitelist, empty when unrestricted
      * @throws GatewayException on a divergent-pipeline violation ({@link EventType#SECURITY_FILTER_VIOLATION}),
      *                          a whitelist miss ({@link EventType#PATH_NOT_ALLOWED}), or a body-cap breach
-     *                          ({@link EventType#PARAMETER_LIMIT_EXCEEDED})
+     *                          ({@link EventType#CONTENT_TOO_LARGE})
      */
     public void process(PipelineRequest request, List<String> allowedPaths) {
         Objects.requireNonNull(request, "request");
@@ -119,7 +119,7 @@ public final class ThoroughChecksStage {
     private static void enforceBodyCap(PipelineRequest request, SecurityConfiguration routeConfig) {
         long cap = routeConfig.maxBodySize();
         if (request.declaredContentLength() > cap) {
-            throw new GatewayException(EventType.PARAMETER_LIMIT_EXCEEDED,
+            throw new GatewayException(EventType.CONTENT_TOO_LARGE,
                     "Declared body %d exceeds route cap %d".formatted(request.declaredContentLength(), cap));
         }
     }

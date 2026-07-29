@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -38,6 +39,7 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 
+import io.quarkus.runtime.configuration.MemorySize;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -129,6 +131,35 @@ class ConfigProducerTest {
               websocket_relay_cap: 16
             """;
 
+    /**
+     * The framework ceiling every producer in this class is wired with. Deliberately small and
+     * unrelated to the shipped {@code 64M} default: the check under test is the inequality between
+     * the declared cap and the injected limit, so a tiny limit exercises it exactly and keeps the
+     * fixture documents readable.
+     */
+    private static final long FRAMEWORK_LIMIT_BYTES = 1024L;
+
+    /** An anchor declaring a body cap ABOVE {@link #FRAMEWORK_LIMIT_BYTES} — unreachable, so boot must abort. */
+    private static final String GATEWAY_WITH_CAP_ABOVE_FRAMEWORK_LIMIT = gatewayDeclaringBodyCap(2048);
+
+    /** An anchor declaring a body cap exactly AT {@link #FRAMEWORK_LIMIT_BYTES} — reachable, so boot is clean. */
+    private static final String GATEWAY_WITH_CAP_AT_FRAMEWORK_LIMIT = gatewayDeclaringBodyCap(1024);
+
+    private static String gatewayDeclaringBodyCap(int maxBodyBytes) {
+        return """
+                version: 1
+                metadata:
+                  config_version: "2026-07-13"
+                anchors:
+                  uploads:
+                    path_prefix: /uploads
+                    type: proxy
+                    access: public
+                    security_filter:
+                      max_body_bytes: %d
+                """.formatted(maxBodyBytes);
+    }
+
     @TempDir
     Path configDir;
 
@@ -145,6 +176,7 @@ class ConfigProducerTest {
         Files.writeString(configDir.resolve("gateway.yaml"), gatewayYaml);
         ConfigProducer producer = new ConfigProducer();
         producer.configDir = configDir.toString();
+        producer.frameworkBodyLimit = new MemorySize(BigInteger.valueOf(FRAMEWORK_LIMIT_BYTES));
         return producer;
     }
 
@@ -194,6 +226,42 @@ class ConfigProducerTest {
 
         assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
                 "a relay sub-budget larger than the admission pool aborts boot rather than serving");
+    }
+
+    /**
+     * The fail-closed framework-limit check: a declared {@code max_body_bytes} above the Vert.x
+     * ceiling is unreachable, because Quarkus rejects the oversize request in a root handler in
+     * front of the gateway router. Rather than let that mismatch stay silent, boot aborts through
+     * the same collected-violation path, and the violation names the Quarkus key the operator must
+     * raise — so the ERROR record is actionable without reading the source.
+     */
+    @Test
+    void shouldRefuseBootWhenADeclaredBodyCapExceedsTheFrameworkLimit() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_CAP_ABOVE_FRAMEWORK_LIMIT);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> producer.onStartup(null),
+                "a declared body cap above the framework limit must abort boot rather than be silently clipped");
+
+        assertTrue(exception.getMessage().contains("Refusing to start"),
+                "the abort should carry the refusing-to-start summary");
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.ERROR,
+                "quarkus.http.limits.max-body-size");
+    }
+
+    /**
+     * The boundary of the same inequality: a declared cap exactly AT the framework limit is
+     * reachable, so it must boot clean. This pins the comparison as {@code >} rather than
+     * {@code >=} — the shipped configuration deliberately sets the floor equal to the largest
+     * declared cap, so an off-by-one here would refuse every default deployment.
+     */
+    @Test
+    void shouldBootWhenTheDeclaredBodyCapEqualsTheFrameworkLimit() throws Exception {
+        ConfigProducer producer = producerForGateway(GATEWAY_WITH_CAP_AT_FRAMEWORK_LIMIT);
+
+        assertDoesNotThrow(() -> producer.onStartup(null),
+                "a declared cap equal to the framework limit is reachable and must boot clean");
+        assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
     }
 
     @Test

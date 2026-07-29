@@ -78,6 +78,7 @@ class EventTypeTest {
                 "PASSTHROUGH_HOST_SMUGGLED, 404, INPUT_VALIDATION",
                 "METHOD_NOT_ALLOWED,        405, INPUT_VALIDATION",
                 "RESERVED_BODY_TOO_LARGE,   413, INPUT_VALIDATION",
+                "CONTENT_TOO_LARGE,         413, INPUT_VALIDATION",
                 "TOKEN_MISSING,             401, AUTHENTICATION",
                 "TOKEN_INVALID,             401, AUTHENTICATION",
                 "SCOPE_MISSING,             403, AUTHORIZATION",

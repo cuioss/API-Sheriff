@@ -75,8 +75,24 @@ public enum EventType {
      * {@code reserved_body_max_bytes} ceiling. These paths are read before the pipeline's per-route
      * body cap can apply, so the ceiling is enforced at the read itself and the request is rejected
      * {@code 413} without the oversized body ever being buffered.
+     * <p>
+     * Contrast {@link #CONTENT_TOO_LARGE}, which is the <em>per-route</em>
+     * {@code security_filter.max_body_bytes} cap on the proxy path. This event is exclusively the
+     * edge-level {@code reserved_body_max_bytes} ceiling on gateway-terminated reserved paths.
      */
     RESERVED_BODY_TOO_LARGE(EventCategory.INPUT_VALIDATION, 413),
+    /**
+     * A proxied request declared or streamed a body beyond its route's
+     * {@code security_filter.max_body_bytes} cap. The cap has two enforcement points: the
+     * {@code Content-Length} fast-reject in {@code ThoroughChecksStage}, which rejects before any
+     * body is read, and the streaming byte counter in {@code DispatchStage}, which aborts a chunked
+     * or under-declared body mid-transfer once the cap is crossed.
+     * <p>
+     * Contrast {@link #RESERVED_BODY_TOO_LARGE}, which is the edge's {@code reserved_body_max_bytes}
+     * ceiling on gateway-terminated reserved BFF POST paths. This event is exclusively the per-route
+     * proxy-path cap.
+     */
+    CONTENT_TOO_LARGE(EventCategory.INPUT_VALIDATION, 413),
 
     // --- Authentication (401) ---
 

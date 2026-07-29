@@ -319,7 +319,7 @@ class GrpcDispatchStageTest {
         }
 
         @Test
-        @DisplayName("aborts the gRPC dispatch with PARAMETER_LIMIT_EXCEEDED when the body cap is breached")
+        @DisplayName("aborts the gRPC dispatch with CONTENT_TOO_LARGE when the body cap is breached")
         void abortsOnBodyCapBreach() {
             // Arrange — the shared body-abuse bound also applies to the opaque gRPC frame stream
             TestReadStream source = new TestReadStream();
@@ -335,13 +335,13 @@ class GrpcDispatchStageTest {
             source.emit(Buffer.buffer("frame"));
             source.emit(Buffer.buffer("flood"));
 
-            // Assert — the breaching frame is dropped, the dispatch is aborted, and a 400 is raised
+            // Assert — the breaching frame is dropped, the dispatch is aborted, and a 413 is raised
             assertEquals(1, forwarded.size(), "the breaching frame must never cross to the upstream");
             assertTrue(aborted.get(), "a body-cap breach aborts the in-flight gRPC dispatch");
             GatewayException raised = assertInstanceOf(GatewayException.class, failure.get(),
                     "the breach raises a GatewayException");
-            assertEquals(EventType.PARAMETER_LIMIT_EXCEEDED, raised.getEventType(),
-                    "the shared body-abuse bound raises PARAMETER_LIMIT_EXCEEDED on the gRPC path");
+            assertEquals(EventType.CONTENT_TOO_LARGE, raised.getEventType(),
+                    "the shared body-abuse bound raises CONTENT_TOO_LARGE on the gRPC path");
         }
     }
 
