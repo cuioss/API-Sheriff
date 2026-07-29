@@ -20,6 +20,7 @@ import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
@@ -71,6 +72,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         UpstreamDefaultsConfig.class,
         ForwardedConfig.class,
         ForwardConfig.class,
+        EdgeHardeningConfig.class,
         TokenValidationConfig.class,
         IssuerConfig.class,
         IssuerConfig.Jwks.class,

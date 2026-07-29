@@ -253,6 +253,15 @@
                                         <test.mtls.client.password>localhost-trust</test.mtls.client.password>
                                         <test.mtls.wrong.keystore>${project.basedir}/src/main/docker/certificates/mtls-wrong.p12</test.mtls.wrong.keystore>
                                         <test.mtls.wrong.password>wrong-trust</test.mtls.wrong.password>
+                                        <!-- Relay-permit exhaustion regression: the dedicated
+                                             api-sheriff-ws-admission instance runs a deliberately
+                                             tiny edge_hardening admission budget and is published
+                                             on 10447. Without this, WebSocketProxyIT's exhaustion
+                                             test would fall back to the primary instance's
+                                             production-shaped caps, where its handful of sequential
+                                             upgrades can never exhaust anything and the test would
+                                             pass whether or not the permits are returned. -->
+                                        <test.ws.admission.port>10447</test.ws.admission.port>
                                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                                     </systemPropertyVariables>
                                     <skipITs>${skipITs}</skipITs>

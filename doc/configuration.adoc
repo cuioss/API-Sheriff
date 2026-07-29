@@ -126,7 +126,7 @@ file-and-JSON-pointer error before any immutable value object is built:
 | `schema/gateway.schema.json`
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
   `security_headers`, `security_defaults`, `allowed_methods`, `anchors`, `upstream_defaults`,
-  `forwarded`, `token_validation` and `oidc`.
+  `forwarded`, `edge_hardening`, `token_validation` and `oidc`.
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
@@ -218,6 +218,20 @@ forwarded:                         # resolved by cui-http (de.cuioss.http.forwar
   trust_scheme_host: false         # honor sanitized scheme/host/port/prefix from proxies
                                    #   (ForwardedResolverConfig.trustAll)
   emit: x-forwarded                # x-forwarded (default) | both (adds RFC 7239 Forwarded)
+
+edge_hardening:                    # OPTIONAL admission budget for the public data-plane edge.
+                                   #   Omit the block, or either key, to take the defaults shown.
+  admission_cap: 2048              # max concurrently in-flight requests across the whole edge;
+                                   #   a request beyond it is refused 503. Minimum 1.
+  websocket_relay_cap: 512         # max concurrently ESTABLISHED WebSocket relays. A sub-budget
+                                   #   acquired IN ADDITION TO the general permit above, never
+                                   #   instead of it, because a relay holds its permit for the
+                                   #   connection's whole lifetime rather than one round-trip.
+                                   #   Minimum 1, and must not exceed admission_cap -- a larger
+                                   #   value could never bind. Omitting this key alone takes a
+                                   #   QUARTER of the effective admission_cap (>= 1), so lowering
+                                   #   admission_cap alone stays valid. See "Sizing the WebSocket
+                                   #   relay budget" in the protocol-routes guide.
 
 token_validation:                  # offline bearer validation (routes with auth.require: bearer)
   issuers:                         # one entry per accepted identity provider
@@ -595,11 +609,20 @@ Deny-by-default extends to omitted configuration:
 [[_edge_hardening_defaults]]
 === Edge hardening (transport) defaults
 
-The public data-plane HTTP listener is bounded by a set of fixed secure defaults applied in code
-(`EdgeHardeningOptions`), not by `gateway.yaml`. They fail fast on abusive framing before a request
-is admitted to the pipeline and bound the in-flight and shutdown-drain windows. These values are
-recorded here doc-first — they are the contract the edge-hardening code implements, and any change
-to a constant must be reflected in this table.
+The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
+
+The *transport bounds* — the framing limits and the drain window — are fixed secure defaults applied
+in code (`EdgeHardeningOptions`) and are not operator-configurable. They fail fast on abusive framing
+before a request is admitted to the pipeline. These values are recorded here doc-first: they are the
+contract the edge-hardening code implements, and any change to a constant must be reflected in this
+table.
+
+The *admission budgets* — how many requests, and how many WebSocket relays, may be in flight at once
+— are operator-facing and configurable through the optional
+link:#_edge_hardening[`edge_hardening`] block in `gateway.yaml`. Their sizing depends on the
+deployment's traffic shape rather than on protocol safety, which is why they are the two bounds the
+operator owns. Omitting the block, or either key, resolves to the defaults in the table below, so a
+deployment that never writes it keeps the behaviour shown here.
 
 [cols="2,1,3"]
 |===
@@ -622,10 +645,23 @@ to a constant must be reflected in this table.
 | An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
   connection slots.
 
-| Admission cap (in-flight requests)
+| Admission cap (in-flight requests) +
+  [`edge_hardening.admission_cap`]
 | 2048
 | Requests beyond the cap are rejected `503` *before* a virtual thread is dispatched, so a flood
-  cannot spawn unbounded virtual threads.
+  cannot spawn unbounded virtual threads. Operator-configurable; minimum 1.
+
+| WebSocket relay cap (established relays) +
+  [`edge_hardening.websocket_relay_cap`]
+| 512 +
+  (a quarter of the effective `admission_cap`)
+| A sub-budget acquired *in addition to* the general admission permit, never instead of it. An
+  established relay holds both permits for the connection's whole lifetime rather than for one
+  round-trip, so without this second bound a modest number of long-lived relays would consume the
+  general pool and starve ordinary HTTP traffic. An upgrade beyond the cap is refused `503` and
+  releases the general permit on the way out. Operator-configurable; minimum 1, and must not exceed
+  `admission_cap`. Omitting it takes a quarter of the *effective* `admission_cap` rather than a fixed
+  `512`, so the three-quarters-for-HTTP reservation holds at every admission cap.
 
 | Graceful-drain timeout
 | 25 s
@@ -1367,6 +1403,39 @@ upstream_defaults:
   not_modified: { enabled: false }
 ----
 
+[[_edge_hardening]]
+=== `edge_hardening`
+
+The two operator-facing admission budgets for the public data-plane edge, declarable only at the
+`gateway.yaml` (global) scope — the pools they bound are process-wide, so there is no per-endpoint or
+per-route form. The block and both members are optional; each omission resolves to its default, so a
+deployment that never writes the block keeps the shipped behaviour. The remaining edge bounds
+(framing limits, idle reap, drain window) are *not* configurable — see
+link:#_edge_hardening_defaults[Edge hardening defaults] for the full table.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `admission_cap`
+| The maximum number of concurrently in-flight requests the edge admits, across every route
+  (default `2048`, minimum `1`). A request beyond the cap is refused `503` *before* a virtual thread
+  is dispatched, so a flood cannot spawn unbounded virtual threads. Size it to the concurrency the
+  deployment's upstreams can absorb: too high defers the backpressure to the upstream, too low
+  refuses traffic the gateway could have served.
+
+| `websocket_relay_cap`
+| The maximum number of concurrently *established* WebSocket relays (minimum `1`; when omitted, a
+  quarter of the effective `admission_cap` — `512` at the default `admission_cap` of `2048`).
+  This is a *sub-budget acquired in addition to* the general permit, never instead of it, because an
+  established relay holds its permit for the connection's whole lifetime rather than for one
+  request/response round-trip. Without the second bound, a modest number of long-lived relays would
+  consume the general pool and starve ordinary HTTP traffic. An upgrade beyond the cap is refused
+  `503`, releasing the general permit on the way out. Must not exceed `admission_cap` — a larger
+  value could never bind, so it is refused at boot rather than silently ignored. For sizing guidance
+  see link:user/protocol-routes.adoc[Protocol routes].
+|===
+
 === `rate_limit`
 
 Reserved schema for per-node, in-memory token-bucket rate limiting
@@ -1628,3 +1697,14 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   fails the boot.
 * `websocket.idle_timeout_seconds`, when declared, must be a *positive integer* (default `300`
   when omitted); it is valid only on a `protocol: websocket` route.
+* The `edge_hardening` block is optional, and so is each of its members. An omitted `admission_cap`
+  resolves to `2048`; an omitted `websocket_relay_cap` resolves to a *quarter of the effective*
+  `admission_cap` (never below `1`), which is `512` at the default `admission_cap` -- so an operator
+  who lowers `admission_cap` alone gets a proportionally lowered relay sub-budget rather than a
+  boot-time rejection. When declared, each cap must be at least `1` -- a cap of zero would refuse
+  every request (or every relay) and is always a misconfiguration rather than a deliberate posture.
+* `edge_hardening.websocket_relay_cap` must not exceed `edge_hardening.admission_cap`. The relay
+  budget is a *sub-budget of* the admission pool -- a relay takes a permit from both -- so a larger
+  value could never bind and would silently disable the sub-cap the operator meant to impose. The
+  comparison uses the *effective* values; because an omitted relay cap is derived from the admission
+  cap it can only be tripped by an *explicitly declared* relay cap.

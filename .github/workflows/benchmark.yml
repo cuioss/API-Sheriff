@@ -27,27 +27,33 @@ jobs:
     # The -Pbenchmark profile DECLARES TWELVE k6 goals: the eight cross-gateway matrix aspects, the
     # two retained non-matrix health benchmarks (healthLiveCheck, gatewayHealth), and the two
     # API-Sheriff-only passthrough-relay executions (mapped relay throughput and the empty-mode
-    # no-regression run). TEN of them execute: uploadLarge and websocketEcho each carry a <skip>
-    # bound to a property that defaults to true in benchmarks/pom.xml, because each is blocked by an
-    # open gateway defect (see the "Deliberately skipped" table in the coverage step below). Maven
-    # therefore never runs them, so they consume no wall time and cannot abort the suite. Both are
-    # still ordered last in the profile as defense-in-depth, so that flipping a skip property to
-    # false cannot mask a goal that would otherwise produce a result.
+    # no-regression run). ELEVEN of them execute: only uploadLarge still carries a <skip> bound to a
+    # property that defaults to true in benchmarks/pom.xml, because it remains blocked by an open
+    # gateway defect (see the "Deliberately skipped" table in the coverage step below). Maven
+    # therefore never runs it, so it consumes no wall time and cannot abort the suite. It stays
+    # ordered last in the profile as defense-in-depth, so that flipping its skip property to false
+    # cannot mask a goal that would otherwise produce a result.
     #
     # Budget, from per-goal timings measured locally 2026-07-28 rather than estimated:
-    #   * goal execution   ~12 min -- sized on the TEN goals that actually execute, which is now the
+    #   * goal execution   ~13 min -- sized on the ELEVEN goals that actually execute, which is the
     #                      real basis: a skipped goal is not run at all, so it costs nothing but the
     #                      Maven bookkeeping for a skipped execution.
-    #                      10 goals x (60s k6 window + ~10s compose/k6 start and summary write).
-    #                      Re-enabling a skipped goal costs another ~70s, and upload-50MB more than
-    #                      that: it is transfer-bound at reduced concurrency, so it does not finish
-    #                      in the same wall time as a request-rate run. Re-derive this term when a
-    #                      skip property is flipped to false.
-    #   * stack startup    ~90 s -- since #118 the lane boots FOUR native gateway instances
-    #                      (api-sheriff, api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2)
-    #                      alongside Keycloak, go-httpbin, nginx-static, passthrough-backend,
-    #                      grpc-echo, toxiproxy, asset-origin and prometheus, because
-    #                      start-integration-container.sh runs a bare `up -d`.
+    #                      11 goals x (60s k6 window + ~10s compose/k6 start and summary write).
+    #                      The websocketEcho term is the ~70s a re-enabled request-rate goal costs,
+    #                      now that its blocking permit leak is fixed. Re-enabling upload-50MB would
+    #                      cost more than that: it is transfer-bound at reduced concurrency, so it
+    #                      does not finish in the same wall time as a request-rate run. Re-derive
+    #                      this term when a skip property is flipped to false.
+    #   * stack startup    ~100 s -- the lane boots FIVE native gateway instances (api-sheriff,
+    #                      api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2 and
+    #                      api-sheriff-ws-admission, the last added for the WebSocket relay-permit
+    #                      exhaustion regression) alongside Keycloak, go-httpbin, nginx-static,
+    #                      passthrough-backend, grpc-echo, toxiproxy, asset-origin and prometheus,
+    #                      because start-integration-container.sh runs a bare `up -d`. Each added
+    #                      gateway instance costs roughly another 10 s of the readiness wait — they
+    #                      share one native image, so the term grows with instance count, not with
+    #                      image builds. Re-derive this term whenever an api-sheriff* service is
+    #                      added to or removed from integration-tests/docker-compose.yml.
     #   * native compile   the dominant and most variable term on a cold cache.
     #
     # 75 minutes holds with headroom for the cold native compile; it is kept unchanged because the
@@ -113,10 +119,10 @@ jobs:
           # twelve goals: the eight cross-gateway matrix aspects (unauth, bearer, http2,
           # graphql, upload-1MB, upload-50MB, ws, grpc), the two retained non-matrix health
           # benchmarks (healthLiveCheck, gatewayHealth), and the two API-Sheriff-only
-          # passthrough-relay executions (mapped and empty). Ten of the twelve execute and are
-          # expected to produce a CI result; upload-50MB (uploadLarge) and ws (websocketEcho) are
-          # skipped by property against open gateway defects, so Maven does not run them and they
-          # cannot abort the suite. The on-demand APISIX comparison lane is deliberately NOT run
+          # passthrough-relay executions (mapped and empty). Eleven of the twelve execute and are
+          # expected to produce a CI result; only upload-50MB (uploadLarge) is still skipped by
+          # property against an open gateway defect, so Maven does not run it and it cannot abort
+          # the suite. The on-demand APISIX comparison lane is deliberately NOT run
           # here. Maven still fails fast on the goals that do run, so the coverage step below
           # remains what proves which goals actually produced a result.
           echo "Running k6 integration benchmarks with native Quarkus..."
@@ -128,8 +134,8 @@ jobs:
           ls -la benchmarks/target/benchmark-results/
 
       # Maven fails fast, so a goal that errors aborts every goal after it and a goal that is never
-      # reached leaves no trace in the job output — a suite that ran 3 of the 10 executing goals
-      # renders exactly like one that ran all 10. This step diffs the goals that MUST produce a
+      # reached leaves no trace in the job output — a suite that ran 3 of the 11 executing goals
+      # renders exactly like one that ran all 11. This step diffs the goals that MUST produce a
       # summary document against the documents k6 actually wrote, so a partial suite is visibly
       # partial and a goal that silently vanished fails the job. When Maven failed, it also states
       # in words whether the suite was truncated by that failure. Skipped goals are named with their
@@ -145,7 +151,7 @@ jobs:
 
           # Goals expected to write a summary. A goal settled as deliberately skipped is NOT listed
           # here — it belongs in the skip table below, which is what keeps the two states distinct.
-          expected="healthLiveCheck gatewayHealth proxiedStatic passthroughRelay passthroughRelayEmpty bearerProxied http2 graphql uploadSmall grpcUnary"
+          expected="healthLiveCheck gatewayHealth proxiedStatic passthroughRelay passthroughRelayEmpty bearerProxied http2 graphql uploadSmall grpcUnary websocketEcho"
 
           missing=0
           missing_names=""
@@ -173,7 +179,6 @@ jobs:
             echo "| Benchmark | Skipped by | Reason |"
             echo "| --- | --- | --- |"
             echo "| \`uploadLarge\` | \`skip.benchmark.upload.large\` (defaults to \`true\`) | The gateway rejects the 50MB body with 413: the Quarkus HTTP body limit is not derived from the upload anchor's 64 MiB \`max_body_bytes\`, so the declared cap is unreachable. Needs a gateway-side fix; re-enable with \`-Dskip.benchmark.upload.large=false\`. |"
-            echo "| \`websocketEcho\` | \`skip.benchmark.websocket.echo\` (defaults to \`true\`) | Each WebSocket upgrade leaks an edge admission permit; once exhausted the gateway rejects all traffic with 503 until restarted, which would also poison every goal after it. Needs a gateway-side fix; re-enable with \`-Dskip.benchmark.websocket.echo=false\`. |"
             echo "| \`sessionMediated\` | not wired | Wired to no Maven goal on purpose — BFF session mediation belongs to PLAN-07A. |"
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -29,6 +29,7 @@ import de.cuioss.sheriff.gateway.config.load.ConfigLoadException;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
@@ -38,6 +39,7 @@ import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.topology.TopologyResolver;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
+import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
 import de.cuioss.tools.logging.CuiLogger;
 
 import io.quarkus.runtime.StartupEvent;
@@ -59,8 +61,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * {@link ConfigLogMessages} records and throws, so Quarkus exits non-zero and never
  * serves on partial configuration. On success it emits the {@code CONFIG_LOADED}
  * INFO record carrying the audit {@code config_version} and publishes the bound
- * {@link GatewayConfig} and assembled {@link RouteTable} as {@code @ApplicationScoped}
- * beans.
+ * {@link GatewayConfig}, the assembled {@link RouteTable}, the {@link ResolvedTopology}
+ * and the resolved {@link EdgeHardeningOptions} admission budget as beans.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -141,6 +143,27 @@ public class ConfigProducer {
     public ResolvedTopology resolvedTopology() {
         buildOnce();
         return resolvedTopology;
+    }
+
+    /**
+     * Produces the edge's transport bounds and admission budget, resolving the two operator-facing
+     * caps from the {@code edge_hardening} block and falling back to
+     * {@link EdgeHardeningConfig#defaults()} when the block is absent.
+     * <p>
+     * Produced here rather than declared as a bean on the class itself so the whole admission budget
+     * comes from the single boot-time assembly this producer guards — one configuration entry point,
+     * not two. {@code ApplicationScoped} is exact: {@link EdgeHardeningOptions} is a non-final class,
+     * so ArC can build the client proxy a normal scope requires, and the bean also carries
+     * {@code HttpServerOptionsCustomizer} in its bean types so the transport-customizer SPI still
+     * discovers it.
+     *
+     * @return the immutable {@link EdgeHardeningOptions} for this deployment
+     */
+    @Produces
+    @ApplicationScoped
+    public EdgeHardeningOptions edgeHardeningOptions() {
+        buildOnce();
+        return new EdgeHardeningOptions(gateway.edgeHardening().orElseGet(EdgeHardeningConfig::defaults));
     }
 
     private synchronized void buildOnce() {

@@ -48,6 +48,8 @@ import lombok.Builder;
  * @param forwarded        the forwarded-header trust policy, empty when omitted
  * @param tokenValidation  the offline bearer-validation settings, empty when omitted
  * @param oidc             the confidential-client settings, empty when omitted
+ * @param edgeHardening    the admission-budget settings ({@code admission_cap} and the WebSocket
+ *                         relay sub-budget), empty when omitted — the documented defaults then apply
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -55,7 +57,8 @@ import lombok.Builder;
 public record GatewayConfig(int version, Optional<Metadata> metadata, Optional<TlsConfig> tls,
 Optional<SecurityHeadersConfig> securityHeaders, Optional<SecurityDefaultsConfig> securityDefaults,
 List<HttpMethod> allowedMethods, Map<String, AnchorConfig> anchors, Optional<UpstreamDefaultsConfig> upstreamDefaults,
-Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc) {
+Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc,
+Optional<EdgeHardeningConfig> edgeHardening) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and
@@ -73,5 +76,6 @@ Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValida
         forwarded = Objects.requireNonNullElse(forwarded, Optional.empty());
         tokenValidation = Objects.requireNonNullElse(tokenValidation, Optional.empty());
         oidc = Objects.requireNonNullElse(oidc, Optional.empty());
+        edgeHardening = Objects.requireNonNullElse(edgeHardening, Optional.empty());
     }
 }

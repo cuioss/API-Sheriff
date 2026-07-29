@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -45,7 +46,9 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -53,6 +56,8 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
@@ -64,6 +69,7 @@ import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -88,7 +94,9 @@ class WebSocketRelayStageTest {
     private HttpServer upstreamServer;
     private HttpServer frontServer;
     private WebSocketClient wsClient;
+    private HttpClient relayUpstreamClient;
     private int frontPort;
+    private int upstreamPort;
     private int deadPort;
     private final AtomicInteger upstreamConnects = new AtomicInteger();
     private final AtomicReference<String> upstreamCustomHeader = new AtomicReference<>();
@@ -104,7 +112,8 @@ class WebSocketRelayStageTest {
             upstreamCustomHeader.set(ws.headers().get("X-Custom"));
             ws.textMessageHandler(ws::writeTextMessage);
         }).listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
-        int upstreamPort = upstreamServer.actualPort();
+        upstreamPort = upstreamServer.actualPort();
+        relayUpstreamClient = vertx.createHttpClient();
 
         // A definitely-closed port for the unreachable-upstream case.
         HttpServer throwaway = vertx.createHttpServer().requestHandler(req -> req.response().end())
@@ -142,6 +151,7 @@ class WebSocketRelayStageTest {
     @AfterEach
     void tearDown() throws Exception {
         wsClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        relayUpstreamClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
         frontServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
         upstreamServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
         virtualThreadExecutor.close();
@@ -291,6 +301,142 @@ class WebSocketRelayStageTest {
 
         // Assert — activity kept the relay alive; it was never reclaimed
         assertFalse(closed.isDone(), "a heartbeated relay is not reclaimed while activity continues");
+    }
+
+    /**
+     * The admission permit a WebSocket request acquires at the edge is held for the relay's whole
+     * lifetime, because a completed upgrade takes the connection over and the HTTP end handler never
+     * fires. These tests drive {@link WebSocketRelayStage#relay} directly — bypassing the edge, so the
+     * release callback is a plain counter rather than a private semaphore — and pin that it runs
+     * exactly once on each teardown path, and not at all on the path the edge still releases itself.
+     */
+    @Nested
+    @DisplayName("admission-release callback — exactly once per relay teardown")
+    class AdmissionReleaseCallback {
+
+        @Test
+        @DisplayName("releases exactly once when an established relay closes, staying idempotent as both legs tear down")
+        void releasesOnceOnEstablishedRelayTeardown() throws Exception {
+            // Arrange — a live relay over the stub upstream, with the release callback counted
+            AtomicInteger releases = new AtomicInteger();
+            HttpServer relayServer = startRelayOnlyServer(upstreamPort, releases::incrementAndGet);
+            try {
+                WebSocket socket = connectTo(relayServer.actualPort());
+                CompletableFuture<String> echoed = new CompletableFuture<>();
+                socket.textMessageHandler(echoed::complete);
+                socket.writeTextMessage("live");
+                echoed.get(15, TimeUnit.SECONDS);
+                assertEquals(0, releases.get(), "an established relay keeps holding its admission permit");
+
+                // Act
+                socket.close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+
+                // Assert — closeBoth is re-entered from the upstream leg's close handler once the first
+                // pass closed it, so the latch is what keeps the release at exactly one
+                awaitReleases(releases, "a graceful close releases the admission permit");
+                assertNoFurtherRelease(releases, "the closeBoth latch makes a repeated teardown a no-op");
+            } finally {
+                relayServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+
+        @Test
+        @DisplayName("releases once on the client-upgrade-failure branch, which builds no relay session")
+        void releasesOnceWhenTheClientUpgradeFails() throws Exception {
+            // Arrange — the upstream accepts the upgrade, but the client request is a plain GET, so
+            // ctx.request().toWebSocket() fails. That branch constructs no RelaySession and renders no
+            // HTTP response, so it must return the permit itself or the request strands one forever.
+            AtomicInteger releases = new AtomicInteger();
+            HttpServer relayServer = startRelayOnlyServer(upstreamPort, releases::incrementAndGet);
+            HttpClient plainClient = vertx.createHttpClient();
+            try {
+                // Act — deliberately not awaited: the branch under test ends no response, so the
+                // send future never completes; the release callback is the observable outcome.
+                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(), "localhost",
+                        "/relay").compose(HttpClientRequest::send);
+
+                // Assert
+                awaitReleases(releases, "the client-upgrade-failure branch releases the admission permit");
+                assertNoFurtherRelease(releases, "the upgrade-failure branch releases exactly once");
+            } finally {
+                plainClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                relayServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+
+        @Test
+        @DisplayName("never fires on an upstream-dial failure, which the edge's own end handler already covers")
+        void doesNotReleaseOnUpstreamDialFailure() throws Exception {
+            // Arrange — the route points at a closed port, so the dial fails before any upgrade
+            AtomicInteger releases = new AtomicInteger();
+            HttpServer relayServer = startRelayOnlyServer(deadPort, releases::incrementAndGet);
+            try {
+                // Act
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> connectTo(relayServer.actualPort()));
+
+                // Assert — the dial-failure path ends the HTTP response, so the edge's end handler
+                // releases the permit through the same CAS guard; firing the callback too would be a
+                // double-release attempt rather than a fix.
+                assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
+                assertEquals(0, releases.get(),
+                        "the dial-failure path leaves the release to the edge's end handler");
+            } finally {
+                relayServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+
+        private WebSocket connectTo(int port) throws Exception {
+            return wsClient.connect(new WebSocketConnectOptions()
+                    .setHost("localhost").setPort(port).setURI("/relay"))
+                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Stands up a front server whose single route hands the request straight to a fresh
+     * {@link WebSocketRelayStage} — no edge, no pipeline — so {@code releaseAdmission} is observable as
+     * a plain callback instead of the edge's private admission semaphore.
+     */
+    private HttpServer startRelayOnlyServer(int upstreamTargetPort, Runnable releaseAdmission) throws Exception {
+        RouteRuntime route = RouteRuntime.builder()
+                .id("relay-only")
+                .protocol(Protocol.WEBSOCKET)
+                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamTargetPort, "")))
+                .httpClient(Optional.of(relayUpstreamClient))
+                .effectiveWebSocketIdleTimeoutSeconds(Optional.of(300))
+                .build();
+        WebSocketRelayStage stage = new WebSocketRelayStage(
+                new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter());
+        Router router = Router.router(vertx);
+        router.route().handler(ctx -> {
+            // Mirror GatewayEdgeRoute.handle(): the request stream is paused before the dispatch, so the
+            // asynchronous upstream dial cannot race the body being read out from under toWebSocket().
+            ctx.request().pause();
+            stage.relay(ctx, route, Map.of(), Map.of(), "/", releaseAdmission);
+        });
+        return vertx.createHttpServer().requestHandler(router)
+                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+    }
+
+    // NOSONAR java:S2925 - Thread.sleep is load-bearing: relay teardown is a real socket round-trip on
+    // a live Vert.x event loop and no virtual clock can advance it, so the callback count is polled
+    // until it settles rather than assumed to have landed.
+    @SuppressWarnings("java:S2925")
+    private static void awaitReleases(AtomicInteger releases, String message) throws InterruptedException {
+        for (int attempt = 0; attempt < 200 && releases.get() < 1; attempt++) {
+            Thread.sleep(25);
+        }
+        assertEquals(1, releases.get(), message);
+    }
+
+    // NOSONAR java:S2925 - see awaitReleases: a bounded settle window is the only way to observe that
+    // no *further* release lands after the first one on a live event loop.
+    @SuppressWarnings("java:S2925")
+    private static void assertNoFurtherRelease(AtomicInteger releases, String message)
+            throws InterruptedException {
+        Thread.sleep(250);
+        assertEquals(1, releases.get(), message);
     }
 
     private WebSocket connect(String uri, String origin) throws Exception {

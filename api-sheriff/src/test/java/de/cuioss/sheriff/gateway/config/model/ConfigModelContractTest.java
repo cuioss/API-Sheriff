@@ -420,7 +420,7 @@ class ConfigModelContractTest {
         void gatewayConfigBuilderMatchesConstructor() {
             GatewayConfig viaCtor = new GatewayConfig(2, Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), List.of(HttpMethod.GET), Map.of("api", anchorConfig()), Optional.empty(),
-                    Optional.empty(), Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .anchors(Map.of("api", anchorConfig())).build();
             assertEquals(viaCtor, viaBuilder);
@@ -445,7 +445,7 @@ class ConfigModelContractTest {
 
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
-            GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null);
+            GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null);
             assertTrue(cfg.metadata().isEmpty());
             assertTrue(cfg.tls().isEmpty());
             assertTrue(cfg.securityHeaders().isEmpty());
@@ -456,6 +456,43 @@ class ConfigModelContractTest {
             assertTrue(cfg.forwarded().isEmpty());
             assertTrue(cfg.tokenValidation().isEmpty());
             assertTrue(cfg.oidc().isEmpty());
+            assertTrue(cfg.edgeHardening().isEmpty());
+        }
+
+        @Test
+        void edgeHardeningConfigNormalizesAbsentCaps() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(null, null);
+            assertTrue(cfg.admissionCap().isEmpty());
+            assertTrue(cfg.websocketRelayCap().isEmpty());
+            assertEquals(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP, cfg.effectiveAdmissionCap());
+            assertEquals(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
+        void edgeHardeningConfigDerivesAbsentRelayCapFromDeclaredAdmissionCap() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(64), Optional.empty());
+            assertEquals(64, cfg.effectiveAdmissionCap());
+            assertEquals(16, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
+        void edgeHardeningConfigFloorsDerivedRelayCapAtOne() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(1), Optional.empty());
+            assertEquals(1, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
+        void edgeHardeningConfigKeepsExplicitRelayCapAboveAdmissionCap() {
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(4), Optional.of(16));
+            assertEquals(16, cfg.effectiveWebsocketRelayCap());
+        }
+
+        @Test
+        void edgeHardeningConfigDefaultsCarryBothCaps() {
+            EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
+            assertEquals(Optional.of(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), defaults.admissionCap());
+            assertEquals(Optional.of(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP),
+                    defaults.websocketRelayCap());
         }
 
         @Test

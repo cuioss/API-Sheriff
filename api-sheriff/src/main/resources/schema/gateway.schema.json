@@ -170,6 +170,15 @@
         "emit": { "type": "string", "enum": ["x-forwarded", "both"] }
       }
     },
+    "edge_hardening": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Admission budget for the public data-plane edge. websocket_relay_cap is a sub-budget acquired in addition to the general admission permit (a relay holds its permit for the connection's whole lifetime) and must not exceed admission_cap.",
+      "properties": {
+        "admission_cap": { "type": "integer", "minimum": 1 },
+        "websocket_relay_cap": { "type": "integer", "minimum": 1 }
+      }
+    },
     "token_validation": {
       "type": "object",
       "additionalProperties": false,

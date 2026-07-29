@@ -99,6 +99,8 @@ public final class ConfigValidator {
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
     private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
+    private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
+    private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
     private static final int IPV4_BITS = 32;
     private static final int IPV6_BITS = 128;
     private static final int BROAD_PREFIX_IPV4 = 8;
@@ -141,7 +143,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
-            (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors));
+            (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors));
 
     private final List<ValidationRule> rules;
 
@@ -183,6 +186,34 @@ public final class ConfigValidator {
             errors.add(new ConfigError(GATEWAY_FILE, "/version",
                     "unsupported config version %d (supported: %d)".formatted(gateway.version(), SUPPORTED_VERSION)));
         }
+    }
+
+    /**
+     * Bounds the operator-facing admission budget. Both caps must admit at least one request — a cap
+     * of zero or below would refuse every request (or every relay) and is always a misconfiguration
+     * rather than a deliberate posture. The WebSocket sub-budget must additionally stay within the
+     * general pool it draws from: a {@code websocket_relay_cap} above {@code admission_cap} can never
+     * bind, so it would silently disable the sub-cap the operator meant to impose.
+     */
+    private static void validateEdgeHardening(GatewayConfig gateway, List<ConfigError> errors) {
+        gateway.edgeHardening().ifPresent(hardening -> {
+            hardening.admissionCap()
+                    .filter(cap -> cap < 1)
+                    .ifPresent(cap -> errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_ADMISSION_POINTER,
+                            "admission_cap must be at least 1 (was %d)".formatted(cap))));
+            hardening.websocketRelayCap()
+                    .filter(cap -> cap < 1)
+                    .ifPresent(cap -> errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_WEBSOCKET_POINTER,
+                            "websocket_relay_cap must be at least 1 (was %d)".formatted(cap))));
+            int admission = hardening.effectiveAdmissionCap();
+            int relay = hardening.effectiveWebsocketRelayCap();
+            if (admission >= 1 && relay >= 1 && relay > admission) {
+                errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_WEBSOCKET_POINTER,
+                        "websocket_relay_cap %d must not exceed admission_cap %d — the relay budget is a "
+                                .formatted(relay, admission)
+                                + "sub-budget of the admission pool and could never bind"));
+            }
+        });
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {

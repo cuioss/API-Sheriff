@@ -67,6 +67,43 @@ Raise it for long-lived push channels that legitimately idle between messages; l
 reclaim connection slots more aggressively. For the full field contract see
 link:../configuration.adoc#_websocket[Configuration -- `websocket`].
 
+=== Sizing the WebSocket relay budget
+
+An established relay is not like a proxied request. A request holds one *admission permit* for a
+single round-trip and returns it in milliseconds; a relay holds its permit for as long as the
+connection lives — minutes, or the whole day for a push channel. Long-lived relays therefore
+accumulate against the same pool that ordinary HTTP traffic draws from, and enough of them will
+starve it: the gateway starts refusing `503` while doing very little work.
+
+`edge_hardening.websocket_relay_cap` bounds them separately. It is a *sub-budget acquired in
+addition to* the general permit, never instead of it — a relay takes one permit from each pool — so
+capping it leaves the remaining `admission_cap` headroom available to HTTP no matter how many
+sockets are open. An upgrade beyond the cap is refused `503` at the handshake, before the upstream is
+dialled; the general permit is released on the way out, so a refusal costs nothing.
+
+[source,yaml]
+----
+# gateway.yaml -- global; the pools are process-wide, so there is no per-route form
+edge_hardening:
+  admission_cap: 2048          # default; all in-flight requests, relays included
+  websocket_relay_cap: 512     # default; established relays only
+----
+
+Size `websocket_relay_cap` to the *peak concurrent relays* the deployment expects, plus headroom for
+reconnect storms — after an upstream restart or a network blip, clients reconnect together, and the
+old sockets may not have been reaped yet, so the momentary peak runs well above steady state. Then
+check the remainder: `admission_cap - websocket_relay_cap` is the request concurrency guaranteed to
+survive a fully saturated relay pool, and it is what HTTP traffic actually gets in the worst case.
+The defaults reserve three quarters of the pool for HTTP on that reasoning.
+
+Two boot-time rules bound the pair: each cap must be at least `1`, and `websocket_relay_cap` must not
+exceed `admission_cap` — a larger sub-budget could never bind, so it is refused rather than silently
+ignored. Both keys are optional. An omitted `admission_cap` is `2048`; an omitted
+`websocket_relay_cap` is a *quarter of the effective* `admission_cap` (never below `1`), which is the
+`512` shown above at the default pool size. Lowering `admission_cap` on its own therefore lowers the
+relay budget with it — the three-quarters-for-HTTP reservation is preserved instead of being turned
+into a boot-time rejection.
+
 == Configuring a gRPC route
 
 A `protocol: grpc` route proxies gRPC calls -- each an HTTP/2 `POST` to a service/method path.

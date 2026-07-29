@@ -18,7 +18,11 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+
+
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 
 import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
@@ -31,7 +35,6 @@ class EdgeHardeningTest {
     private static final int MAX_INITIAL_LINE_LENGTH_BYTES = 8 * 1024;
     private static final int MAX_CHUNK_SIZE_BYTES = 16 * 1024;
     private static final int IDLE_TIMEOUT_SECONDS = 60;
-    private static final int ADMISSION_CAP = 2048;
     private static final long DRAIN_TIMEOUT_MILLIS = 25_000L;
 
     @Test
@@ -95,18 +98,76 @@ class EdgeHardeningTest {
     }
 
     @Test
-    @DisplayName("bounds in-flight requests with a positive admission cap")
-    void exposesPositiveAdmissionCap() {
-        // Arrange
+    @DisplayName("bounds in-flight requests and WebSocket relays with the documented default budget")
+    void exposesDefaultAdmissionBudget() {
+        // Arrange — the no-arg construction is the documented defaults path a gateway that declares
+        // no edge_hardening block resolves to
         EdgeHardeningOptions hardening = new EdgeHardeningOptions();
 
         // Act
-        int cap = hardening.admissionCap();
+        int admissionCap = hardening.admissionCap();
+        int relayCap = hardening.webSocketRelayCap();
 
-        // Assert — a request beyond the cap is rejected 503 before a virtual thread is dispatched,
-        // so a flood cannot spawn unbounded virtual threads.
-        assertEquals(ADMISSION_CAP, cap, "The admission cap is the documented secure default");
-        assertTrue(cap > 0, "The admission cap must be a positive bound");
+        // Assert — a request beyond the admission cap is rejected 503 before a virtual thread is
+        // dispatched, so a flood cannot spawn unbounded virtual threads; the relay cap is a strictly
+        // smaller sub-budget, so long-lived relays cannot consume the whole pool.
+        assertEquals(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP, admissionCap,
+                "The admission cap is the documented default");
+        assertEquals(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP, relayCap,
+                "The WebSocket relay cap is the documented default");
+        assertTrue(admissionCap > 0, "The admission cap must be a positive bound");
+        assertTrue(relayCap > 0, "The WebSocket relay cap must be a positive bound");
+        assertTrue(relayCap <= admissionCap,
+                "The relay sub-budget must stay within the admission pool it draws from");
+    }
+
+    @Test
+    @DisplayName("carries the operator-configured caps when the edge_hardening block declares them")
+    void carriesOperatorConfiguredCaps() {
+        // Arrange
+        EdgeHardeningConfig configured = new EdgeHardeningConfig(Optional.of(64), Optional.of(8));
+
+        // Act
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(configured);
+
+        // Assert
+        assertEquals(64, hardening.admissionCap(), "The declared admission_cap is carried through");
+        assertEquals(8, hardening.webSocketRelayCap(), "The declared websocket_relay_cap is carried through");
+    }
+
+    @Test
+    @DisplayName("falls back per member, deriving an omitted relay cap from the declared admission cap")
+    void fallsBackPerOmittedMember() {
+        // Arrange — only the admission cap is declared, and it is raised above the default
+        EdgeHardeningConfig partial = new EdgeHardeningConfig(Optional.of(4096), Optional.empty());
+
+        // Act
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(partial);
+
+        // Assert — the omitted member resolves to a quarter of the effective admission cap, so the
+        // documented three-quarters-for-HTTP reservation scales with the pool instead of staying
+        // pinned to DEFAULT_WEBSOCKET_RELAY_CAP
+        assertEquals(4096, hardening.admissionCap(), "The declared admission_cap is carried through");
+        assertEquals(1024, hardening.webSocketRelayCap(),
+                "An omitted websocket_relay_cap resolves to a quarter of the effective admission_cap");
+    }
+
+    @Test
+    @DisplayName("keeps a lowered admission cap valid, deriving a relay sub-budget that stays inside it")
+    void derivesRelayCapBelowALoweredAdmissionCap() {
+        // Arrange — the operator lowers only the admission cap, well below the shipped relay default
+        EdgeHardeningConfig partial = new EdgeHardeningConfig(Optional.of(64), Optional.empty());
+
+        // Act
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(partial);
+
+        // Assert — the derived sub-budget must never exceed the pool it draws from, otherwise the
+        // boot-time validator would refuse a block the configuration contract documents as valid
+        assertEquals(64, hardening.admissionCap(), "The declared admission_cap is carried through");
+        assertEquals(16, hardening.webSocketRelayCap(),
+                "An omitted websocket_relay_cap resolves to a quarter of the lowered admission_cap");
+        assertTrue(hardening.webSocketRelayCap() <= hardening.admissionCap(),
+                "The relay sub-budget must stay within the admission pool it draws from");
     }
 
     @Test
