@@ -1,0 +1,141 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the DEDICATED low-admission-budget integration-test instance
+# (api-sheriff-ws-admission in docker-compose.yml). It is overlay-mounted on top of the shared
+# sheriff-config directory so it replaces ONLY gateway.yaml — the endpoints/ subdirectory and
+# topology.properties are shared with the primary instance, so the /ws/echo relay route and the
+# /proxy HTTP route resolve identically here.
+#
+# This instance exists because the admission budget is a property of the whole gateway process. The
+# production defaults (2048 general permits, 512 relay permits) are far too large for a test to
+# exhaust: proving the WebSocket relay returns its permits at teardown would need thousands of
+# sequential upgrades. Shrinking the caps to single digits turns that proof into a handful of
+# connections — but a gateway with an 8-request admission budget cannot serve the rest of the IT
+# suite, so the small budget lives on this separate instance (published on 10447) while the primary
+# instance (10443) keeps the production-shaped defaults.
+#
+# The anchors, token_validation and oidc blocks are a faithful copy of the primary gateway.yaml so
+# the shared endpoints/ resolve identically and the offline it-static JWKS issuer reaches readiness
+# without Keycloak. The intentional differences are exactly two: the edge_hardening block below, and
+# the absence of tls.passthrough_sni (the SNI front never starts, so Quarkus terminates directly on
+# the public port — matching the mTLS and cookie instances).
+version: 1
+metadata:
+  config_version: "integration-test-ws-admission"
+allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+tls:
+  alpn: ["h2", "http/1.1"]
+# --- The point of this instance: a deliberately tiny admission budget ---------------------------
+# websocket_relay_cap is a sub-budget acquired IN ADDITION TO the general admission permit, and a
+# relay holds BOTH for the connection's whole lifetime. WsAdmissionExhaustion (WebSocketProxyIT)
+# opens and closes more sequential upgrades than either cap allows: with the teardown release in
+# place every permit is returned when the relay closes, so all of them succeed. Leak either permit
+# and the run dies on the connection that first exceeds the leaked cap — the relay sub-budget after
+# 2 upgrades, the general budget after 8 — which is precisely the regression this instance guards.
+edge_hardening:
+  admission_cap: 8
+  websocket_relay_cap: 2
+anchors:
+  api:
+    path_prefix: /proxy
+    type: proxy
+    access: public
+  bff:
+    path_prefix: /bff
+    type: proxy
+    access: public
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+  graphql:
+    path_prefix: /graphql
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+    security_filter:
+      max_body_bytes: 67108864
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+  grpc:
+    path_prefix: /grpc
+    type: proxy
+    access: public
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+    - name: integration-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+# --- Server-mode BFF confidential-client block ---------------------------------------------------
+# Kept in lockstep with the primary gateway.yaml (the shared endpoints/ directory declares a
+# require: session route, and ConfigValidator refuses a session floor with no oidc block). No login
+# is ever driven against this instance; the URLs name this instance's own published port so the
+# document is internally consistent rather than silently pointing at the primary gateway.
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  redirect_uri: https://localhost:10447/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10447/auth/logout/return
+    final_redirect: /
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    refresh:
+      enabled: true
+      leeway_seconds: 30
+    csrf:
+      trusted_origins: ["https://localhost:10447"]
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub", "preferred_username", "email", "groups"]
+    default_view: ["sub", "preferred_username"]
+  login:
+    path: /auth/login

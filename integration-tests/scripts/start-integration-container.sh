@@ -205,32 +205,36 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Wait for the two dedicated cookie-mode gateway instances (api-sheriff-cookie on 10445 /
-# management 19002, and its key-sharing peer api-sheriff-cookie-2 on 10446 / management 19003).
-# Both reuse the same native image and reach readiness offline (static-file JWKS). The Bff*Cookie*IT
-# suites drive their TLS ports directly — and BffCookieStatelessnessIT drives BOTH in one test — so
-# an unwaited instance is a race that surfaces as a connection refusal in the IT phase, not as a
-# start-up failure here. Mirrors the mTLS block above exactly.
-for cookie_instance in "api-sheriff-cookie:19002" "api-sheriff-cookie-2:19003"; do
-    COOKIE_SERVICE="${cookie_instance%%:*}"
-    COOKIE_MGMT_PORT="${cookie_instance##*:}"
-    echo "⏳ Waiting for the ${COOKIE_SERVICE} gateway instance to be ready..."
+# Wait for the remaining dedicated gateway instances: the two cookie-mode instances
+# (api-sheriff-cookie on 10445 / management 19002, and its key-sharing peer api-sheriff-cookie-2 on
+# 10446 / management 19003) and the low-admission-budget instance (api-sheriff-ws-admission on
+# 10447 / management 19004). All reuse the same native image and reach readiness offline
+# (static-file JWKS). Their suites drive the TLS ports directly — the Bff*Cookie*IT suites, with
+# BffCookieStatelessnessIT driving BOTH cookie instances in one test, and WebSocketProxyIT's relay
+# exhaustion regression driving the low-cap instance — so an unwaited instance is a race that
+# surfaces as a connection refusal in the IT phase, not as a start-up failure here. Mirrors the
+# mTLS block above exactly; keep the list in lockstep with the api-sheriff* services in
+# docker-compose.yml.
+for gateway_instance in "api-sheriff-cookie:19002" "api-sheriff-cookie-2:19003" "api-sheriff-ws-admission:19004"; do
+    GATEWAY_SERVICE="${gateway_instance%%:*}"
+    GATEWAY_MGMT_PORT="${gateway_instance##*:}"
+    echo "⏳ Waiting for the ${GATEWAY_SERVICE} gateway instance to be ready..."
     for i in {1..30}; do
-        if curl -skf "https://localhost:${COOKIE_MGMT_PORT}/q/health/live" > /dev/null 2>&1; then
-            echo "✅ ${COOKIE_SERVICE} gateway instance is ready!"
+        if curl -skf "https://localhost:${GATEWAY_MGMT_PORT}/q/health/live" > /dev/null 2>&1; then
+            echo "✅ ${GATEWAY_SERVICE} gateway instance is ready!"
             break
         fi
         if [ $i -eq 30 ]; then
-            echo "❌ ${COOKIE_SERVICE} gateway instance failed to start within 30 seconds"
+            echo "❌ ${GATEWAY_SERVICE} gateway instance failed to start within 30 seconds"
             DIAG_DIR="target/failsafe-reports"
             mkdir -p "$DIAG_DIR"
-            echo "----- $COMPOSE_BASE logs ${COOKIE_SERVICE} -----"
-            $COMPOSE_BASE logs --no-color "${COOKIE_SERVICE}" 2>&1 | tee "$DIAG_DIR/${COOKIE_SERVICE}-app.log"
-            curl -sk "https://localhost:${COOKIE_MGMT_PORT}/q/health" 2>&1 | tee "$DIAG_DIR/${COOKIE_SERVICE}-health.json"
+            echo "----- $COMPOSE_BASE logs ${GATEWAY_SERVICE} -----"
+            $COMPOSE_BASE logs --no-color "${GATEWAY_SERVICE}" 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-app.log"
+            curl -sk "https://localhost:${GATEWAY_MGMT_PORT}/q/health" 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-health.json"
             echo ""
             exit 1
         fi
-        echo "⏳ Waiting for ${COOKIE_SERVICE} gateway... (attempt $i/30)"
+        echo "⏳ Waiting for ${GATEWAY_SERVICE} gateway... (attempt $i/30)"
         sleep 1
     done
 done

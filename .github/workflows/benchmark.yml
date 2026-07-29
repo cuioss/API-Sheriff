@@ -43,11 +43,16 @@ jobs:
     #                      that: it is transfer-bound at reduced concurrency, so it does not finish
     #                      in the same wall time as a request-rate run. Re-derive this term when a
     #                      skip property is flipped to false.
-    #   * stack startup    ~90 s -- since #118 the lane boots FOUR native gateway instances
-    #                      (api-sheriff, api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2)
-    #                      alongside Keycloak, go-httpbin, nginx-static, passthrough-backend,
-    #                      grpc-echo, toxiproxy, asset-origin and prometheus, because
-    #                      start-integration-container.sh runs a bare `up -d`.
+    #   * stack startup    ~100 s -- the lane boots FIVE native gateway instances (api-sheriff,
+    #                      api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2 and
+    #                      api-sheriff-ws-admission, the last added for the WebSocket relay-permit
+    #                      exhaustion regression) alongside Keycloak, go-httpbin, nginx-static,
+    #                      passthrough-backend, grpc-echo, toxiproxy, asset-origin and prometheus,
+    #                      because start-integration-container.sh runs a bare `up -d`. Each added
+    #                      gateway instance costs roughly another 10 s of the readiness wait — they
+    #                      share one native image, so the term grows with instance count, not with
+    #                      image builds. Re-derive this term whenever an api-sheriff* service is
+    #                      added to or removed from integration-tests/docker-compose.yml.
     #   * native compile   the dominant and most variable term on a cold cache.
     #
     # 75 minutes holds with headroom for the cold native compile; it is kept unchanged because the

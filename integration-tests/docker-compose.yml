@@ -536,6 +536,81 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # --- The low-admission-budget instance backing the relay-permit exhaustion regression ----------
+  # The admission budget is a property of the whole gateway process, and the production-shaped
+  # defaults the other instances run with (2048 general permits, 512 relay permits) are far too
+  # large for a test to exhaust — proving the WebSocket relay returns its permits at teardown would
+  # need thousands of sequential upgrades. This instance reuses the SAME native image and overlays a
+  # gateway.yaml whose edge_hardening block shrinks the caps to single digits (admission_cap 8,
+  # websocket_relay_cap 2), turning that proof into a handful of connections. It is separate because
+  # an 8-request admission budget cannot serve the rest of the IT suite; published on 10447.
+  api-sheriff-ws-admission:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    ports:
+      - "10447:8443"  # External test port for the exhaustion regression (test.ws.admission.port)
+      - "19004:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      - LOG_FILE_PATH=/logs/quarkus-ws-admission.log
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19004 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness wait in start-integration-container.sh (https + -k for all) would hang.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
+      # (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep with the primary
+      # api-sheriff service, whose gateway.yaml has the same oidc block.
+      - OIDC_CLIENT_SECRET=integration-secret
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the low-admission-budget variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-ws-admission/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
+    # gated host-side by start-integration-container.sh probing the published management port 19004.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.6.0
     ports:

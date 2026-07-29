@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
+import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -57,6 +58,32 @@ import org.junit.jupiter.api.Test;
  * empty {@code allowed_origins} — cannot coexist with a bootable stack (it aborts boot fail-fast), so
  * it is proven by {@code verify-invalid-config-fails.sh} and the unit-level {@code ConfigValidatorTest}
  * rather than against the running edge here.
+ * <p>
+ * <strong>Admission-permit exhaustion.</strong> One test in this suite deliberately drives a
+ * <em>different</em> instance: {@code api-sheriff-ws-admission} on {@code test.ws.admission.port}
+ * (10447), whose overlaid {@code gateway.yaml} shrinks the {@code edge_hardening} budget to single
+ * digits. The permit-release contract cannot be observed on the primary instance at all — its
+ * production-shaped caps (2048 general permits, 512 relay permits) would need thousands of sequential
+ * upgrades to exhaust, so a handful of connections passes there whether or not the relay ever returns
+ * its permits. The low-cap instance is what turns that silent pass into a real assertion.
+ * <p>
+ * <strong>Why the pre-existing suite could not see the leak.</strong> Before that regression landed,
+ * this class held seven tests, all green, while the relay leaked its admission permit on every
+ * established connection. The blind spot was structural, not an oversight in any one test. Each of
+ * the seven performs at most <em>one</em> handshake and asserts only the status of that one
+ * request — and only three of them complete an upgrade at all
+ * ({@link #echoRoundTripThroughGateway()}, {@link #idleRelayReclaimedAfterTimeout()},
+ * {@link #heartbeatedRelaySurvivesIdleTimeout()}). The other four are rejection paths that end the
+ * HTTP response, so the edge's own end handler releases their permit correctly; they could not leak
+ * even in principle. Three leaked permits against a 2048-permit pool is invisible by construction: no
+ * assertion in the suite reads the pool, and the pool never runs dry.
+ * <p>
+ * The generalisable rule: <em>a per-request correctness assertion cannot observe cumulative resource
+ * exhaustion.</em> Detecting it needs an assertion of a different shape — one made <em>after N
+ * operations</em>, and made <em>about the gateway</em> rather than about any single response. That is
+ * exactly the shape of {@link #sequentialRelaysReturnTheirAdmissionPermitsAtTeardown()}: N sequential
+ * relays, then a claim about the edge's remaining capacity. Adding an eighth per-request test would
+ * have left the leak equally invisible.
  */
 class WebSocketProxyIT extends BaseIntegrationTest {
 
@@ -71,13 +98,29 @@ class WebSocketProxyIT extends BaseIntegrationTest {
     /** Idle-reclaim close code (WebSocket 1001 Going Away) the relay emits on idle expiry. */
     private static final int CLOSE_GOING_AWAY = 1001;
 
+    /**
+     * Sequential upgrades driven against the low-cap instance. It exceeds BOTH caps that instance
+     * declares ({@code admission_cap: 8}, {@code websocket_relay_cap: 2}), so a leak of either permit
+     * fails the run: the relay sub-budget would run dry on the 3rd upgrade and the general budget on
+     * the 9th. With both permits returned at relay teardown, all ten succeed.
+     */
+    private static final int LOW_CAP_SEQUENTIAL_UPGRADES = 10;
+
     private static String wsBaseUri;
+    private static String lowCapWsBaseUri;
+    private static int lowCapHttpPort;
     private static HttpClient httpClient;
 
     @BeforeAll
     static void setUpWebSocketClient() throws Exception {
         String testPort = System.getProperty("test.https.port", "10443");
         wsBaseUri = "wss://localhost:" + testPort;
+
+        // The dedicated low-admission-budget instance (api-sheriff-ws-admission), published on its
+        // own host port and mounting the sheriff-config-ws-admission gateway.yaml overlay. It shares
+        // the endpoints/ directory with the primary instance, so /ws/echo and /proxy resolve here too.
+        lowCapHttpPort = Integer.parseInt(System.getProperty("test.ws.admission.port", "10447"));
+        lowCapWsBaseUri = "wss://localhost:" + lowCapHttpPort;
 
         // Trust-all TLS: the integration stack serves a self-signed localhost certificate, exactly
         // the case BaseIntegrationTest handles for REST Assured via useRelaxedHTTPSValidation(). The
@@ -172,6 +215,56 @@ class WebSocketProxyIT extends BaseIntegrationTest {
         WebSocketHandshakeException failure = expectHandshakeFailure("/ws/does-not-exist", ALLOWED_ORIGIN);
         assertEquals(404, failure.getResponse().statusCode(),
                 "an unmatched WS path must be rejected 404 by deny-by-default route selection");
+    }
+
+    @Test
+    @DisplayName("more sequential relays than either admission cap allows all succeed, and HTTP still serves")
+    void sequentialRelaysReturnTheirAdmissionPermitsAtTeardown() throws Exception {
+        for (int upgrade = 1; upgrade <= LOW_CAP_SEQUENTIAL_UPGRADES; upgrade++) {
+            var listener = new RecordingListener();
+            WebSocket socket = openLowCapRelay(listener, upgrade);
+            String payload = "sheriff-ws-admission-" + upgrade;
+
+            socket.sendText(payload, true).get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            String echoed = listener.firstMessage.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            socket.sendClose(WebSocket.NORMAL_CLOSURE, "done").get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            // Awaiting the close frame is what makes the next iteration race-free rather than timed:
+            // the relay's single teardown funnel releases both permits BEFORE it closes either leg,
+            // so a close frame observed here proves the release has already happened.
+            listener.closed.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+            assertEquals(payload, echoed,
+                    "relay " + upgrade + " must round-trip its frame — a permit-starved edge cannot echo");
+        }
+
+        // A leaked general permit starves ordinary HTTP long before it exhausts the pool entirely, so
+        // the surviving HTTP path is the second half of the proof: the ten relays above returned their
+        // general permits too, not just their relay sub-permits.
+        given()
+                .port(lowCapHttpPort)
+                .when()
+                .get("/proxy/get")
+                .then()
+                .statusCode(200);
+    }
+
+    /**
+     * Opens one relay against the low-cap instance, translating a refused upgrade into an assertion
+     * failure that names which upgrade in the sequence was refused — the raw
+     * {@link ExecutionException} would otherwise report only a bare {@code 503} with no indication of
+     * whether the run died at the relay sub-budget or the general one.
+     */
+    private static WebSocket openLowCapRelay(RecordingListener listener, int upgrade) throws Exception {
+        try {
+            return httpClient.newWebSocketBuilder()
+                    .header("Origin", ALLOWED_ORIGIN)
+                    .buildAsync(URI.create(lowCapWsBaseUri + "/ws/echo"), listener)
+                    .get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (ExecutionException refused) {
+            throw new AssertionError("upgrade " + upgrade + " of " + LOW_CAP_SEQUENTIAL_UPGRADES
+                    + " was refused — the closed relays before it did not return their admission permits",
+                    refused.getCause());
+        }
     }
 
     /**
