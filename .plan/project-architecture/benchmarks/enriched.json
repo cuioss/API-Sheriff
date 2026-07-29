@@ -1,6 +1,8 @@
 {
   "best_practices": [],
-  "insights": [],
+  "insights": [
+    "The benchmark coverage 'expected=' list in .github/workflows/benchmark.yml is an independent oracle, not a mirror of the run-k6-* executions in benchmarks/pom.xml. Review-bot suggestions to derive it from the pom are declined: deriving it would make a goal deleted from the pom vanish from both sides and the coverage step go green, losing the silent-deletion detection that is the step's main reason to exist. Skip state is also property-driven and CLI-overridable, so a naive derivation would demand a summary for a deliberately skipped goal. Maintain the list by hand when a goal is added or un-skipped."
+  ],
   "internal_dependencies": [],
   "key_dependencies": [
     "de.cuioss:benchmarking-common",
