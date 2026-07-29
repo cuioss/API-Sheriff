@@ -349,7 +349,7 @@ Design (to be built as a low, framework-agnostic base package):
   category* (per CUI logging convention) and are metric counters only -- e.g.
   `REQUEST_FORWARDED`, `TOKEN_REFRESHED`, `CONFIG_LOADED`.
 * Failure event types carry a category -- e.g. `PATH_NOT_ALLOWED` / `SECURITY_FILTER_VIOLATION`
-  / `PARAMETER_LIMIT_EXCEEDED` (`INPUT_VALIDATION`), `TOKEN_MISSING` / `TOKEN_INVALID`
+  / `PARAMETER_LIMIT_EXCEEDED` / `CONTENT_TOO_LARGE` (`INPUT_VALIDATION`), `TOKEN_MISSING` / `TOKEN_INVALID`
   (`AUTHENTICATION`), `SCOPE_MISSING` / `CSRF_REJECTED` (`AUTHORIZATION`),
   `UPSTREAM_ERROR` / `UPSTREAM_TIMEOUT` (`UPSTREAM`).
 * Typed gateway exceptions carry their `EventType`, so the HTTP edge maps
@@ -370,11 +370,12 @@ names the category but leaks no internal detail. The consolidated status mapping
 |===
 | Status | Cause | EventCategory
 
-| `400` | Security-filter violation (path/parameter/header pipeline, collection limits, body size) | `INPUT_VALIDATION`
+| `400` | Security-filter violation (path/parameter/header pipeline, collection limits) | `INPUT_VALIDATION`
 | `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
 | `403` | Valid credentials lacking a required scope; failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `INPUT_VALIDATION`
 | `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `INPUT_VALIDATION`
+| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called (`Retry-After` hints at `reset_ms`) | `UPSTREAM`
@@ -395,11 +396,12 @@ rejection it would render as an HTTP status for an HTTP route onto the canonical
 |===
 | gRPC status | code | Gateway rejection (the HTTP status the same cause renders on an HTTP route)
 
-| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits, body size)
+| `INVALID_ARGUMENT`   | 3  | `400` -- security-filter violation (path/parameter/header pipeline, collection limits)
 | `UNAUTHENTICATED`    | 16 | `401` -- missing/invalid bearer token; invalid or expired session on a non-navigation request
 | `PERMISSION_DENIED`  | 7  | `403` -- valid credentials lacking a required scope; failed CSRF origin check
 | `NOT_FOUND`          | 5  | `404` -- no route matched (deny-by-default routing); reserved-for-passthrough `Host`; disabled endpoint
 | `UNIMPLEMENTED`      | 12 | `405` -- request method not in the matched route's effective `allowed_methods` allowlist
+| `RESOURCE_EXHAUSTED` | 8  | `413` -- request body beyond the route's `security_filter.max_body_bytes` cap
 | `UNAVAILABLE`        | 14 | `502` / `503` -- upstream connection failure / invalid upstream response, or circuit breaker open; *also* an HTTP/2 negotiation failure at dispatch (the forced-h2 upstream dial could not establish `h2`)
 | `DEADLINE_EXCEEDED`  | 4  | `504` -- upstream timeout (`connect_timeout_ms` / `read_timeout_ms`)
 |===

@@ -941,10 +941,12 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Baseline preset; the limits below override it.
 
 | `max_body_bytes`
-| *(gateway-enforced)*
-| DoS guard. `cui-http` removed its BODY validation pipeline ("body content validation should
-  be handled at application layer"), so the gateway enforces this cap itself while reading the
-  request body; `SecurityConfiguration.maxBodySize` is not wired.
+| *(gateway-enforced, under a framework floor)*
+| DoS guard, and the *effective* cap for the route: a request whose body exceeds it is rejected
+  *413* with an `application/problem+json` envelope. `cui-http` removed its BODY validation
+  pipeline ("body content validation should be handled at application layer"), so the gateway
+  enforces the cap itself while reading the request body; `SecurityConfiguration.maxBodySize` is
+  not wired. The cap only takes effect *below the framework floor* described immediately below.
 
 | `max_header_count` / `max_query_params`
 | `maxHeaderCount` / `maxParameterCount` (`RequestCollectionValidator`)
@@ -967,6 +969,30 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | `allowedContentTypes`
 | Optional `Content-Type` allowlist for request bodies.
 |===
+
+*The framework body-size floor.* `max_body_bytes` is a cap the gateway applies *on top of* an
+underlying HTTP-framework limit, `quarkus.http.limits.max-body-size`. The framework limit is the
+floor every declared cap sits under: a route cannot accept more than the floor allows, whatever it
+declares. API Sheriff ships the floor at *`64M`* (67108864 bytes) in `application.properties`,
+matching the largest `max_body_bytes` in the shipped topology. Without that declaration Vert.x
+applies its own 10 MiB default and silently clips every larger declared cap, so the route's own
+limit never fires.
+
+The relationship is *boot-enforced*: a deployment that declares a `max_body_bytes` larger than the
+floor fails fast at startup rather than running with a cap that cannot be honoured. Raising a
+declared cap therefore means raising `quarkus.http.limits.max-body-size` in the same change.
+
+*Shadowing at the boundary.* When the floor is set *equal to* the largest declared cap, the
+framework's own `Content-Length` pre-check answers a breach of that largest cap with a bare `413`
+(`Connection: close`, empty body) *before the gateway's request handling runs* — so the RFC 9457
+`application/problem+json` envelope is rendered only for routes capped strictly *below* the floor.
+An operator who wants the gateway's own envelope on the largest-capped route sets the floor *above*
+that cap rather than equal to it. The integration stack does exactly this: it overrides the floor to
+`128M` so the gateway, not the framework, renders the rejection.
+
+*Chunked requests.* A chunked request carries no `Content-Length`, so it passes the framework's
+pre-check untouched and is capped by the gateway's streaming byte counter instead — it always
+receives the gateway's `application/problem+json` envelope, regardless of where the floor sits.
 
 *Whitelisting.* `cui-http` has no path allow-list knob, so URL/parameter whitelisting is enforced at
 the gateway layer: `allowed_paths` (a request whose validated, normalized path matches no entry is
