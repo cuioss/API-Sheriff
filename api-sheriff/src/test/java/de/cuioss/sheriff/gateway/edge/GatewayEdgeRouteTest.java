@@ -17,15 +17,21 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -45,12 +51,19 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.WebSocket;
+import io.vertx.core.http.WebSocketClient;
+import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -175,6 +188,111 @@ class GatewayEdgeRouteTest {
         // within its bounded window, so the shutdown completes cleanly and never hangs.
         assertTimeoutPreemptively(Duration.ofSeconds(5), () -> edge.onShutdown(new ShutdownEvent()),
                 "Graceful drain returns promptly when no request is in flight");
+    }
+
+    /**
+     * The admission-accounting plumbing a WebSocket route depends on. {@code handle()} registers its
+     * release inside {@code ctx.addEndHandler}, but a completed WebSocket upgrade takes the connection
+     * over so that handler never fires — the release CAS guard is therefore stashed on the
+     * {@link io.vertx.ext.web.RoutingContext} and read back by the WebSocket branch, which releases at
+     * relay teardown instead. These tests pin both halves of that seam against a refactor that reverts
+     * to the end-handler-only assumption and silently strands one permit per upgrade.
+     */
+    @Nested
+    @DisplayName("admission-release guard stashed on the RoutingContext")
+    class AdmissionGuardPlumbing {
+
+        /** Mirrors the private {@code GatewayEdgeRoute.ADMISSION_GUARD_KEY}. */
+        private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
+
+        @Test
+        @DisplayName("stashes the release guard on the context before the pipeline is dispatched")
+        void stashesReleaseGuardBeforeDispatch() throws Exception {
+            // Arrange — an empty route table renders 404 without dialing anything; a probe handler
+            // registered ahead of the catch-all reads the stash back the moment handle() returns.
+            CompletableFuture<Object> stashed = new CompletableFuture<>();
+            HttpServer front = startFront(new RouteTable(List.of()), stashed);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                // Act
+                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), "localhost", "/nothing")
+                        .compose(HttpClientRequest::send);
+
+                // Assert
+                assertInstanceOf(AtomicBoolean.class, stashed.get(15, TimeUnit.SECONDS),
+                        "handle() stashes the admission-release CAS guard under its context key");
+            } finally {
+                client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+
+        @Test
+        @DisplayName("the WebSocket branch reads the guard back and releases at relay teardown")
+        void webSocketBranchReleasesThroughTheStashedGuard() throws Exception {
+            // Arrange — a real upgrade against a stub upstream, so the HTTP response never ends
+            HttpServer upstream = vertx.createHttpServer()
+                    .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
+                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            CompletableFuture<Object> stashed = new CompletableFuture<>();
+            HttpServer front = startFront(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), stashed);
+            WebSocketClient client = vertx.createWebSocketClient();
+            try {
+                WebSocket socket = client.connect(new WebSocketConnectOptions()
+                                .setHost("localhost").setPort(front.actualPort()).setURI("/w/room"))
+                        .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                AtomicBoolean guard = assertInstanceOf(AtomicBoolean.class, stashed.get(15, TimeUnit.SECONDS),
+                        "the WebSocket request stashes the same release guard");
+                assertFalse(guard.get(),
+                        "an established relay still holds its admission permit — release at upgrade "
+                                + "completion would under-count concurrent relays");
+
+                // Act
+                socket.close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+
+                // Assert — nothing ever ended the HTTP response, so only the relay's teardown callback
+                // can have flipped the guard
+                awaitReleased(guard, "the WebSocket relay releases the admission permit at teardown");
+            } finally {
+                client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                upstream.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+
+        private HttpServer startFront(RouteTable table, CompletableFuture<Object> stashed) throws Exception {
+            Router router = Router.router(vertx);
+            // Registered before the edge, which adds its catch-all last: ctx.next() runs handle()
+            // synchronously up to the asynchronous dispatch, so the stash is visible on return.
+            router.route().handler(ctx -> {
+                ctx.next();
+                stashed.complete(ctx.get(ADMISSION_GUARD_KEY));
+            });
+            newEdge(table).registerRoutes(router);
+            return vertx.createHttpServer().requestHandler(router)
+                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        }
+    }
+
+    // NOSONAR java:S2925 - Thread.sleep is load-bearing: relay teardown is a real socket round-trip on
+    // a live Vert.x event loop with no virtual clock to advance, so the guard is polled until it flips.
+    @SuppressWarnings("java:S2925")
+    private static void awaitReleased(AtomicBoolean guard, String message) throws InterruptedException {
+        for (int attempt = 0; attempt < 200 && !guard.get(); attempt++) {
+            Thread.sleep(25);
+        }
+        assertTrue(guard.get(), message);
+    }
+
+    private static ResolvedRoute webSocketRoute(int upstreamPort) {
+        return ResolvedRoute.builder()
+                .id("w")
+                .protocol(Protocol.WEBSOCKET)
+                .match(MatchConfig.builder().pathPrefix("/w").build())
+                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
+                .build();
     }
 
     private GatewayEdgeRoute newEdge(RouteTable table) {

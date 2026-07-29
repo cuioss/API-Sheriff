@@ -62,6 +62,18 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * Every socket operation is event-loop-bound; the relay hops onto the request's Vert.x context so
  * both legs share one event loop and the frame relay is single-threaded.
+ * <p>
+ * <strong>An established relay owns an admission permit for its lifetime.</strong> A completed client
+ * upgrade takes the connection over, so the HTTP response never ends and the edge's end handler never
+ * fires — the relay is therefore handed a release callback and is the component responsible for
+ * returning the permit. It is invoked on every teardown path and never at upgrade completion: releasing
+ * on upgrade would under-count concurrent relays and re-open the exhaustion window the callback exists
+ * to close. Two terminal paths carry it — the established relay's single idempotent
+ * {@code RelaySession.closeBoth} funnel (graceful close, abrupt disconnect, idle reclaim, relay error),
+ * and the client-upgrade-failure branch of {@link #onUpstreamConnected}, which constructs no
+ * {@code RelaySession} at all. The upstream-dial-failure path ({@link #onUpstreamFailure}) does not
+ * invoke it: that path ends the HTTP response, so the edge's own end handler releases the permit
+ * through the same idempotent guard.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -103,14 +115,18 @@ public final class WebSocketRelayStage {
      * @param securityHeaders the stage-0 security headers accumulated on the response, applied to a
      *                        handshake-failure response before it is ended
      * @param requestUri      the upstream request URI (path + allow-listed query)
+     * @param releaseAdmission the edge's idempotent admission-release callback, invoked once at relay
+     *                        teardown — on the established relay's {@code closeBoth} funnel and on the
+     *                        client-upgrade-failure branch — and never at upgrade completion
      */
     public void relay(RoutingContext ctx, RouteRuntime route, Map<String, String> forwardHeaders,
-            Map<String, String> securityHeaders, String requestUri) {
+            Map<String, String> securityHeaders, String requestUri, Runnable releaseAdmission) {
         Objects.requireNonNull(ctx, "ctx");
         Objects.requireNonNull(route, "route");
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(securityHeaders, "securityHeaders");
         Objects.requireNonNull(requestUri, "requestUri");
+        Objects.requireNonNull(releaseAdmission, "releaseAdmission");
         Map<String, String> retainedSecurityHeaders = Map.copyOf(securityHeaders);
         HttpClient client = route.getHttpClient()
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires an upstream client"));
@@ -123,18 +139,23 @@ public final class WebSocketRelayStage {
                 .setURI(requestUri);
         forwardHeaders.forEach(options::addHeader);
         ctx.vertx().runOnContext(v -> client.webSocket(options)
-                .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs))
+                .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs, releaseAdmission))
                 .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }
 
-    private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs) {
+    private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs,
+            Runnable releaseAdmission) {
         ctx.request().toWebSocket()
-                .onSuccess(clientWs -> establishRelay(ctx, route, clientWs, upstreamWs))
+                .onSuccess(clientWs -> establishRelay(ctx, route, clientWs, upstreamWs, releaseAdmission))
                 .onFailure(failure -> {
                     // The upstream is already upgraded but the client handshake could not complete;
                     // there is no HTTP response to render anymore. Close the upstream leg and drop.
+                    // No RelaySession is constructed here, so this branch owns its own admission
+                    // release — without it the permit acquired for this request is stranded, since the
+                    // HTTP end handler no longer has a response to fire on.
                     LOGGER.debug(failure, "WebSocket client upgrade failed on route '%s': %s", route.getId(),
                             failure.getMessage());
+                    releaseAdmission.run();
                     closeQuietly(upstreamWs, CLOSE_INTERNAL_ERROR, "client upgrade failed");
                 });
     }
@@ -167,11 +188,14 @@ public final class WebSocketRelayStage {
     }
 
     private void establishRelay(RoutingContext ctx, RouteRuntime route, ServerWebSocket clientWs,
-            WebSocket upstreamWs) {
+            WebSocket upstreamWs, Runnable releaseAdmission) {
         int idleSeconds = route.getEffectiveWebSocketIdleTimeoutSeconds().orElse(DEFAULT_IDLE_TIMEOUT_SECONDS);
         LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.getId());
         eventCounter.increment(EventType.REQUEST_FORWARDED);
-        new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds, eventCounter).start();
+        // The admission permit stays held for the relay's whole lifetime — the session releases it from
+        // its single teardown funnel, never here at upgrade completion.
+        new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds, eventCounter,
+                releaseAdmission).start();
     }
 
     private static void closeQuietly(WebSocketBase ws, short code, @Nullable String reason) {
@@ -181,9 +205,13 @@ public final class WebSocketRelayStage {
     }
 
     /**
-     * One established relay: the two legs, the idle-timeout timer, and the frame-relay wiring. All
-     * callbacks run on the shared request event loop, so the mutable {@code closed} / timer state is
-     * single-threaded and needs no synchronization.
+     * One established relay: the two legs, the idle-timeout timer, the frame-relay wiring, and the
+     * admission permit the relay holds for its lifetime. All callbacks run on the shared request event
+     * loop, so the mutable {@code closed} / timer state is single-threaded and needs no synchronization.
+     * <p>
+     * {@link #closeBoth} is the single idempotent teardown funnel every terminal path reaches — client
+     * close, upstream close, idle reclaim and relay error alike — so it is also the single site the
+     * admission-release callback is invoked from, exactly once.
      */
     private static final class RelaySession {
 
@@ -194,11 +222,12 @@ public final class WebSocketRelayStage {
         private final int idleSeconds;
         private final long idleMillis;
         private final GatewayEventCounter eventCounter;
+        private final Runnable releaseAdmission;
         private long idleTimerId = -1L;
         private boolean closed;
 
         RelaySession(Vertx vertx, String routeId, ServerWebSocket clientWs, WebSocket upstreamWs, int idleSeconds,
-                GatewayEventCounter eventCounter) {
+                GatewayEventCounter eventCounter, Runnable releaseAdmission) {
             this.vertx = vertx;
             this.routeId = routeId;
             this.clientWs = clientWs;
@@ -206,6 +235,7 @@ public final class WebSocketRelayStage {
             this.idleSeconds = idleSeconds;
             this.idleMillis = idleSeconds * 1000L;
             this.eventCounter = eventCounter;
+            this.releaseAdmission = releaseAdmission;
         }
 
         void start() {
@@ -289,6 +319,9 @@ public final class WebSocketRelayStage {
                 return;
             }
             closed = true;
+            // The relay held the admission permit for its whole lifetime; return it here, behind the
+            // latch, so every terminal path releases it exactly once.
+            releaseAdmission.run();
             if (idleTimerId != -1L) {
                 vertx.cancelTimer(idleTimerId);
                 idleTimerId = -1L;

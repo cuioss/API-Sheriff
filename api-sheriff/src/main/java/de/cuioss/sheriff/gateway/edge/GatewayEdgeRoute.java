@@ -24,6 +24,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -188,6 +189,12 @@ public class GatewayEdgeRoute {
      * read failure or timeout, so {@link #readFormBody} reads {@code null} and the receiver fails closed
      * to {@code 400}. */
     private static final String RESERVED_BODY_KEY = "sheriff.reservedbody";
+    /** Holds the per-request admission-release CAS guard stashed in {@link #handle} so a terminal path
+     * that runs <em>after</em> the virtual-thread hop — where only the {@link RoutingContext} is in
+     * scope — can still release the permit exactly once. The WebSocket relay is the one such path:
+     * a completed upgrade takes the connection over, so the HTTP end handler never fires and
+     * {@link #dispatchWebSocket} must hand the relay its own release callback. */
+    private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
 
     private final List<RouteRuntime> routes;
     private final ExecutorService virtualThreadExecutor;
@@ -354,7 +361,13 @@ public class GatewayEdgeRoute {
         // Guard the admission accounting so it is rolled back exactly once. The end handler releases
         // it on the normal path; the executor-rejection path below also rolls it back, and both must
         // never double-release (reject() ends the response, which itself fires this end handler).
+        // The end handler is NOT the only release site: a protocol: websocket route that completes its
+        // upgrade takes the connection over, so the HTTP response never ends and this handler never
+        // fires. That route therefore releases through the same guard from the relay's teardown
+        // callback (see dispatchWebSocket / WebSocketRelayStage); the guard is stashed on the context
+        // under ADMISSION_GUARD_KEY because the virtual-thread hop carries only the RoutingContext.
         AtomicBoolean admissionReleased = new AtomicBoolean();
+        ctx.put(ADMISSION_GUARD_KEY, admissionReleased);
         ctx.addEndHandler(result -> {
             releaseAdmission(admissionReleased);
             recordRequestMetrics(ctx, startNanos);
@@ -537,8 +550,9 @@ public class GatewayEdgeRoute {
 
     /**
      * Releases one admission permit and decrements the in-flight counter exactly once, guarded by
-     * {@code released} so the normal end-handler path and the executor-rejection rollback path can
-     * both call it without double-counting.
+     * {@code released} so the normal end-handler path, the executor-rejection rollback path and the
+     * WebSocket relay-teardown callback (see {@link #dispatchWebSocket}) can all call it without
+     * double-counting.
      */
     private void releaseAdmission(AtomicBoolean released) {
         if (released.compareAndSet(false, true)) {
@@ -819,6 +833,14 @@ public class GatewayEdgeRoute {
      * before any upstream contact — GW-09 / CSWSH), then hands the upgrade to the opaque
      * {@link WebSocketRelayStage}. The upstream dial and the client upgrade are performed by the
      * relay stage, so no HTTP {@link ResponseStage} relay runs for a WebSocket route.
+     * <p>
+     * <strong>Admission accounting.</strong> Because a completed upgrade takes the connection over, the
+     * HTTP end handler registered in {@link #handle} never fires for an established relay — the permit
+     * would otherwise be stranded for the process lifetime. The per-request CAS guard stashed under
+     * {@link #ADMISSION_GUARD_KEY} is therefore read back here and handed to the relay as a release
+     * callback, which the relay invokes on each of its teardown paths. Routing the release through the
+     * same guard keeps it idempotent against the end handler and the executor-rejection rollback, so an
+     * upstream-dial failure (which does end the response) can never double-release.
      */
     private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
             ForwardPolicyStage.Result forward) {
@@ -831,7 +853,10 @@ public class GatewayEdgeRoute {
                 .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
         applyStageSetCookies(ctx.response(), request.responseSetCookies());
-        webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri);
+        AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(ADMISSION_GUARD_KEY),
+                "admission guard missing — handle() must stash it before dispatch");
+        webSocketRelayStage.relay(ctx, route, forward.headers(), request.responseHeaders(), uri,
+                () -> releaseAdmission(admissionGuard));
     }
 
     /**
