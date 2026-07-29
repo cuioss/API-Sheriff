@@ -34,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessor;
@@ -49,7 +50,11 @@ import io.vertx.core.http.HttpClient;
  * {@link RouteRuntime} instances, deduplicating the heavy collaborators so shared shapes
  * reuse one object rather than copying it:
  * <ul>
- *   <li>one cui-http {@link SecurityConfiguration} per distinct {@link SecurityFilterConfig} shape;</li>
+ *   <li>one resolved {@linkplain SecurityPosture security posture} — effective
+ *       {@link SecurityProfile} plus its cui-http {@link SecurityConfiguration} — per distinct
+ *       {@code Optional<}{@link SecurityFilterConfig}{@code >} shape. The posture is resolved for
+ *       <em>every</em> route, including one that declares no {@code security_filter} block at all,
+ *       so a gateway-wide {@code profile} reaches a block-less route;</li>
  *   <li>one Vert.x {@link HttpClient} per distinct {@linkplain UpstreamTarget upstream-target tuple}
  *       (scheme, host, port) — routes sharing a tuple hold the same client reference;</li>
  *   <li>one SmallRye Fault-Tolerance {@link Guard} per distinct {@linkplain ResilienceShape
@@ -82,7 +87,8 @@ public final class RouteRuntimeAssembler {
      * heavy collaborators.
      *
      * @param table                 the frozen route table
-     * @param securityConfigFactory builds one {@link SecurityConfiguration} per security-filter shape
+     * @param securityConfigFactory resolves one {@link SecurityPosture} per security-filter shape,
+     *                              invoked for every route (an absent block included)
      * @param clientFactory         builds one {@link HttpClient} per upstream target tuple
      * @param guardFactory          builds one {@link Guard} per resilience shape
      * @param assetSourceFactory    builds the live {@link AssetSource} for an asset route's
@@ -99,7 +105,7 @@ public final class RouteRuntimeAssembler {
         Objects.requireNonNull(guardFactory, "guardFactory");
         Objects.requireNonNull(assetSourceFactory, "assetSourceFactory");
 
-        Map<SecurityFilterConfig, SecurityConfiguration> securityCache = new HashMap<>();
+        Map<Optional<SecurityFilterConfig>, SecurityPosture> securityCache = new HashMap<>();
         Map<UpstreamTarget, HttpClient> clientCache = new HashMap<>();
         Map<ResilienceShape, Guard> guardCache = new HashMap<>();
         List<RouteRuntime> runtimes = new ArrayList<>();
@@ -107,8 +113,10 @@ public final class RouteRuntimeAssembler {
         for (ResolvedRoute route : table.routes()) {
             ProtocolProcessor processor = protocolRegistry.require(route.protocol(), route.id());
 
-            Optional<SecurityConfiguration> securityConfiguration = route.effectiveSecurityFilter()
-                    .map(filter -> securityCache.computeIfAbsent(filter, securityConfigFactory::create));
+            // Resolved for EVERY route, not only inside effectiveSecurityFilter().map(...): a
+            // gateway-wide profile must also govern a route that declares no security_filter block.
+            SecurityPosture posture = securityCache.computeIfAbsent(route.effectiveSecurityFilter(),
+                    securityConfigFactory::create);
 
             RouteRuntime.RouteRuntimeBuilder runtime = RouteRuntime.builder()
                     .id(route.id())
@@ -118,7 +126,10 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedMethods(toMethodSet(route.effectiveAllowedMethods()))
                     .effectiveAuth(route.effectiveAuth())
                     .requiredScopes(route.effectiveAuth().requiredScopes())
-                    .securityConfiguration(securityConfiguration)
+                    // Both set unconditionally: RouteRuntime's @Builder.Default STRICT exists for the
+                    // builder's test call sites, never as a stand-in for the production resolution.
+                    .securityProfile(posture.profile())
+                    .securityConfiguration(Optional.of(posture.configuration()))
                     .securityHeaders(route.effectiveSecurityHeaders())
                     .effectiveForward(route.effectiveForward())
                     .effectiveAllowedPaths(route.effectiveSecurityFilter()
@@ -192,16 +203,43 @@ public final class RouteRuntimeAssembler {
     }
 
     /**
-     * Factory building one cui-http {@link SecurityConfiguration} for a security-filter shape.
+     * A route's resolved inbound-filter posture: the effective {@link SecurityProfile} and the
+     * concrete cui-http {@link SecurityConfiguration} that carries its limits.
+     * <p>
+     * The configuration is always present — even under {@link SecurityProfile#NONE}, which
+     * disables validation but never limits, so the retained {@code max_body_bytes} guard keeps a
+     * concrete {@code maxBodySize} to enforce.
+     *
+     * @param profile       the effective mode after the
+     *                      {@code security_filter → security_defaults} fallback
+     * @param configuration the limits policy: the nearest non-{@code none} profile's preset, with
+     *                      the route's declared limit overrides applied on top
+     */
+    public record SecurityPosture(SecurityProfile profile, SecurityConfiguration configuration) {
+
+        /**
+         * Canonical constructor rejecting an absent component — a posture is fully resolved or it
+         * is a boot defect.
+         */
+        public SecurityPosture {
+            Objects.requireNonNull(profile, "profile");
+            Objects.requireNonNull(configuration, "configuration");
+        }
+    }
+
+    /**
+     * Factory resolving one {@link SecurityPosture} for a security-filter shape. Invoked for every
+     * route, so {@code filter} is {@link Optional#empty()} for a route that declares no
+     * {@code security_filter} block and the gateway-wide fallback applies.
      */
     @FunctionalInterface
     public interface SecurityConfigurationFactory {
 
         /**
-         * @param filter the security-filter shape
-         * @return the built security configuration
+         * @param filter the route's effective security-filter shape, empty when it declares none
+         * @return the resolved posture
          */
-        SecurityConfiguration create(SecurityFilterConfig filter);
+        SecurityPosture create(Optional<SecurityFilterConfig> filter);
     }
 
     /**

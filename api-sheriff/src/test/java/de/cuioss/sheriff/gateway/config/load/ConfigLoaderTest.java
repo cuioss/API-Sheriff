@@ -44,6 +44,8 @@ import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConfigLoader}: binding a valid {@code gateway.yaml} (including
@@ -393,6 +395,133 @@ class ConfigLoaderTest {
         assertEquals(AnchorType.PROXY, api.type(), "the required type axis binds (case-insensitive from 'proxy')");
         assertEquals(AccessLevel.AUTHENTICATED, api.access(),
                 "the required access axis binds (case-insensitive from 'authenticated')");
+    }
+
+    /**
+     * The {@code profile} value range is owned by the bundled JSON Schema, which carries three
+     * symmetric enum sites: {@code gateway.yaml} {@code security_defaults.profile} and
+     * {@code $defs/securityFilter.profile}, plus {@code endpoint.schema.json}'s
+     * {@code $defs/securityFilter.profile}. These tests pin all three together so a partial edit
+     * cannot leave one site still accepting the dropped {@code default} preset.
+     */
+    @ParameterizedTest(name = "gateway security_defaults.profile ''{0}'' fails the boot")
+    @ValueSource(strings = {"default", "bogus"})
+    void rejectsUnrecognisedGlobalSecurityDefaultsProfile(String value) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_defaults:
+                  profile: %s
+                """.formatted(value));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("security_defaults")),
+                () -> "expected a schema violation naming the security_defaults key, got: "
+                        + exception.errors());
+    }
+
+    @ParameterizedTest(name = "anchor security_filter.profile ''{0}'' fails the boot")
+    @ValueSource(strings = {"default", "bogus"})
+    void rejectsUnrecognisedAnchorSecurityFilterProfile(String value) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api:
+                    path_prefix: /api
+                    type: proxy
+                    access: public
+                    security_filter:
+                      profile: %s
+                """.formatted(value));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("profile")),
+                () -> "expected a schema violation naming the anchor's profile key, got: "
+                        + exception.errors());
+    }
+
+    @ParameterizedTest(name = "route security_filter.profile ''{0}'' fails the boot")
+    @ValueSource(strings = {"default", "bogus"})
+    void rejectsUnrecognisedRouteSecurityFilterProfile(String value) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                      security_filter:
+                        profile: %s
+                """.formatted(value));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.pointer().contains("security_filter/profile")),
+                () -> "expected a schema violation naming the route's profile key, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void acceptsTheNoneProfileAtEveryEnumSite() throws Exception {
+        // Arrange — the newly admitted member of the mode set, declared at all three sites at once
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_defaults:
+                  profile: none
+                anchors:
+                  api:
+                    path_prefix: /api
+                    type: proxy
+                    access: public
+                    security_filter:
+                      profile: none
+                """);
+        writeConfig("endpoints/orders.yaml", """
+                endpoint:
+                  id: orders
+                  base_url: ORDERS
+                  auth:
+                    require: none
+                  routes:
+                    - id: orders-read
+                      match:
+                        path_prefix: /orders
+                      security_filter:
+                        profile: none
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert
+        assertEquals(Optional.of("none"), loaded.gateway().securityDefaults().orElseThrow().profile());
+        assertEquals(Optional.of("none"),
+                loaded.gateway().anchors().get("api").securityFilter().orElseThrow().profile());
+        assertEquals(Optional.of("none"), loaded.endpoints().getFirst().routes().getFirst()
+                .securityFilter().orElseThrow().profile());
     }
 
     @Test

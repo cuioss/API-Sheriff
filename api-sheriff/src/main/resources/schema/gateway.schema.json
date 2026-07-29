@@ -29,7 +29,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "profile": { "type": "string", "enum": ["default", "strict", "lenient"] },
+        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] },
         "allowed_paths": { "type": "array", "items": { "type": "string" } },
         "max_header_count": { "type": "integer" },
         "max_header_value_length": { "type": "integer" },
@@ -127,8 +127,9 @@
     "security_defaults": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Global inbound-filter baseline. An omitted block — or a block without 'profile' — resolves the gateway-wide profile to 'strict'. 'none' is a partial disable: it turns off only the url-parameter name/value validation and the per-route pipeline re-run, and is refused at boot on effectively-authenticated and BFF routes (see ADR-0023).",
       "properties": {
-        "profile": { "type": "string", "enum": ["default", "strict", "lenient"] }
+        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] }
       }
     },
     "allowed_methods": {

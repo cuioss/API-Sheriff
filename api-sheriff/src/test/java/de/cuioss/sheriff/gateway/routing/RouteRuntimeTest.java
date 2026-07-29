@@ -23,12 +23,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -110,6 +113,51 @@ class RouteRuntimeTest {
             assertTrue(registry.supports(Protocol.WEBSOCKET), "WebSocket is now supported");
             assertEquals("websocket", registry.require(Protocol.WEBSOCKET, "ws-route").id(),
                     "a WebSocket route resolves the WebSocket processor");
+        }
+    }
+
+    @Nested
+    @DisplayName("RouteRuntime — resolved inbound-filter posture")
+    class SecurityPosture {
+
+        @Test
+        @DisplayName("Should default an omitted securityProfile to the fail-closed STRICT")
+        void shouldDefaultSecurityProfileToStrict() {
+            // Arrange — the shape of the five builder call sites that construct a route for an
+            // auth / verb-gate / route-selection / relay concern and declare no profile.
+            RouteRuntime runtime = runtimeBuilder().build();
+
+            // Assert — never null (which would NPE in the ThoroughChecksStage branch) and never
+            // NONE (which would silently disable validation on a route nobody configured).
+            assertEquals(SecurityProfile.STRICT, runtime.getSecurityProfile(),
+                    "an omitted profile resolves to the most restrictive mode");
+            assertTrue(runtime.getSecurityProfile().skippableValidationEnabled(),
+                    "the default keeps the skippable validation half switched on");
+        }
+
+        @Test
+        @DisplayName("Should carry an explicitly resolved profile unchanged")
+        void shouldCarryExplicitProfile() {
+            // Arrange + Act
+            RouteRuntime lenient = runtimeBuilder().securityProfile(SecurityProfile.LENIENT).build();
+            RouteRuntime none = runtimeBuilder().securityProfile(SecurityProfile.NONE).build();
+
+            // Assert
+            assertEquals(SecurityProfile.LENIENT, lenient.getSecurityProfile(),
+                    "an explicitly resolved LENIENT overrides the builder default");
+            assertEquals(SecurityProfile.NONE, none.getSecurityProfile(),
+                    "an explicitly resolved NONE overrides the builder default");
+            assertFalse(none.getSecurityProfile().skippableValidationEnabled(),
+                    "the NONE route reports its skippable half as disabled");
+        }
+
+        private RouteRuntime.RouteRuntimeBuilder runtimeBuilder() {
+            return RouteRuntime.builder()
+                    .id("r")
+                    .protocol(Protocol.HTTP)
+                    .matcher(RouteMatcher.from(MatchConfig.builder().pathPrefix("/r").build()))
+                    .effectiveAuth(AuthConfig.builder().require("none").build())
+                    .effectiveAllowedMethods(Set.of(HttpMethod.GET));
         }
     }
 

@@ -47,6 +47,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
@@ -657,6 +658,56 @@ class RouteTableBuilderTest {
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "effective posture");
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "orders-read");
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "anchor='api'");
+        }
+
+        @Test
+        @DisplayName("Should log the resolved effective profile, not a placeholder, for a route omitting the knob")
+        void shouldLogResolvedProfileForRouteOmittingTheKnob() {
+            // Arrange — no security_filter anywhere, so the route inherits the gateway-wide profile
+            GatewayConfig config = gateway()
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("lenient"))))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
+
+            // Act
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert — the old logPosture printed the literal "none" as a placeholder for unset, which
+            // now reads as the real 'none' mode and would misreport every knob-less route.
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='lenient'");
+        }
+
+        @Test
+        @DisplayName("Should log strict for a knob-less route under an omitted security_defaults block")
+        void shouldLogStrictWhenSecurityDefaultsOmitted() {
+            // Arrange
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
+
+            // Act
+            builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='strict'");
+        }
+
+        @Test
+        @DisplayName("Should log a route's own declared profile ahead of the gateway-wide fallback")
+        void shouldLogDeclaredRouteProfile() {
+            // Arrange
+            GatewayConfig config = gateway()
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"))))
+                    .build();
+            RouteConfig declared = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
+                    .securityFilter(Optional.of(filter("none"))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(declared)).build();
+
+            // Act
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='none'");
         }
 
         @Test

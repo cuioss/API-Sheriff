@@ -33,7 +33,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 
-import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -44,6 +43,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -196,20 +196,30 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("rejects a request breaching the baseline parameter-count cap 400")
+    @DisplayName("enforces the resolved security_defaults baseline cap exactly, not the bare cui-http default")
     void rejectsExcessiveParameters() throws Exception {
-        // Arrange — one parameter beyond the default cap trips the stage-1 baseline filter
-        int cap = SecurityConfiguration.defaults().maxParameterCount();
-        StringJoiner query = new StringJoiner("&", "/echo/orders?", "");
-        for (int i = 0; i <= cap; i++) {
-            query.add("p" + i + "=1");
-        }
+        // Arrange — this fixture's GatewayConfig declares no security_defaults block, so the
+        // gateway-wide baseline resolves to SecurityProfile.DEFAULT_PROFILE's preset. Bracketing the
+        // cap (at the limit passes, one over fails) pins the baseline actually in force, so a
+        // regression back to the looser SecurityConfiguration.defaults() would fail this test rather
+        // than pass it silently.
+        int cap = SecurityProfile.DEFAULT_PROFILE.preset().maxParameterCount();
 
         // Act
-        Response response = send(io.vertx.core.http.HttpMethod.GET, query.toString(), Map.of(), null);
+        Response atCap = send(io.vertx.core.http.HttpMethod.GET, queryWithParameters(cap), Map.of(), null);
+        Response overCap = send(io.vertx.core.http.HttpMethod.GET, queryWithParameters(cap + 1), Map.of(), null);
 
         // Assert
-        assertEquals(400, response.status());
+        assertEquals(200, atCap.status(), "a request exactly at the resolved cap is served");
+        assertEquals(400, overCap.status(), "one parameter beyond the resolved cap trips the pre-route floor");
+    }
+
+    private static String queryWithParameters(int count) {
+        StringJoiner query = new StringJoiner("&", "/echo/orders?", "");
+        for (int i = 0; i < count; i++) {
+            query.add("p" + i + "=1");
+        }
+        return query.toString();
     }
 
     @Test

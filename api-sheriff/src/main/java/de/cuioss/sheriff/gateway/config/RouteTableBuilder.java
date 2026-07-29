@@ -42,8 +42,10 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
@@ -81,7 +83,7 @@ public final class RouteTableBuilder {
     private static final List<HttpMethod> STANDARD_ALLOWED_METHODS = List.copyOf(EnumSet.allOf(HttpMethod.class));
 
     /** The {@link AuthConfig#require()} value meaning no authentication is required; also the
-     * display fallback for an absent anchor name / security-filter profile in {@link #logPosture}. */
+     * display fallback for an absent anchor name in {@link #logPosture}. */
     private static final String NONE = "none";
 
     /** The default {@code websocket.idle_timeout_seconds} applied when a WebSocket route omits it. */
@@ -199,7 +201,7 @@ public final class RouteTableBuilder {
             builder.upstream(Optional.of(applyRouteUpstreamPath(upstream, route)));
         }
         ResolvedRoute resolved = builder.build();
-        logPosture(resolved);
+        logPosture(resolved, globalProfile(gateway));
         return resolved;
     }
 
@@ -280,11 +282,35 @@ public final class RouteTableBuilder {
         return anchor.map(AnchorConfig::access).orElse(AccessLevel.PUBLIC);
     }
 
-    private static void logPosture(ResolvedRoute route) {
+    /**
+     * Emits the route's boot posture line. The profile logged is the <em>resolved effective</em>
+     * one — the route's own {@code security_filter.profile} when declared, otherwise the
+     * gateway-wide {@code security_defaults} fallback. It is deliberately NOT the raw declared
+     * value with a {@code "none"} placeholder for unset: {@code none} is now a real mode, so that
+     * placeholder would report a {@code none}-mode posture for every route that merely omits the knob.
+     */
+    private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
         String anchorName = route.anchor().orElse(NONE);
-        String filter = route.effectiveSecurityFilter().flatMap(SecurityFilterConfig::profile).orElse(NONE);
+        SecurityProfile effectiveProfile = route.effectiveSecurityFilter()
+                .flatMap(SecurityFilterConfig::profile)
+                .flatMap(SecurityProfile::parse)
+                .orElse(globalProfile);
         LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, route.effectiveAuth().require(),
-                filter);
+                effectiveProfile.name().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * The gateway-wide effective profile: the declared {@code security_defaults.profile}, or
+     * {@link SecurityProfile#DEFAULT_PROFILE} when the block (or the knob) is omitted.
+     *
+     * @param gateway the bound gateway document
+     * @return the resolved gateway-wide profile
+     */
+    private static SecurityProfile globalProfile(GatewayConfig gateway) {
+        return gateway.securityDefaults()
+                .flatMap(SecurityDefaultsConfig::profile)
+                .flatMap(SecurityProfile::parse)
+                .orElse(SecurityProfile.DEFAULT_PROFILE);
     }
 
     private static void warnOnWeakeningOverride(RouteConfig route, EndpointConfig endpoint,
