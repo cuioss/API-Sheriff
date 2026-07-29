@@ -418,7 +418,7 @@ class CookieSessionBindingTest {
     @DisplayName("Session-record nonce contract")
     class SessionRecordNonceContract {
 
-        private static SessionRecord.SessionRecordBuilder record() {
+        private static SessionRecord.SessionRecordBuilder baseRecord() {
             return SessionRecord.builder()
                     .sessionId("ignored-on-bind")
                     .accessToken(ACCESS_TOKEN)
@@ -431,7 +431,7 @@ class CookieSessionBindingTest {
         @ValueSource(strings = {"", " ", "\t", "\n", "   "})
         @DisplayName("Should reject a present-but-blank session nonce")
         void shouldRejectPresentButBlankNonce(String blank) {
-            SessionRecord.SessionRecordBuilder builder = record().sessionNonce(Optional.of(blank));
+            SessionRecord.SessionRecordBuilder builder = baseRecord().sessionNonce(Optional.of(blank));
 
             assertThrows(IllegalArgumentException.class, builder::build,
                     "a blank nonce would silently degrade the derived identity to the colliding pre-nonce shape");
@@ -440,7 +440,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should keep the rejected nonce out of the exception message")
         void shouldNotLeakNonceIntoRejectionMessage() {
-            SessionRecord.SessionRecordBuilder builder = record().sessionNonce(Optional.of("   "));
+            SessionRecord.SessionRecordBuilder builder = baseRecord().sessionNonce(Optional.of("   "));
 
             IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, builder::build);
 
@@ -450,7 +450,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should accept an absent session nonce — that is the server-mode shape")
         void shouldAcceptAbsentNonce() {
-            SessionRecord serverMode = record().build();
+            SessionRecord serverMode = baseRecord().build();
 
             assertTrue(serverMode.sessionNonce().isEmpty(),
                     "server-mode records carry no nonce and must stay constructible");
@@ -459,7 +459,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should normalize a null session nonce to empty rather than reject it")
         void shouldNormalizeNullNonceToEmpty() {
-            SessionRecord serverMode = record().sessionNonce(null).build();
+            SessionRecord serverMode = baseRecord().sessionNonce(null).build();
 
             assertTrue(serverMode.sessionNonce().isEmpty());
         }
@@ -467,7 +467,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should accept a non-blank session nonce")
         void shouldAcceptNonBlankNonce() {
-            SessionRecord cookieMode = record().sessionNonce(Optional.of("session-nonce-material")).build();
+            SessionRecord cookieMode = baseRecord().sessionNonce(Optional.of("session-nonce-material")).build();
 
             assertEquals(Optional.of("session-nonce-material"), cookieMode.sessionNonce());
         }
