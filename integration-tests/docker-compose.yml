@@ -106,6 +106,12 @@ services:
   # readiness probe and local debugging.
   go-httpbin:
     image: ghcr.io/mccutchen/go-httpbin:2.23.1
+    # go-httpbin caps request bodies at 1 MiB by default, well below the upload anchor's declared
+    # 64 MiB max_body_bytes. Without this raise the upstream — not the gateway — would reject
+    # LargeBodyIT's 11 MiB positive body, turning a test about the framework body-size floor into a
+    # test about go-httpbin's own default. The value matches the upload anchor's cap exactly, so a
+    # body the gateway forwards is a body this upstream accepts.
+    command: ["-max-body-size", "67108864"]
     ports:
       - "18080:8080"
     networks:
@@ -188,6 +194,16 @@ services:
       # override moves it to sheriff.tls.internal-https-port (8444); the front L4-relays a matched
       # passthrough SNI to the resolved backend and hands every other connection to localhost:8444.
       - QUARKUS_HTTP_SSL_PORT=8444
+      # Raise the framework body-size floor ABOVE the upload anchor's declared 64 MiB
+      # max_body_bytes for this instance only. application.properties ships the floor at exactly
+      # 64M, where the Quarkus root handler's Content-Length pre-check answers an oversize request
+      # with a bare 413 (Connection: close, empty body) before the gateway pipeline runs — so the
+      # RFC 9457 problem+json envelope would never be rendered for the largest-capped route. Lifting
+      # the floor to 128M puts LargeBodyIT's 68 MiB negative-case body under the framework limit and
+      # over the gateway's own cap, which is what makes the gateway (not the framework) the rejecting
+      # component. BodyLimitActivationWiringTest asserts this override stays strictly above that body
+      # size; dropping or lowering it silently turns LargeBodyIT into a test of the framework.
+      - QUARKUS_HTTP_LIMITS_MAX_BODY_SIZE=128M
       # Certificate paths (runtime override)
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
