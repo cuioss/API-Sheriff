@@ -103,7 +103,6 @@
           "lane": "minimal"
         },
         "plan-marshall:automatic-review": {
-          "enabled_bots": "coderabbit,sourcery,pr-agent",
           "review_bot_buffer_seconds": 180,
           "review_completion_poll_timeout_seconds": 600,
           "re_review_on_loopback": false,
@@ -112,7 +111,10 @@
           "re_review_on_timeout": "ask",
           "review_rate_window_await": false,
           "review_rate_window_timeout_seconds": 3600,
-          "lane": "auto"
+          "lane": "auto",
+          "required_bots": "coderabbit,pr-agent",
+          "optional_bots": "sourcery",
+          "bot_lists_provenance": "answered"
         },
         "default:sonar-roundtrip": {
           "touched_file_cleanup": "new_code_only",
@@ -303,7 +305,7 @@
       "plugin_cache_keep_versions": 5,
       "plugin_cache_keep_days": 3
     },
-    "provisioned_version": "0.1.1246",
-    "config_seed_fingerprint": "120d376a"
+    "provisioned_version": "0.1.1261",
+    "config_seed_fingerprint": "ccb21c71"
   }
 }
