@@ -327,7 +327,7 @@ class GatewayEdgeRouteTest {
 
     private WebSocket connectWs(WebSocketClient client, int port) throws Exception {
         return client.connect(new WebSocketConnectOptions()
-                        .setHost("localhost").setPort(port).setURI("/w/room"))
+                .setHost("localhost").setPort(port).setURI("/w/room"))
                 .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
     }
 

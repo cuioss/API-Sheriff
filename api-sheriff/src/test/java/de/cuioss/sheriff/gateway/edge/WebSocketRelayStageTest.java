@@ -388,7 +388,7 @@ class WebSocketRelayStageTest {
 
         private WebSocket connectTo(int port) throws Exception {
             return wsClient.connect(new WebSocketConnectOptions()
-                            .setHost("localhost").setPort(port).setURI("/relay"))
+                    .setHost("localhost").setPort(port).setURI("/relay"))
                     .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
         }
     }
