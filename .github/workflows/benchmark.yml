@@ -128,8 +128,8 @@ jobs:
           ls -la benchmarks/target/benchmark-results/
 
       # Maven fails fast, so a goal that errors aborts every goal after it and a goal that is never
-      # reached leaves no trace in the job output — a suite that ran 3 of the 11 executing goals
-      # renders exactly like one that ran all 11. This step diffs the goals that MUST produce a
+      # reached leaves no trace in the job output — a suite that ran 3 of the 12 executing goals
+      # renders exactly like one that ran all 12. This step diffs the goals that MUST produce a
       # summary document against the documents k6 actually wrote, so a partial suite is visibly
       # partial and a goal that silently vanished fails the job. When Maven failed, it also states
       # in words whether the suite was truncated by that failure. Skipped goals are named with their
