@@ -28,18 +28,15 @@
         <!-- Skip benchmarks by default (enable with -Pbenchmark) -->
         <skip.benchmark>true</skip.benchmark>
 
-        <!-- Per-aspect skip for a k6 goal blocked by an open gateway defect. It defaults to
-             true, so -Pbenchmark runs the eleven aspects that can pass and genuinely does not
-             execute this one. Flip it back on with -Dskip.benchmark.upload.large=false once its
-             finding below is fixed; that is also how you reproduce the defect through the harness. -->
-
-        <!-- uploadLarge: the upload anchor's max_body_bytes (64 MiB) is silently capped at the
-             Quarkus default quarkus.http.limits.max-body-size (10 MiB), so the 50MB body is
-             rejected with 413 before the gateway's security filter is ever consulted. The k6
-             script's 'status is 200' check therefore drops to a 0 rate, breaching its
-             threshold and failing the goal. Finding 0562be. Flip to false once the gateway
-             derives the HTTP limit from the anchor. -->
-        <skip.benchmark.upload.large>true</skip.benchmark.upload.large>
+        <!-- uploadLarge ran skipped while the upload anchor's max_body_bytes (64 MiB) was
+             silently capped at the Quarkus default quarkus.http.limits.max-body-size (10 MiB):
+             the 50MB body was rejected before the gateway's security filter was ever consulted,
+             so the k6 script's 'status is 200' check dropped to a 0 rate and breached its
+             threshold. application.properties now declares the framework body-size floor at 64M,
+             matching the largest declared cap, so the aspect measures upload throughput instead
+             of the rejection path. The property is kept rather than deleted so the goal stays
+             individually suppressible without editing the execution. -->
+        <skip.benchmark.upload.large>false</skip.benchmark.upload.large>
 
         <!-- websocketEcho ran skipped while each WebSocket upgrade leaked an edge admission
              permit (finding 218b5c): the permit was released via ctx.addEndHandler, which a
@@ -558,14 +555,14 @@
                                 </configuration>
                             </execution>
 
-                            <!-- The executions below carry a <skip> bound to their own property. Only
-                                 uploadLarge is still genuinely skipped, against an open gateway defect:
-                                 it is capped at the Quarkus 10 MiB default instead of the anchor's
-                                 max_body_bytes (finding 0562be, declared true in this pom's properties
-                                 block), so that goal does not run and cannot abort the suite.
-                                 websocketEcho's blocking defect — the leaked edge admission permit in
-                                 GatewayEdgeRoute — is fixed, and its property is now false, so it does
-                                 run. Both stay ordered LAST as defense-in-depth: Maven runs same-phase
+                            <!-- The executions below carry a <skip> bound to their own property. Both
+                                 properties are now false, so both goals run: uploadLarge's blocking
+                                 defect — the anchor's max_body_bytes silently capped at the Quarkus
+                                 10 MiB default — is fixed by the framework body-size floor declared in
+                                 application.properties, and websocketEcho's — the leaked edge admission
+                                 permit in GatewayEdgeRoute — was fixed earlier. Each property is kept so
+                                 its goal stays individually suppressible without editing the execution.
+                                 Both stay ordered LAST as defense-in-depth: Maven runs same-phase
                                  executions in declaration order, so a fail-fast abort from a goal here
                                  still cannot discard goals that would otherwise pass. -->
 
@@ -578,7 +575,7 @@
                                     <goal>exec</goal>
                                 </goals>
                                 <configuration>
-                                    <!-- Blocked by finding 0562be — see skip.benchmark.upload.large -->
+                                    <!-- Individually suppressible — see skip.benchmark.upload.large -->
                                     <skip>${skip.benchmark.upload.large}</skip>
                                     <executable>docker</executable>
                                     <arguments>
