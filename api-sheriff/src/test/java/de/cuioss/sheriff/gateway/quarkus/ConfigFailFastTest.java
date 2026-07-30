@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.math.BigInteger;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 
@@ -27,6 +28,7 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 
+import io.quarkus.runtime.configuration.MemorySize;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -40,11 +42,21 @@ import org.junit.jupiter.api.Test;
 @EnableTestLogger
 class ConfigFailFastTest {
 
+    /**
+     * The framework body ceiling wired onto every producer here, matching the shipped
+     * {@code quarkus.http.limits.max-body-size} floor. None of these fixtures declares a
+     * {@code max_body_bytes}, so the framework-limit check is inert for them — the field is set
+     * because the producer reads it on every boot, not because these tests exercise the check
+     * (that is {@code ConfigProducerTest}'s job).
+     */
+    private static final long FRAMEWORK_LIMIT_BYTES = 67108864L;
+
     private static ConfigProducer producerFor(String resourceDir) throws URISyntaxException {
         var resource = ConfigFailFastTest.class.getResource(resourceDir);
         assertNotNull(resource, resourceDir + " fixture must be on the test classpath");
         ConfigProducer producer = new ConfigProducer();
         producer.configDir = Path.of(resource.toURI()).toString();
+        producer.frameworkBodyLimit = new MemorySize(BigInteger.valueOf(FRAMEWORK_LIMIT_BYTES));
         return producer;
     }
 

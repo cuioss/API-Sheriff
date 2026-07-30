@@ -9,15 +9,19 @@ services:
       - "18081:8080"  # published only for the host-side readiness probe
     volumes:
       - ./nginx/nginx-static.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./src/main/docker/nginx/body-limits.conf:/etc/nginx/conf.d/00-body-limits.conf:ro
     networks:
       - api-sheriff
     restart: unless-stopped
 
   api-sheriff:
     environment:
-      # Override the UPSTREAM topology alias (go-httpbin) with the static backend
-      # for benchmarks. TOPOLOGY_<ALIAS> takes precedence over topology.properties,
-      # so the mounted config is reused unchanged and only the target is repointed.
+      # Repoint the UPSTREAM topology alias (go-httpbin) at the static backend for
+      # benchmarks. This binds to the explicit ${TOPOLOGY_UPSTREAM:-...} placeholder
+      # written in topology.properties — EnvSecretResolver substitutes only in-file
+      # placeholders, and there is no TOPOLOGY_<ALIAS> precedence mechanism. The
+      # mounted config is reused unchanged; unset, the placeholder's default keeps
+      # the IT stack on go-httpbin.
       - TOPOLOGY_UPSTREAM=http://nginx-static:8080
     depends_on:
       - nginx-static

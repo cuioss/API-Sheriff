@@ -40,6 +40,7 @@ import io.vertx.core.http.HttpServerResponse;
  *   <li>{@code 403} → {@code PERMISSION_DENIED} (7)</li>
  *   <li>{@code 404} → {@code NOT_FOUND} (5)</li>
  *   <li>{@code 405} → {@code UNIMPLEMENTED} (12)</li>
+ *   <li>{@code 413} → {@code RESOURCE_EXHAUSTED} (8)</li>
  *   <li>{@code 502} / {@code 503} → {@code UNAVAILABLE} (14) — also an h2-negotiation failure</li>
  *   <li>{@code 504} → {@code DEADLINE_EXCEEDED} (4)</li>
  *   <li>anything else → {@code UNKNOWN} (2)</li>
@@ -62,6 +63,8 @@ public final class GrpcStatusMapper {
     public static final int NOT_FOUND = 5;
     /** gRPC status code: the caller lacked permission (maps HTTP 403). */
     public static final int PERMISSION_DENIED = 7;
+    /** gRPC status code: a per-request resource bound was exhausted (maps HTTP 413). */
+    public static final int RESOURCE_EXHAUSTED = 8;
     /** gRPC status code: the operation is not implemented / not supported (maps HTTP 405). */
     public static final int UNIMPLEMENTED = 12;
     /** gRPC status code: the service is unavailable (maps HTTP 502 / 503 and h2-negotiation failure). */
@@ -90,6 +93,7 @@ public final class GrpcStatusMapper {
             case 403 -> PERMISSION_DENIED;
             case 404 -> NOT_FOUND;
             case 405 -> UNIMPLEMENTED;
+            case 413 -> RESOURCE_EXHAUSTED;
             case 502, 503 -> UNAVAILABLE;
             case 504 -> DEADLINE_EXCEEDED;
             default -> UNKNOWN;

@@ -134,12 +134,12 @@ class DispatchStageTest {
             source.emit(Buffer.buffer("123456"));
             source.emit(Buffer.buffer("ABCDEF"));
 
-            // Assert — the breaching chunk is not forwarded, the call is aborted, and a 400 is raised
+            // Assert — the breaching chunk is not forwarded, the call is aborted, and a 413 is raised
             assertEquals(1, forwarded.size(), "the breaching chunk must never cross to the upstream");
             assertTrue(aborted.get(), "a mid-stream breach must abort the in-flight upstream call");
             Throwable raised = failure.get();
             GatewayException gatewayException = assertInstanceOf(GatewayException.class, raised);
-            assertEquals(EventType.PARAMETER_LIMIT_EXCEEDED, gatewayException.getEventType());
+            assertEquals(EventType.CONTENT_TOO_LARGE, gatewayException.getEventType());
         }
 
         @Test

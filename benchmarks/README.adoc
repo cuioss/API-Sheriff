@@ -153,7 +153,13 @@ fail-fast discarded goals 5-12, which had therefore never run in CI even once. B
 `pom.xml` is not evidence that a goal produces a number.
 
 Current disposition — the CI end-of-job coverage step (see `.github/workflows/benchmark.yml`)
-enforces this table, so a goal that silently stops running fails the job:
+enforces this, so a goal that silently stops running fails the job. It does not read the table
+below: it derives the expected set from the build-generated execution manifest
+(`benchmarks/target/benchmark-execution-manifest.json`, emitted at `initialize` by the
+`generate-benchmark-manifest` execution in `pom.xml`), so the gate cannot drift from the POM the way
+a hand-maintained list can. The workflow calls `benchmark-manifest.py summarise` rather than
+re-deriving the summary itself, so the manifest has exactly one consumer. The table here is
+documentation of that resolved set, not its source:
 
 [cols="2,1,4", options="header"]
 |===
@@ -173,11 +179,14 @@ enforces this table, so a goal that silently stops running fails the job:
 |First execution in CI under PLAN-25. Their trend series start empty here.
 
 |`uploadLarge`
-|*skipped*
-|Skipped by `skip.benchmark.upload.large`, which defaults to `true`. The gateway rejects the 50MB
- body with `413`: the `upload` anchor declares `max_body_bytes: 67108864`, but the Quarkus HTTP body
- limit is not derived from it, so the declared 64 MiB cap is unreachable and the body is refused
- before the security filter runs. Blocked on a gateway-side fix.
+|runs
+|Skipped until the framework body-size floor was declared: the `upload` anchor declares
+ `max_body_bytes: 67108864`, but `quarkus.http.limits.max-body-size` was left at the Quarkus 10 MiB
+ default, so the declared 64 MiB cap was unreachable and the 50MB body was refused with `413` before
+ the security filter ran. `application.properties` now declares that floor at `64M`, matching the
+ largest declared cap, so the goal measures upload throughput instead of the rejection path. Its
+ trend series starts empty. `skip.benchmark.upload.large` is retained (now `false`) so the goal stays
+ individually suppressible.
 
 |`websocketEcho`
 |runs
@@ -193,20 +202,22 @@ enforces this table, so a goal that silently stops running fails the job:
 |Backs no Maven goal on purpose — see below.
 |===
 
-*Skipped means not executed.* A skipped goal carries a `<skip>` element in `benchmarks/pom.xml` bound
-to its own property, declared there with the id of the finding that blocks it and defaulting to
-`true` — so Maven does not run the goal, it consumes no wall time, and it cannot abort the suite.
-The two states are kept distinct rather than collapsed: the CI coverage step gates on the eleven
-goals that execute and names each skipped goal, its skip property and its reason in the job summary.
-When Maven fails, that step also states in words whether the failure truncated the suite. Silence is
-never the signal.
+*Skipped means not executed.* A goal suppressed by a `<skip>` element in `benchmarks/pom.xml` — bound
+to its own property — is not run at all: it consumes no wall time and cannot abort the suite. No k6
+goal is suppressed today; every declared goal executes. The two states are kept distinct rather than
+collapsed: the CI coverage step gates on whichever goals the execution manifest reports as `enabled`,
+and names every non-executing goal with its state, its skip property and its reason in the job
+summary. Both sides of that split come from the manifest, so suppressing a goal automatically moves it
+from the gated set into the reported table — there is no second list to remember to update. When Maven
+fails, that step also states in words whether the failure truncated the suite. Silence is never the
+signal.
 
-Re-enable a goal once its gateway defect is fixed by flipping its property, which is also how you
-reproduce the defect through the harness:
+The per-goal properties are retained even when `false`, so a single goal can be suppressed for a
+local run without editing its execution:
 
 [source,bash]
 ----
-./mvnw clean verify -pl benchmarks -Pbenchmark -Dskip.benchmark.upload.large=false
+./mvnw clean verify -pl benchmarks -Pbenchmark -Dskip.benchmark.upload.large=true
 ----
 
 === Deliberately unwired scripts
@@ -216,10 +227,12 @@ reproduce the defect through the harness:
 server-session variant and explicitly deferred its per-variant benchmark additions because
 `benchmarks/**` is PLAN-25's surface. The script is therefore ready but unclaimed, not forgotten.
 
-It is listed in the CI end-of-job coverage summary under its own skip section, so its absence from a
-run is stated in every job rather than reading as a silent omission. Do not treat a missing
-`sessionMediated-summary.json` as a regression, and do not wire the script to a Maven goal without
-the owning plan.
+The manifest generator discovers it by reading the `@unwiredReason` tag in the script's own header
+comment and reports it as `unwired`, so the CI coverage summary lists it — with that reason — in the
+"Not expected to run" table of every job rather than letting its absence read as a silent omission.
+The tag in the script is the single place that reason is written; keep it there rather than
+duplicating it into the workflow. Do not treat a missing `sessionMediated-summary.json` as a
+regression, and do not wire the script to a Maven goal without the owning plan.
 
 == Running the CI baseline lane
 
@@ -503,10 +516,10 @@ know:
 . *Post-processing*: `WrkBenchmarkConverter` / `WrkResultPostProcessor` are replaced by
   `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
   10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
-. *Coverage*: the lane grew from three wired executions to twelve *declared* goals, eleven of which
-  execute and are expected to produce a CI result — only `uploadLarge` is declared but skipped by
-  property against an open gateway defect, so Maven does not run it at all. `websocketEcho` was
-  skipped alongside it until its blocking edge admission-permit leak was fixed. `bearer`
+. *Coverage*: the lane grew from three wired executions to twelve *declared* goals, all of which
+  execute and are expected to produce a CI result. Two of them reached that state late: `websocketEcho`
+  once its blocking edge admission-permit leak was fixed, and `uploadLarge` once the framework
+  body-size floor was declared under the `upload` anchor's `max_body_bytes`. `bearer`
   is genuinely new CI coverage — the wrk-era bearer runner existed on disk but was registered in no
   Maven execution. Being *wired* is not the same as *executing*, and *executing* is not the same as
   *producing a result*: until PLAN-25 the job died at the fourth goal and goals 5-12 had never run
@@ -525,11 +538,10 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
   (see the `latency_ms.stdev` limit above).
 * Every benchmark that writes a summary document for the first time begins with *no history* and
   needs ten runs before its trend series is meaningful. Under PLAN-25 that is most of the lane:
-  eight of the twelve declared goals had never executed in CI, and seven of those eight are expected
-  to produce a result and so start their series empty — six at the PLAN-25 commit, and
-  `websocketEcho` once its blocking permit leak was fixed. `uploadLarge` starts *no* series at all —
-  only a goal that actually writes a summary document opens one, and it is skipped by property
-  rather than executed. The workflow's end-of-job coverage step
+  eight of the twelve declared goals had never executed in CI, and all eight are expected
+  to produce a result and so start their series empty — six at the PLAN-25 commit,
+  `websocketEcho` once its blocking permit leak was fixed, and `uploadLarge` once the framework
+  body-size floor was declared. The workflow's end-of-job coverage step
   (`.github/workflows/benchmark.yml`) is the record of which goals produced a result in a given run.
   A flat or short trend line on a name that *did* run is an absence of history, not a regression.
 

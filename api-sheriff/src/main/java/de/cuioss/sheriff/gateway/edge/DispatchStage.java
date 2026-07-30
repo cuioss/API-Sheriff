@@ -53,7 +53,7 @@ import org.jspecify.annotations.Nullable;
  * {@link ByteCappedBodyStream} that forwards each chunk to the upstream request as it arrives and
  * enforces the {@code max_body_bytes} ceiling with a running counter. A mid-stream breach ABORTS
  * the in-flight upstream call (Vert.x {@link HttpClientRequest#reset()}) and surfaces
- * {@link EventType#PARAMETER_LIMIT_EXCEEDED} (400). The upstream body is <strong>never
+ * {@link EventType#CONTENT_TOO_LARGE} (413). The upstream body is <strong>never
  * materialized</strong> into an {@code HttpResult<byte[]>} (ADR-0006/0008): the returned
  * {@link HttpClientResponse} is a live {@link ReadStream} whose body {@link ResponseStage} streams
  * back with backpressure.
@@ -283,7 +283,7 @@ public final class DispatchStage {
      * A {@link ReadStream} decorator that forwards each request-body chunk to the upstream as it
      * arrives — never accumulating the body — while counting bytes against a ceiling. On breach it
      * aborts the in-flight upstream request and fails the stream with a
-     * {@link EventType#PARAMETER_LIMIT_EXCEEDED} {@link GatewayException}.
+     * {@link EventType#CONTENT_TOO_LARGE} {@link GatewayException}.
      */
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
 
@@ -320,7 +320,7 @@ public final class DispatchStage {
                 aborted = true;
                 delegate.pause();
                 abortAction.run();
-                propagateFailure(new GatewayException(EventType.PARAMETER_LIMIT_EXCEEDED,
+                propagateFailure(new GatewayException(EventType.CONTENT_TOO_LARGE,
                         "Request body exceeded max_body_bytes=" + maxBytes));
                 return;
             }

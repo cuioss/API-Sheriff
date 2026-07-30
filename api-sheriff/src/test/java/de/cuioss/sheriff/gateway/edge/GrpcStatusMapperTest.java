@@ -87,6 +87,13 @@ class GrpcStatusMapperTest {
         }
 
         @Test
+        @DisplayName("413 (body cap breached) maps to RESOURCE_EXHAUSTED")
+        void mapsContentTooLargeToResourceExhausted() {
+            assertEquals(GrpcStatusMapper.RESOURCE_EXHAUSTED, mapper.toGrpcStatus(EventType.CONTENT_TOO_LARGE),
+                    "an HTTP 413 body-cap breach maps to gRPC RESOURCE_EXHAUSTED (8)");
+        }
+
+        @Test
         @DisplayName("502 (upstream error / h2-negotiation failure) maps to UNAVAILABLE")
         void mapsBadGatewayToUnavailable() {
             assertEquals(GrpcStatusMapper.UNAVAILABLE, mapper.toGrpcStatus(EventType.UPSTREAM_ERROR),

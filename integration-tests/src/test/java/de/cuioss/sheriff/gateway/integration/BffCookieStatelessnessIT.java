@@ -20,12 +20,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.restassured.response.Response;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
+
+import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

@@ -16,10 +16,13 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -28,6 +31,7 @@ import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoadException;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
+import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -36,6 +40,7 @@ import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.topology.TopologyResolver;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
@@ -43,6 +48,7 @@ import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
 import de.cuioss.tools.logging.CuiLogger;
 
 import io.quarkus.runtime.StartupEvent;
+import io.quarkus.runtime.configuration.MemorySize;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
@@ -56,7 +62,13 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * It drives the framework-agnostic boot pipeline — {@link ConfigLoader} (read,
  * schema-validate, secret-resolve, bind) → endpoint-enablement filter →
  * {@link TopologyResolver} → {@link ConfigValidator} → {@link RouteTableBuilder} —
- * supplying every collaborator by construction. On the first collected violation
+ * supplying every collaborator by construction. It additionally applies one check the
+ * framework-agnostic validator cannot: the largest declared {@code max_body_bytes}
+ * across the anchors and the enabled endpoints' routes must not exceed the Vert.x
+ * {@code quarkus.http.limits.max-body-size} ceiling, because the framework rejects an
+ * over-ceiling request in a root handler in front of the gateway router and the declared
+ * cap would never be reached. That violation joins the validator's own collection and
+ * aborts through the same path. On the first collected violation
  * the producer logs every problem through structured ERROR
  * {@link ConfigLogMessages} records and throws, so Quarkus exits non-zero and never
  * serves on partial configuration. On success it emits the {@code CONFIG_LOADED}
@@ -75,6 +87,14 @@ public class ConfigProducer {
 
     @ConfigProperty(name = "sheriff.config.dir", defaultValue = "config")
     String configDir;
+
+    /**
+     * The Vert.x request-body ceiling the framework enforces in a root handler in front of the
+     * gateway router. Injected here — the ADR-0005 framework-bound edge — rather than in the
+     * framework-agnostic {@code ConfigValidator}, so Quarkus-key knowledge stays at this seam.
+     */
+    @ConfigProperty(name = "quarkus.http.limits.max-body-size")
+    MemorySize frameworkBodyLimit;
 
     private GatewayConfig gateway;
     private RouteTable routeTable;
@@ -177,7 +197,9 @@ public class ConfigProducer {
             List<EndpointConfig> enabled = loaded.endpoints().stream().filter(EndpointConfig::enabled).toList();
             ResolvedTopology topology = new TopologyResolver(resolver)
                     .resolve(directory.resolve(TOPOLOGY_FILE), enabled, additionalTopologyAliases(loaded, enabled));
-            List<ConfigError> violations = new ConfigValidator().validate(loaded.gateway(), enabled, topology);
+            List<ConfigError> violations = new ArrayList<>(
+                    new ConfigValidator().validate(loaded.gateway(), enabled, topology));
+            violations.addAll(frameworkBodyLimitViolations(loaded.gateway(), enabled));
             if (!violations.isEmpty()) {
                 abort(violations);
             }
@@ -192,6 +214,50 @@ public class ConfigProducer {
             LOGGER.error(e, ConfigLogMessages.ERROR.CONFIG_STARTUP_ABORTED, e.getMessage());
             throw new IllegalStateException("Refusing to start — configuration is invalid", e);
         }
+    }
+
+    /**
+     * The fail-closed framework-limit check: a declared per-route body cap above the Vert.x ceiling
+     * is unreachable, because Quarkus rejects the request in a root handler installed in front of the
+     * gateway router. Rather than let that mismatch stay silent, the boot refuses to start and names
+     * the key the operator must raise.
+     *
+     * @param gateway the bound gateway document (source of the anchor-level caps)
+     * @param enabled the enabled endpoints whose routes carry the route-level caps
+     * @return the single violation when the largest declared cap exceeds the framework limit,
+     *         otherwise an empty list
+     */
+    private List<ConfigError> frameworkBodyLimitViolations(GatewayConfig gateway, List<EndpointConfig> enabled) {
+        long limit = frameworkBodyLimit.asLongValue();
+        long declared = maxDeclaredBodyBytes(gateway, enabled);
+        if (declared <= limit) {
+            return List.of();
+        }
+        return List.of(new ConfigError("application.properties", "quarkus.http.limits.max-body-size",
+                "%d exceeds framework limit %d; raise quarkus.http.limits.max-body-size to at least %d"
+                        .formatted(declared, limit, declared)));
+    }
+
+    /**
+     * The largest {@code max_body_bytes} declared anywhere in the configuration set — across the
+     * named policy anchors and every enabled endpoint's routes, the only two places a per-route cap
+     * can be declared.
+     *
+     * @param gateway the bound gateway document
+     * @param enabled the enabled endpoints
+     * @return the maximum declared cap in bytes, or {@code 0} when no cap is declared
+     */
+    private static long maxDeclaredBodyBytes(GatewayConfig gateway, List<EndpointConfig> enabled) {
+        return Stream.concat(
+                gateway.anchors().values().stream().map(AnchorConfig::securityFilter),
+                enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
+                        .map(RouteConfig::securityFilter))
+                .flatMap(Optional::stream)
+                .map(SecurityFilterConfig::maxBodyBytes)
+                .flatMap(Optional::stream)
+                .mapToLong(Integer::longValue)
+                .max()
+                .orElse(0L);
     }
 
     /**

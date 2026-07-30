@@ -125,7 +125,7 @@ class ThoroughChecksStageTest {
                 () -> stage.process(request, List.of()));
 
         // Assert
-        assertEquals(EventType.PARAMETER_LIMIT_EXCEEDED, thrown.getEventType());
+        assertEquals(EventType.CONTENT_TOO_LARGE, thrown.getEventType());
     }
 
     @Test
