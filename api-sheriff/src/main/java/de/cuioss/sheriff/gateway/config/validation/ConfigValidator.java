@@ -48,7 +48,9 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
@@ -81,6 +83,11 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code access: authenticated} anchor requires a non-{@code none} auth floor whose
  * backing block is present; and an {@code access: public} anchor must not declare an
  * auth block. These collect into the same shared list and never fail fast.
+ * <p>
+ * The fail-closed inbound-filter mode refusal (ADR-0023) adds one more: a route whose effective
+ * {@code profile} resolves to {@code none} must be neither effectively authenticated nor anchored
+ * under a {@code type: bff} anchor. The {@code profile} <em>value range</em> is owned by the bundled
+ * JSON Schema, so no post-binding range rule exists here — only this posture refusal.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -132,6 +139,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateSecurityProfileNone(gateway, endpoints, errors),
             ConfigValidator::validateTerminalAction,
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
@@ -553,6 +561,83 @@ public final class ConfigValidator {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
         }
+    }
+
+    /**
+     * Rule: the fail-closed inbound-filter mode refusal (ADR-0023). A route whose effective
+     * {@code profile} resolves to {@link SecurityProfile#NONE} must be neither effectively
+     * authenticated nor anchored under a {@code type: bff} anchor. {@code none} drops the
+     * url-parameter name/value validation, and dropping it in front of a token- or session-bearing
+     * surface is never a deliberate posture — so the boot fails rather than serving the weakened
+     * route.
+     * <p>
+     * The access level is derived through {@link RouteTableBuilder#effectiveAccessLevel} — the same
+     * seam the route table uses — rather than from {@link AnchorConfig#access()} directly: a route or
+     * endpoint may legally <em>strengthen</em> a {@code public}-access anchor's auth floor (ADR-0007
+     * forbids weakening it, not strengthening it), and reading the anchor's static {@code access}
+     * would under-refuse exactly those routes. The gateway-wide case needs no separate rule: a
+     * {@code security_defaults.profile: none} reaching an authenticated or BFF route through the
+     * fallback resolves to {@code none} here and is refused identically.
+     * <p>
+     * The message names the route, the refusing dimension and the remedy, and echoes no configured
+     * scalar value. Every violation collects into the shared list; the rule never fails fast
+     * (ADR-0009).
+     */
+    private static void validateSecurityProfileNone(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
+                if (effectiveProfile(gateway, route, anchor) != SecurityProfile.NONE) {
+                    continue;
+                }
+                List<String> refusals = noneRefusalDimensions(gateway, endpoint, route, anchor);
+                if (!refusals.isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            ("route '%s' resolves inbound-filter profile 'none' but %s; 'none' is refused on "
+                                    + "authenticated and bff routes — declare profile 'strict' or 'lenient' for this "
+                                    + "route, or stop routing it through a 'none' fallback")
+                                    .formatted(route.id(), String.join(" and ", refusals))));
+                }
+            }
+        }
+    }
+
+    /**
+     * The dimensions on which a {@code profile: none} route is refused: an effectively-authenticated
+     * access level, a {@code type: bff} anchor, or both. An empty list means the route may legally
+     * run under {@code none}.
+     */
+    private static List<String> noneRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, Optional<AnchorConfig> anchor) {
+        List<String> refusals = new ArrayList<>();
+        boolean authenticated = effectiveAuth(gateway, endpoint, route)
+                .map(auth -> RouteTableBuilder.effectiveAccessLevel(anchor, auth))
+                .filter(access -> access == AccessLevel.AUTHENTICATED)
+                .isPresent();
+        if (authenticated) {
+            refusals.add("its effective access level is 'authenticated'");
+        }
+        anchor.filter(resolved -> resolved.type() == AnchorType.BFF)
+                .ifPresent(resolved -> refusals.add("its anchor '%s' is type 'bff'".formatted(resolved.name())));
+        return refusals;
+    }
+
+    /**
+     * The route's effective inbound-filter profile, resolved through the same
+     * {@code route → declared-anchor} wholesale {@code security_filter} replacement chain
+     * {@code RouteTableBuilder} materializes, falling back to the gateway-wide
+     * {@link RouteTableBuilder#globalProfile(GatewayConfig) profile} (itself
+     * {@link SecurityProfile#DEFAULT_PROFILE} when undeclared). The whole {@code security_filter}
+     * block is replaced, not merged: a route declaring a block without a {@code profile} falls back
+     * to the gateway-wide value, never to its anchor's profile.
+     */
+    private static SecurityProfile effectiveProfile(GatewayConfig gateway, RouteConfig route,
+            Optional<AnchorConfig> anchor) {
+        return route.securityFilter().or(() -> anchor.flatMap(AnchorConfig::securityFilter))
+                .flatMap(SecurityFilterConfig::profile)
+                .flatMap(SecurityProfile::parse)
+                .orElseGet(() -> RouteTableBuilder.globalProfile(gateway));
     }
 
     /**

@@ -274,8 +274,18 @@ public final class RouteTableBuilder {
      * {@link AccessLevel#PUBLIC} for an unanchored, effectively-unauthenticated asset route (the
      * configuration validator rejects an asset action on a non-asset anchor before assembly, so
      * this default is a defensive floor).
+     * <p>
+     * A shared seam: {@code ConfigValidator}'s fail-closed {@code profile: none} refusal derives the
+     * access level through this same method rather than reading {@link AnchorConfig#access()}
+     * directly, so the boot refusal and the runtime governance can never disagree about which routes
+     * count as authenticated (ADR-0009 single-reporter, the {@link #normalizePrefix} precedent).
+     *
+     * @param anchor        the route's resolved anchor, empty when the route is unanchored
+     * @param effectiveAuth the route's effective auth posture
+     * @return the effective access level; {@link AccessLevel#AUTHENTICATED} whenever the effective
+     *         auth requires authentication
      */
-    private static AccessLevel effectiveAccessLevel(Optional<AnchorConfig> anchor, AuthConfig effectiveAuth) {
+    public static AccessLevel effectiveAccessLevel(Optional<AnchorConfig> anchor, AuthConfig effectiveAuth) {
         if (!NONE.equals(effectiveAuth.require())) {
             return AccessLevel.AUTHENTICATED;
         }
@@ -302,11 +312,14 @@ public final class RouteTableBuilder {
     /**
      * The gateway-wide effective profile: the declared {@code security_defaults.profile}, or
      * {@link SecurityProfile#DEFAULT_PROFILE} when the block (or the knob) is omitted.
+     * <p>
+     * Shared with {@code ConfigValidator}'s fail-closed {@code profile: none} refusal so the boot
+     * refusal resolves the gateway-wide fallback through exactly this chain.
      *
      * @param gateway the bound gateway document
      * @return the resolved gateway-wide profile
      */
-    private static SecurityProfile globalProfile(GatewayConfig gateway) {
+    public static SecurityProfile globalProfile(GatewayConfig gateway) {
         return gateway.securityDefaults()
                 .flatMap(SecurityDefaultsConfig::profile)
                 .flatMap(SecurityProfile::parse)

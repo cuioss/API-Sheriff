@@ -27,7 +27,8 @@ import java.util.Optional;
  * boot there), not by this model and not by the configuration validator.
  * <p>
  * <strong>Fallback.</strong> Every route resolves its effective profile through
- * {@code route → endpoint → anchor security_filter → security_defaults}. A route that declares no
+ * {@code route security_filter → anchor security_filter → security_defaults} — the endpoint level
+ * carries no {@code security_filter} block, so it is not part of the chain. A route that declares no
  * {@code security_filter} — or one whose block omits {@code profile} — therefore inherits the value
  * carried here, and an entirely omitted {@code security_defaults} block resolves to
  * {@link SecurityProfile#DEFAULT_PROFILE}.
