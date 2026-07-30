@@ -84,7 +84,10 @@ section is the operator's decision guide.
 | `strict`
 | Default choice. Any route serving untrusted clients, and every authenticated or BFF surface.
 | The tightest caps: 1 MiB body, 20 query parameters, 1024-character header values, parameter values
-  and paths, and suspicious-pattern rejection on.
+  and paths, and suspicious-pattern rejection on. The 1024-character figure is the *preset* cap;
+  `Cookie` / `Set-Cookie` values are the one exception -- a cookie-mode BFF gateway validates them
+  pre-route against a raised, gateway-wide cap derived from `oidc.session.max_cookie_size`. See
+  link:../configuration.adoc#_oidc[Configuration Reference -- `oidc.session.max_cookie_size`].
 
 | `lenient`
 | A trusted internal caller legitimately needs headroom -- long tokens in headers, many query
@@ -94,10 +97,12 @@ section is the operator's decision guide.
 
 | `none`
 | A specific route receives url-parameter values the validator rejects but your application requires
-  -- a path-shaped callback target, an opaque token containing separators. Use it *per route*, never
-  gateway-wide.
-| Everything `strict` enforces *except* url-parameter name/value validation. See "What `none` does not
-  turn off" below -- it is a partial disable, not an off switch.
+  -- a path-shaped callback target, an opaque token containing separators. Prefer it *per route*: a
+  gateway-wide `security_defaults.profile: none` is accepted only while no authenticated or BFF route
+  inherits it, because the boot validator refuses the mode on those routes.
+| Everything `strict` enforces *except* two things: the url-parameter name/value validation and the
+  per-route pipeline re-run. See "What `none` does not turn off" below -- it is a partial disable,
+  not an off switch.
 |===
 
 === `none` is a partial disable, not an off switch

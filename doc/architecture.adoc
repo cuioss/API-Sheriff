@@ -156,7 +156,8 @@ Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
   counts) -- the DoS guard a per-value pipeline cannot express.
 * A shared, immutable `SecurityConfiguration` supplies the tunable limits. The gateway sources it
   from the resolved profile's preset (`strict()` / `lenient()`), overlaid with any explicit
-  `security_filter` limit keys -- never from bare builder defaults.
+  `security_filter` limit keys -- never from bare builder defaults. `none` has no preset of its own
+  and inherits the nearest non-`none` one (see *Profiles* above).
 * A single `de.cuioss.http.security.monitoring.SecurityEventCounter` is passed into every
   pipeline; it auto-increments on each violation, and its counts feed the gateway metrics.
 
