@@ -142,10 +142,14 @@ post-route: a collection limit is a DoS guard that does not depend on a per-rout
 
 *Profiles.* The mode set is `strict` / `lenient` / `none`, on the gateway-wide `security_defaults`
 block and on any `security_filter` block. An omitted block -- or a block omitting `profile` --
-resolves to `strict`, the fail-closed choice. The value *range* is enforced by the bundled JSON
-Schema, not by the configuration validator. `none` contributes no limits policy of its own, so a
-`none` route takes its limits from the nearest non-`none` profile in its fallback chain (landing on
-`strict` when the whole chain is `none`), which is what keeps its retained body cap concrete. See
+resolves to `strict`, the fail-closed choice. Two layers validate the setting, and they own
+different halves: the value *range* is enforced by the bundled JSON Schema's `profile` enum, so an
+unrecognized value fails the boot before binding and no post-binding range rule exists; the
+configuration validator owns the *posture* rule -- the fail-closed refusal of an effective `none`
+on an effectively-authenticated or `type: bff` route (see *What `profile: none` costs, exactly.*
+above). `none` contributes no limits policy of its own, so a `none` route takes its limits from the
+nearest non-`none` profile in its fallback chain (landing on `strict` when the whole chain is
+`none`), which is what keeps its retained body cap concrete. See
 link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 
 Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
