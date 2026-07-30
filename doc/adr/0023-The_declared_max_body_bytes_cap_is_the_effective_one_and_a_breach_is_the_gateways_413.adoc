@@ -1,0 +1,153 @@
+= ADR-0023: The declared max_body_bytes cap is the effective one and a breach is the gateway's 413
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A route's declared security_filter.max_body_bytes is the effective ceiling; the framework floor is derived from it and validated fail-closed at boot, and a breach is rendered by the gateway as an RFC 9457 413.
+// tags: body-limits, error-contract, fail-closed, configuration, edge
+// affects: api-sheriff/src/main/resources/application.properties, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigProducer.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcStatusMapper.java, doc/configuration.adoc, doc/architecture.adoc
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Context
+
+A gateway that lets an operator declare a per-route request-body ceiling owns two
+limits, not one: the ceiling the configuration declares, and the ceiling the HTTP
+framework beneath it enforces. Whichever is lower is the one that actually applies.
+
+That creates a class of defect in which a documented configuration key is inert. The
+declared value is parsed, modelled and enforced by real gateway code, yet every
+request that would exercise it is terminated by the framework first, so the
+enforcement path is never reached. Nothing fails: the framework's rejection is a
+well-formed HTTP response, so the deployment looks correct from the outside while the
+operator's stated policy is silently not the policy in force. Unit tests do not
+detect it, because they exercise the filter directly — below the layer where the
+truncation happens — and therefore pass on a path production never takes.
+
+The choice point is structural: either the framework floor is derived from the
+declared configuration so the gateway is reliably the component that rejects, or the
+two limits are allowed to disagree and the effective ceiling becomes an emergent
+property of whichever happens to be smaller.
+
+A second question follows from the first. Once the gateway is the rejecting
+component, its rejection must be distinguishable from the framework's. The framework
+answers an over-limit request from a root handler in front of the router, with a bare
+status line and no response body. If the gateway's own rejection is not
+distinguishable from that, a test asserting "the request was rejected" cannot tell
+whether the enforcement under test ran at all — which is precisely the blind spot
+that let the inert key survive.
+
+== Decision
+
+**The declared cap is the effective cap.** The framework body limit is configuration
+derived from the declared anchors rather than an independent knob, and the
+relationship between them is validated fail-closed at boot: startup aborts when any
+route declares a `max_body_bytes` above the framework floor, naming the offending
+descriptor. A deployment whose stated policy cannot be honoured does not start, it
+does not start and serve a quietly smaller limit.
+
+Enforcement predicates are unchanged by this decision. The `Content-Length`
+fast-reject and the streaming running-counter remain where they were; what changes is
+that they are now reachable.
+
+**A body-cap breach is the gateway's own 413.** The proxy-path breach renders as
+`CONTENT_TOO_LARGE`, mapped to HTTP 413 in the `INPUT_VALIDATION` category and
+carried in the standard RFC 9457 `application/problem+json` envelope. The gRPC path
+maps the same event to `RESOURCE_EXHAUSTED` rather than falling through to `UNKNOWN`,
+so a body-cap breach is the same semantic outcome on both protocols.
+
+The status alone is deliberately not the discriminator between the two rejecting
+components, because the framework also answers 413. The envelope is: the gateway's
+rejection carries `application/problem+json` with a problem type and title, and the
+framework's carries no body at all. Any assertion that means to prove the gateway
+enforced must therefore assert on the envelope, not only on the status.
+
+== Consequences
+
+=== Positive
+
+* A declared `max_body_bytes` is honoured or the deployment refuses to start. There
+  is no third state in which it is documented, parsed, and inert.
+* The component that rejects an oversize body is the one whose configuration
+  described the limit, so the rejection is attributable and carries the gateway's
+  diagnostic envelope rather than a bare framework status line.
+* The failure mode is legible at the layer that owns it: a misconfiguration fails at
+  boot with the offending descriptor named, rather than at request time as a smaller
+  ceiling than the operator asked for.
+* Body-cap semantics are uniform across the proxy and gRPC paths.
+
+=== Negative
+
+* The framework floor and the declared caps are coupled: raising a declared cap above
+  the shipped floor is a two-part change, and doing only half of it is a boot
+  failure rather than a warning.
+* The shipped floor is a product default that most deployments never touch but every
+  deployment inherits, so it must be chosen conservatively enough to be safe and
+  generous enough not to make the common case a boot failure.
+
+=== Risks
+
+* **Shadowing at equality.** When the framework floor is set exactly equal to the
+  largest declared cap, an over-cap request is rejected by the framework's
+  pre-router check before the gateway pipeline is entered, so the operator receives
+  the bare framework 413 rather than the RFC 9457 envelope. The boot check permits
+  this configuration because the declared cap is still honoured for every request at
+  or below it — only the *renderer* of an over-cap rejection changes. A deployment
+  that wants the gateway's envelope for over-cap requests must set the floor strictly
+  above its largest declared cap. This is documented in the configuration reference
+  rather than forbidden, because forbidding it would reject a configuration whose
+  stated policy is in fact honoured.
+* **Chunked requests take a different path.** A request with no `Content-Length`
+  skips the framework's pre-check entirely, so the gateway's streaming counter is the
+  enforcing mechanism and the envelope is always rendered. The two transports
+  therefore differ in *which* component rejects, though not in the effective limit.
+* Raising the framework floor does not widen any un-capped ingress path: every proxy
+  route falls back to a default body size when it declares none, and reserved
+  BFF paths carry their own independent ceiling. This is a property the
+  architecture must preserve — a future change that made the framework floor the only
+  ceiling for some route would silently re-open the risk this ADR closes.
+
+== Alternatives Considered
+
+**Leave the framework floor at its default and enforce only in the gateway.** This is
+the state this ADR replaces. It requires no configuration derivation and no boot
+validation, and it is why the declared cap was unreachable: the gateway's enforcement
+sits behind the framework's, so the lower limit wins regardless of what the
+configuration says. It fails not because it is complex but because it makes the
+effective policy an accident of which limit is smaller.
+
+**Require the operator to set the framework key by hand, with no validation.**
+Cheapest to implement, and it does make the declared cap reachable when the operator
+gets it right. It fails on the same axis as the status quo: a deployment that omits
+the key or sets it too low is indistinguishable from a correct one until a large
+request arrives, so the defect class survives with a manual step added.
+
+**Raise the framework limit to a fixed safe ceiling unrelated to the declared caps.**
+This makes the gateway the rejecting component without any derivation, and is
+attractive for its simplicity. It was rejected because the constant is arbitrary: it
+is either lower than some deployment's declared cap — reintroducing the original
+defect for that deployment — or high enough to be meaningless as a limit, which
+removes the framework's own backstop without putting anything in its place.
+
+The unifying failure is the same in all three: each leaves the effective ceiling
+implicit. The decision above makes it explicit and refuses to boot when it cannot be
+honoured, which is the only variant in which the documented configuration surface and
+the enforced behaviour cannot diverge.
+
+== References
+
+* `doc/configuration.adoc` — the `max_body_bytes` reference and the operator-facing
+  statement of the framework floor, the shadowing consequence and the chunked-request
+  carve-out.
+* `doc/architecture.adoc` — the error contract: the HTTP status and category tables
+  and the gRPC status mapping.
+* ADR-0003 — the immediate-TCP-peer trust gate, for the edge trust boundary this
+  enforcement sits behind.
