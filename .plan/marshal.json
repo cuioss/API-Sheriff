@@ -82,10 +82,10 @@
         },
         "default:pre-submission-self-review": {
           "drop_review_on_scope_gate": false,
-          "lane": "auto"
+          "lane": "standard"
         },
         "default:finalize-step-simplify": {
-          "lane": "auto"
+          "lane": "standard"
         },
         "default:finalize-step-security-audit": {
           "lane": "full"
@@ -111,7 +111,7 @@
           "re_review_on_timeout": "ask",
           "review_rate_window_await": false,
           "review_rate_window_timeout_seconds": 3600,
-          "lane": "auto",
+          "lane": "standard",
           "required_bots": "coderabbit,pr-agent",
           "optional_bots": "sourcery",
           "bot_lists_provenance": "answered"
@@ -120,7 +120,7 @@
           "touched_file_cleanup": "new_code_only",
           "do_transition": false,
           "ce_wait_timeout_seconds": 600,
-          "lane": "auto"
+          "lane": "standard"
         },
         "default:lessons-capture": {
           "lane": "minimal"
@@ -306,7 +306,7 @@
       "plugin_cache_keep_days": 3,
       "no_plan_body_days": 7
     },
-    "provisioned_version": "0.1.1274",
+    "provisioned_version": "0.1.1275",
     "config_seed_fingerprint": "59c217c3"
   }
 }
