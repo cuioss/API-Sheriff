@@ -53,13 +53,16 @@ can reach it**. Specifically:
 
 Use a different diagram type when:
 
-- The structure is **flow through stages** → use the flow type (`diagram-type-flow.md`).
-- The structure is a **time-ordered exchange** → use the sequence type (`diagram-type-sequence.md`).
+- The structure is **flow through stages** → use the flow type
+  (`pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md`).
+- The structure is a **time-ordered exchange** → use the sequence type
+  (`pm-documents:ref-svg-diagrams/standards/diagram-type-sequence.md`).
 - The structure is **producer / store / consumer** or a **side-by-side comparison** → use the block
-  type (`diagram-type-block.md`).
-- The structure is **layers stacked on a substrate** → use the stack type (`diagram-type-stack.md`).
+  type (`pm-documents:ref-svg-diagrams/standards/diagram-type-block.md`).
+- The structure is **layers stacked on a substrate** → use the stack type
+  (`pm-documents:ref-svg-diagrams/standards/diagram-type-stack.md`).
 - The structure is **hub-and-spoke relationships without containment** → use the graph type
-  (`diagram-type-graph.md`).
+  (`pm-documents:ref-svg-diagrams/standards/diagram-type-graph.md`).
 
 The discriminator is containment. If nothing in the picture is *inside* anything else, this is the
 wrong type.
@@ -97,27 +100,36 @@ cluster ─▶ namespace ─▶ pod ─▶ container        (orchestrated form)
 |------|-------|
 | Maximum nesting depth | **4 boxes**, counting the outermost enclosure as depth 1. |
 | Inset — child box edge to parent box inner edge | **16 px** on every side, at every level. |
-| Label band — reserved strip at the top of every enclosure | **28 px**. No child box may start above `parent_top + 28`. |
+| Label band — reserved strip at the top of every enclosure | **28 px** for a label-only enclosure, **44 px** when the enclosure carries an `encl-sub` sub-label. No child box may start above `parent_top +` the effective band. |
 | Minimum legible inner box | **120 × 48 px**. |
 
-Corner radius decreases with depth, so nested corners read as concentric rather than parallel:
+Corner radius steps down as the enclosure role gets more concrete, so nested corners read as
+concentric rather than parallel. The radius is keyed to the **role**, not to the raw depth number,
+because the two canonical ladders put different roles at the same depth — the compose ladder has a
+container at depth 3 where the orchestrated ladder has a pod:
 
-| Depth | `rx` / `ry` |
-|-------|-------------|
-| 1 — outermost enclosure (host, cluster) | 8 |
-| 2 — network, namespace | 6 |
-| 3 — pod, container group | 6 |
-| 4 — container, process | 4 |
+| Enclosure role | `rx` / `ry` |
+|----------------|-------------|
+| Outermost enclosure — host, cluster | 8 |
+| Network, namespace | 6 |
+| Everything the network contains — pod, container group, container, process | 4 |
 
-Depth 4 is the floor because a box at depth 4 sits 48 px inside its outermost ancestor on each axis
-and still has to hold a legible label. **When the topology needs a fifth level, split it into a
-second diagram** rather than shrinking the type or the inset — a depth-5 box cannot satisfy the
-120 × 48 px minimum inside any of the standard `viewBox` sizes.
+A leaf container therefore takes `rx="4"` whatever its depth: depth 3 in the compose ladder, depth 4
+in the orchestrated one. The innermost tier is flat at 4 rather than continuing to decrease because
+4 px is the smallest radius that still reads as a rounded corner at raster scale — a pod at 4 and its
+contained container at 4 are the one place two nested corners share a radius, and the 16 px inset
+keeps them from reading as parallel.
+
+Depth 4 is the nesting floor because a box at depth 4 sits 48 px inside its outermost ancestor on
+each axis and still has to hold a legible label. **When the topology needs a fifth level, split it
+into a second diagram** rather than shrinking the type or the inset — a depth-5 box cannot satisfy
+the 120 × 48 px minimum inside any of the standard `viewBox` sizes.
 
 The 120 × 48 px minimum is what a box needs to hold a 13 px label plus one 11 px sub-label with the
-standard 12 px left inset and the 28 px label band. **A box that would fall below the minimum is not
-drawn smaller — it is collapsed**: replace the group of undersized boxes with one box carrying a
-count and an annotation naming what was collapsed (see § Collapsed groups).
+standard 12 px left inset and the 44 px label band that a sub-label requires. **A box that would
+fall below the minimum is not drawn smaller — it is collapsed**: replace the group of undersized
+boxes with one box carrying a count and an annotation naming what was collapsed (see § Collapsed
+groups).
 
 ### Enclosure labels
 
