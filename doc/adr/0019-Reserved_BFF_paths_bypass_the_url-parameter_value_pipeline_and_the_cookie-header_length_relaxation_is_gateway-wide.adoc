@@ -58,8 +58,9 @@ each leaves every other validator untouched.*
 
 === (a) The url-parameter value pipeline is not applied to matched reserved paths
 
-The inbound stage takes a reserved-path predicate over host and canonical path. When a request
-matches a reserved gateway path, the url-parameter *value* pipeline is not applied to it.
+When a request matches a reserved gateway path, the url-parameter *value* pipeline is not applied to
+it. See the Amendment below: this relaxation is now enforced *structurally* rather than by the
+reserved-path predicate this section originally described.
 
 The justification is that a matched reserved path is *terminated at the gateway and never proxied*,
 so the threat the value pipeline addresses — a parameter reinterpreted by an upstream — does not
@@ -99,6 +100,47 @@ The residual exposure is therefore precisely: on a cookie-mode gateway, a client
 `Cookie` header value than the default policy would accept, subject to every other content check and
 to the gateway's own transport limits. A value that is not a resolvable sealed session is refused by
 the session binding fail-closed as "no session".
+
+== Amendment: relaxation (a) is now enforced structurally, not by a predicate
+
+*This record is amended, not superseded. The observable relaxation of decision (a) is unchanged; only
+its enforcement mechanism is.*
+
+When this record was written, the url-parameter *value* pipeline ran in the pre-route stage, so
+exempting a reserved path required an explicit reserved-path *predicate* over host and canonical path
+threaded into that stage. The exemption was therefore predicate-driven: a decision the stage made
+per request by consulting a matcher.
+
+The url-parameter name and value validation has since *moved into the post-route stage*, so that it
+runs under the route's own configuration and under the inbound-filter profile gate introduced by
+link:0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023].
+That relocation makes decision (a) *structural*: a matched reserved path terminates at its reserved
+handler *before route selection*, so it never reaches the post-route stage and therefore never reaches
+the parameter pipeline at all. The exemption is now a consequence of the pipeline's shape rather than
+of a predicate consulted inside it.
+
+Consequences of the amendment:
+
+* *The reserved-path predicate is removed* from the pre-route stage, which no longer takes one. There
+  is no longer a matcher to keep in sync with the reserved-path set, and no way for the exemption and
+  the reserved-path routing to disagree about which paths are reserved — previously two independent
+  representations of the same set.
+* *The observable behaviour is identical.* A reserved path's url-parameter values are not run through
+  the generic value pipeline, exactly as before, and validation still *moves to* the reserved handler
+  that knows each parameter's grammar. The obligation recorded under Risks — that a new reserved
+  handler must validate its own parameters — is unchanged and remains the load-bearing half of the
+  guarantee.
+* *Everything else that constrained a reserved path still constrains it.* Path canonicalisation still
+  runs in the pre-route floor and still yields the single canonical path later stages consume, the
+  parameter- and header-*count* caps still apply, and every header validator still applies. The
+  relocation moved the *value* pipeline only.
+* *Relaxation (b), the cookie-header value-length raise, is untouched* by this amendment. It remains a
+  pre-route relaxation, remains gateway-wide for the structural reason decision (b) gives, and its
+  three bounding axes are unchanged.
+
+The amendment strengthens the original decision rather than qualifying it: the relaxation the record
+granted deliberately is now a property of where reserved paths terminate, which cannot drift out of
+agreement with itself the way a predicate could.
 
 == Consequences
 
@@ -177,6 +219,7 @@ limit is structural and is stated as such rather than left to be discovered.
 == References
 
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode and the reserved-path model] -- the architecture these relaxations serve.
+* link:0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023 -- Inbound filter modes] -- relocates the url-parameter validation into the post-route stage, which is what makes relaxation (a) structural (see the Amendment above). Does not supersede this record.
 * link:../architecture.adoc[Architecture] -- the inbound pipeline's position ahead of routing.
 * link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the session block carrying the cookie-size budget.
 * link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the variant whose sealed cookie motivates the length relaxation.

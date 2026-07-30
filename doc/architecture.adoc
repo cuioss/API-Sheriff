@@ -21,12 +21,51 @@ An inbound request flows left to right through a fixed pipeline. The TLS edge te
 (or passes through) the connection; a *security-headers/CORS stage* prepares the response
 headers applied to *every* response -- including rejections -- and answers CORS preflight
 `OPTIONS` requests before authentication (preflights carry no credentials by spec; see
-link:configuration.adoc#_security_headers[Configuration -- `security_headers`]); then the
-security filter, route matcher, authentication layer, and zero-trust forward policy each act
-in turn; a request that fails any stage is rejected before it reaches the upstream. The event
+link:configuration.adoc#_security_headers[Configuration -- `security_headers`]); then inbound
+validation, the route matcher, the authentication layer, and the zero-trust forward policy each
+act in turn; a request that fails any stage is rejected before it reaches the upstream. The event
 system and metrics observe every stage.
 
+*Inbound validation is not one step but two, split across route selection.* A single
+undifferentiated "security filter" box is the wrong mental model, because the two halves differ in
+what they can see and in what configuration can switch off:
+
+. A *non-skippable pre-route floor* runs first, under the gateway-wide baseline policy. It validates
+  the raw path and every header name and value, enforces the parameter- and header-*count* caps, and
+  produces the *single canonical path* every later stage consumes. Route selection hard-requires that
+  canonical path, which is exactly why this half cannot be made skippable or moved behind routing:
+  without it there is no path to select a route with.
+. *Route selection* then resolves exactly one route -- and with it, for the first time in the
+  pipeline, a per-route policy.
+. A *post-route per-route stage* runs next. It is *always dispatched*, for every route and every
+  profile, but only part of what it does is switchable: it unconditionally enforces the route's
+  `max_body_bytes` cap and its `allowed_paths` allowlist, while its *validation half* -- the
+  url-parameter name and value validation, plus the divergent path/header pipeline re-run -- is gated
+  by the route's inbound-filter `profile`.
+
+*What `profile: none` costs, exactly.* `none` is a *partial* disable
+(link:adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023]),
+and describing it as "skipping the thorough checks" is wrong in both directions. Its blast radius is
+closed and consists of exactly two items: the url-parameter name and value validation, and the
+per-route pipeline re-run. Everything else still runs -- the whole pre-route floor (so an encoded path
+separator, an over-cap parameter count and an oversized header value are still rejected), the
+`max_body_bytes` cap, the `allowed_paths` allowlist, authentication, the verb gate, the
+terminal-action rules and the response envelope. Because a body cap is a resource guard and a path
+allowlist is a surface restriction, neither is treated as an injection defence and neither rides the
+profile switch. A route whose effective profile resolves to `none` is additionally *refused at boot*
+when it is effectively authenticated or sits under a `type: bff` anchor.
+
 image::resources/diagrams/request-pipeline.svg[Inbound request pipeline: TLS edge, security filter, route match, authenticate, forward policy, then upstream, align=center]
+
+[NOTE]
+====
+The diagram above renders inbound validation as a *single* "security filter" box ahead of route
+matching. That is a simplification: it predates the pre-route/post-route split described above and
+does not show the post-route per-route stage or the profile gate on its validation half. Read the
+three-step list above as authoritative for the pipeline's shape; the diagram remains accurate for the
+*order* of the surrounding stages (TLS edge -> headers/CORS -> inbound validation -> route match ->
+authenticate -> forward policy -> upstream).
+====
 
 The authentication stage is where the three variants differ: offline bearer validation
 (link:variants/01-base-gateway.adoc[Variant 1]), OIDC session mediation
@@ -79,7 +118,35 @@ update), not by mutating a live process.
 
 The inbound filter is the "basic HTTP security filtering -- not a WAF" layer, delivered by
 `cui-http`'s security module. It runs as cheap, in-CPU, synchronous work (< 1 ms target, no
-I/O) and is therefore safe to run inline on the request's virtual thread.
+I/O) and is therefore safe to run inline on the request's virtual thread. As the Component Model
+above describes, it is split across route selection: a non-skippable pre-route floor and an
+always-dispatched post-route per-route stage whose validation half is profile-gated.
+
+*Which half enforces what:*
+
+[cols="2,1,3", options="header"]
+|===
+| Check | Stage | Switchable by `profile`
+
+| Path canonicalisation and validation | pre-route floor | no -- route selection requires its output
+| Header name and value validation | pre-route floor | no
+| Parameter and header *count* caps | pre-route floor | no
+| `max_body_bytes` cap | post-route | no -- a resource guard, not an injection defence
+| `allowed_paths` allowlist | post-route | no -- a surface restriction, not an injection defence
+| url-parameter *name* and *value* validation | post-route | *yes* -- off under `none`
+| Divergent path/header pipeline re-run | post-route | *yes* -- off under `none`
+|===
+
+The parameter *count* cap stays in the floor even though the values it bounds are validated
+post-route: a collection limit is a DoS guard that does not depend on a per-route policy.
+
+*Profiles.* The mode set is `strict` / `lenient` / `none`, on the gateway-wide `security_defaults`
+block and on any `security_filter` block. An omitted block -- or a block omitting `profile` --
+resolves to `strict`, the fail-closed choice. The value *range* is enforced by the bundled JSON
+Schema, not by the configuration validator. `none` contributes no limits policy of its own, so a
+`none` route takes its limits from the nearest non-`none` profile in its fallback chain (landing on
+`strict` when the whole chain is `none`), which is what keeps its retained body cap concrete. See
+link:adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023].
 
 Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
 
@@ -87,8 +154,9 @@ Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
   header-name and header-value pipelines.
 * `RequestCollectionValidator` enforces collection-count limits (parameter/header/cookie
   counts) -- the DoS guard a per-value pipeline cannot express.
-* A shared, immutable `SecurityConfiguration` (`defaults()` / `strict()` / `lenient()`, or a
-  builder) supplies the tunable limits.
+* A shared, immutable `SecurityConfiguration` supplies the tunable limits. The gateway sources it
+  from the resolved profile's preset (`strict()` / `lenient()`), overlaid with any explicit
+  `security_filter` limit keys -- never from bare builder defaults.
 * A single `de.cuioss.http.security.monitoring.SecurityEventCounter` is passed into every
   pipeline; it auto-increments on each violation, and its counts feed the gateway metrics.
 

@@ -1,0 +1,270 @@
+= ADR-0023: Inbound filter modes — `none` is a partial disable retaining the body cap and path allowlist, and is refused on authenticated and BFF routes
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The inbound-filter mode set is strict/lenient/none with an omitted profile resolving to strict; none is a bounded PARTIAL disable turning off only the url-parameter name/value validation and the per-route pipeline re-run, retaining the pre-route floor, the body cap and the path allowlist, and refused fail-closed at boot on effectively-authenticated and BFF routes
+// tags: security, input-validation, security-profile, inbound-filter, fail-closed, blast-radius, boot-validation, partial-disable
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The gateway's `profile` knob selects an inbound-validation posture, on the gateway-wide
+`security_defaults` block and on every per-route and per-anchor `security_filter` block. Two things
+about it were underspecified, and both were being resolved by accident rather than by decision.
+
+*The mode set had a member that promised nothing.* Alongside `strict` and `lenient` — each backed by
+a concrete cui-http preset — the set carried a `default` value whose meaning was "whatever the
+library's builder defaults happen to be". A posture name that resolves to an incidental value cannot
+be reasoned about: it names a deferral, not a policy. Worse, an *omitted* `security_defaults` block
+resolved to that same incidental baseline, so the most common configuration shape — one declaring no
+global posture at all — received the loosest-by-accident policy rather than the
+safest-by-construction one.
+
+*"Turn the filter off" had no defined meaning.* Operators legitimately need an escape hatch. A
+partner-integration route receives url-parameters carrying structure the anti-injection policy treats
+as suspicious — a path-shaped callback target, an opaque token containing separators — and the
+operator's real requirement is "stop validating *these parameter values*", not "stop defending this
+route". No vocabulary existed for that requirement, so the available choice was between a posture
+that rejects legitimate traffic and an undefined off switch. The undefined off switch is the
+dangerous option: nobody can say afterwards what it disabled, so nobody can review it.
+
+Two structural facts constrain any answer.
+
+*The pre-route floor cannot be skipped.* Inbound path validation yields the single canonical path
+that route selection consumes. Route selection therefore *hard-requires* the floor to have run — a
+request whose profile suppressed path canonicalisation would have no path to select a route with. The
+floor's non-skippability is a property of the pipeline's shape rather than a policy choice, and it
+follows that the profile knob cannot reach it: the profile is a *per-route* setting, and no route is
+resolved until after the floor has run. This is the same structural argument
+link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]
+makes about the cookie-header cap, reached from the opposite direction.
+
+*A `none` route can be an authenticated route.* Because the profile sits on a route or anchor while
+the auth floor may come from a route, an endpoint, or an anchor, nothing structurally prevents an
+operator from disabling parameter validation on a surface that mediates a session or a bearer token.
+That combination is never a deliberate posture — it is the shape a misconfiguration takes — and it is
+precisely the combination least likely to be noticed, because each half reads as reasonable in
+isolation.
+
+== Decision
+
+*The mode set is `strict` / `lenient` / `none`. `none` is a bounded partial disable with a normative
+closed list of what it turns off, and it is refused at boot on effectively-authenticated and BFF
+routes.*
+
+Four coupled decisions follow.
+
+=== (1) The canonical mode set is strict / lenient / none, and an omitted profile resolves to strict
+
+`default` is *removed* from the value space. Every remaining mode names a policy the reader can look
+up: `strict` and `lenient` are backed by their cui-http presets, and `none` is defined by decision
+(3) below.
+
+An omitted `security_defaults` block — or a block that omits `profile` — resolves to `strict`. The
+common configuration shape now receives the fail-closed posture by construction, and a deployment
+wanting a looser baseline must *say so*. This is a deliberate tightening with a real blast radius
+(see Consequences).
+
+*The value-range gate stays in the JSON Schema.* The schema already enumerates the mode set at each
+of its three symmetric declaration sites, so an out-of-range value — the dropped `default` preset
+included — fails boot there. It is deliberately *not* duplicated into the configuration validator: a
+second copy of an enumeration is a second thing to keep in sync, and the failure mode of drift
+between two range gates is that the looser one silently wins. One gate, at the boundary where the
+document is bound.
+
+=== (2) `none` is a partial disable, bounded structurally and by policy
+
+`none` disables *validation*. It is not a statement about *limits*, and it is not a bypass.
+
+Two independent bounds hold it in place.
+
+*The structural bound.* The pre-route floor — path canonicalisation, header name and value
+validation, and the parameter- and header-*count* caps — runs for every request regardless of
+profile, because route selection hard-requires the canonical path it produces. No profile value can
+reach it. A `none` route is therefore still rejected for an encoded path separator, an over-cap
+parameter count, and an oversized header value, exactly as a `strict` route is.
+
+*The policy bound.* `max_body_bytes` and `allowed_paths` are *retained* under `none`. Both are
+enforced by the post-route stage, so unlike the floor they *could* have been placed behind the
+profile gate; they deliberately are not. Neither is an injection defence: a body cap is a resource
+guard against exhaustion, and a path allowlist is an authorisation-shaped surface restriction. An
+operator asking to stop validating parameter values is not asking to remove a denial-of-service guard
+or to widen the route's reachable surface, and reading one request as the other is the kind of
+over-delivery that turns an escape hatch into a hole.
+
+`none` therefore still needs a concrete limits policy. Since it names no preset of its own, a `none`
+route resolves its limits from the nearest non-`none` profile in its fallback chain, landing on
+`strict` when the whole chain is `none` — so the retained body cap always has a concrete number to
+enforce.
+
+=== (3) The closed list of what `none` disables is normative
+
+`none` disables exactly two things:
+
+. the url-parameter *name* and *value* validation — relocated into the post-route stage so it runs
+  under the route's own configuration and under this gate;
+. the per-route pipeline *re-run* — the second pass of the path and header pipelines that a route
+  whose configuration diverges from the gateway baseline would otherwise perform.
+
+*Nothing else.* This list is the definition of the mode, not a description of the current
+implementation: adding a third item to it is a change to this ADR, not a refactor. Anything absent
+from the list keeps running under `none` — the pre-route floor, the body cap, the path allowlist,
+authentication, the method gate, the terminal-action rules, and the response-side envelope.
+
+Note what item (2) is and is not. The re-run is skipped because a route's *divergent* second pass is
+part of the profile-gated half; the *baseline* path and header validation performed by the floor has
+already run and is not repeated by it.
+
+=== (4) `none` is refused fail-closed at boot on effectively-authenticated and BFF routes
+
+A route whose effective profile resolves to `none` fails the boot when either
+
+* its *effective access level* is `authenticated`, or
+* its resolving anchor's *type* is `bff`.
+
+The refusal is a boot failure, not a warning. It collects into the shared all-violations pass and
+never fails fast, per link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]; the message names the
+route, the refusing dimension and the remedy, and echoes no configured scalar value.
+
+*The access level is derived, not read.* The check keys on the *effective* access level — resolved
+through the same seam the route table uses — rather than on the anchor's declared `access`. This is
+load-bearing, and the link:0007-anchor-scoped-policy.adoc[ADR-0007] strengthening case is what makes
+it so: a route or endpoint may legally strengthen a `public` anchor's auth floor, since ADR-0007
+forbids *weakening* a floor and not strengthening one. A route adding its own `require: bearer` under
+a `public` anchor is effectively authenticated while its anchor still reads `access: public`, so a
+check reading the anchor's static `access` would let precisely that route through — the case most in
+need of the refusal, and the one a reviewer is least likely to spot.
+
+The anchor-type dimension is independent. Per
+link:0013-anchor-type-access-axes.adoc[ADR-0013] a `bff` anchor must be `access: authenticated`, so
+today it is already covered by the first dimension; it is named separately so the refusal survives
+any future relaxation of that matrix rule.
+
+The global case needs no separate rule. A `security_defaults.profile: none` reaching an authenticated
+or BFF route through the fallback chain resolves to `none` at that route and is refused identically.
+
+=== Relationship to existing records
+
+This ADR *does not supersede* ADR-0007, ADR-0013 or ADR-0019. It composes with all three: it consumes
+ADR-0007's strengthening rule to derive the access level, it consumes ADR-0013's type and access axes
+for the BFF dimension, and it shares ADR-0019's structural argument about what a pre-route position
+can and cannot scope. It *amends* ADR-0019 in one respect — the reserved-BFF-path relaxation is now
+enforced structurally rather than by a predicate — recorded as an amendment in that record rather than
+as a supersession, because the observable relaxation is unchanged.
+
+== Consequences
+
+=== Positive
+
+* A posture name now means something. Every mode in the set resolves to a policy a reader can look
+  up, and the escape hatch has an enumerable definition instead of being an undefined off switch.
+* The default is safe by construction. A configuration declaring no global posture receives the
+  fail-closed one rather than the loosest-by-accident one.
+* The escape hatch is proportionate to the request it serves. An operator needing a path-shaped
+  parameter accepted gets exactly that, and keeps the resource guard, the surface restriction and the
+  whole pre-route floor.
+* The worst misconfiguration the knob permits cannot boot. Disabling parameter validation in front of
+  a token- or session-bearing surface fails at startup rather than serving weakened traffic.
+* The blast radius is reviewable rather than emergent: the closed list in decision (3) is a
+  specification an implementation can be checked against.
+
+=== Negative
+
+* Tightening the omitted-block default from an incidental baseline to `strict` is a *behavioural
+  change for existing deployments*: the caps on body size, parameter count, header-value length,
+  parameter-value length and path length all drop, and suspicious-pattern failure turns on. A
+  deployment relying on the looser incidental values must now declare `lenient` explicitly — which is
+  the point — but it is still a break, and it lands without a deprecation window.
+* `none` is a name that over-promises. An operator reading "none" will reasonably expect the filter to
+  be off, and it is not; the documentation must carry that correction everywhere the value appears,
+  and a reader who skips the documentation will guess wrong.
+* The closed list is a maintenance obligation. A future change moving a check across the profile gate
+  is a change to this record, and nothing in the type system enforces that.
+* Two gates now govern the same knob — the schema owns the value range, the validator owns the posture
+  refusal — so a reader must know which gate rejected a configuration in order to know why.
+
+=== Risks
+
+* *Mode-name misreading in production.* The likeliest failure is an operator setting `none` believing
+  it disables the filter and later discovering the body cap still rejects. Mitigated by the
+  documentation, and by the fact that this direction of surprise is the safe one: the mode enforces
+  more than expected, never less.
+* *Erosion of the closed list.* Each future request to move "just one more" check behind the profile
+  gate is individually plausible and collectively turns the partial disable into the wholesale one
+  this record rejects. The list is the limit, not a starting point.
+* *The refusal being read as the whole guard.* The refusal covers authenticated and BFF routes. A
+  `none` route on a genuinely public surface is permitted, and its parameter values really are
+  unvalidated — the operator still owns that decision. The refusal narrows the blast radius; it does
+  not make `none` safe everywhere.
+* *Baseline drift between the floor and a route.* The floor runs under the gateway-wide profile while
+  each route runs under its own, so a deployment lowering the global baseline to `lenient` loosens the
+  floor for *every* route, including `strict` ones, because the floor precedes route selection. This
+  is the same structural property ADR-0019 records, stated here so it is not rediscovered as a bug.
+
+== Alternatives Considered
+
+*Keep `default` in the mode set.* This requires no change and breaks nothing. Rejected because a
+posture whose meaning is "whatever the library's builder defaults are" cannot be reasoned about or
+reviewed: it names a deferral rather than a policy, and it silently became the baseline for every
+configuration omitting a global posture — putting the loosest-by-accident value where the
+safest-by-construction one belongs.
+
+*Make `none` a wholesale skip of the post-route stage.* This is the simplest possible semantics — one
+branch, no closed list to maintain, and it matches what the name suggests. Rejected because it
+over-delivers on the request that motivates the mode. An operator asking to stop validating parameter
+values is not asking to remove the body cap or to widen the route's reachable surface, and a mode
+granting all three cannot be reviewed as a bounded relaxation: its residual exposure becomes
+"everything the stage would have done", which is not enumerable. The closed list costs a maintenance
+obligation and buys a reviewable blast radius; that trade is the whole point of the record.
+
+*Let `none` reach the pre-route floor too.* Rejected as *not achievable* rather than merely
+undesirable: route selection consumes the canonical path the floor produces, so a request whose
+profile suppressed the floor would have no path to select a route with — and no route means no profile
+to read. The impossibility is structural and worth stating explicitly, because "make the off switch
+actually turn everything off" is the obvious next request.
+
+*Warn instead of refusing `none` on authenticated and BFF routes.* This preserves operator autonomy
+and breaks no existing configuration. Rejected because a boot WARN on a security posture is a signal
+nobody reads: the deployment serves weakened traffic in the meantime, and the combination has no
+legitimate use that would justify the escape. Where a warning is the right instrument the gateway
+already uses one; this is not one of those cases.
+
+*Read the anchor's declared `access` instead of deriving the effective level.* This is simpler and
+needs no shared seam. Rejected because it under-refuses exactly the case most needing refusal: a route
+strengthening a `public` anchor's floor with its own `require: bearer` is effectively authenticated
+while its anchor still reads `access: public`, so the naive check would pass it. A guard that misses
+the subtle instance of the thing it guards against is worse than no guard, because it reads as
+coverage.
+
+*Duplicate the profile value range into the configuration validator.* This would place both of this
+record's gates in one component. Rejected because a second copy of an enumeration is a second thing to
+keep in sync, and the failure mode of drift is that the looser gate silently wins. The schema
+validates the document at the boundary where it is bound; that is the right and only home for a range
+check.
+
+The rejected alternatives divide cleanly. One group widens the escape hatch past the requirement that
+motivates it — the wholesale skip, reaching the floor, keeping `default` — while the other refuses to
+commit to a bound at all, whether by warning instead of refusing or by checking a weaker predicate
+than the real one. The chosen position is the narrowest disable satisfying the operator's actual
+requirement, with a normative list of what it gives up and a boot refusal on the one combination that
+is never deliberate.
+
+== References
+
+* link:0007-anchor-scoped-policy.adoc[ADR-0007 -- Anchor-scoped policy] -- the auth-floor resolution chain and the strengthening case the effective-access-level derivation depends on. Not superseded.
+* link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009 -- Asymmetric alias-resolution failure] -- establishes the configuration validator as the single authoritative reporter whose all-violations pass the boot refusal collects into.
+* link:0013-anchor-type-access-axes.adoc[ADR-0013 -- Anchor type and access axes] -- the type and access classification the BFF refusal dimension reads. Not superseded.
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the cookie-header relaxation] -- the same structural argument about pre-route scoping; amended, not superseded, by this record.
+* link:../architecture.adoc[Architecture] -- the three-stage inbound pipeline this record's bounds are expressed against.
+* link:../configuration.adoc[Configuration Reference] -- the `security_defaults` and `security_filter` blocks carrying the `profile` knob.
