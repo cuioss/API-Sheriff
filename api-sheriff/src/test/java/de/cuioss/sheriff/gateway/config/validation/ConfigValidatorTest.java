@@ -1594,6 +1594,31 @@ class ConfigValidatorTest {
                     .build();
         }
 
+        private static AnchorConfig anchorWithProfile(String name, String prefix, AnchorType type,
+                AccessLevel access, String require, String profile) {
+            return AnchorConfig.builder()
+                    .name(name)
+                    .pathPrefix(prefix)
+                    .type(type)
+                    .access(access)
+                    .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                    .securityFilter(Optional.of(
+                            SecurityFilterConfig.builder().profile(Optional.of(profile)).build()))
+                    .build();
+        }
+
+        /** A route declaring a {@code security_filter} block that omits {@code profile}. */
+        private static RouteConfig profileLessFilterRoute(String id, String prefix, String anchorName) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .anchor(Optional.of(anchorName))
+                    .match(match(prefix, HttpMethod.GET))
+                    .auth(Optional.empty())
+                    .securityFilter(Optional.of(
+                            SecurityFilterConfig.builder().maxBodyBytes(Optional.of(4096)).build()))
+                    .build();
+        }
+
         private static GatewayConfig gatewayWithGlobalProfile(AnchorConfig anchorConfig, String globalProfile) {
             return validGateway()
                     .anchors(Map.of(anchorConfig.name(), anchorConfig))
@@ -1704,6 +1729,59 @@ class ConfigValidatorTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject an anchor-declared 'none' inherited by a block-less authenticated route")
+        void shouldRejectAnchorDeclaredNoneInheritedByAuthenticatedRoute() {
+            // Arrange — the middle leg of the resolution chain: the route declares no security_filter,
+            // so 'none' reaches it from the anchor's own block rather than per route or gateway-wide.
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchorWithProfile("secure", "/secure",
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", null, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", "effective access level is 'authenticated'");
+        }
+
+        @Test
+        @DisplayName("Should accept an anchor-declared 'none' on a genuinely public, unauthenticated route")
+        void shouldAcceptAnchorDeclaredNoneOnPublicUnauthenticatedRoute() {
+            // Arrange — the mirror-image of the refusal above: no refusal dimension applies
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithProfile("open", "/open",
+                    AnchorType.PROXY, AccessLevel.PUBLIC, null, NONE_PROFILE)));
+            EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
+                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
+                    profiledRoute("open-read", "/open/read", "open", null, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should replace the anchor's whole security_filter block rather than merge its profile")
+        void shouldReplaceAnchorFilterBlockWholesaleRatherThanMergeProfile() {
+            // Arrange — the route declares a security_filter block WITHOUT a profile under an anchor
+            // declaring 'none'. The block is replaced wholesale, so the profile falls back to the
+            // gateway-wide 'strict' and never to the anchor's 'none' — a merge would refuse here.
+            GatewayConfig gateway = gatewayWithGlobalProfile(anchorWithProfile("secure", "/secure",
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE), "strict");
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profileLessFilterRoute("secure-read", "/secure/read", "secure"));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
         }
 
