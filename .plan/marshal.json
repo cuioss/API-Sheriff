@@ -303,9 +303,10 @@
       "lessons_superseded_days": 0,
       "temp_on_maintenance": true,
       "plugin_cache_keep_versions": 5,
-      "plugin_cache_keep_days": 3
+      "plugin_cache_keep_days": 3,
+      "no_plan_body_days": 7
     },
-    "provisioned_version": "0.1.1261",
-    "config_seed_fingerprint": "ccb21c71"
+    "provisioned_version": "0.1.1274",
+    "config_seed_fingerprint": "59c217c3"
   }
 }
