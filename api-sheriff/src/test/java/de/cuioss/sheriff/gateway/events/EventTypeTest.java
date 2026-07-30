@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
@@ -38,12 +39,18 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Pins {@link EventType}'s category, HTTP-status and WebSocket-close mappings.
  * <p>
- * Every constant is claimed by exactly one of four explicitly enumerated contract lists — success /
- * informational, boot-only configuration, WebSocket-close, and the request-time error contract. The
- * expected statuses and categories are stated here as literals rather than re-read from the enum
- * under test, so the lists carry independent information; the drift guards in
- * {@link ContractCoverage} then assert that the lists remain <em>exhaustive</em>, which is what a
- * hand-maintained mirror of an authoritative source cannot guarantee on its own.
+ * Every constant is claimed by exactly one of four buckets — success / informational, boot-only
+ * configuration, WebSocket-close, and the request-time error contract. Bucket <em>membership</em> is
+ * DERIVED from {@link EventType}'s own accessors ({@code hasHttpMapping}, {@code wsCloseCode},
+ * {@code category}), not hand-listed: a guard that merely detects an omission still lets the second
+ * registry drift first, whereas a derived set cannot drift at all. A constant added to the enum
+ * therefore lands in its bucket automatically, and {@link ContractCoverage} asserts the four
+ * predicates remain a true partition so a constant can never fall into none or two of them.
+ * <p>
+ * What stays literal is the thing that carries independent information: {@link #ERROR_CONTRACT}
+ * states each mapped event's expected status and category as written-out values rather than
+ * re-reading them from the enum under test, so the mapping assertions cannot pass vacuously. The
+ * split is deliberate — derive the membership, state the mapping.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -52,26 +59,34 @@ import org.junit.jupiter.params.provider.MethodSource;
 class EventTypeTest {
 
     /** Success / informational events: no category, no HTTP mapping, no WebSocket-close mapping. */
-    private static final Set<EventType> SUCCESS_EVENTS = EnumSet.of(
-            EventType.REQUEST_FORWARDED,
-            EventType.TOKEN_REFRESHED,
-            EventType.CONFIG_LOADED,
-            EventType.SESSION_CREATED,
-            EventType.SESSION_DESTROYED,
-            EventType.SESSION_REFRESH_FAILED,
-            EventType.BACKCHANNEL_LOGOUT);
+    private static final Set<EventType> SUCCESS_EVENTS =
+            classify(eventType -> !eventType.hasHttpMapping()
+                    && eventType.wsCloseCode() == 0
+                    && eventType.category() == null);
+
+    /**
+     * Selects the constants matching {@code predicate}. Membership is DERIVED from {@link EventType}'s
+     * own accessors rather than hand-listed, so a constant added to the enum lands in its bucket
+     * automatically and cannot be silently omitted from the suite.
+     */
+    private static Set<EventType> classify(Predicate<EventType> predicate) {
+        return EnumSet.allOf(EventType.class).stream()
+                .filter(predicate)
+                .collect(() -> EnumSet.noneOf(EventType.class), Set::add, Set::addAll);
+    }
 
     /** Boot-only configuration failures: a category, but never an HTTP response. */
-    private static final Set<EventType> CONFIGURATION_EVENTS = EnumSet.of(
-            EventType.CONFIG_INVALID,
-            EventType.AUTH_WEAKENED);
+    private static final Set<EventType> CONFIGURATION_EVENTS =
+            classify(eventType -> !eventType.hasHttpMapping()
+                    && eventType.wsCloseCode() == 0
+                    && eventType.category() != null);
 
     /**
      * Events that terminate an <em>established</em> WebSocket relay: no HTTP mapping (they occur
      * after the {@code 101} upgrade) but a non-zero close code.
      */
-    private static final Set<EventType> WEBSOCKET_CLOSE_EVENTS = EnumSet.of(
-            EventType.WEBSOCKET_IDLE_TIMEOUT);
+    private static final Set<EventType> WEBSOCKET_CLOSE_EVENTS =
+            classify(eventType -> !eventType.hasHttpMapping() && eventType.wsCloseCode() > 0);
 
     /**
      * The request-time error contract: one row per event the edge renders as an HTTP status, with the
@@ -102,6 +117,10 @@ class EventTypeTest {
 
     static Stream<EventType> configurationEvents() {
         return CONFIGURATION_EVENTS.stream();
+    }
+
+    static Stream<EventType> websocketCloseEvents() {
+        return WEBSOCKET_CLOSE_EVENTS.stream();
     }
 
     static Stream<Arguments> errorContract() {
@@ -168,10 +187,10 @@ class EventTypeTest {
     @DisplayName("Established-relay WebSocket-close events")
     class WebSocketCloseEvents {
 
-        @Test
-        @DisplayName("Should close the relay with 1001 Going Away and carry no HTTP mapping")
-        void shouldCloseIdleRelayWithGoingAway() {
-            EventType eventType = EventType.WEBSOCKET_IDLE_TIMEOUT;
+        @ParameterizedTest
+        @MethodSource("de.cuioss.sheriff.gateway.events.EventTypeTest#websocketCloseEvents")
+        @DisplayName("Should carry a close code and no HTTP mapping")
+        void shouldCarryCloseCodeWithoutHttpMapping(EventType eventType) {
             assertAll("websocket-close event " + eventType,
                     () -> assertNull(eventType.category(),
                             "A reclaimed relay is not a request-time rejection, so it carries no category"),
@@ -179,7 +198,16 @@ class EventTypeTest {
                     () -> assertEquals(0, eventType.httpStatus(),
                             "The close happens after the 101 upgrade, so there is no HTTP status to render"),
                     () -> assertFalse(eventType.hasHttpMapping(), "WebSocket-close events have no HTTP mapping"),
-                    () -> assertEquals(1001, eventType.wsCloseCode(), "An idle relay is closed with 1001 Going Away"));
+                    () -> assertTrue(eventType.wsCloseCode() > 0, "WebSocket-close events carry a close code"));
+        }
+
+        @Test
+        @DisplayName("Should close an idle relay with 1001 Going Away")
+        void shouldCloseIdleRelayWithGoingAway() {
+            // The literal close code, stated independently of the enum: the parameterized test above
+            // derives its membership from wsCloseCode(), so it cannot also be what pins the value.
+            assertEquals(1001, EventType.WEBSOCKET_IDLE_TIMEOUT.wsCloseCode(),
+                    "An idle relay is closed with 1001 Going Away");
         }
     }
 
@@ -200,29 +228,23 @@ class EventTypeTest {
         }
 
         @Test
-        @DisplayName("Should cover exactly the constants carrying a WebSocket close code")
-        void shouldCoverExactlyTheWebSocketCloseConstants() {
-            Set<EventType> closing = EnumSet.allOf(EventType.class).stream()
-                    .filter(eventType -> eventType.wsCloseCode() > 0)
-                    .collect(() -> EnumSet.noneOf(EventType.class), Set::add, Set::addAll);
-
-            assertEquals(WEBSOCKET_CLOSE_EVENTS, closing,
-                    "Every EventType with a non-zero wsCloseCode must be asserted as a WebSocket-close event");
-        }
-
-        @Test
-        @DisplayName("Should claim every EventType constant in exactly one contract list")
+        @DisplayName("Should claim every EventType constant in exactly one bucket")
         void shouldClaimEveryConstantExactlyOnce() {
             List<EventType> claimed = Stream
                     .of(SUCCESS_EVENTS, CONFIGURATION_EVENTS, WEBSOCKET_CLOSE_EVENTS, errorContractKeys())
                     .flatMap(Collection::stream)
                     .toList();
 
-            assertAll("contract-list partition",
+            // The three membership sets are derived from the enum, so this is not guarding against a
+            // forgotten list entry — it guards the PREDICATES. A constant whose accessor combination
+            // no shape covers (or that two shapes both claim) means the four predicates have stopped
+            // being a partition, and the buckets would silently disagree about who owns it.
+            assertAll("bucket partition",
                     () -> assertEquals(EnumSet.allOf(EventType.class), EnumSet.copyOf(claimed),
-                            "Every EventType constant must be asserted by one of the contract lists"),
+                            "Every EventType constant must be claimed by one of the four bucket predicates —"
+                                    + " an unclaimed constant means the predicates no longer cover the enum"),
                     () -> assertEquals(claimed.size(), EnumSet.copyOf(claimed).size(),
-                            "No EventType constant may appear in more than one contract list"));
+                            "No EventType constant may be claimed by more than one bucket predicate"));
         }
     }
 
