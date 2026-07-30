@@ -78,11 +78,14 @@ import org.junit.jupiter.api.Test;
  * so the counter stays at {@code 0} — the observable proof the rejection happened <em>before</em> any
  * payload crossed the wire, not after 68 MiB were uploaded and discarded.
  * <p>
- * The negative case deliberately makes <strong>no assertion on the status code</strong>: the status
- * is the framework's to choose once the gateway hands it a rejection, and pinning it here would
- * couple the test to that incidental choice. What is under test is the envelope — the
- * {@code application/problem+json} content type, the input-validation problem type and title, and the
- * absence of the go-httpbin echo that proves the request never reached the upstream.
+ * The negative case asserts <strong>both</strong> halves of the error contract, and neither replaces
+ * the other. The status assertion locks the mapping under test: a proxy-path body-cap breach renders
+ * {@code CONTENT_TOO_LARGE} as HTTP {@code 413}, so a regression that moved the event back to a
+ * 400-mapped constant fails here. The envelope assertions — the {@code application/problem+json}
+ * content type, the input-validation problem type and title, and the absence of the go-httpbin echo —
+ * are what discriminate the <em>gateway's</em> rejection from the <em>framework's</em>: the framework's
+ * own {@code Content-Length} pre-check answers with a bare {@code 413} carrying no envelope, so the
+ * status alone cannot tell the two apart.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -151,6 +154,9 @@ class LargeBodyIT extends BaseIntegrationTest {
                 .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(413, response.statusCode(),
+                "an over-cap request must render CONTENT_TOO_LARGE as HTTP 413");
 
         String contentType = response.headers().firstValue("Content-Type").orElse("");
         JsonPath problem = JsonPath.from(response.body());
