@@ -200,9 +200,16 @@ security_defaults:
 YAML
 chmod 755 "${PROFILE_RANGE_DIR}"
 chmod 644 "${PROFILE_RANGE_DIR}/gateway.yaml"
-# Marker is the config KEY, never the rejected scalar: the D5 binding-error redaction contract
-# guarantees raw values are not echoed, so asserting on 'default' would contradict it.
-assert_fails_to_boot "${PROFILE_RANGE_DIR}" "an out-of-range security_defaults profile" "profile"
+# Marker is the JSON-pointer instance location the schema violation reports —
+# 'gateway.yaml [/security_defaults/profile]' in the aggregated ConfigLoadException message. It is
+# a config KEY PATH, never the rejected scalar: the D5 binding-error redaction contract guarantees
+# raw values are not echoed, so asserting on 'default' would contradict it. The pointer is also
+# preferred over any slice of the enum-rejection sentence itself, which the schema validator
+# renders in the container's locale and would make a text marker locale-fragile. The bare word
+# 'profile' was too weak — it can appear in unrelated startup output, so the case could pass green
+# even if the D2 enum gate regressed entirely.
+assert_fails_to_boot "${PROFILE_RANGE_DIR}" "an out-of-range security_defaults profile" \
+    "/security_defaults/profile"
 
 # Case 5: profile 'none' on an effectively-authenticated route (ADR-0024). The anchor's bearer floor
 # makes every route under it effectively authenticated, so the fail-closed ConfigValidator rule
