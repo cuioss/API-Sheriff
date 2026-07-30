@@ -153,7 +153,11 @@ fail-fast discarded goals 5-12, which had therefore never run in CI even once. B
 `pom.xml` is not evidence that a goal produces a number.
 
 Current disposition — the CI end-of-job coverage step (see `.github/workflows/benchmark.yml`)
-enforces this table, so a goal that silently stops running fails the job:
+enforces this, so a goal that silently stops running fails the job. It does not read the table
+below: it derives the expected set from the build-generated execution manifest
+(`benchmarks/target/benchmark-execution-manifest.json`, emitted at `initialize` by the
+`generate-benchmark-manifest` execution in `pom.xml`), so the gate cannot drift from the POM the way
+a hand-maintained list can. The table here is documentation of that resolved set, not its source:
 
 [cols="2,1,4", options="header"]
 |===
@@ -199,9 +203,12 @@ enforces this table, so a goal that silently stops running fails the job:
 *Skipped means not executed.* A goal suppressed by a `<skip>` element in `benchmarks/pom.xml` — bound
 to its own property — is not run at all: it consumes no wall time and cannot abort the suite. No k6
 goal is suppressed today; every declared goal executes. The two states are kept distinct rather than
-collapsed: the CI coverage step gates on the twelve goals that execute and would name any suppressed
-goal, its skip property and its reason in the job summary. When Maven fails, that step also states in
-words whether the failure truncated the suite. Silence is never the signal.
+collapsed: the CI coverage step gates on whichever goals the execution manifest reports as `enabled`,
+and names every non-executing goal with its state, its skip property and its reason in the job
+summary. Both sides of that split come from the manifest, so suppressing a goal automatically moves it
+from the gated set into the reported table — there is no second list to remember to update. When Maven
+fails, that step also states in words whether the failure truncated the suite. Silence is never the
+signal.
 
 The per-goal properties are retained even when `false`, so a single goal can be suppressed for a
 local run without editing its execution:
@@ -218,10 +225,12 @@ local run without editing its execution:
 server-session variant and explicitly deferred its per-variant benchmark additions because
 `benchmarks/**` is PLAN-25's surface. The script is therefore ready but unclaimed, not forgotten.
 
-It is listed in the CI end-of-job coverage summary under its own skip section, so its absence from a
-run is stated in every job rather than reading as a silent omission. Do not treat a missing
-`sessionMediated-summary.json` as a regression, and do not wire the script to a Maven goal without
-the owning plan.
+The manifest generator discovers it by reading the `@unwiredReason` tag in the script's own header
+comment and reports it as `unwired`, so the CI coverage summary lists it — with that reason — in the
+"Not expected to run" table of every job rather than letting its absence read as a silent omission.
+The tag in the script is the single place that reason is written; keep it there rather than
+duplicating it into the workflow. Do not treat a missing `sessionMediated-summary.json` as a
+regression, and do not wire the script to a Maven goal without the owning plan.
 
 == Running the CI baseline lane
 

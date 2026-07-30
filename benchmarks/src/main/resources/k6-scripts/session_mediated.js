@@ -20,6 +20,11 @@
  * checks rate of 0 and fails the build instead of reporting the redirect/rejection path as an
  * excellent result. {@link setup} is fail-loud for the same reason: a run that could not establish
  * a session aborts here rather than measuring the unauthenticated fall-through.
+ *
+ * @unwiredReason Wired to no Maven goal on purpose -- BFF session mediation belongs to PLAN-07A,
+ * which deferred its per-variant benchmark additions. benchmark-manifest.py reads this tag and
+ * reports the script as `unwired` in the CI coverage summary, so its absence from a run is stated
+ * rather than silent.
  */
 import http from 'k6/http';
 import { check, fail } from 'k6';

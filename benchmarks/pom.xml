@@ -83,6 +83,14 @@
         <!-- Benchmark history directory for trend analysis -->
         <benchmark.history.dir>${k6.results.dir}/history</benchmark.history.dir>
 
+        <!-- The build-generated execution manifest: which k6 goals the resolved -Pbenchmark model
+             runs, which are suppressed by which property, and which scripts are wired to no goal.
+             It is what .github/workflows/benchmark.yml gates on, replacing the hand-maintained
+             expected list and skip table that used to mirror this POM with nothing enforcing
+             agreement. Written at initialize so a run truncated by a later failure still leaves
+             behind a statement of what was expected. -->
+        <benchmark.manifest.file>${project.build.directory}/benchmark-execution-manifest.json</benchmark.manifest.file>
+
         <!-- Sonar configuration: Skip analysis for benchmarking modules -->
         <sonar.skip>true</sonar.skip>
     </properties>
@@ -192,6 +200,44 @@
                         <groupId>org.codehaus.mojo</groupId>
                         <artifactId>exec-maven-plugin</artifactId>
                         <executions>
+                            <!-- Derive the benchmark execution manifest the CI coverage step gates on.
+                                 Bound to initialize, the earliest phase that still sees the resolved
+                                 profile, so the manifest exists before any goal runs and a suite
+                                 truncated by a later failure still states what was expected.
+
+                                 The generator reads this POM for the execution set and each k6 script
+                                 for the summary-document name it writes; the only thing Maven hands
+                                 over is the RESOLVED value of each skip property, so a
+                                 -Dskip.benchmark.upload.large=true override is reflected. The
+                                 generator FAILS the build when an execution's skip property is not in
+                                 that list, so a new suppressible goal cannot silently report as
+                                 executing. -->
+                            <execution>
+                                <id>generate-benchmark-manifest</id>
+                                <phase>initialize</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>python3</executable>
+                                    <arguments>
+                                        <argument>${project.basedir}/scripts/benchmark-manifest.py</argument>
+                                        <argument>generate</argument>
+                                        <argument>--pom</argument>
+                                        <argument>${project.basedir}/pom.xml</argument>
+                                        <argument>--k6-script-dir</argument>
+                                        <argument>${k6.script.dir}</argument>
+                                        <argument>--output</argument>
+                                        <argument>${benchmark.manifest.file}</argument>
+                                        <argument>--skip-property</argument>
+                                        <argument>skip.benchmark.upload.large=${skip.benchmark.upload.large}</argument>
+                                        <argument>--skip-property</argument>
+                                        <argument>skip.benchmark.websocket.echo=${skip.benchmark.websocket.echo}</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+
                             <!-- Build native executable and Docker image via integration-tests module -->
                             <execution>
                                 <id>maven-build-integration-tests</id>

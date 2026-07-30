@@ -128,13 +128,21 @@ jobs:
           ls -la benchmarks/target/benchmark-results/
 
       # Maven fails fast, so a goal that errors aborts every goal after it and a goal that is never
-      # reached leaves no trace in the job output — a suite that ran 3 of the 12 executing goals
-      # renders exactly like one that ran all 12. This step diffs the goals that MUST produce a
+      # reached leaves no trace in the job output — a suite that ran a handful of the executing goals
+      # renders exactly like one that ran all of them. This step diffs the goals that MUST produce a
       # summary document against the documents k6 actually wrote, so a partial suite is visibly
       # partial and a goal that silently vanished fails the job. When Maven failed, it also states
-      # in words whether the suite was truncated by that failure. Skipped goals are named with their
-      # reason and their skip property rather than omitted, so "not run" is never
-      # indistinguishable from "forgotten".
+      # in words whether the suite was truncated by that failure. Goals that are not expected to run
+      # are named with their reason and their skip property rather than omitted, so "not run" is
+      # never indistinguishable from "forgotten".
+      #
+      # Both the expected set and the not-expected table are DERIVED from the build-generated
+      # execution manifest (benchmarks/pom.xml, generate-benchmark-manifest, bound to initialize),
+      # not maintained by hand here. That is deliberate: the previous hand-maintained list mirrored
+      # the POM with nothing enforcing agreement, and it drifted — the goal set moved from eleven to
+      # twelve while prose in this file still said eleven. Deriving both from the manifest makes the
+      # drift structurally impossible, and an absent manifest is itself a hard failure rather than an
+      # empty expected set that would vacuously pass.
       - name: Summarise benchmark coverage
         if: always()
         env:
@@ -142,10 +150,30 @@ jobs:
         run: |
           set -uo pipefail
           results_dir=benchmarks/target/benchmark-results/k6
+          manifest=benchmarks/target/benchmark-execution-manifest.json
 
-          # Goals expected to write a summary. A goal settled as deliberately skipped is NOT listed
-          # here — it belongs in the skip table below, which is what keeps the two states distinct.
-          expected="healthLiveCheck gatewayHealth proxiedStatic passthroughRelay passthroughRelayEmpty bearerProxied http2 graphql uploadSmall uploadLarge grpcUnary websocketEcho"
+          # An absent manifest means the initialize-bound generator never ran. Fail loudly rather
+          # than deriving an empty expected set, which would report full coverage over zero goals.
+          # The one tolerated case is a benchmark step that failed before initialize completed —
+          # there its own error is the actionable signal, so state the gap and defer to it.
+          if [ ! -f "${manifest}" ]; then
+            {
+              echo "## Benchmark coverage"
+              echo
+              echo "Execution manifest \`${manifest}\` is absent, so coverage could not be derived."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${BENCHMARK_OUTCOME}" = "success" ]; then
+              echo "::error::Benchmark execution manifest absent although the benchmark step succeeded — the generate-benchmark-manifest execution did not run."
+              exit 1
+            fi
+            echo "::warning::Benchmark execution manifest absent; the benchmark step reported '${BENCHMARK_OUTCOME}', so coverage is unknown rather than complete."
+            exit 0
+          fi
+
+          # Goals the resolved profile expects to write a summary. A goal the manifest reports as
+          # skipped or unwired is NOT in this set — it belongs in the table below, which is what
+          # keeps the two states distinct.
+          expected="$(jq -r '.executions[] | select(.state == "enabled") | .goal' "${manifest}")"
 
           missing=0
           missing_names=""
@@ -166,20 +194,25 @@ jobs:
             fi
           done
 
+          # Every non-executing goal, with the property that suppressed it and the documented
+          # reason, both read straight from the manifest.
           {
             echo
-            echo "### Deliberately skipped"
+            echo "### Not expected to run"
             echo
-            echo "| Benchmark | Skipped by | Reason |"
-            echo "| --- | --- | --- |"
-            echo "| \`sessionMediated\` | not wired | Wired to no Maven goal on purpose — BFF session mediation belongs to PLAN-07A. |"
+            echo "| Benchmark | State | Suppressed by | Reason |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '.executions[]
+                     | select(.state != "enabled")
+                     | "| `\(.goal)` | \(.state) | \(.skip_property // "not wired") | \(.reason // "-") |"' \
+              "${manifest}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Only fail on a missing summary when Maven itself reported success: when the benchmark
           # step already failed, its own error is the actionable signal and this step must not
           # mask it with a derived one.
           if [ "${missing}" -gt 0 ] && [ "${BENCHMARK_OUTCOME}" = "success" ]; then
-            echo "::error::${missing} expected benchmark summary document(s) absent although the benchmark step succeeded."
+            echo "::error::${missing} expected benchmark summary document(s) absent although the benchmark step succeeded: ${missing_names}."
             exit 1
           fi
 
