@@ -154,15 +154,20 @@ public final class ThoroughChecksStage {
 
     /**
      * Re-runs the path and header pipelines under a route configuration that diverges from the
-     * stage-1 default. The parameter loop is deliberately absent: {@link #validateParameters} already
+     * stage-1 default. Header NAMES as well as header VALUES are re-run: the pre-route
+     * {@code BasicChecksStage} validates names under the gateway baseline only, so a route whose
+     * declared {@code security_filter} carries a stricter name policy ({@code allowed_header_names},
+     * {@code blocked_header_names}, a lower {@code maxHeaderNameLength}) would otherwise never have
+     * it applied. The parameter loop is deliberately absent: {@link #validateParameters} already
      * ran under this same configuration, so re-running it here would be duplicate hot-path work.
      */
     private void reRunPipelines(PipelineRequest request, SecurityConfiguration routeConfig, String canonicalPath) {
         PipelineFactory.PipelineSet pipelines = pipelinesFor(routeConfig);
         try {
             pipelines.urlPathPipeline().validate(canonicalPath);
-            for (List<String> values : request.headers().values()) {
-                for (String value : values) {
+            for (Map.Entry<String, List<String>> header : request.headers().entrySet()) {
+                pipelines.headerNamePipeline().validate(header.getKey());
+                for (String value : header.getValue()) {
                     pipelines.headerValuePipeline().validate(value);
                 }
             }

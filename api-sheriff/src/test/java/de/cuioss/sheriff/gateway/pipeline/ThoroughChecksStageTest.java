@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.pipeline;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
@@ -353,6 +354,85 @@ class ThoroughChecksStageTest {
             assertThrows(GatewayException.class, () -> stage.process(badParameters, List.of()),
                     "the same parameters are rejected once the profile is not 'none'");
         }
+    }
+
+    /**
+     * The divergent-route header-NAME re-validation (finding b35d66). The pre-route
+     * {@code BasicChecksStage} validates header names under the GATEWAY BASELINE only, so a route
+     * whose declared {@code security_filter} carries a stricter name policy — here a lower
+     * {@code maxHeaderNameLength} — is only ever enforced by the re-run in this stage.
+     */
+    @Nested
+    @DisplayName("divergent route header-name policy")
+    class DivergentHeaderNameValidation {
+
+        /** 31 characters: accepted by the baseline's 128-character cap, refused by the route's 8. */
+        private static final String OVERLONG_HEADER_NAME = "x-tenant-correlation-identifier";
+
+        @ParameterizedTest(name = "profile {0} enforces the route's own header-name cap")
+        @EnumSource(value = SecurityProfile.class, names = {"STRICT", "LENIENT"})
+        @DisplayName("rejects a header name the route's divergent configuration refuses")
+        void rejectsHeaderNameUnderDivergentConfig(SecurityProfile profile) {
+            // Arrange — the baseline accepts this name, the route's own configuration does not
+            assertTrue(OVERLONG_HEADER_NAME.length() <= defaultConfiguration.maxHeaderNameLength(),
+                    "the baseline must accept the name, otherwise the case proves nothing about the re-run");
+            PipelineRequest request = requestWithHeaders(
+                    Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
+                    route(profile, Optional.of(stricterHeaderNamePolicy())));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("leaves the header name unvalidated under profile: none — the closed disable list is unchanged")
+        void skipsHeaderNameValidationUnderNone() {
+            // Arrange — the same stricter route policy, this time on a 'none' route
+            PipelineRequest request = requestWithHeaders(
+                    Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
+                    route(SecurityProfile.NONE, Optional.of(stricterHeaderNamePolicy())));
+
+            // Act + Assert — reRunPipelines IS item two of what 'none' disables, in its entirety
+            assertDoesNotThrow(() -> stage.process(request, List.of()),
+                    "'none' skips the whole skippable half, header names included");
+        }
+
+        @Test
+        @DisplayName("does not re-run the header-name pipeline for a route whose config equals the baseline")
+        void skipsHeaderNameReRunWhenConfigEqualsBaseline() {
+            // Arrange — a stage whose BASELINE itself refuses the name, and a route carrying exactly
+            // that baseline: the skip-if-equal guard must leave the name to the pre-route stage.
+            SecurityConfiguration baseline = stricterHeaderNamePolicy();
+            ThoroughChecksStage baselineEqualStage =
+                    new ThoroughChecksStage(baseline, new SecurityEventCounter());
+            PipelineRequest request = requestWithHeaders(
+                    Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
+                    route(SecurityProfile.STRICT, Optional.of(baseline)));
+
+            // Act + Assert
+            assertDoesNotThrow(() -> baselineEqualStage.process(request, List.of()),
+                    "a baseline-equal route is not re-validated here — BasicChecksStage already did it");
+        }
+
+        private static SecurityConfiguration stricterHeaderNamePolicy() {
+            return SecurityConfiguration.builder().maxHeaderNameLength(8).build();
+        }
+    }
+
+    private static PipelineRequest requestWithHeaders(Map<String, List<String>> headers, RouteRuntime route) {
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/api/orders")
+                .queryParameters(Map.of())
+                .headers(headers)
+                .build();
+        request.canonicalPath("/api/orders");
+        request.selectedRoute(route);
+        return request;
     }
 
     private static PipelineRequest requestFor(String canonicalPath, RouteRuntime route) {
