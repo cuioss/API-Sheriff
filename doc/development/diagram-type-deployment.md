@@ -112,7 +112,7 @@ container at depth 3 where the orchestrated ladder has a pod:
 |----------------|-------------|
 | Outermost enclosure — host, cluster | 8 |
 | Network, namespace | 6 |
-| Everything the network contains — pod, container group, container, process | 4 |
+| Nested workload roles — pod, container group, container, process | 4 |
 
 A leaf container therefore takes `rx="4"` whatever its depth: depth 3 in the compose ladder, depth 4
 in the orchestrated one. The innermost tier is flat at 4 rather than continuing to decrease because
