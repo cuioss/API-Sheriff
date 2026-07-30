@@ -157,7 +157,9 @@ enforces this, so a goal that silently stops running fails the job. It does not 
 below: it derives the expected set from the build-generated execution manifest
 (`benchmarks/target/benchmark-execution-manifest.json`, emitted at `initialize` by the
 `generate-benchmark-manifest` execution in `pom.xml`), so the gate cannot drift from the POM the way
-a hand-maintained list can. The table here is documentation of that resolved set, not its source:
+a hand-maintained list can. The workflow calls `benchmark-manifest.py summarise` rather than
+re-deriving the summary itself, so the manifest has exactly one consumer. The table here is
+documentation of that resolved set, not its source:
 
 [cols="2,1,4", options="header"]
 |===

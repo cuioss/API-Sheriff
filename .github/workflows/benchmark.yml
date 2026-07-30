@@ -140,81 +140,25 @@ jobs:
       # execution manifest (benchmarks/pom.xml, generate-benchmark-manifest, bound to initialize),
       # not maintained by hand here. That is deliberate: the previous hand-maintained list mirrored
       # the POM with nothing enforcing agreement, and it drifted — the goal set moved from eleven to
-      # twelve while prose in this file still said eleven. Deriving both from the manifest makes the
+      # twelve while prose in this file still said eleven. Deriving both from the manifest makes that
       # drift structurally impossible, and an absent manifest is itself a hard failure rather than an
-      # empty expected set that would vacuously pass.
+      # empty expected set that would vacuously report full coverage.
+      #
+      # The rendering lives in the generator's own `summarise` subcommand rather than being
+      # reimplemented in bash here, so the manifest has exactly ONE consumer. Splitting it across two
+      # implementations would recreate, one level up, the duplicated-contract defect this manifest was
+      # introduced to remove — and did: an earlier bash/jq version of this step diverged on the table
+      # heading and mislabelled an inline `<skip>` as "not wired".
       - name: Summarise benchmark coverage
         if: always()
         env:
           BENCHMARK_OUTCOME: ${{ steps.run-benchmarks.outcome }}
         run: |
-          set -uo pipefail
-          results_dir=benchmarks/target/benchmark-results/k6
-          manifest=benchmarks/target/benchmark-execution-manifest.json
-
-          # An absent manifest means the initialize-bound generator never ran. Fail loudly rather
-          # than deriving an empty expected set, which would report full coverage over zero goals.
-          # The one tolerated case is a benchmark step that failed before initialize completed —
-          # there its own error is the actionable signal, so state the gap and defer to it.
-          if [ ! -f "${manifest}" ]; then
-            {
-              echo "## Benchmark coverage"
-              echo
-              echo "Execution manifest \`${manifest}\` is absent, so coverage could not be derived."
-            } >> "$GITHUB_STEP_SUMMARY"
-            if [ "${BENCHMARK_OUTCOME}" = "success" ]; then
-              echo "::error::Benchmark execution manifest absent although the benchmark step succeeded — the generate-benchmark-manifest execution did not run."
-              exit 1
-            fi
-            echo "::warning::Benchmark execution manifest absent; the benchmark step reported '${BENCHMARK_OUTCOME}', so coverage is unknown rather than complete."
-            exit 0
-          fi
-
-          # Goals the resolved profile expects to write a summary. A goal the manifest reports as
-          # skipped or unwired is NOT in this set — it belongs in the table below, which is what
-          # keeps the two states distinct.
-          expected="$(jq -r '.executions[] | select(.state == "enabled") | .goal' "${manifest}")"
-
-          missing=0
-          missing_names=""
-          {
-            echo "## Benchmark coverage"
-            echo
-            echo "| Benchmark | Result |"
-            echo "| --- | --- |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          for name in ${expected}; do
-            if [ -f "${results_dir}/${name}-summary.json" ]; then
-              echo "| \`${name}\` | ran |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "| \`${name}\` | **DID NOT RUN** |" >> "$GITHUB_STEP_SUMMARY"
-              missing=$((missing + 1))
-              missing_names="${missing_names:+${missing_names}, }${name}"
-            fi
-          done
-
-          # Every non-executing goal, with the property that suppressed it and the documented
-          # reason, both read straight from the manifest.
-          {
-            echo
-            echo "### Not expected to run"
-            echo
-            echo "| Benchmark | State | Suppressed by | Reason |"
-            echo "| --- | --- | --- | --- |"
-            jq -r '.executions[]
-                     | select(.state != "enabled")
-                     | "| `\(.goal)` | \(.state) | \(.skip_property // "not wired") | \(.reason // "-") |"' \
-              "${manifest}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # Only fail on a missing summary when Maven itself reported success: when the benchmark
-          # step already failed, its own error is the actionable signal and this step must not
-          # mask it with a derived one.
-          if [ "${missing}" -gt 0 ] && [ "${BENCHMARK_OUTCOME}" = "success" ]; then
-            echo "::error::${missing} expected benchmark summary document(s) absent although the benchmark step succeeded: ${missing_names}."
-            exit 1
-          fi
+          python3 benchmarks/scripts/benchmark-manifest.py summarise \
+            --manifest benchmarks/target/benchmark-execution-manifest.json \
+            --results-dir benchmarks/target/benchmark-results/k6 \
+            --benchmark-outcome "${BENCHMARK_OUTCOME}" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
 
           # When Maven failed, the DID NOT RUN rows above and the Maven error are almost always the
           # same event, but nothing on the page says so — a reader is left to infer the causal link.
