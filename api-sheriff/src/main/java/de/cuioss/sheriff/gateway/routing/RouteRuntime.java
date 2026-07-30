@@ -78,8 +78,16 @@ public final class RouteRuntime {
      * The deduplicated cui-http security configuration carrying this route's limits. Resolved for
      * every route by the {@code RouteRuntimeAssembler}, so it is present on every
      * assembler-produced runtime; it stays {@link Optional} only for the builder's test call sites.
+     * <p>
+     * The {@link Builder.Default} is {@link Optional#empty()} — the fail-closed value, so a builder
+     * call site that omits the field yields an empty {@link Optional} rather than a raw {@code null}
+     * that would fault {@code ThoroughChecksStage}'s {@code orElse(defaultConfiguration)} on the hot
+     * path. The default exists for the builder's test call sites; the {@code RouteRuntimeAssembler}
+     * nevertheless sets the field <em>unconditionally</em>, so the default can never mask an
+     * assembler regression.
      */
-    private final Optional<SecurityConfiguration> securityConfiguration;
+    @Builder.Default
+    private final Optional<SecurityConfiguration> securityConfiguration = Optional.empty();
 
     /**
      * The resolved effective inbound-filter mode, the signal {@code ThoroughChecksStage} branches

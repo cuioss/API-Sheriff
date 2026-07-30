@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.routing;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -149,6 +150,20 @@ class RouteRuntimeTest {
                     "an explicitly resolved NONE overrides the builder default");
             assertFalse(none.getSecurityProfile().skippableValidationEnabled(),
                     "the NONE route reports its skippable half as disabled");
+        }
+
+        @Test
+        @DisplayName("Should default an omitted securityConfiguration to an empty Optional, never null")
+        void shouldDefaultSecurityConfigurationToEmpty() {
+            // Arrange + Act — a builder call site that declares no resolved configuration
+            RouteRuntime runtime = runtimeBuilder().build();
+
+            // Assert — a raw null here would NPE ThoroughChecksStage's
+            // getSecurityConfiguration().orElse(defaultConfiguration) on the hot path.
+            assertNotNull(runtime.getSecurityConfiguration(),
+                    "an omitted securityConfiguration is an empty Optional, not null");
+            assertTrue(runtime.getSecurityConfiguration().isEmpty(),
+                    "the default carries no configuration, so the stage falls back to the gateway baseline");
         }
 
         private RouteRuntime.RouteRuntimeBuilder runtimeBuilder() {

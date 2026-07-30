@@ -473,6 +473,57 @@ class GatewayEdgeRouteTest {
             assertEquals(Set.of("Accept"), resolved.allowedHeaderNames());
             assertEquals(Set.of("X-Debug"), resolved.blockedHeaderNames());
         }
+
+        /**
+         * Semantic drift guard for {@code GatewayEdgeRoute.builderSeededFrom}, which mirrors the
+         * third-party {@link SecurityConfiguration} record component-by-component. A component the
+         * copy drops silently reverts to the {@code defaults()} policy as soon as a route declares
+         * any {@code security_filter} limit — a posture regression with no other failing test.
+         */
+        @Test
+        @DisplayName("round-trips every preset component when an override restates the preset's own value")
+        void roundTripsPresetThroughTheSeededBuilder() {
+            // Arrange / Act / Assert — one non-none preset per branch of limitsProfile
+            assertPresetRoundTrips(SecurityProfile.STRICT);
+            assertPresetRoundTrips(SecurityProfile.LENIENT);
+        }
+
+        /**
+         * Cheap tripwire so a cui-http upgrade that grows the record surfaces the review question
+         * even when the round-trip above happens to still pass (a dropped component whose preset
+         * value coincides with the {@code defaults()} value).
+         */
+        @Test
+        @DisplayName("fails when the cui-http SecurityConfiguration record grows a component the copy does not know")
+        void tripwiresOnSecurityConfigurationComponentDrift() {
+            // Arrange — the number of components GatewayEdgeRoute.builderSeededFrom copies
+            int copiedByBuilderSeededFrom = 24;
+
+            // Act
+            int declaredComponents = SecurityConfiguration.class.getRecordComponents().length;
+
+            // Assert
+            assertEquals(copiedByBuilderSeededFrom, declaredComponents,
+                    "builderSeededFrom copies %d components but SecurityConfiguration declares %d — extend the copy before upgrading cui-http"
+                            .formatted(copiedByBuilderSeededFrom, declaredComponents));
+        }
+
+        private void assertPresetRoundTrips(SecurityProfile profile) {
+            // Arrange — restate exactly one dimension at the preset's own value, so the rebuilt
+            // configuration must come back equal to the preset unless a component was dropped.
+            SecurityConfiguration preset = SecurityProfile.limitsProfile(profile, profile).preset();
+            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
+                    .maxQueryParams(Optional.of(preset.maxParameterCount()))
+                    .build());
+
+            // Act
+            SecurityConfiguration resolved =
+                    GatewayEdgeRoute.securityPostureFor(declared, profile).configuration();
+
+            // Assert
+            assertEquals(preset, resolved,
+                    "seeding the builder from the %s preset must round-trip to that preset".formatted(profile));
+        }
     }
 
     private WebSocket connectWs(WebSocketClient client, int port) throws Exception {

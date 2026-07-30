@@ -50,6 +50,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -58,7 +59,6 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
-import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
@@ -283,10 +283,7 @@ public class GatewayEdgeRoute {
         // BasicChecksStage, ThoroughChecksStage's skip-if-equal baseline,
         // ForwardedResolverConfig.securityConfig and defaultMaxBodySize — so seeding it here is
         // what makes an omitted security_defaults block genuinely mean 'strict' for every route.
-        SecurityProfile globalProfile = gatewayConfig.securityDefaults()
-                .flatMap(SecurityDefaultsConfig::profile)
-                .flatMap(SecurityProfile::parse)
-                .orElse(SecurityProfile.DEFAULT_PROFILE);
+        SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
         SecurityConfiguration defaultConfiguration =
                 SecurityProfile.limitsProfile(globalProfile, globalProfile).preset();
         this.defaultMaxBodySize = defaultConfiguration.maxBodySize();
