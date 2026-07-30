@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -47,6 +48,8 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
@@ -75,8 +78,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
  * full-space rejection and broad-prefix boot-WARN, and the same-prefix
  * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
- * {@code TRACE}/{@code CONNECT} rejection, and the single-pass aggregation contract
- * that reports every violation together rather than stopping at the first.
+ * {@code TRACE}/{@code CONNECT} rejection, the fail-closed ADR-0024 {@code profile: none}
+ * refusal on effectively-authenticated and BFF routes, and the single-pass aggregation
+ * contract that reports every violation together rather than stopping at the first.
  */
 @EnableGeneratorController
 @EnableTestLogger
@@ -1566,6 +1570,278 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("The fail-closed 'profile: none' refusal (ADR-0024)")
+    class SecurityProfileNoneRefusal {
+
+        private static final String NONE_PROFILE = "none";
+        private static final String REQUIRE_NONE = "none";
+        private static final String REQUIRE_BEARER = "bearer";
+        private static final String REFUSAL_MESSAGE = "resolves inbound-filter profile 'none'";
+
+        private static RouteConfig profiledRoute(String id, String prefix, String anchorName, String profile,
+                Optional<AuthConfig> auth) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                    .match(match(prefix, HttpMethod.GET))
+                    .auth(auth)
+                    .securityFilter(profile == null ? Optional.empty()
+                            : Optional.of(SecurityFilterConfig.builder().profile(Optional.of(profile)).build()))
+                    .build();
+        }
+
+        private static AnchorConfig anchorWithProfile(String name, String prefix, AnchorType type,
+                AccessLevel access, String require, String profile) {
+            return AnchorConfig.builder()
+                    .name(name)
+                    .pathPrefix(prefix)
+                    .type(type)
+                    .access(access)
+                    .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                    .securityFilter(Optional.of(
+                            SecurityFilterConfig.builder().profile(Optional.of(profile)).build()))
+                    .build();
+        }
+
+        /** A route declaring a {@code security_filter} block that omits {@code profile}. */
+        private static RouteConfig profileLessFilterRoute(String id, String prefix, String anchorName) {
+            return RouteConfig.builder()
+                    .id(id)
+                    .anchor(Optional.of(anchorName))
+                    .match(match(prefix, HttpMethod.GET))
+                    .auth(Optional.empty())
+                    .securityFilter(Optional.of(
+                            SecurityFilterConfig.builder().maxBodyBytes(Optional.of(4096)).build()))
+                    .build();
+        }
+
+        private static GatewayConfig gatewayWithGlobalProfile(AnchorConfig anchorConfig, String globalProfile) {
+            return validGateway()
+                    .anchors(Map.of(anchorConfig.name(), anchorConfig))
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(globalProfile))))
+                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should reject 'none' on a route under an access: authenticated anchor")
+        void shouldRejectNoneOnAuthenticatedAnchor() {
+            // Arrange — the anchor's bearer floor makes every route under it effectively authenticated.
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", "effective access level is 'authenticated'");
+        }
+
+        @Test
+        @DisplayName("Should reject 'none' on a route under a type: bff anchor, naming the anchor-type dimension")
+        void shouldRejectNoneOnBffAnchor() {
+            // Arrange — a bff anchor is required to be access: authenticated (ADR-0013), so a matrix-clean
+            // bff fixture necessarily trips both refusal dimensions; the anchor-type one must be named.
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(
+                    matrixAnchor("shell", "/shell", AnchorType.BFF, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+            EndpointConfig endpoint = anchoredEndpoint("bff", "BFF", "shell", Optional.empty(),
+                    profiledRoute("shell-view", "/shell/view", "shell", NONE_PROFILE, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("BFF"));
+
+            // Assert
+            assertHasError(errors, "/endpoint/routes", "anchor 'shell' is type 'bff'");
+        }
+
+        @Test
+        @DisplayName("Should reject 'none' on a public anchor whose route strengthens the auth floor")
+        void shouldRejectNoneOnRouteStrengtheningPublicAnchorFloor() {
+            // Arrange — the under-refusal case: the anchor stays access: public, so reading the anchor's
+            // static access would let this route through, but the route's own bearer floor makes it
+            // effectively authenticated.
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(
+                    matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null));
+            EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
+                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
+                    profiledRoute("open-secured", "/open/secured", "open", NONE_PROFILE,
+                            Optional.of(new AuthConfig(REQUIRE_BEARER, List.of()))));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", "effective access level is 'authenticated'");
+        }
+
+        @Test
+        @DisplayName("Should accept 'none' on a genuinely public, effectively-unauthenticated route")
+        void shouldAcceptNoneOnPublicUnauthenticatedRoute() {
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("open",
+                    matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
+                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
+                    profiledRoute("open-read", "/open/read", "open", NONE_PROFILE, Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject a gateway-wide security_defaults 'none' inherited by an authenticated route")
+        void shouldRejectGlobalNoneInheritedByAuthenticatedRoute() {
+            // Arrange — the route declares no security_filter at all; 'none' reaches it through the
+            // gateway-wide fallback, which is the same violation as declaring it per route.
+            GatewayConfig gateway = gatewayWithGlobalProfile(
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER),
+                    NONE_PROFILE);
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", null, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("Should accept a gateway-wide 'none' that no authenticated or BFF route inherits")
+        void shouldAcceptGlobalNoneOnPublicRoutesOnly() {
+            GatewayConfig gateway = validGateway()
+                    .anchors(Map.of("open",
+                            matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)))
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(NONE_PROFILE))))
+                    .build();
+            EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
+                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
+                    profiledRoute("open-read", "/open/read", "open", null, Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject an anchor-declared 'none' inherited by a block-less authenticated route")
+        void shouldRejectAnchorDeclaredNoneInheritedByAuthenticatedRoute() {
+            // Arrange — the middle leg of the resolution chain: the route declares no security_filter,
+            // so 'none' reaches it from the anchor's own block rather than per route or gateway-wide.
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchorWithProfile("secure", "/secure",
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", null, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", "effective access level is 'authenticated'");
+        }
+
+        @Test
+        @DisplayName("Should accept an anchor-declared 'none' on a genuinely public, unauthenticated route")
+        void shouldAcceptAnchorDeclaredNoneOnPublicUnauthenticatedRoute() {
+            // Arrange — the mirror-image of the refusal above: no refusal dimension applies
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithProfile("open", "/open",
+                    AnchorType.PROXY, AccessLevel.PUBLIC, null, NONE_PROFILE)));
+            EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
+                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
+                    profiledRoute("open-read", "/open/read", "open", null, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should replace the anchor's whole security_filter block rather than merge its profile")
+        void shouldReplaceAnchorFilterBlockWholesaleRatherThanMergeProfile() {
+            // Arrange — the route declares a security_filter block WITHOUT a profile under an anchor
+            // declaring 'none'. The block is replaced wholesale, so the profile falls back to the
+            // gateway-wide 'strict' and never to the anchor's 'none' — a merge would refuse here.
+            GatewayConfig gateway = gatewayWithGlobalProfile(anchorWithProfile("secure", "/secure",
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE), "strict");
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profileLessFilterRoute("secure-read", "/secure/read", "secure"));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "profile ''{0}'' is accepted on an authenticated route")
+        @ValueSource(strings = {"strict", "lenient", "STRICT", "Lenient"})
+        @DisplayName("Should accept a non-'none' profile on an authenticated route, case-insensitively")
+        void shouldAcceptNonNoneProfileOnAuthenticatedRoute(String profile) {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", profile, Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report the refusal alongside an unrelated violation in one pass")
+        void shouldAggregateRefusalWithUnrelatedViolation() {
+            // Arrange — an unsupported version plus a refused 'none' route: the pass must report both.
+            GatewayConfig gateway = validGateway()
+                    .version(2)
+                    .anchors(Map.of("secure",
+                            matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
+                                    REQUIRE_BEARER)))
+                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .build();
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, Optional.empty()));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            // Assert
+            assertAll(
+                    () -> assertHasError(errors, "/version", "unsupported config version"),
+                    () -> assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE));
+        }
+
+        @Test
+        @DisplayName("Should name the remedy and echo no configured scalar value")
+        void shouldNameRemedyWithoutEchoingConfiguredScalars() {
+            GatewayConfig gateway = gatewayWithAnchorAndIssuer(
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, Optional.empty()));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
+
+            ConfigError refusal = errors.stream()
+                    .filter(error -> error.message().contains(REFUSAL_MESSAGE))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("expected a 'none' refusal error, got: " + errors));
+            assertAll(
+                    () -> assertTrue(refusal.message().contains("secure-read"), "names the route"),
+                    () -> assertTrue(refusal.message().contains("declare profile 'strict' or 'lenient'"),
+                            "names the remedy"),
+                    () -> assertFalse(refusal.message().contains("https://idp.example"), "echoes no configured scalar value"));
         }
     }
 }

@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,6 +44,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 
@@ -53,6 +55,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 @DisplayName("RouteRuntimeAssembler — boot-time assembly and heavy-object dedup")
 class RouteRuntimeAssemblerTest {
@@ -68,7 +72,8 @@ class RouteRuntimeAssemblerTest {
     void setUp() {
         vertx = Vertx.vertx();
         assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
-        securityConfigFactory = _ -> SecurityConfiguration.builder().build();
+        securityConfigFactory = _ -> new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.STRICT,
+                SecurityConfiguration.builder().build());
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(Path.of(asset.directory().orElse("/tmp")),
@@ -85,9 +90,10 @@ class RouteRuntimeAssemblerTest {
     void shouldReuseSecurityConfigurationForSharedShape() {
         SecurityFilterConfig sharedFilter = SecurityFilterConfig.builder().allowedPaths(List.of("/shared")).build();
         var invocations = new AtomicInteger();
-        securityConfigFactory = filter -> {
+        securityConfigFactory = _ -> {
             invocations.incrementAndGet();
-            return SecurityConfiguration.builder().build();
+            return new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.STRICT,
+                    SecurityConfiguration.builder().build());
         };
         RouteTable table = new RouteTable(List.of(
                 route("r1", Protocol.HTTP, "none", Optional.of(sharedFilter), upstream("a.example")),
@@ -266,6 +272,85 @@ class RouteRuntimeAssemblerTest {
         assertTrue(runtime.getUpstream().isPresent(), "the guarded empty-asset branch resolves the proxy upstream");
         assertTrue(runtime.getHttpClient().isPresent(), "the proxy path builds a Vert.x client");
         assertTrue(runtime.getResilienceGuard().isPresent(), "the proxy path builds a resilience guard");
+    }
+
+    @Test
+    @DisplayName("Should resolve the posture for a route that declares no security_filter block")
+    void shouldResolvePostureForBlockLessRoute() {
+        // Arrange — the load-bearing case: a global profile must reach a route with no block at all,
+        // which the previous effectiveSecurityFilter().map(...) shape silently skipped.
+        List<Optional<SecurityFilterConfig>> seen = new ArrayList<>();
+        securityConfigFactory = filter -> {
+            seen.add(filter);
+            return new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.NONE,
+                    SecurityProfile.STRICT.preset());
+        };
+        RouteTable table = new RouteTable(List.of(
+                route("block-less", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+
+        // Act
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        // Assert
+        assertEquals(List.of(Optional.empty()), seen,
+                "the resolver runs for a block-less route, receiving an empty Optional");
+        RouteRuntime runtime = runtimes.getFirst();
+        assertEquals(SecurityProfile.NONE, runtime.getSecurityProfile(),
+                "the resolved profile reaches a route that declares no security_filter block");
+        assertTrue(runtime.getSecurityConfiguration().isPresent(),
+                "every route carries a concrete limits policy, so the body cap is always enforceable");
+    }
+
+    @ParameterizedTest
+    @EnumSource(SecurityProfile.class)
+    @DisplayName("Should set the resolved profile explicitly rather than leaning on the builder default")
+    void shouldSetResolvedProfileExplicitly(SecurityProfile resolved) {
+        // Arrange — LENIENT and NONE differ from RouteRuntime's @Builder.Default STRICT, so a runtime
+        // carrying them proves the assembler assigned the field instead of inheriting the default.
+        securityConfigFactory = _ -> new RouteRuntimeAssembler.SecurityPosture(resolved,
+                SecurityProfile.limitsProfile(resolved, resolved).preset());
+        RouteTable table = new RouteTable(List.of(
+                route("declared", Protocol.HTTP, "none",
+                        Optional.of(SecurityFilterConfig.builder().build()), upstream("a.example")),
+                route("block-less", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+
+        // Act
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
+                assetSourceFactory);
+
+        // Assert
+        for (RouteRuntime runtime : runtimes) {
+            assertEquals(resolved, runtime.getSecurityProfile(),
+                    "route '%s' carries the resolved %s profile".formatted(runtime.getId(), resolved));
+            assertEquals(SecurityProfile.limitsProfile(resolved, resolved).preset(),
+                    runtime.getSecurityConfiguration().orElseThrow(),
+                    "route '%s' carries the resolved limits policy".formatted(runtime.getId()));
+        }
+    }
+
+    @Test
+    @DisplayName("Should key the posture cache on the whole Optional, splitting a declared block from an absent one")
+    void shouldSplitPostureCacheOnDeclaredVersusAbsentBlock() {
+        // Arrange
+        var invocations = new AtomicInteger();
+        securityConfigFactory = _ -> {
+            invocations.incrementAndGet();
+            return new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.STRICT,
+                    SecurityConfiguration.builder().build());
+        };
+        SecurityFilterConfig declared = SecurityFilterConfig.builder().allowedPaths(List.of("/shared")).build();
+        RouteTable table = new RouteTable(List.of(
+                route("r1", Protocol.HTTP, "none", Optional.of(declared), upstream("a.example")),
+                route("r2", Protocol.HTTP, "none", Optional.of(declared), upstream("a.example")),
+                route("r3", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+
+        // Act
+        assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
+
+        // Assert
+        assertEquals(2, invocations.get(),
+                "the shared declared shape resolves once and the absent block resolves once more");
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require,

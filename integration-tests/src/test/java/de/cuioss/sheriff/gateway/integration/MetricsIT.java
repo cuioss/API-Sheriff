@@ -94,10 +94,13 @@ class MetricsIT extends BaseIntegrationTest {
                 "sheriff_security_events_total must be exposed once the shared counter is bound at boot");
         double baseline = securityEventsTotal(before);
 
-        // Act — drive a GW-01/GW-02 stage-1 filter rejection: a query-parameter value carrying an
-        // encoded path-traversal attack. urlEncodingEnabled(false) sends the pre-encoded value verbatim
-        // so cui-http decodes and rejects it (400 SECURITY_FILTER_VIOLATION) before route selection,
-        // incrementing the shared SecurityEventCounter the meter is bound to.
+        // Act — drive a filter rejection: a query-parameter value carrying an encoded path-traversal
+        // attack. urlEncodingEnabled(false) sends the pre-encoded value verbatim so cui-http decodes
+        // and rejects it (400 SECURITY_FILTER_VIOLATION), incrementing the shared SecurityEventCounter
+        // the meter is bound to. The rejection now happens POST-route in ThoroughChecksStage — the
+        // url-parameter validation was relocated there so it runs under the route's own profile
+        // (ADR-0024) — which is immaterial to the meter, but the /proxy route must stay non-'none'
+        // for this rejection to occur at all.
         given()
                 .urlEncodingEnabled(false)
                 .when()

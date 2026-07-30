@@ -18,6 +18,16 @@ version: 1
 metadata:
   config_version: "integration-test"
 allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+# The gateway-wide inbound-filter baseline (ADR-0024). Declared EXPLICITLY rather than left to
+# the omitted-block default: the default is now `strict`, so the pinned value here documents the
+# posture the whole IT suite is measured against instead of letting it drift with the default.
+# Every route that declares no `security_filter.profile` resolves to this value — including the
+# /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
+# parameters, 1024-character header values and parameter values, 1024-character paths) are the
+# floor the suite proves. The single `none`-mode route below is the only opt-out, and it is a
+# PARTIAL one.
+security_defaults:
+  profile: strict
 tls:
   # ALPN advertises h2 alongside http/1.1 so the http2 benchmark aspect negotiates
   # HTTP/2 at the edge instead of silently falling back to HTTP/1.1 — a fallback

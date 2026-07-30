@@ -47,8 +47,10 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -62,6 +64,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link RouteTableBuilder}: enabled-only merge, longest-prefix
@@ -660,6 +664,56 @@ class RouteTableBuilderTest {
         }
 
         @Test
+        @DisplayName("Should log the resolved effective profile, not a placeholder, for a route omitting the knob")
+        void shouldLogResolvedProfileForRouteOmittingTheKnob() {
+            // Arrange — no security_filter anywhere, so the route inherits the gateway-wide profile
+            GatewayConfig config = gateway()
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("lenient"))))
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
+
+            // Act
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert — the old logPosture printed the literal "none" as a placeholder for unset, which
+            // now reads as the real 'none' mode and would misreport every knob-less route.
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='lenient'");
+        }
+
+        @Test
+        @DisplayName("Should log strict for a knob-less route under an omitted security_defaults block")
+        void shouldLogStrictWhenSecurityDefaultsOmitted() {
+            // Arrange
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
+
+            // Act
+            builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='strict'");
+        }
+
+        @Test
+        @DisplayName("Should log a route's own declared profile ahead of the gateway-wide fallback")
+        void shouldLogDeclaredRouteProfile() {
+            // Arrange
+            GatewayConfig config = gateway()
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"))))
+                    .build();
+            RouteConfig declared = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
+                    .securityFilter(Optional.of(filter("none"))).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(declared)).build();
+
+            // Act
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='none'");
+        }
+
+        @Test
         @DisplayName("Should WARN when a route replaces an anchor-provided security_filter wholesale")
         void shouldWarnOnWeakeningSecurityFilterOverride() {
             GatewayConfig config = gateway()
@@ -1010,6 +1064,82 @@ class RouteTableBuilderTest {
 
             assertEquals(2, table.routes().size(),
                     () -> "presence-disjoint same-prefix routes must both survive for prefix: " + prefix);
+        }
+    }
+
+    @Nested
+    @DisplayName("The shared effectiveAccessLevel seam")
+    class EffectiveAccessLevelSeam {
+
+        private static AnchorConfig accessAnchor(AccessLevel access) {
+            return AnchorConfig.builder()
+                    .name("surface")
+                    .pathPrefix("/surface")
+                    .type(AnchorType.PROXY)
+                    .access(access)
+                    .build();
+        }
+
+        @ParameterizedTest(name = "require ''{0}'' resolves to AUTHENTICATED even under a public anchor")
+        @ValueSource(strings = {"bearer", "session"})
+        @DisplayName("Should treat any non-'none' effective auth as authenticated regardless of anchor access")
+        void shouldTreatNonNoneRequireAsAuthenticated(String require) {
+            // The strengthened-floor case: the anchor stays access: public, but the route's own floor
+            // must still govern the surface as authenticated (ADR-0007 permits strengthening).
+            AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
+                    Optional.of(accessAnchor(AccessLevel.PUBLIC)), new AuthConfig(require, List.of()));
+
+            assertEquals(AccessLevel.AUTHENTICATED, access);
+        }
+
+        @ParameterizedTest(name = "an effectively-unauthenticated route inherits the anchor access {0}")
+        @EnumSource(AccessLevel.class)
+        @DisplayName("Should fall back to the anchor's declared access for an effectively-unauthenticated route")
+        void shouldFallBackToAnchorAccessWhenUnauthenticated(AccessLevel declared) {
+            AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
+                    Optional.of(accessAnchor(declared)), new AuthConfig("none", List.of()));
+
+            assertEquals(declared, access);
+        }
+
+        @Test
+        @DisplayName("Should default to PUBLIC for an unanchored, effectively-unauthenticated route")
+        void shouldDefaultToPublicWhenUnanchoredAndUnauthenticated() {
+            AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
+                    Optional.empty(), new AuthConfig("none", List.of()));
+
+            assertEquals(AccessLevel.PUBLIC, access);
+        }
+    }
+
+    @Nested
+    @DisplayName("The shared globalProfile seam")
+    class GlobalProfileSeam {
+
+        @Test
+        @DisplayName("Should resolve a declared security_defaults profile")
+        void shouldResolveDeclaredGlobalProfile() {
+            GatewayConfig config = gateway()
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("lenient"))))
+                    .build();
+
+            assertEquals(SecurityProfile.LENIENT, RouteTableBuilder.globalProfile(config));
+        }
+
+        @Test
+        @DisplayName("Should resolve an omitted security_defaults block to the fail-closed default")
+        void shouldResolveOmittedBlockToDefault() {
+            assertEquals(SecurityProfile.DEFAULT_PROFILE, RouteTableBuilder.globalProfile(gateway().build()));
+        }
+
+        @Test
+        @DisplayName("Should resolve a security_defaults block without a profile to the fail-closed default")
+        void shouldResolveBlockWithoutProfileToDefault() {
+            GatewayConfig config = gateway()
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.empty())))
+                    .build();
+
+            assertEquals(SecurityProfile.DEFAULT_PROFILE, RouteTableBuilder.globalProfile(config));
         }
     }
 }

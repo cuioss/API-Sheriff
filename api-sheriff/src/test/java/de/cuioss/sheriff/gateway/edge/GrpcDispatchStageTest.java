@@ -46,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -117,7 +118,10 @@ class GrpcDispatchStageTest {
                 capturedTargets.add(target);
                 return vertx.createHttpClient();
             };
-            securityConfigFactory = filter -> SecurityConfiguration.builder().build();
+            // A fixed neutral posture: this test's subject is forced-h2 client-tuple splitting, which
+            // is orthogonal to the inbound security posture.
+            securityConfigFactory = _ -> new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.STRICT,
+                    SecurityConfiguration.builder().build());
             guardFactory = shape -> new StoredOnlyGuard();
             assetSourceFactory = asset -> {
                 throw new UnsupportedOperationException("no asset route in this test");

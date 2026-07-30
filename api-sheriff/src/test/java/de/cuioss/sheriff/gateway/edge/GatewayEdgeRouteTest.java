@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,6 +29,7 @@ import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -36,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 
+import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
@@ -46,6 +49,8 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -322,6 +327,202 @@ class GatewayEdgeRouteTest {
             newEdge(table).registerRoutes(router);
             return vertx.createHttpServer().requestHandler(router)
                     .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * The {@code security_filter → security_defaults} posture resolution the edge hands to the
+     * {@code RouteRuntimeAssembler}. It is asserted directly rather than through a booted edge
+     * because an assembled edge exposes no view of its compiled routes.
+     */
+    @Nested
+    @DisplayName("inbound-filter posture resolution (security_filter → security_defaults)")
+    class PostureResolution {
+
+        @Test
+        @DisplayName("applies the gateway-wide profile to a route that declares no security_filter block")
+        void appliesGlobalProfileToBlockLessRoute() {
+            // Arrange — the case the previous effectiveSecurityFilter().map(...) shape skipped entirely
+
+            // Act
+            RouteRuntimeAssembler.SecurityPosture strict =
+                    GatewayEdgeRoute.securityPostureFor(Optional.empty(), SecurityProfile.STRICT);
+            RouteRuntimeAssembler.SecurityPosture lenient =
+                    GatewayEdgeRoute.securityPostureFor(Optional.empty(), SecurityProfile.LENIENT);
+
+            // Assert
+            assertEquals(SecurityProfile.STRICT, strict.profile(),
+                    "a block-less route inherits the gateway-wide profile");
+            assertEquals(SecurityConfiguration.strict(), strict.configuration(),
+                    "and is governed by that profile's preset, not by SecurityConfiguration.defaults()");
+            assertEquals(SecurityProfile.LENIENT, lenient.profile());
+            assertEquals(SecurityConfiguration.lenient(), lenient.configuration());
+        }
+
+        @Test
+        @DisplayName("falls back to the gateway-wide profile for a block that omits profile")
+        void fallsBackForBlockWithoutProfile() {
+            // Arrange
+            Optional<SecurityFilterConfig> noProfile =
+                    Optional.of(SecurityFilterConfig.builder().allowedPaths(List.of("/x")).build());
+
+            // Act
+            RouteRuntimeAssembler.SecurityPosture posture =
+                    GatewayEdgeRoute.securityPostureFor(noProfile, SecurityProfile.LENIENT);
+
+            // Assert
+            assertEquals(SecurityProfile.LENIENT, posture.profile(),
+                    "a declared block that omits 'profile' still inherits the gateway-wide value");
+            assertEquals(SecurityConfiguration.lenient(), posture.configuration(),
+                    "an allowlist-only block declares no limit override, so the preset is unchanged");
+        }
+
+        @Test
+        @DisplayName("lets a declared route profile win over the gateway-wide one")
+        void letsDeclaredRouteProfileWin() {
+            // Arrange
+            Optional<SecurityFilterConfig> declared =
+                    Optional.of(SecurityFilterConfig.builder().profile(Optional.of("lenient")).build());
+
+            // Act
+            RouteRuntimeAssembler.SecurityPosture posture =
+                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT);
+
+            // Assert
+            assertEquals(SecurityProfile.LENIENT, posture.profile(), "the route's own profile wins");
+            assertEquals(SecurityConfiguration.lenient(), posture.configuration());
+        }
+
+        @Test
+        @DisplayName("gives a none route the nearest non-none profile's limits so the body cap stays enforceable")
+        void givesNoneRouteConcreteLimits() {
+            // Arrange
+            Optional<SecurityFilterConfig> none =
+                    Optional.of(SecurityFilterConfig.builder().profile(Optional.of("none")).build());
+
+            // Act — chain none → lenient, then the all-none chain
+            RouteRuntimeAssembler.SecurityPosture inheritsLenient =
+                    GatewayEdgeRoute.securityPostureFor(none, SecurityProfile.LENIENT);
+            RouteRuntimeAssembler.SecurityPosture allNone =
+                    GatewayEdgeRoute.securityPostureFor(none, SecurityProfile.NONE);
+            RouteRuntimeAssembler.SecurityPosture globalNoneBlockLess =
+                    GatewayEdgeRoute.securityPostureFor(Optional.empty(), SecurityProfile.NONE);
+
+            // Assert
+            assertEquals(SecurityProfile.NONE, inheritsLenient.profile(), "the mode itself stays 'none'");
+            assertEquals(SecurityConfiguration.lenient(), inheritsLenient.configuration(),
+                    "'none' takes the nearest non-none profile's limits");
+            assertEquals(SecurityConfiguration.strict(), allNone.configuration(),
+                    "an all-none chain lands on STRICT rather than leaving the limits unresolved");
+            assertEquals(SecurityProfile.NONE, globalNoneBlockLess.profile(),
+                    "a gateway-wide 'none' also reaches a route with no security_filter block");
+            assertEquals(SecurityConfiguration.strict(), globalNoneBlockLess.configuration());
+        }
+
+        @Test
+        @DisplayName("overrides only the declared limits and leaves every other dimension on the preset")
+        void overridesOnlyDeclaredLimits() {
+            // Arrange — one declared dimension against the strict preset
+            SecurityConfiguration preset = SecurityConfiguration.strict();
+            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
+                    .maxBodyBytes(Optional.of(4096))
+                    .allowedContentTypes(List.of("application/json"))
+                    .build());
+
+            // Act
+            SecurityConfiguration resolved =
+                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT).configuration();
+
+            // Assert — the declared dimensions win …
+            assertEquals(4096L, resolved.maxBodySize(), "a declared max_body_bytes overrides the preset");
+            assertEquals(Set.of("application/json"), resolved.allowedContentTypes(),
+                    "a declared content-type allowlist overrides the preset");
+
+            // … and every undeclared dimension stays on the preset rather than reverting to defaults().
+            assertEquals(preset.maxPathLength(), resolved.maxPathLength());
+            assertEquals(preset.maxParameterCount(), resolved.maxParameterCount());
+            assertEquals(preset.maxHeaderValueLength(), resolved.maxHeaderValueLength());
+            assertEquals(preset.failOnSuspiciousPatterns(), resolved.failOnSuspiciousPatterns());
+            assertEquals(preset.allowDoubleEncoding(), resolved.allowDoubleEncoding());
+            assertNotEquals(SecurityConfiguration.defaults().maxBodySize(), resolved.maxBodySize(),
+                    "the resolved policy is the route's, never the bare cui-http default");
+        }
+
+        @Test
+        @DisplayName("keeps a route's declared header allow/block lists on top of the preset")
+        void keepsDeclaredHeaderLists() {
+            // Arrange
+            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
+                    .maxHeaderCount(Optional.of(11))
+                    .maxHeaderValueLength(Optional.of(2222))
+                    .maxQueryParams(Optional.of(7))
+                    .maxParamValueLength(Optional.of(333))
+                    .allowedHeaderNames(List.of("Accept"))
+                    .blockedHeaderNames(List.of("X-Debug"))
+                    .build());
+
+            // Act
+            SecurityConfiguration resolved =
+                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.LENIENT).configuration();
+
+            // Assert
+            assertEquals(11, resolved.maxHeaderCount());
+            assertEquals(2222, resolved.maxHeaderValueLength());
+            assertEquals(7, resolved.maxParameterCount());
+            assertEquals(333, resolved.maxParameterValueLength());
+            assertEquals(Set.of("Accept"), resolved.allowedHeaderNames());
+            assertEquals(Set.of("X-Debug"), resolved.blockedHeaderNames());
+        }
+
+        /**
+         * Semantic drift guard for {@code GatewayEdgeRoute.builderSeededFrom}, which mirrors the
+         * third-party {@link SecurityConfiguration} record component-by-component. A component the
+         * copy drops silently reverts to the {@code defaults()} policy as soon as a route declares
+         * any {@code security_filter} limit — a posture regression with no other failing test.
+         */
+        @Test
+        @DisplayName("round-trips every preset component when an override restates the preset's own value")
+        void roundTripsPresetThroughTheSeededBuilder() {
+            // Arrange / Act / Assert — one non-none preset per branch of limitsProfile
+            assertPresetRoundTrips(SecurityProfile.STRICT);
+            assertPresetRoundTrips(SecurityProfile.LENIENT);
+        }
+
+        /**
+         * Cheap tripwire so a cui-http upgrade that grows the record surfaces the review question
+         * even when the round-trip above happens to still pass (a dropped component whose preset
+         * value coincides with the {@code defaults()} value).
+         */
+        @Test
+        @DisplayName("fails when the cui-http SecurityConfiguration record grows a component the copy does not know")
+        void tripwiresOnSecurityConfigurationComponentDrift() {
+            // Arrange — the number of components GatewayEdgeRoute.builderSeededFrom copies
+            int copiedByBuilderSeededFrom = 24;
+
+            // Act
+            int declaredComponents = SecurityConfiguration.class.getRecordComponents().length;
+
+            // Assert
+            assertEquals(copiedByBuilderSeededFrom, declaredComponents,
+                    "builderSeededFrom copies %d components but SecurityConfiguration declares %d — extend the copy before upgrading cui-http"
+                            .formatted(copiedByBuilderSeededFrom, declaredComponents));
+        }
+
+        private void assertPresetRoundTrips(SecurityProfile profile) {
+            // Arrange — restate exactly one dimension at the preset's own value, so the rebuilt
+            // configuration must come back equal to the preset unless a component was dropped.
+            SecurityConfiguration preset = SecurityProfile.limitsProfile(profile, profile).preset();
+            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
+                    .maxQueryParams(Optional.of(preset.maxParameterCount()))
+                    .build());
+
+            // Act
+            SecurityConfiguration resolved =
+                    GatewayEdgeRoute.securityPostureFor(declared, profile).configuration();
+
+            // Assert
+            assertEquals(preset, resolved,
+                    "seeding the builder from the %s preset must round-trip to that preset".formatted(profile));
         }
     }
 

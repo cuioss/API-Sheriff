@@ -31,22 +31,46 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 
 /**
- * Stage 3 — per-route thorough checks, run after the verb gate on the selected route.
+ * Stage 3 — per-route thorough checks, run after the verb gate on the selected route. The stage is
+ * <strong>always dispatched</strong>: there is no profile condition at the {@code GatewayEdgeRoute}
+ * call site, because two of its four enforcements must survive every mode.
  * <p>
- * Three per-route enforcements, all on the single canonical path:
+ * <strong>Unconditional half</strong> — runs for every route, {@code profile: none} included:
  * <ul>
- *   <li><strong>Re-run only on divergence.</strong> When the route carries its own
- *       {@link SecurityConfiguration} that differs from the stage-1 default, its pipelines are
- *       re-run on the canonical path, every parameter value, and every header value; a route whose
- *       config equals the default is skipped (stage 1 already covered it). Per-config pipeline sets
- *       are cached so shared route shapes reuse one set.</li>
+ *   <li><strong>{@code max_body_bytes} fast-reject.</strong> A declared {@code Content-Length}
+ *       already exceeding the route config's {@code maxBodySize} — the effective cap derived for the
+ *       route — is rejected 413 ({@link EventType#CONTENT_TOO_LARGE}) before the body is read. It is a
+ *       DoS resource guard, not an injection defence, so it carries no reason to ride the mode
+ *       switch.</li>
  *   <li><strong>{@code allowed_paths} whitelist.</strong> When the caller supplies a non-empty
  *       whitelist, the canonical path must match one pattern, where a {@code {name}} segment matches
- *       exactly one path segment; a miss is a 400 {@link EventType#PATH_NOT_ALLOWED}.</li>
- *   <li><strong>{@code max_body_bytes} fast-reject.</strong> A declared {@code Content-Length}
- *       already exceeding the route config's {@code maxBodySize} is rejected 413
- *       ({@link EventType#CONTENT_TOO_LARGE}) before the body is read.</li>
+ *       exactly one path segment; a miss is a 400 {@link EventType#PATH_NOT_ALLOWED}. A path
+ *       allowlist is likewise not an injection defence.</li>
  * </ul>
+ * <p>
+ * <strong>Skippable half</strong> — gated on
+ * {@link de.cuioss.sheriff.gateway.config.model.SecurityProfile#skippableValidationEnabled()}, so it
+ * runs for {@code strict} and {@code lenient} and is skipped only under {@code none}:
+ * <ul>
+ *   <li><strong>url-parameter name + value validation.</strong> Relocated here from the pre-route
+ *       {@code BasicChecksStage} so it runs under the ROUTE's configuration; it validates the
+ *       parameter name as well as each value. It runs unconditionally for a non-{@code none} route
+ *       because it is now the only run, not a re-run.</li>
+ *   <li><strong>Divergent pipeline re-run.</strong> When the route carries a
+ *       {@link SecurityConfiguration} that differs from the stage-1 default, the path and header
+ *       pipelines are re-run under it; a route whose config equals the default is skipped (stage 1
+ *       already covered it). Per-config pipeline sets are cached so shared route shapes reuse one set.
+ *       The parameter loop is deliberately NOT re-run here — that would duplicate the validation
+ *       above on the hot path.</li>
+ * </ul>
+ * <p>
+ * <strong>The closed list of what {@code none} turns off is exactly those two items</strong> — the
+ * relocated url-parameter name/value validation and the pipeline re-run. Everything else keeps
+ * running: the whole non-skippable pre-route floor (collection caps, the URL path pipeline that
+ * produces the canonical path, {@code CanonicalPathGuard}, {@code FramingGate}, the passthrough host
+ * guard, header validation), the body cap and the path allowlist above, and everything downstream
+ * (verb gate, CSRF defence, authentication, forward policy, dispatch). Widening this list is a scope
+ * change that belongs back with the operator, not here. See ADR-0024.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -70,12 +94,13 @@ public final class ThoroughChecksStage {
     }
 
     /**
-     * Runs the per-route thorough checks.
+     * Runs the per-route thorough checks: the unconditional half first, then the profile-gated half.
      *
      * @param request      the in-flight request context; its route must be selected (stage 2)
      * @param allowedPaths the selected route's {@code allowed_paths} whitelist, empty when unrestricted
-     * @throws GatewayException on a divergent-pipeline violation ({@link EventType#SECURITY_FILTER_VIOLATION}),
-     *                          a whitelist miss ({@link EventType#PATH_NOT_ALLOWED}), or a body-cap breach
+     * @throws GatewayException on a parameter or divergent-pipeline violation
+     *                          ({@link EventType#SECURITY_FILTER_VIOLATION}), a whitelist miss
+     *                          ({@link EventType#PATH_NOT_ALLOWED}), or a body-cap breach
      *                          ({@link EventType#CONTENT_TOO_LARGE})
      */
     public void process(PipelineRequest request, List<String> allowedPaths) {
@@ -83,37 +108,84 @@ public final class ThoroughChecksStage {
         Objects.requireNonNull(allowedPaths, "allowedPaths");
         RouteRuntime route = requireSelectedRoute(request);
         String canonicalPath = requireCanonicalPath(request);
+        // Present for every assembler-produced route (the posture resolver runs for all of them), so
+        // the fallback covers only a RouteRuntime built without a resolved configuration.
+        SecurityConfiguration routeConfig = route.getSecurityConfiguration().orElse(defaultConfiguration);
 
-        route.getSecurityConfiguration().ifPresent(routeConfig -> {
-            if (!routeConfig.equals(defaultConfiguration)) {
-                reRunPipelines(request, routeConfig, canonicalPath);
-            }
-            enforceBodyCap(request, routeConfig);
-        });
+        // Unconditional half — a resource guard and a path allowlist, neither of which is an
+        // injection defence, so neither rides the profile switch.
+        enforceBodyCap(request, routeConfig);
         enforceAllowedPaths(canonicalPath, allowedPaths);
+
+        // Skippable half — the closed list of what 'none' turns off, and nothing more.
+        if (!route.getSecurityProfile().skippableValidationEnabled()) {
+            return;
+        }
+        validateParameters(request, routeConfig);
+        if (!routeConfig.equals(defaultConfiguration)) {
+            reRunPipelines(request, routeConfig, canonicalPath);
+        }
     }
 
-    private void reRunPipelines(PipelineRequest request, SecurityConfiguration routeConfig, String canonicalPath) {
-        PipelineFactory.PipelineSet pipelines = pipelineCache.computeIfAbsent(routeConfig,
-                config -> PipelineFactory.createCommonPipelines(config, eventCounter));
+    /**
+     * Validates every query-parameter NAME and value under the route's configuration. Relocated from
+     * the pre-route {@code BasicChecksStage}: cui-http exposes no dedicated URL-parameter-name
+     * pipeline to this project, so the url-parameter pipeline is reused against the key — closing the
+     * name-validation gap with the same rigor applied to values, mirroring the header validation that
+     * stays in the pre-route floor.
+     * <p>
+     * Reserved BFF paths never reach this stage: they terminate in {@code handleReservedPath} before
+     * route selection, which is what makes the ADR-0019 reserved-path relaxation structural rather
+     * than predicate-driven.
+     */
+    private void validateParameters(PipelineRequest request, SecurityConfiguration routeConfig) {
+        PipelineFactory.PipelineSet pipelines = pipelinesFor(routeConfig);
         try {
-            pipelines.urlPathPipeline().validate(canonicalPath);
-            for (List<String> values : request.queryParameters().values()) {
-                for (String value : values) {
+            for (Map.Entry<String, List<String>> parameter : request.queryParameters().entrySet()) {
+                pipelines.urlParameterPipeline().validate(parameter.getKey());
+                for (String value : parameter.getValue()) {
                     pipelines.urlParameterPipeline().validate(value);
                 }
             }
-            for (List<String> values : request.headers().values()) {
-                for (String value : values) {
+        } catch (UrlSecurityException violation) {
+            throw rejected(violation);
+        }
+    }
+
+    /**
+     * Re-runs the path and header pipelines under a route configuration that diverges from the
+     * stage-1 default. Header NAMES as well as header VALUES are re-run: the pre-route
+     * {@code BasicChecksStage} validates names under the gateway baseline only, so a route whose
+     * declared {@code security_filter} carries a stricter name policy ({@code allowed_header_names},
+     * {@code blocked_header_names}, a lower {@code maxHeaderNameLength}) would otherwise never have
+     * it applied. The parameter loop is deliberately absent: {@link #validateParameters} already
+     * ran under this same configuration, so re-running it here would be duplicate hot-path work.
+     */
+    private void reRunPipelines(PipelineRequest request, SecurityConfiguration routeConfig, String canonicalPath) {
+        PipelineFactory.PipelineSet pipelines = pipelinesFor(routeConfig);
+        try {
+            pipelines.urlPathPipeline().validate(canonicalPath);
+            for (Map.Entry<String, List<String>> header : request.headers().entrySet()) {
+                pipelines.headerNamePipeline().validate(header.getKey());
+                for (String value : header.getValue()) {
                     pipelines.headerValuePipeline().validate(value);
                 }
             }
         } catch (UrlSecurityException violation) {
-            throw new GatewayException(EventType.SECURITY_FILTER_VIOLATION,
-                    "Per-route filter rejected %s at %s".formatted(violation.getFailureType(),
-                            violation.getValidationType()),
-                    violation);
+            throw rejected(violation);
         }
+    }
+
+    private PipelineFactory.PipelineSet pipelinesFor(SecurityConfiguration routeConfig) {
+        return pipelineCache.computeIfAbsent(routeConfig,
+                config -> PipelineFactory.createCommonPipelines(config, eventCounter));
+    }
+
+    private static GatewayException rejected(UrlSecurityException violation) {
+        return new GatewayException(EventType.SECURITY_FILTER_VIOLATION,
+                "Per-route filter rejected %s at %s".formatted(violation.getFailureType(),
+                        violation.getValidationType()),
+                violation);
     }
 
     private static void enforceBodyCap(PipelineRequest request, SecurityConfiguration routeConfig) {

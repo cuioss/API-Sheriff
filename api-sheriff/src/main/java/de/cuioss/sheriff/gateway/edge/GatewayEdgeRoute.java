@@ -50,6 +50,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -59,6 +60,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -110,7 +112,9 @@ import org.jspecify.annotations.Nullable;
  * <strong>Boot-time assembly.</strong> The constructor compiles the frozen {@link RouteTable} into
  * immutable {@link RouteRuntime} instances via the {@link RouteRuntimeAssembler} (deduplicating the
  * shared Vert.x clients and SmallRye guards), builds every stage once with the shared
- * {@link SecurityEventCounter}, the default {@link SecurityConfiguration}, the boot-wired
+ * {@link SecurityEventCounter}, the gateway-wide {@link SecurityConfiguration} seeded from the
+ * resolved {@code security_defaults} {@link SecurityProfile} (an omitted block resolving to
+ * {@link SecurityProfile#DEFAULT_PROFILE}), the boot-wired
  * {@link ForwardedHeaderResolver} + {@link TcpPeerGate} (from the global {@code forwarded} block),
  * and the shared {@link GatewayEventCounter}. That same shared {@link SecurityEventCounter} is bound
  * to {@link SheriffMetrics} here so its per-{@code UrlSecurityFailureType} counts surface as the
@@ -274,7 +278,14 @@ public class GatewayEdgeRoute {
         this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
 
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
-        SecurityConfiguration defaultConfiguration = SecurityConfiguration.defaults();
+        // The gateway-wide baseline is seeded from the RESOLVED security_defaults profile rather
+        // than from a hard-coded SecurityConfiguration.defaults(). This single instance feeds
+        // BasicChecksStage, ThoroughChecksStage's skip-if-equal baseline,
+        // ForwardedResolverConfig.securityConfig and defaultMaxBodySize — so seeding it here is
+        // what makes an omitted security_defaults block genuinely mean 'strict' for every route.
+        SecurityProfile globalProfile = RouteTableBuilder.globalProfile(gatewayConfig);
+        SecurityConfiguration defaultConfiguration =
+                SecurityProfile.limitsProfile(globalProfile, globalProfile).preset();
         this.defaultMaxBodySize = defaultConfiguration.maxBodySize();
         this.gatewayEventCounter = new GatewayEventCounter();
         this.upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
@@ -291,7 +302,7 @@ public class GatewayEdgeRoute {
 
         RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
         this.routes = assembler.assemble(routeTable,
-                GatewayEdgeRoute::securityConfigurationFor,
+                filter -> securityPostureFor(filter, globalProfile),
                 target -> clientFor(vertx, target),
                 this::guardFor,
                 GatewayEdgeRoute::assetSourceFor);
@@ -300,13 +311,13 @@ public class GatewayEdgeRoute {
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
         // consulted in process() ahead of route selection, so a proxy route such as
         // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
-        // global oidc block declares a redirect_uri. Built before basicChecksStage so the latter can
-        // reuse the same match to exempt gateway-terminated reserved params from the url-parameter
-        // pipeline (see BasicChecksStage — reserved handlers self-validate their own params).
+        // global oidc block declares a redirect_uri. The reserved-path exemption from the
+        // url-parameter pipeline is now STRUCTURAL rather than predicate-driven: handleReservedPath
+        // returns before route selection, and the parameter pipeline moved after it into
+        // ThoroughChecksStage, so a reserved path never reaches it (ADR-0019, amended).
         this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
-                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent(),
                 cookieHeaderConfigurationFor(gatewayConfig, bffRuntime));
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
@@ -1245,12 +1256,43 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Maps a route's {@code security_filter} block to a cui-http {@link SecurityConfiguration},
-     * seeding the safe builder defaults and overriding only the limits the route declared, so an
-     * undeclared dimension never falls below the gateway baseline.
+     * Resolves a route's inbound-filter posture: the effective {@link SecurityProfile} after the
+     * {@code security_filter → security_defaults} fallback, plus the cui-http
+     * {@link SecurityConfiguration} carrying its limits.
+     * <p>
+     * The limits are seeded from the <em>preset</em> of the nearest non-{@code none} profile in the
+     * chain (see {@link SecurityProfile#limitsProfile}), never from bare builder defaults, and only
+     * the dimensions the route actually declared are overridden on top — so an undeclared dimension
+     * lands exactly on the resolved preset rather than below it. A {@code none} route therefore
+     * still carries a concrete, enforceable {@code maxBodySize}.
+     * <p>
+     * Invoked for every route, including one that declares no {@code security_filter} block at all,
+     * which is what lets a gateway-wide {@code profile} govern a block-less route.
+     * <p>
+     * Package-private rather than private so the posture resolution — the fallback chain and the
+     * preset-seeded limit overrides — is asserted directly by {@code GatewayEdgeRouteTest} instead
+     * of only through a booted edge, whose assembled routes are not observable.
      */
-    private static SecurityConfiguration securityConfigurationFor(SecurityFilterConfig filter) {
-        SecurityConfigurationBuilder builder = SecurityConfiguration.builder();
+    static RouteRuntimeAssembler.SecurityPosture securityPostureFor(
+            Optional<SecurityFilterConfig> filter, SecurityProfile globalProfile) {
+        SecurityProfile effective = filter.flatMap(SecurityFilterConfig::profile)
+                .flatMap(SecurityProfile::parse)
+                .orElse(globalProfile);
+        SecurityConfiguration preset = SecurityProfile.limitsProfile(effective, globalProfile).preset();
+        return new RouteRuntimeAssembler.SecurityPosture(effective,
+                filter.map(declared -> applyDeclaredLimits(preset, declared)).orElse(preset));
+    }
+
+    /**
+     * Applies a route's declared {@code security_filter} limits on top of the resolved preset. The
+     * builder is seeded component-by-component from {@code preset} because the cui-http
+     * {@link SecurityConfiguration} exposes no preset-seeded builder — {@link SecurityConfiguration#builder()}
+     * starts from {@code defaults()}, so seeding explicitly is the only way an undeclared dimension
+     * keeps the preset's value instead of silently reverting to the default policy.
+     */
+    private static SecurityConfiguration applyDeclaredLimits(SecurityConfiguration preset,
+            SecurityFilterConfig filter) {
+        SecurityConfigurationBuilder builder = builderSeededFrom(preset);
         filter.maxBodyBytes().ifPresent(value -> builder.maxBodySize(value.longValue()));
         filter.maxQueryParams().ifPresent(builder::maxParameterCount);
         filter.maxHeaderCount().ifPresent(builder::maxHeaderCount);
@@ -1266,6 +1308,40 @@ public class GatewayEdgeRoute {
             builder.allowedContentTypes(Set.copyOf(filter.allowedContentTypes()));
         }
         return builder.build();
+    }
+
+    /**
+     * Returns a {@link SecurityConfigurationBuilder} carrying every component of {@code preset}, so
+     * a caller overriding one dimension leaves the other twenty-three on the preset's values. Copies
+     * the record's full component set deliberately: an omitted component would silently fall back to
+     * the {@code defaults()} policy the builder starts from.
+     */
+    private static SecurityConfigurationBuilder builderSeededFrom(SecurityConfiguration preset) {
+        return SecurityConfiguration.builder()
+                .maxPathLength(preset.maxPathLength())
+                .allowDoubleEncoding(preset.allowDoubleEncoding())
+                .maxParameterNameLength(preset.maxParameterNameLength())
+                .maxParameterValueLength(preset.maxParameterValueLength())
+                .maxHeaderNameLength(preset.maxHeaderNameLength())
+                .maxHeaderValueLength(preset.maxHeaderValueLength())
+                .maxCookieNameLength(preset.maxCookieNameLength())
+                .maxCookieValueLength(preset.maxCookieValueLength())
+                .maxBodySize(preset.maxBodySize())
+                .allowNullBytes(preset.allowNullBytes())
+                .allowControlCharacters(preset.allowControlCharacters())
+                .allowExtendedAscii(preset.allowExtendedAscii())
+                .normalizeUnicode(preset.normalizeUnicode())
+                .caseSensitiveComparison(preset.caseSensitiveComparison())
+                .failOnSuspiciousPatterns(preset.failOnSuspiciousPatterns())
+                .requireSecureCookies(preset.requireSecureCookies())
+                .requireHttpOnlyCookies(preset.requireHttpOnlyCookies())
+                .maxParameterCount(preset.maxParameterCount())
+                .maxHeaderCount(preset.maxHeaderCount())
+                .maxCookieCount(preset.maxCookieCount())
+                .allowedHeaderNames(preset.allowedHeaderNames())
+                .blockedHeaderNames(preset.blockedHeaderNames())
+                .allowedContentTypes(preset.allowedContentTypes())
+                .blockedContentTypes(preset.blockedContentTypes());
     }
 
     /**

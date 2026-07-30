@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.pipeline;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.BiPredicate;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -32,17 +31,27 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Stage 1 — the baseline cui-http security filter plus collection-limit fast-reject, run for
- * every request before route selection.
+ * Stage 1 — the <strong>non-skippable pre-route floor</strong>: the baseline cui-http path and
+ * header filter plus the collection-limit fast-reject, run for every request before route selection
+ * and unaffected by any {@code security_filter} profile, {@code none} included.
  * <p>
- * The stage validates the raw path, every query-parameter value, and every header name / value
- * through the shared {@link PipelineFactory.PipelineSet} built from the gateway's default
+ * The stage validates the raw path and every header name / value through the shared
+ * {@link PipelineFactory.PipelineSet} built from the gateway's resolved baseline
  * {@link SecurityConfiguration}. The path pipeline yields the <strong>single canonical path</strong>
- * ({@link PipelineRequest#canonicalPath(String)}) that GW-01 requires every later stage to consume.
- * A pipeline violation ({@link UrlSecurityException}) becomes a
+ * ({@link PipelineRequest#canonicalPath(String)}) that GW-01 requires every later stage to consume —
+ * and that route selection hard-requires, which is precisely why this floor cannot be made skippable
+ * or moved behind route selection. A pipeline violation ({@link UrlSecurityException}) becomes a
  * {@link EventType#SECURITY_FILTER_VIOLATION} (400); a parameter- or header-count overflow beyond
  * the configured caps becomes a {@link EventType#PARAMETER_LIMIT_EXCEEDED} (400) — both without ever
  * echoing the offending value.
+ * <p>
+ * <strong>What moved out.</strong> The url-parameter NAME and VALUE validation now lives in the
+ * post-route {@code ThoroughChecksStage}, where it runs under the route's own configuration and
+ * under the {@code profile} gate. The parameter <em>count</em> cap stays here: a collection limit is
+ * part of the floor even though the values it bounds are validated post-route. With that move the
+ * ADR-0019 reserved-BFF-path relaxation becomes <strong>structural</strong> — a reserved path
+ * terminates in {@code handleReservedPath} before route selection and therefore never reaches the
+ * parameter pipeline at all — so this stage no longer takes a reserved-path predicate.
  * <p>
  * <strong>The cookie-mode header-value carve-out.</strong> A cookie-mode BFF's sealed session cookie
  * is designed to a multi-kilobyte budget, which the default 2048-character header-value cap would
@@ -69,18 +78,10 @@ public final class BasicChecksStage {
     private final SecurityConfiguration configuration;
     private final PipelineFactory.PipelineSet pipelines;
     private final HttpSecurityValidator cookieHeaderValuePipeline;
-    private final BiPredicate<String, String> reservedPathMatcher;
 
     /**
-     * @param configuration      the gateway's default inbound validation policy
+     * @param configuration      the gateway's resolved baseline inbound validation policy
      * @param eventCounter       the shared cui-http security event counter (never a local instance)
-     * @param reservedPathMatcher predicate {@code (host, canonicalPath) -> isReserved}: a matched
-     *                           reserved gateway path is terminated at the gateway (never proxied) and
-     *                           its query params are validated by the reserved handler itself, so the
-     *                           url-parameter value pipeline — an anti-injection defense for params
-     *                           forwarded to an upstream — is not applied to it (a same-origin
-     *                           {@code return_to} path legitimately carries {@code /}, which the
-     *                           pipeline would otherwise reject)
      * @param cookieHeaderConfiguration the policy applied to {@code Cookie} / {@code Set-Cookie}
      *                           header VALUES only, or {@code null} to validate them under
      *                           {@code configuration} like every other header. Supplied only by a
@@ -88,7 +89,6 @@ public final class BasicChecksStage {
      *                           default header-value cap
      */
     public BasicChecksStage(SecurityConfiguration configuration, SecurityEventCounter eventCounter,
-            BiPredicate<String, String> reservedPathMatcher,
             @Nullable SecurityConfiguration cookieHeaderConfiguration) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         SecurityEventCounter counter = Objects.requireNonNull(eventCounter, "eventCounter");
@@ -96,7 +96,6 @@ public final class BasicChecksStage {
         this.cookieHeaderValuePipeline = cookieHeaderConfiguration == null
                 ? this.pipelines.headerValuePipeline()
                 : PipelineFactory.createHeaderValuePipeline(cookieHeaderConfiguration, counter);
-        this.reservedPathMatcher = Objects.requireNonNull(reservedPathMatcher, "reservedPathMatcher");
     }
 
     /**
@@ -110,16 +109,7 @@ public final class BasicChecksStage {
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
         enforceCollectionLimits(request);
-        String canonical = validatePath(request.requestPath());
-        request.canonicalPath(canonical);
-        // A gateway-terminated reserved path (callback/login/logout/userinfo/back-channel) self-validates
-        // its own params in its handler; the generic url-parameter value pipeline (an anti-injection
-        // defense for upstream-forwarded params) is not applied to it, so a legitimate same-origin
-        // return_to path carrying '/' is not rejected. The param-count cap, path pipeline, and header
-        // pipeline above/below still apply.
-        if (!reservedPathMatcher.test(request.host(), canonical)) {
-            validateParameters(request.queryParameters());
-        }
+        request.canonicalPath(validatePath(request.requestPath()));
         validateHeaders(request.headers());
     }
 
@@ -139,23 +129,6 @@ public final class BasicChecksStage {
     private String validatePath(String rawPath) {
         try {
             return pipelines.urlPathPipeline().validate(rawPath).orElse(rawPath);
-        } catch (UrlSecurityException violation) {
-            throw rejected(violation);
-        }
-    }
-
-    private void validateParameters(Map<String, List<String>> parameters) {
-        try {
-            for (Map.Entry<String, List<String>> parameter : parameters.entrySet()) {
-                // Validate the parameter NAME as well as each value. cui-http exposes no dedicated
-                // URL-parameter-name pipeline to this project, so the url-parameter pipeline is reused
-                // against the key — closing the name-validation gap with the same rigor applied to
-                // values, mirroring validateHeaders which validates both header name and value.
-                pipelines.urlParameterPipeline().validate(parameter.getKey());
-                for (String value : parameter.getValue()) {
-                    pipelines.urlParameterPipeline().validate(value);
-                }
-            }
         } catch (UrlSecurityException violation) {
             throw rejected(violation);
         }

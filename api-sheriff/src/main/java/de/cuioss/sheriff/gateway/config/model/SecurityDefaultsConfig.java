@@ -21,10 +21,17 @@ import java.util.Optional;
 /**
  * The global {@code security_defaults} block of {@code gateway.yaml}.
  * <p>
- * {@code profile} selects the inbound-filter baseline preset
- * ({@code default} / {@code strict} / {@code lenient}) applied to every route
- * that does not declare its own {@code security_filter}. The value set is
- * enforced by the configuration validator, not by the model.
+ * {@code profile} selects the gateway-wide inbound-filter mode — {@code strict} /
+ * {@code lenient} / {@code none}, see {@link SecurityProfile}. The value range is enforced by the
+ * bundled JSON Schema (an unrecognized value, the dropped {@code default} preset included, fails
+ * boot there), not by this model and not by the configuration validator.
+ * <p>
+ * <strong>Fallback.</strong> Every route resolves its effective profile through
+ * {@code route security_filter → anchor security_filter → security_defaults} — the endpoint level
+ * carries no {@code security_filter} block, so it is not part of the chain. A route that declares no
+ * {@code security_filter} — or one whose block omits {@code profile} — therefore inherits the value
+ * carried here, and an entirely omitted {@code security_defaults} block resolves to
+ * {@link SecurityProfile#DEFAULT_PROFILE}.
  *
  * @param profile the baseline security-filter profile, empty when omitted
  * @author API Sheriff Team
