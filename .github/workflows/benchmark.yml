@@ -160,23 +160,6 @@ jobs:
             --benchmark-outcome "${BENCHMARK_OUTCOME}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
-          # When Maven failed, the DID NOT RUN rows above and the Maven error are almost always the
-          # same event, but nothing on the page says so — a reader is left to infer the causal link.
-          # State it. This path never exits non-zero: the benchmark step's own failure already fails
-          # the job, and duplicating that here would only bury the real error.
-          if [ "${BENCHMARK_OUTCOME}" != "success" ]; then
-            {
-              echo
-              if [ "${missing}" -gt 0 ]; then
-                echo "> **Maven failed and the suite was TRUNCATED**: goals ${missing_names} produced no summary because the run aborted before reaching them. The DID NOT RUN rows above are a consequence of that failure, not ${missing} independent problems — fix the reported Maven error first, then re-read this table."
-              else
-                echo "> **Maven failed AFTER every expected goal produced a summary.** No goal was lost to truncation, so the failure lies outside goal execution (post-processing, the baseline comparison, or container teardown). The results above are complete and usable."
-              fi
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          echo "Benchmark coverage: ${missing} expected summary document(s) absent (benchmark step outcome: ${BENCHMARK_OUTCOME})."
-
       - name: Assemble benchmark artifacts for deployment
         run: |
           python3 benchmarks/scripts/benchmark-pages.py assemble \
