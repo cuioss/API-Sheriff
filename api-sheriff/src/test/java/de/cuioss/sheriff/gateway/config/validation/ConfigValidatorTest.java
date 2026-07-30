@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -1615,8 +1616,8 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
             // Assert
-            assertHasError(errors, "/endpoint/routes",REFUSAL_MESSAGE);
-            assertHasError(errors, "/endpoint/routes","effective access level is 'authenticated'");
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", "effective access level is 'authenticated'");
         }
 
         @Test
@@ -1633,7 +1634,7 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("BFF"));
 
             // Assert
-            assertHasError(errors, "/endpoint/routes","anchor 'shell' is type 'bff'");
+            assertHasError(errors, "/endpoint/routes", "anchor 'shell' is type 'bff'");
         }
 
         @Test
@@ -1653,8 +1654,8 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
             // Assert
-            assertHasError(errors, "/endpoint/routes",REFUSAL_MESSAGE);
-            assertHasError(errors, "/endpoint/routes","effective access level is 'authenticated'");
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", "effective access level is 'authenticated'");
         }
 
         @Test
@@ -1686,7 +1687,7 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
             // Assert
-            assertHasError(errors, "/endpoint/routes",REFUSAL_MESSAGE);
+            assertHasError(errors, "/endpoint/routes", REFUSAL_MESSAGE);
         }
 
         @Test
@@ -1762,8 +1763,7 @@ class ConfigValidatorTest {
                     () -> assertTrue(refusal.message().contains("secure-read"), "names the route"),
                     () -> assertTrue(refusal.message().contains("declare profile 'strict' or 'lenient'"),
                             "names the remedy"),
-                    () -> assertTrue(!refusal.message().contains("https://idp.example"),
-                            "echoes no configured scalar value"));
+                    () -> assertFalse(refusal.message().contains("https://idp.example"), "echoes no configured scalar value"));
         }
     }
 }
