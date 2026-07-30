@@ -100,6 +100,7 @@ class ConfigModelContractTest {
     private static TlsConfig tlsConfig() {
         return TlsConfig.builder()
                 .minVersion(Optional.of("TLSv1.3"))
+                .cipherSuites(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"))
                 .alpn(List.of("h2", "http/1.1"))
                 .passthroughSni(Map.of("internal.example.com", "internal-alias"))
                 .mtls(Optional.of(new TlsConfig.Mtls(true, Optional.of("/etc/ca.pem"))))
@@ -548,8 +549,9 @@ class ConfigModelContractTest {
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
             assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
             assertTrue(new ForwardConfig(null, null, null).setHeaders().isEmpty());
-            assertTrue(new TlsConfig(null, null, null, null).alpn().isEmpty());
-            assertTrue(new TlsConfig(null, null, null, null).passthroughSni().isEmpty());
+            assertTrue(new TlsConfig(null, null, null, null, null).cipherSuites().isEmpty());
+            assertTrue(new TlsConfig(null, null, null, null, null).alpn().isEmpty());
+            assertTrue(new TlsConfig(null, null, null, null, null).passthroughSni().isEmpty());
             assertTrue(new MatchConfig("/p", null, null, null).methods().isEmpty());
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());

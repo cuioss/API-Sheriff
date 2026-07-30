@@ -104,6 +104,25 @@ class MtlsServerCustomizerTest {
                 "enabled mTLS without a client_ca trust anchor must not start a require-client-auth listener");
     }
 
+    @Test
+    @DisplayName("client-auth is owned solely by the mTLS customizer, not by a raw configuration default")
+    void clientAuthIsOwnedByTheMtlsCustomizer() {
+        // Arrange — a listener whose client-auth was left at the framework default, as it now is
+        // since quarkus.http.ssl.client-auth was deleted from application.properties: gateway.yaml's
+        // tls.mtls block is the single source, and it is this customizer that puts it in force.
+        HttpServerOptions options = new HttpServerOptions();
+        assertEquals(ClientAuth.NONE, options.getClientAuth(),
+                "with no raw client-auth key declared, the listener starts with client-auth off");
+
+        // Act
+        customizerFor(mtls(true, Optional.of(CLIENT_CA_PATH))).customizeHttpsServer(options);
+
+        // Assert
+        assertEquals(ClientAuth.REQUIRED, options.getClientAuth(),
+                "the customizer alone raises client-auth, so no raw quarkus.http.ssl.client-auth default is needed");
+        assertNotNull(options.getTrustOptions(), "the trust anchor comes from gateway.yaml's client_ca");
+    }
+
     private static MtlsServerCustomizer customizerFor(TlsConfig.Mtls mtls) {
         GatewayConfig gateway = GatewayConfig.builder().version(1)
                 .tls(Optional.of(TlsConfig.builder().mtls(Optional.of(mtls)).build()))

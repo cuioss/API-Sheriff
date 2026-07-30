@@ -290,6 +290,14 @@
             <properties>
                 <quarkus.native.container-build>true</quarkus.native.container-build>
                 <quarkus.native.enabled>true</quarkus.native.enabled>
+                <!-- Build-time GraalVM knob: enables SSL support in the native image. It is fixed when
+                     the image is built, so it is deliberately OUTSIDE the neutral runtime configuration
+                     surface — gateway.yaml is read at startup and could never make this key take effect.
+                     Bound here rather than in application.properties so it lives with the other
+                     build-time native properties and is active exactly when it has meaning. See ADR-0025
+                     for the boundary rule separating build-time knobs, deployment-bound ports/trust
+                     material, and gateway.yaml-owned TLS policy. -->
+                <quarkus.ssl.native>true</quarkus.ssl.native>
             </properties>
         </profile>
     </profiles>
