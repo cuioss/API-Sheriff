@@ -66,3 +66,119 @@ Documents in `doc/user/` cover:
 Design rationale for these features lives in the link:../README.adoc[design documentation] and
 the link:../adr/0007-anchor-scoped-policy.adoc[Architecture Decision Records]; this layer
 describes how to *use* them, never why they were chosen.
+
+== Inbound Filter Modes (`security_defaults.profile`)
+
+The `profile` knob selects the gateway's inbound-validation mode. It is declarable gateway-wide on
+`security_defaults` and per route or anchor on `security_filter`. Field-level contract and the
+resolution chain live in
+link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
+section is the operator's decision guide.
+
+=== The three modes
+
+[cols="1,2,3"]
+|===
+| Mode | Choose it when | What you get
+
+| `strict`
+| Default choice. Any route serving untrusted clients, and every authenticated or BFF surface.
+| The tightest caps: 1 MiB body, 20 query parameters, 1024-character header values, parameter values
+  and paths, and suspicious-pattern rejection on.
+
+| `lenient`
+| A trusted internal caller legitimately needs headroom -- long tokens in headers, many query
+  parameters, larger bodies -- and you have decided that traffic is trustworthy.
+| Relaxed caps (10 MiB body, 8192-character header values, no suspicious-pattern rejection). Null
+  bytes are *still* refused and path traversal is *still* blocked -- no mode permits either.
+
+| `none`
+| A specific route receives url-parameter values the validator rejects but your application requires
+  -- a path-shaped callback target, an opaque token containing separators. Use it *per route*, never
+  gateway-wide.
+| Everything `strict` enforces *except* url-parameter name/value validation. See "What `none` does not
+  turn off" below -- it is a partial disable, not an off switch.
+|===
+
+=== `none` is a partial disable, not an off switch
+
+Setting `profile: none` does *not* stop the gateway defending the route. It turns off exactly two
+things -- the url-parameter name and value validation, and the per-route pipeline re-run -- and
+nothing else. In particular, a `none` route **still**:
+
+* enforces `max_body_bytes`, so an over-cap body is still rejected `400`;
+* enforces `allowed_paths`, so a path outside the allowlist is still rejected `400`;
+* runs the full pre-route floor, so an encoded path separator (`%2F`), an over-cap query-parameter
+  count, and an oversized header value are all still rejected `400`;
+* enforces authentication, the verb gate, CSRF, and the forward-policy allowlists.
+
+If you set `none` expecting the body cap or the path allowlist to stop applying, that is the
+misreading to correct: the mode name is narrower than it sounds. The normative closed list of what
+`none` disables is in
+link:../configuration.adoc#_the_none_mode[Configuration Reference -- The `none` mode].
+
+=== `none` is refused at boot on authenticated and BFF routes
+
+The gateway *fails to start* if a route whose effective profile resolves to `none` is either
+
+* effectively authenticated -- its resolved auth posture requires a bearer token or a session, or
+* under a `type: bff` anchor.
+
+This includes the indirect case: a gateway-wide `security_defaults.profile: none` that reaches such a
+route through the fallback chain is refused exactly as a per-route declaration would be. It also
+includes the subtle case: a route that adds its own `auth.require: bearer` under an `access: public`
+anchor *is* authenticated in effect, so it is refused even though its anchor still reads `public`.
+
+The boot error names the route, which dimension refused it, and the remedy. Fix it by giving that
+route an explicit `profile: strict` (or `lenient`), or by moving the `none` declaration to the
+specific public route that needs it.
+
+=== An unrecognized `profile` value is a hard boot failure
+
+The mode set is exactly `strict`, `lenient`, `none`. Any other value -- including the *removed*
+`default` -- makes the gateway *refuse to start*. There is no fallback and no warning-and-continue.
+
+[IMPORTANT]
+====
+*Migration from `default`.* The `default` value has been removed. Replace it with `strict`:
+
+[source,yaml]
+----
+security_defaults:
+  profile: strict     # was: default
+----
+
+Choose `lenient` instead if you need to keep the looser caps `default` happened to provide.
+====
+
+=== An omitted `security_defaults` block now means `strict`
+
+*This is a tightening relative to previous releases.* A `gateway.yaml` that declares no
+`security_defaults` block -- or declares one without `profile` -- now resolves to `strict`, where it
+previously resolved to a looser incidental baseline.
+
+*Symptom to look for after upgrading:* requests that previously succeeded start returning `400`. The
+caps that dropped are:
+
+[cols="2,1,1"]
+|===
+| Cap | Previously | Now (`strict`)
+
+| Request body | 5 MiB | 1 MiB
+| Query-parameter count | 100 | 20
+| Header value length | 2048 chars | 1024 chars
+| Parameter value length | 2048 chars | 1024 chars
+| Path length | 4096 chars | 1024 chars
+| Suspicious-pattern rejection | off | *on*
+|===
+
+If a previously-working request now returns `400`, check it against that table first. Two remedies,
+in order of preference:
+
+. *Raise only the cap you need*, on the specific route that needs it -- e.g.
+  `security_filter: { max_body_bytes: 5242880 }`. This keeps the strict posture everywhere else.
+. *Restore the looser baseline explicitly* with `security_defaults: { profile: lenient }`. This is a
+  gateway-wide loosening; prefer option 1 unless you genuinely want it everywhere.
+
+Declaring the value you want -- rather than relying on the omitted-block default -- is the durable
+fix either way.

@@ -95,3 +95,90 @@ Documents in `doc/development/` cover:
 
 Design rationale lives in the link:../README.adoc[design documentation]; this layer describes
 how to *work in* the codebase that implements it.
+
+== Inbound Validation: Where the Code Lives and Why
+
+The inbound filter is *two stages split across route selection*, not one. A contributor changing
+anything in this area needs the four structural reasons below, because each one is a constraint that
+looks arbitrary until you know it. The decision record is
+link:../adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023];
+the operator-facing behaviour is in
+link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`].
+
+=== The two stages
+
+`BasicChecksStage` is the *pre-route floor*. It validates the raw path and every header name and
+value, enforces the parameter- and header-*count* caps, and records the canonical path. It runs under
+the *gateway-wide* resolved configuration, for every request, before route selection.
+
+`ThoroughChecksStage` is the *post-route per-route stage*. It is *always dispatched*, but only part of
+its work is switchable: it unconditionally enforces the route's `max_body_bytes` cap and its
+`allowed_paths` allowlist, then returns early when the route's profile is `NONE`, skipping the
+url-parameter name/value validation and the divergent pipeline re-run.
+
+=== Why the url-parameter validation was relocated post-route
+
+It used to live in the pre-route floor. It moved into `ThoroughChecksStage` because the profile is a
+*per-route* setting and no route is resolved until after the floor has run -- so a pre-route parameter
+check cannot be gated on a route's profile, and cannot run under the route's own
+`SecurityConfiguration` either. The relocation is what makes both possible.
+
+The relocation also made the ADR-0019 reserved-BFF-path relaxation *structural*: a reserved path
+terminates in `handleReservedPath` before route selection, so it never reaches `ThoroughChecksStage`
+and never reaches the parameter pipeline. The `reservedPathMatcher` predicate that used to implement
+that exemption is *gone* -- do not reintroduce it. `BasicChecksStage` deliberately takes no
+reserved-path argument.
+
+=== Why the pre-route floor cannot be made skippable
+
+`BasicChecksStage.validatePath` produces the *single canonical path* that route selection consumes.
+Route selection therefore hard-requires the floor to have run: a request whose profile suppressed the
+floor would have no canonical path to match a route against -- and with no route, there is no profile
+to read in the first place.
+
+This is a circular dependency, not a policy preference. Any proposal to let `profile: none` reach the
+floor is not merely undesirable, it is unimplementable in this pipeline shape. The parameter *count*
+cap stays in the floor for the same reason it is safe there: a collection limit is a DoS guard that
+needs no per-route policy.
+
+=== Why the `none` branch lives inside `ThoroughChecksStage`, not at the dispatch site
+
+It would be easy to test the profile at the call site and skip dispatching the stage at all. That is
+wrong, and the current shape is deliberate: `max_body_bytes` and `allowed_paths` are enforced *inside*
+the stage and must run under `none`, so skipping the dispatch would silently drop both.
+
+Keeping the branch inside the stage means the *stage itself* owns the closed list of what the mode
+disables, immediately adjacent to the unconditional checks it must not affect. A future contributor
+adding a check to this stage has to make an explicit decision about which side of the `if` it belongs
+on, rather than inheriting a skip decision made elsewhere. Do not "optimise" the dispatch away.
+
+=== Where the profile value-range gate lives
+
+In the *bundled JSON Schema*, at each of its three symmetric `profile` declaration sites -- *not* in
+`ConfigValidator`. An out-of-range value (the removed `default` included) fails when the document is
+bound.
+
+`ConfigValidator` deliberately carries *no* profile-range rule. A second copy of the enumeration would
+be a second thing to keep in sync, and the failure mode of drift is that the looser gate silently
+wins. `SecurityProfile.parse` returns an `Optional` for the model layer and for tests; it is not the
+boot gate. When you add a mode, update the schema's three enum sites -- adding a validator rule
+instead is the wrong fix.
+
+=== Why the boot refusal keys on the effective access level
+
+`ConfigValidator`'s `none`-refusal rule derives the access level through
+`RouteTableBuilder.effectiveAccessLevel` -- the same seam the route table uses -- rather than reading
+`AnchorConfig.access` directly.
+
+Reading the anchor's declared `access` would *under-refuse* the case that most needs refusing. Per
+link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] a route or endpoint may legally *strengthen* a
+`public` anchor's auth floor (weakening is forbidden, strengthening is not), so a route adding its own
+`require: bearer` under an `access: public` anchor is authenticated *in effect* while its anchor still
+reads `public`. The naive check passes exactly that route -- and it reads as coverage while providing
+none.
+
+The rule reuses the private `resolveAnchor` / `effectiveAuth` / `effectiveRequire` helpers for the same
+reason: they implement the ADR-0007 resolution chain, and re-deriving the posture from raw config
+fields would reintroduce the divergence the shared seam exists to prevent. `effectiveAccessLevel` and
+`globalProfile` are `public static` on `RouteTableBuilder` solely to serve as those shared seams,
+following the existing `normalizePrefix` precedent -- they are not general-purpose API.
