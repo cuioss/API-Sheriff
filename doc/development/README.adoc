@@ -66,6 +66,18 @@ This tree is seeded here and grows as contributor-facing material lands.
   change requires a `FORMAT_VERSION` bump, the derived session identity with its
   stability-and-uniqueness constraints, the engine-boundary rule, and the unit/integration test
   entry points.
+
+| link:integration-test-topology.adoc[Integration-Test Topology]
+| The shape of the stack `integration-tests` brings up -- the five gateway instances and their
+  published ports, the SNI front listener's L4 relay to the passthrough backend, the mounted
+  certificate and configuration material, and the two trust boundaries -- drawn from
+  `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
+
+| link:diagram-type-deployment.md[Deployment Diagram Type -- Authoring Standard]
+| How a deployment/topology SVG is drawn -- containment nesting with its depth limit and insets,
+  protocol-and-port edge labels, the trust-boundary visual that stays inside the theme-neutral
+  palette, first-party vs external components, mounted material, and the container-run render
+  check. Written in Markdown, deliberately, so it can graduate upstream unchanged.
 |===
 
 == Scope of This Layer
