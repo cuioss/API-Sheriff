@@ -4,12 +4,24 @@
 #
 # ConfigProducer validates the mounted gateway configuration at boot
 # (StartupEvent). On any violation it logs structured ERROR records and throws, so
-# Quarkus exits non-zero. This script exercises two independent invalid
+# Quarkus exits non-zero. This script exercises six independent invalid
 # configurations and asserts a fail-fast non-zero exit for each:
 #   1. a schema-invalid gateway.yaml (non-integer version + an unknown top-level key,
 #      both rejected by the D2 schema);
 #   2. an anchor-violation gateway.yaml (two anchors whose prefixes are not pairwise
-#      disjoint — '/api' contains '/api/v1'), rejected by the ADR-0007 anchor rules.
+#      disjoint — '/api' contains '/api/v1'), rejected by the ADR-0007 anchor rules;
+#   3. a fail-closed WebSocket violation (a bearer websocket route with no
+#      allowed_origins allowlist), rejected by the ADR-0015 rule;
+#   4. a security_defaults profile outside the mode set (the dropped 'default' preset),
+#      rejected by the D2 schema's profile enum — the VALUE RANGE gate;
+#   5. profile 'none' on an effectively-authenticated route, refused by the fail-closed
+#      ADR-0023 ConfigValidator rule on the effective-access-level dimension;
+#   6. profile 'none' on a type: bff route, refused by the same rule on the anchor-type
+#      dimension.
+#
+# Cases 4-6 split the two ADR-0023 gates deliberately: the schema owns the profile
+# value range (case 4) and ConfigValidator owns the posture refusal (cases 5-6), so a
+# regression in either gate fails a distinct case rather than being masked by the other.
 
 set -euo pipefail
 
@@ -172,5 +184,120 @@ chmod 644 "${WS_FAILCLOSED_DIR}/gateway.yaml" "${WS_FAILCLOSED_DIR}/topology.pro
 # Marker: the tail of the ConfigValidator fail-closed message. The route id is a config KEY
 # (safe to assert on), never a redacted scalar value.
 assert_fails_to_boot "${WS_FAILCLOSED_DIR}" "a fail-closed WebSocket configuration" "fail-closed"
+
+# Case 4: a security_defaults profile outside the mode set (ADR-0023). The value range is owned by
+# the D2 JSON Schema (three symmetric enum sites), NOT by ConfigValidator — the dropped 'default'
+# preset is the canonical out-of-range value, so this case proves the schema still guards the range
+# after the mode set was narrowed to strict/lenient/none.
+PROFILE_RANGE_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${PROFILE_RANGE_DIR}")
+cat > "${PROFILE_RANGE_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "profile-out-of-range"
+security_defaults:
+  profile: default
+YAML
+chmod 755 "${PROFILE_RANGE_DIR}"
+chmod 644 "${PROFILE_RANGE_DIR}/gateway.yaml"
+# Marker is the config KEY, never the rejected scalar: the D5 binding-error redaction contract
+# guarantees raw values are not echoed, so asserting on 'default' would contradict it.
+assert_fails_to_boot "${PROFILE_RANGE_DIR}" "an out-of-range security_defaults profile" "profile"
+
+# Case 5: profile 'none' on an effectively-authenticated route (ADR-0023). The anchor's bearer floor
+# makes every route under it effectively authenticated, so the fail-closed ConfigValidator rule
+# refuses the mode at boot rather than serving a route whose url-parameter validation is off in
+# front of a token-bearing surface. A complete, otherwise valid config is assembled so this refusal
+# is the ONLY violation.
+NONE_AUTHENTICATED_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${NONE_AUTHENTICATED_DIR}")
+mkdir -p "${NONE_AUTHENTICATED_DIR}/endpoints"
+cat > "${NONE_AUTHENTICATED_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "none-on-authenticated"
+anchors:
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+YAML
+cat > "${NONE_AUTHENTICATED_DIR}/topology.properties" <<'PROPS'
+SECURE_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${NONE_AUTHENTICATED_DIR}/endpoints/secure.yaml" <<'YAML'
+endpoint:
+  id: secure
+  base_url: SECURE_UPSTREAM
+  anchor: secure
+  routes:
+    - id: secure-none-mode
+      match:
+        path_prefix: /secure/none
+      security_filter:
+        profile: none
+YAML
+chmod 755 "${NONE_AUTHENTICATED_DIR}" "${NONE_AUTHENTICATED_DIR}/endpoints"
+chmod 644 "${NONE_AUTHENTICATED_DIR}/gateway.yaml" "${NONE_AUTHENTICATED_DIR}/topology.properties" \
+    "${NONE_AUTHENTICATED_DIR}/endpoints/secure.yaml"
+# Marker: the fixed refusing-dimension fragment of the ConfigValidator message. Route ids and
+# anchor names are config KEYS (safe to assert on); no rejected scalar VALUE is asserted.
+assert_fails_to_boot "${NONE_AUTHENTICATED_DIR}" "profile 'none' on an authenticated route" \
+    "effective access level is 'authenticated'"
+
+# Case 6: profile 'none' on a type: bff route (ADR-0023). The second refusing dimension: a BFF
+# surface mediates a browser session, so the mode is refused on the anchor TYPE independently of
+# the access level. ADR-0013 requires a bff anchor to be access: authenticated, so this fixture
+# necessarily trips both dimensions — the marker below pins the anchor-type one specifically.
+NONE_BFF_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${NONE_BFF_DIR}")
+mkdir -p "${NONE_BFF_DIR}/endpoints"
+cat > "${NONE_BFF_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "none-on-bff"
+anchors:
+  shell:
+    path_prefix: /shell
+    type: bff
+    access: authenticated
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+YAML
+cat > "${NONE_BFF_DIR}/topology.properties" <<'PROPS'
+SHELL_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${NONE_BFF_DIR}/endpoints/shell.yaml" <<'YAML'
+endpoint:
+  id: shell
+  base_url: SHELL_UPSTREAM
+  anchor: shell
+  routes:
+    - id: shell-none-mode
+      match:
+        path_prefix: /shell/view
+      security_filter:
+        profile: none
+YAML
+chmod 755 "${NONE_BFF_DIR}" "${NONE_BFF_DIR}/endpoints"
+chmod 644 "${NONE_BFF_DIR}/gateway.yaml" "${NONE_BFF_DIR}/topology.properties" \
+    "${NONE_BFF_DIR}/endpoints/shell.yaml"
+assert_fails_to_boot "${NONE_BFF_DIR}" "profile 'none' on a type: bff route" "is type 'bff'"
 
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."
