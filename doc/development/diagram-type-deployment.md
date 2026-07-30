@@ -120,10 +120,15 @@ in the orchestrated one. The innermost tier is flat at 4 rather than continuing 
 contained container at 4 are the one place two nested corners share a radius, and the 16 px inset
 keeps them from reading as parallel.
 
-Depth 4 is the nesting floor because a box at depth 4 sits 48 px inside its outermost ancestor on
-each axis and still has to hold a legible label. **When the topology needs a fifth level, split it
-into a second diagram** rather than shrinking the type or the inset — a depth-5 box cannot satisfy
-the 120 × 48 px minimum inside any of the standard `viewBox` sizes.
+Depth 4 is the nesting floor, and the reason is legibility rather than geometry. Space is not the
+constraint: in the smallest `viewBox` (`0 0 1000 620`) a depth-5 box still has roughly 820 × 330 px
+after the 24 px outer margin, four 16 px insets and four 44 px label bands, so it clears the
+120 × 48 px minimum with room to spare. What runs out is the reader's ability to track containment
+and the radius ladder that signals it: the ladder has only three steps (8 / 6 / 4), so depth 4
+already shares its radius with depth 3's leaves, and a fifth level would carry no distinguishing
+radius at all — five nested strokes in one neutral colour read as a pattern rather than a hierarchy.
+**When the topology needs a fifth level, split it into a second diagram** rather than shrinking the
+type or the inset.
 
 The 120 × 48 px minimum is what a box needs to hold a 13 px label plus one 11 px sub-label with the
 standard 12 px left inset and the 44 px label band that a sub-label requires. **A box that would
