@@ -1,4 +1,4 @@
-= ADR-0023: Inbound filter modes — `none` is a partial disable retaining the body cap and path allowlist, and is refused on authenticated and BFF routes
+= ADR-0024: Inbound filter modes — `none` is a partial disable retaining the body cap and path allowlist, and is refused on authenticated and BFF routes
 :toc: left
 :toclevels: 2
 :sectnums:
@@ -266,5 +266,6 @@ is never deliberate.
 * link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009 -- Asymmetric alias-resolution failure] -- establishes the configuration validator as the single authoritative reporter whose all-violations pass the boot refusal collects into.
 * link:0013-anchor-type-access-axes.adoc[ADR-0013 -- Anchor type and access axes] -- the type and access classification the BFF refusal dimension reads. Not superseded.
 * link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the cookie-header relaxation] -- the same structural argument about pre-route scoping; amended, not superseded, by this record.
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap is the effective one] -- defines the cap this record retains under `none`, including the framework floor it sits under and the 413 a breach renders. Not superseded.
 * link:../architecture.adoc[Architecture] -- the three-stage inbound pipeline this record's bounds are expressed against.
 * link:../configuration.adoc[Configuration Reference] -- the `security_defaults` and `security_filter` blocks carrying the `profile` knob.

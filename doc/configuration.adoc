@@ -1615,7 +1615,7 @@ what gives the retained `max_body_bytes` cap a concrete number to enforce.
 
 The rationale for each bound -- and the alternatives rejected, including a wholesale skip of the
 post-route stage -- is recorded in
-link:adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023].
+link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 
 [[_allowed_methods]]
 === `allowed_methods`

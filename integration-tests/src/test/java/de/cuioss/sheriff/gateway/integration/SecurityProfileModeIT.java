@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Proves the inbound-filter mode set (ADR-0023) end-to-end over the public HTTPS edge — the runtime
+ * Proves the inbound-filter mode set (ADR-0024) end-to-end over the public HTTPS edge — the runtime
  * half of the deliverable whose boot half lives in {@code verify-invalid-config-fails.sh}.
  * <p>
  * Two routes on the mounted configuration carry the contrast. {@code /proxy} declares no
@@ -156,7 +156,9 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
         @DisplayName("the route body cap still rejects a declared body above max_body_bytes")
         void bodyCapStillRejectsOverCapBody() {
             // A resource guard is not an injection defence, so it does not ride the mode switch. The
-            // declared Content-Length is fast-rejected before the body is read.
+            // declared Content-Length is fast-rejected before the body is read. The route cap sits far
+            // below the framework floor the IT stack raises, so the GATEWAY renders the rejection —
+            // a 413 CONTENT_TOO_LARGE, not the 400 the other floor rejections carry.
             String overCapBody = "x".repeat(NONE_ROUTE_BODY_CAP + 1);
 
             given()
@@ -165,7 +167,7 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
                     .when()
                     .post(NONE_ROUTE_PATH)
                     .then()
-                    .statusCode(400);
+                    .statusCode(413);
         }
 
         @Test

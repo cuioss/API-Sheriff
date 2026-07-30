@@ -106,7 +106,7 @@ Setting `profile: none` does *not* stop the gateway defending the route. It turn
 things -- the url-parameter name and value validation, and the per-route pipeline re-run -- and
 nothing else. In particular, a `none` route **still**:
 
-* enforces `max_body_bytes`, so an over-cap body is still rejected `400`;
+* enforces `max_body_bytes`, so an over-cap body is still rejected `413`;
 * enforces `allowed_paths`, so a path outside the allowlist is still rejected `400`;
 * runs the full pre-route floor, so an encoded path separator (`%2F`), an over-cap query-parameter
   count, and an oversized header value are all still rejected `400`;
@@ -157,8 +157,8 @@ Choose `lenient` instead if you need to keep the looser caps `default` happened 
 `security_defaults` block -- or declares one without `profile` -- now resolves to `strict`, where it
 previously resolved to a looser incidental baseline.
 
-*Symptom to look for after upgrading:* requests that previously succeeded start returning `400`. The
-caps that dropped are:
+*Symptom to look for after upgrading:* requests that previously succeeded start returning `400` --
+or `413` when it is the body cap that dropped. The caps that dropped are:
 
 [cols="2,1,1"]
 |===
@@ -172,8 +172,8 @@ caps that dropped are:
 | Suspicious-pattern rejection | off | *on*
 |===
 
-If a previously-working request now returns `400`, check it against that table first. Two remedies,
-in order of preference:
+If a previously-working request now returns `400` -- or `413` on an over-cap body -- check it against
+that table first. Two remedies, in order of preference:
 
 . *Raise only the cap you need*, on the specific route that needs it -- e.g.
   `security_filter: { max_body_bytes: 5242880 }`. This keeps the strict posture everywhere else.

@@ -101,7 +101,7 @@ how to *work in* the codebase that implements it.
 The inbound filter is *two stages split across route selection*, not one. A contributor changing
 anything in this area needs the four structural reasons below, because each one is a constraint that
 looks arbitrary until you know it. The decision record is
-link:../adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023];
+link:../adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024];
 the operator-facing behaviour is in
 link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`].
 

@@ -127,7 +127,7 @@
     "security_defaults": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Global inbound-filter baseline. An omitted block — or a block without 'profile' — resolves the gateway-wide profile to 'strict'. 'none' is a partial disable: it turns off only the url-parameter name/value validation and the per-route pipeline re-run, and is refused at boot on effectively-authenticated and BFF routes (see ADR-0023).",
+      "description": "Global inbound-filter baseline. An omitted block — or a block without 'profile' — resolves the gateway-wide profile to 'strict'. 'none' is a partial disable: it turns off only the url-parameter name/value validation and the per-route pipeline re-run, and is refused at boot on effectively-authenticated and BFF routes (see ADR-0024).",
       "properties": {
         "profile": { "type": "string", "enum": ["strict", "lenient", "none"] }
       }

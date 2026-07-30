@@ -78,7 +78,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
  * full-space rejection and broad-prefix boot-WARN, and the same-prefix
  * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
- * {@code TRACE}/{@code CONNECT} rejection, the fail-closed ADR-0023 {@code profile: none}
+ * {@code TRACE}/{@code CONNECT} rejection, the fail-closed ADR-0024 {@code profile: none}
  * refusal on effectively-authenticated and BFF routes, and the single-pass aggregation
  * contract that reports every violation together rather than stopping at the first.
  */
@@ -1574,7 +1574,7 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("The fail-closed 'profile: none' refusal (ADR-0023)")
+    @DisplayName("The fail-closed 'profile: none' refusal (ADR-0024)")
     class SecurityProfileNoneRefusal {
 
         private static final String NONE_PROFILE = "none";

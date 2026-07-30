@@ -44,7 +44,7 @@ what they can see and in what configuration can switch off:
   by the route's inbound-filter `profile`.
 
 *What `profile: none` costs, exactly.* `none` is a *partial* disable
-(link:adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023]),
+(link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]),
 and describing it as "skipping the thorough checks" is wrong in both directions. Its blast radius is
 closed and consists of exactly two items: the url-parameter name and value validation, and the
 per-route pipeline re-run. Everything else still runs -- the whole pre-route floor (so an encoded path
@@ -146,7 +146,7 @@ resolves to `strict`, the fail-closed choice. The value *range* is enforced by t
 Schema, not by the configuration validator. `none` contributes no limits policy of its own, so a
 `none` route takes its limits from the nearest non-`none` profile in its fallback chain (landing on
 `strict` when the whole chain is `none`), which is what keeps its retained body cap concrete. See
-link:adr/0023-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0023].
+link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 
 Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
 

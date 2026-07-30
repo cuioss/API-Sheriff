@@ -46,7 +46,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * {@code none} is a <strong>partial</strong> disable, not "the inbound filter is off": it turns off
  * exactly the url-parameter name/value validation and the per-route pipeline re-run. The pre-route
- * floor, {@code max_body_bytes} and {@code allowed_paths} all keep running under it. See ADR-0023.
+ * floor, {@code max_body_bytes} and {@code allowed_paths} all keep running under it. See ADR-0024.
  * <p>
  * Immutable and thread-safe.
  *

@@ -84,7 +84,7 @@ import de.cuioss.tools.logging.CuiLogger;
  * backing block is present; and an {@code access: public} anchor must not declare an
  * auth block. These collect into the same shared list and never fail fast.
  * <p>
- * The fail-closed inbound-filter mode refusal (ADR-0023) adds one more: a route whose effective
+ * The fail-closed inbound-filter mode refusal (ADR-0024) adds one more: a route whose effective
  * {@code profile} resolves to {@code none} must be neither effectively authenticated nor anchored
  * under a {@code type: bff} anchor. The {@code profile} <em>value range</em> is owned by the bundled
  * JSON Schema, so no post-binding range rule exists here — only this posture refusal.
@@ -564,7 +564,7 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: the fail-closed inbound-filter mode refusal (ADR-0023). A route whose effective
+     * Rule: the fail-closed inbound-filter mode refusal (ADR-0024). A route whose effective
      * {@code profile} resolves to {@link SecurityProfile#NONE} must be neither effectively
      * authenticated nor anchored under a {@code type: bff} anchor. {@code none} drops the
      * url-parameter name/value validation, and dropping it in front of a token- or session-bearing

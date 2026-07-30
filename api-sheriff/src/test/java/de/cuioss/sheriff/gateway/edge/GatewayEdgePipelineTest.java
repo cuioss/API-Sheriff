@@ -314,8 +314,8 @@ class GatewayEdgePipelineTest {
         Response outsideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/elsewhere", Map.of(), null);
         Response insideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed", Map.of(), null);
 
-        // Assert
-        assertEquals(400, overCapBody.status(), "'none' is a validation statement, never a limits statement");
+        // Assert — the body cap is the gateway's own 413, the allowlist miss a 400; 'none' changes neither
+        assertEquals(413, overCapBody.status(), "'none' is a validation statement, never a limits statement");
         assertEquals(400, outsideAllowlist.status(), "the path allowlist survives 'none'");
         assertEquals(200, insideAllowlist.status(), "a benign in-allowlist request on the none route is served");
     }

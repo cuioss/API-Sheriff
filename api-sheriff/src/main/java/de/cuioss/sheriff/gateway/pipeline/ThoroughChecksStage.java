@@ -70,7 +70,7 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
  * produces the canonical path, {@code CanonicalPathGuard}, {@code FramingGate}, the passthrough host
  * guard, header validation), the body cap and the path allowlist above, and everything downstream
  * (verb gate, CSRF defence, authentication, forward policy, dispatch). Widening this list is a scope
- * change that belongs back with the operator, not here. See ADR-0023.
+ * change that belongs back with the operator, not here. See ADR-0024.
  *
  * @author API Sheriff Team
  * @since 1.0

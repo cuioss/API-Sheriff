@@ -99,7 +99,7 @@ class MetricsIT extends BaseIntegrationTest {
         // and rejects it (400 SECURITY_FILTER_VIOLATION), incrementing the shared SecurityEventCounter
         // the meter is bound to. The rejection now happens POST-route in ThoroughChecksStage — the
         // url-parameter validation was relocated there so it runs under the route's own profile
-        // (ADR-0023) — which is immaterial to the meter, but the /proxy route must stay non-'none'
+        // (ADR-0024) — which is immaterial to the meter, but the /proxy route must stay non-'none'
         // for this rejection to occur at all.
         given()
                 .urlEncodingEnabled(false)

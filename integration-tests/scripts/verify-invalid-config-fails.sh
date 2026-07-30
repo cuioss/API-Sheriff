@@ -15,11 +15,11 @@
 #   4. a security_defaults profile outside the mode set (the dropped 'default' preset),
 #      rejected by the D2 schema's profile enum — the VALUE RANGE gate;
 #   5. profile 'none' on an effectively-authenticated route, refused by the fail-closed
-#      ADR-0023 ConfigValidator rule on the effective-access-level dimension;
+#      ADR-0024 ConfigValidator rule on the effective-access-level dimension;
 #   6. profile 'none' on a type: bff route, refused by the same rule on the anchor-type
 #      dimension.
 #
-# Cases 4-6 split the two ADR-0023 gates deliberately: the schema owns the profile
+# Cases 4-6 split the two ADR-0024 gates deliberately: the schema owns the profile
 # value range (case 4) and ConfigValidator owns the posture refusal (cases 5-6), so a
 # regression in either gate fails a distinct case rather than being masked by the other.
 
@@ -185,7 +185,7 @@ chmod 644 "${WS_FAILCLOSED_DIR}/gateway.yaml" "${WS_FAILCLOSED_DIR}/topology.pro
 # (safe to assert on), never a redacted scalar value.
 assert_fails_to_boot "${WS_FAILCLOSED_DIR}" "a fail-closed WebSocket configuration" "fail-closed"
 
-# Case 4: a security_defaults profile outside the mode set (ADR-0023). The value range is owned by
+# Case 4: a security_defaults profile outside the mode set (ADR-0024). The value range is owned by
 # the D2 JSON Schema (three symmetric enum sites), NOT by ConfigValidator — the dropped 'default'
 # preset is the canonical out-of-range value, so this case proves the schema still guards the range
 # after the mode set was narrowed to strict/lenient/none.
@@ -204,7 +204,7 @@ chmod 644 "${PROFILE_RANGE_DIR}/gateway.yaml"
 # guarantees raw values are not echoed, so asserting on 'default' would contradict it.
 assert_fails_to_boot "${PROFILE_RANGE_DIR}" "an out-of-range security_defaults profile" "profile"
 
-# Case 5: profile 'none' on an effectively-authenticated route (ADR-0023). The anchor's bearer floor
+# Case 5: profile 'none' on an effectively-authenticated route (ADR-0024). The anchor's bearer floor
 # makes every route under it effectively authenticated, so the fail-closed ConfigValidator rule
 # refuses the mode at boot rather than serving a route whose url-parameter validation is off in
 # front of a token-bearing surface. A complete, otherwise valid config is assembled so this refusal
@@ -254,7 +254,7 @@ chmod 644 "${NONE_AUTHENTICATED_DIR}/gateway.yaml" "${NONE_AUTHENTICATED_DIR}/to
 assert_fails_to_boot "${NONE_AUTHENTICATED_DIR}" "profile 'none' on an authenticated route" \
     "effective access level is 'authenticated'"
 
-# Case 6: profile 'none' on a type: bff route (ADR-0023). The second refusing dimension: a BFF
+# Case 6: profile 'none' on a type: bff route (ADR-0024). The second refusing dimension: a BFF
 # surface mediates a browser session, so the mode is refused on the anchor TYPE independently of
 # the access level. ADR-0013 requires a bff anchor to be access: authenticated, so this fixture
 # necessarily trips both dimensions — the marker below pins the anchor-type one specifically.
