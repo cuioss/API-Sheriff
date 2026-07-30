@@ -32,18 +32,26 @@ import de.cuioss.http.security.database.OWASPTop10AttackDatabase;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
-@DisplayName("ThoroughChecksStage — stage 3 per-route divergent filters, allowed_paths, and body cap")
+@DisplayName("ThoroughChecksStage — stage 3, always dispatched, with a profile-gated skippable half")
 class ThoroughChecksStageTest {
+
+    /** A parameter value the url-parameter pipeline rejects (a path separator inside a value). */
+    private static final String REJECTED_PARAMETER_VALUE = "/home";
+    /** A parameter name the url-parameter pipeline rejects (an embedded null byte). */
+    private static final String REJECTED_PARAMETER_NAME = "evil\0name";
 
     private final SecurityConfiguration defaultConfiguration = SecurityConfiguration.defaults();
     private final SecurityEventCounter counter = new SecurityEventCounter();
@@ -98,9 +106,10 @@ class ThoroughChecksStageTest {
     }
 
     @Test
-    @DisplayName("skips per-route enforcement entirely when the route declares no security config")
-    void skipsWhenRouteDeclaresNoConfig() {
-        // Arrange
+    @DisplayName("falls back to the stage-1 baseline when a route carries no resolved configuration")
+    void fallsBackToBaselineWhenRouteDeclaresNoConfig() {
+        // Arrange — the posture resolver leaves every assembler-produced route with a configuration,
+        // so this covers only a RouteRuntime built without one.
         PipelineRequest request = requestFor("/api/orders", routeWithConfig(Optional.empty()));
 
         // Act + Assert
@@ -195,6 +204,157 @@ class ThoroughChecksStageTest {
         assertThrows(IllegalStateException.class, () -> stage.process(request, List.of()));
     }
 
+    /**
+     * The relocated url-parameter validation: it now runs here, under the ROUTE's configuration,
+     * for every non-{@code none} route — unconditionally, because it is the only run rather than a
+     * re-run.
+     */
+    @Nested
+    @DisplayName("relocated url-parameter name/value validation")
+    class ParameterValidation {
+
+        @ParameterizedTest(name = "profile {0} rejects a bad parameter VALUE")
+        @EnumSource(value = SecurityProfile.class, names = {"STRICT", "LENIENT"})
+        @DisplayName("rejects a parameter value the route's pipeline refuses")
+        void rejectsParameterValue(SecurityProfile profile) {
+            // Arrange
+            PipelineRequest request = requestWithParameters(
+                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
+                    route(profile, Optional.of(defaultConfiguration)));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        @ParameterizedTest(name = "profile {0} rejects a bad parameter NAME")
+        @EnumSource(value = SecurityProfile.class, names = {"STRICT", "LENIENT"})
+        @DisplayName("rejects a parameter name with the same rigor as its value — the name check survived the move")
+        void rejectsParameterName(SecurityProfile profile) {
+            // Arrange — a parameter NAME carrying a null byte is a classic injection vector and must
+            // be rejected, not only the value (symmetry with header-name validation).
+            PipelineRequest request = requestWithParameters(
+                    Map.of(REJECTED_PARAMETER_NAME, List.of("ok")),
+                    route(profile, Optional.of(defaultConfiguration)));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("validates parameters even when the route config equals the baseline (it is a run, not a re-run)")
+        void validatesParametersWithoutDivergence() {
+            // Arrange — the divergence guard skips the PATH/HEADER re-run for a baseline-equal route,
+            // but parameter validation must still run: stage 1 no longer does it.
+            PipelineRequest request = requestWithParameters(
+                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
+                    route(SecurityProfile.STRICT, Optional.of(defaultConfiguration)));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
+        }
+    }
+
+    /**
+     * The {@code none} partial-disable matrix. The closed list of what {@code none} turns off is the
+     * relocated parameter validation and the pipeline re-run — and nothing else.
+     */
+    @Nested
+    @DisplayName("profile: none — the partial disable")
+    class NoneModePartialDisable {
+
+        @Test
+        @DisplayName("still enforces the body cap")
+        void stillEnforcesBodyCap() {
+            // Arrange
+            long cap = defaultConfiguration.maxBodySize();
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.POST)
+                    .requestPath("/api/orders")
+                    .declaredContentLength(cap + 1)
+                    .build();
+            request.canonicalPath("/api/orders");
+            request.selectedRoute(route(SecurityProfile.NONE, Optional.of(defaultConfiguration)));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, List.of()));
+
+            // Assert — a DoS resource guard is not an injection defence, so it does not ride the mode
+            assertEquals(EventType.CONTENT_TOO_LARGE, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("still enforces allowed_paths")
+        void stillEnforcesAllowedPaths() {
+            // Arrange
+            PipelineRequest request = requestFor("/api/other",
+                    route(SecurityProfile.NONE, Optional.of(defaultConfiguration)));
+
+            // Act
+            List<String> allowedPaths = List.of("/api/orders");
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> stage.process(request, allowedPaths));
+
+            // Assert
+            assertEquals(EventType.PATH_NOT_ALLOWED, thrown.getEventType());
+        }
+
+        @Test
+        @DisplayName("accepts a parameter name and value a non-none route rejects")
+        void acceptsParameterValidationTheModeDisables() {
+            // Arrange — both halves of the relocated validation are off under 'none'
+            PipelineRequest request = requestWithParameters(
+                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE),
+                            REJECTED_PARAMETER_NAME, List.of("ok")),
+                    route(SecurityProfile.NONE, Optional.of(defaultConfiguration)));
+
+            // Act + Assert
+            assertDoesNotThrow(() -> stage.process(request, List.of()),
+                    "'none' disables the relocated url-parameter name/value validation");
+        }
+
+        @Test
+        @DisplayName("skips the divergent pipeline re-run")
+        void skipsPipelineReRun() {
+            // Arrange — a divergent strict config over a path the re-run would reject
+            PipelineRequest request = requestFor("/api/../etc/passwd",
+                    route(SecurityProfile.NONE, Optional.of(SecurityConfiguration.strict())));
+
+            // Act + Assert
+            assertDoesNotThrow(() -> stage.process(request, List.of()),
+                    "'none' disables the per-route pipeline re-run");
+        }
+
+        @Test
+        @DisplayName("a strict route rejects the very path and parameters the none route accepted")
+        void strictRouteStillRejectsWhatNoneAccepts() {
+            // Arrange — the control case that makes the two assertions above meaningful
+            PipelineRequest divergentPath = requestFor("/api/../etc/passwd",
+                    route(SecurityProfile.STRICT, Optional.of(SecurityConfiguration.strict())));
+            PipelineRequest badParameters = requestWithParameters(
+                    Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
+                    route(SecurityProfile.STRICT, Optional.of(SecurityConfiguration.strict())));
+
+            // Act + Assert
+            assertThrows(GatewayException.class, () -> stage.process(divergentPath, List.of()),
+                    "the same path is rejected once the profile is not 'none'");
+            assertThrows(GatewayException.class, () -> stage.process(badParameters, List.of()),
+                    "the same parameters are rejected once the profile is not 'none'");
+        }
+    }
+
     private static PipelineRequest requestFor(String canonicalPath, RouteRuntime route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
@@ -207,10 +367,27 @@ class ThoroughChecksStageTest {
         return request;
     }
 
+    private static PipelineRequest requestWithParameters(Map<String, List<String>> parameters, RouteRuntime route) {
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/api/orders")
+                .queryParameters(parameters)
+                .headers(Map.of())
+                .build();
+        request.canonicalPath("/api/orders");
+        request.selectedRoute(route);
+        return request;
+    }
+
     private static RouteRuntime routeWithConfig(Optional<SecurityConfiguration> config) {
+        return route(SecurityProfile.STRICT, config);
+    }
+
+    private static RouteRuntime route(SecurityProfile profile, Optional<SecurityConfiguration> config) {
         return RouteRuntime.builder()
                 .id("r")
                 .matcher(RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").build()))
+                .securityProfile(profile)
                 .securityConfiguration(config)
                 .build();
     }

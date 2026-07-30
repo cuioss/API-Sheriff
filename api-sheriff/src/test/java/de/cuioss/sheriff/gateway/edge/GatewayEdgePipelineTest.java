@@ -42,6 +42,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -76,6 +77,8 @@ import org.junit.jupiter.api.Test;
 class GatewayEdgePipelineTest {
 
     private static final String ORIGIN = "https://app.example";
+    /** The {@code max_body_bytes} the {@code profile: none} route declares, retained under that mode. */
+    private static final int NONE_ROUTE_BODY_CAP = 1024;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -105,7 +108,8 @@ class GatewayEdgePipelineTest {
 
         RouteTable routeTable = new RouteTable(List.of(
                 route("secure", "/secure", "bearer", upstreamPort, HttpMethod.GET),
-                route("echo", "/echo", "none", upstreamPort, HttpMethod.GET, HttpMethod.POST)));
+                route("echo", "/echo", "none", upstreamPort, HttpMethod.GET, HttpMethod.POST),
+                noneModeRoute(upstreamPort)));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
@@ -260,6 +264,62 @@ class GatewayEdgePipelineTest {
                 "the preflight advertises the allowed methods");
     }
 
+    @Test
+    @DisplayName("profile: none disables only the url-parameter validation — the strict route still rejects it")
+    void noneRouteAcceptsParameterValueTheStrictRouteRejects() throws Exception {
+        // Arrange — a '/' inside a parameter value is refused by the url-parameter pipeline
+
+        // Act
+        Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders?return_to=%2Fhome",
+                Map.of(), null);
+        Response onNoneRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed?return_to=%2Fhome",
+                Map.of(), null);
+
+        // Assert
+        assertEquals(400, onStrictRoute.status(), "the strict-baseline route rejects the parameter value");
+        assertEquals(200, onNoneRoute.status(), "the none-mode route accepts it — that is what 'none' turns off");
+    }
+
+    @Test
+    @DisplayName("profile: none is still governed by the whole pre-route floor")
+    void noneRouteIsStillGovernedByThePreRouteFloor() throws Exception {
+        // Arrange — the floor runs before route selection and no profile can switch it off
+        int paramCap = SecurityProfile.DEFAULT_PROFILE.preset().maxParameterCount();
+        int headerCap = SecurityProfile.DEFAULT_PROFILE.preset().maxHeaderValueLength();
+        StringJoiner overCapQuery = new StringJoiner("&", "/open/allowed?", "");
+        for (int i = 0; i <= paramCap; i++) {
+            overCapQuery.add("p" + i + "=1");
+        }
+
+        // Act
+        Response overCapParameters = send(io.vertx.core.http.HttpMethod.GET, overCapQuery.toString(), Map.of(), null);
+        Response encodedSeparator = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed%2Fx", Map.of(), null);
+        Response oversizedHeader = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed",
+                Map.of("X-Custom", "a".repeat(headerCap + 1)), null);
+
+        // Assert
+        assertEquals(400, overCapParameters.status(), "the parameter-count cap still applies under 'none'");
+        assertEquals(400, encodedSeparator.status(), "the canonical-path guard still applies under 'none'");
+        assertEquals(400, oversizedHeader.status(), "header-value validation still applies under 'none'");
+    }
+
+    @Test
+    @DisplayName("profile: none still enforces max_body_bytes and allowed_paths")
+    void noneRouteStillEnforcesBodyCapAndAllowedPaths() throws Exception {
+        // Arrange — the two per-route enforcements the operator deliberately retained under 'none'
+
+        // Act
+        Response overCapBody = send(io.vertx.core.http.HttpMethod.POST, "/open/allowed", Map.of(),
+                "a".repeat(NONE_ROUTE_BODY_CAP + 1));
+        Response outsideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/elsewhere", Map.of(), null);
+        Response insideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed", Map.of(), null);
+
+        // Assert
+        assertEquals(400, overCapBody.status(), "'none' is a validation statement, never a limits statement");
+        assertEquals(400, outsideAllowlist.status(), "the path allowlist survives 'none'");
+        assertEquals(200, insideAllowlist.status(), "a benign in-allowlist request on the none route is served");
+    }
+
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
             String body) throws Exception {
         RequestOptions options = new RequestOptions()
@@ -288,6 +348,28 @@ class GatewayEdgePipelineTest {
                 .allowedHeaders(List.of("authorization"))
                 .build();
         return SecurityHeadersConfig.builder().cors(Optional.of(cors)).build();
+    }
+
+    /**
+     * A {@code profile: none} route carrying both retained per-route enforcements — a
+     * {@code max_body_bytes} cap and an {@code allowed_paths} allowlist — so the partial-disable
+     * semantics are executable rather than merely documented.
+     */
+    private static ResolvedRoute noneModeRoute(int upstreamPort) {
+        SecurityFilterConfig filter = SecurityFilterConfig.builder()
+                .profile(Optional.of("none"))
+                .allowedPaths(List.of("/open/allowed"))
+                .maxBodyBytes(Optional.of(NONE_ROUTE_BODY_CAP))
+                .build();
+        return ResolvedRoute.builder()
+                .id("open")
+                .protocol(Protocol.HTTP)
+                .match(MatchConfig.builder().pathPrefix("/open").build())
+                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .effectiveSecurityFilter(Optional.of(filter))
+                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
+                .build();
     }
 
     private static ResolvedRoute route(String id, String pathPrefix, String require, int upstreamPort,

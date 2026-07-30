@@ -314,13 +314,13 @@ public class GatewayEdgeRoute {
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
         // consulted in process() ahead of route selection, so a proxy route such as
         // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
-        // global oidc block declares a redirect_uri. Built before basicChecksStage so the latter can
-        // reuse the same match to exempt gateway-terminated reserved params from the url-parameter
-        // pipeline (see BasicChecksStage — reserved handlers self-validate their own params).
+        // global oidc block declares a redirect_uri. The reserved-path exemption from the
+        // url-parameter pipeline is now STRUCTURAL rather than predicate-driven: handleReservedPath
+        // returns before route selection, and the parameter pipeline moved after it into
+        // ThoroughChecksStage, so a reserved path never reaches it (ADR-0019, amended).
         this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
-                (host, canonicalPath) -> reservedPathRegistry.match(host, canonicalPath).isPresent(),
                 cookieHeaderConfigurationFor(gatewayConfig, bffRuntime));
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();

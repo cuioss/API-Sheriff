@@ -31,6 +31,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
@@ -67,6 +68,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -82,6 +84,11 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.RequestOptions;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -183,6 +190,99 @@ class GatewayEdgeRouteBffWiringTest {
             return new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
                     new SheriffMetrics(new SimpleMeterRegistry()), runtime);
+        }
+    }
+
+    /**
+     * The ADR-0019 reserved-path relaxation is now <strong>structural</strong>. It used to be a
+     * {@code reservedPathMatcher} predicate handed to {@code BasicChecksStage}; with the
+     * url-parameter pipeline relocated into the post-route {@code ThoroughChecksStage}, a reserved
+     * path simply terminates in {@code handleReservedPath} before route selection and therefore never
+     * reaches that stage at all. The proxy route below is deliberately rigged to reject everything it
+     * sees ({@code allowed_paths} matching nothing), so any response other than the reserved
+     * handler's own proves the request fell through to route selection.
+     */
+    @Nested
+    @DisplayName("reserved paths bypass ThoroughChecksStage structurally (ADR-0019, amended)")
+    class StructuralReservedPathBypass {
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private HttpClient client;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(Optional.of(fullOidc())).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(rejectEverythingRoute())),
+                    gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(new InMemorySessionStore(16))));
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = vertx.createHttpServer().requestHandler(router)
+                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            virtualThreadExecutor.close();
+            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        }
+
+        @Test
+        @DisplayName("a reserved path is served by its handler and never reaches the route's allowed_paths gate")
+        void reservedPathNeverReachesThoroughChecks() throws Exception {
+            // Act — a reserved user-info request under the same /auth prefix the proxy route claims,
+            // carrying a return_to value the url-parameter pipeline would reject
+            int status = statusOf(USER_INFO_PATH + "?return_to=%2Fhome");
+
+            // Assert — 401 is the user-info handler's own no-session answer. A 400 would mean the
+            // request reached route selection and then the route's allowed_paths gate.
+            assertEquals(401, status,
+                    "the reserved path terminates before route selection, so ThoroughChecksStage never runs");
+        }
+
+        @Test
+        @DisplayName("a non-reserved path under the same prefix IS routed and hits the allowed_paths gate")
+        void nonReservedPathStillReachesThoroughChecks() throws Exception {
+            // Act — the control case that makes the assertion above meaningful
+            int status = statusOf("/auth/not-reserved");
+
+            // Assert
+            assertEquals(400, status, "an ordinary path is routed and rejected by the route's allowed_paths");
+        }
+
+        private int statusOf(String uri) throws Exception {
+            // Connect to the local front server but present the OIDC host in the authority: the
+            // reserved-path registry is keyed on (host, canonicalPath).
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "localhost"))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+            return client.request(options)
+                    .compose(HttpClientRequest::send)
+                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS).statusCode();
+        }
+
+        private static ResolvedRoute rejectEverythingRoute() {
+            return ResolvedRoute.builder()
+                    .id("auth-proxy")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/auth").build())
+                    .effectiveAuth(AuthConfig.builder().require("none").build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .effectiveSecurityFilter(Optional.of(SecurityFilterConfig.builder()
+                            .allowedPaths(List.of("/auth/never-matches")).build()))
+                    .upstream(Optional.of(new ResolvedUpstream("http", "localhost", 1, "")))
+                    .build();
         }
     }
 
