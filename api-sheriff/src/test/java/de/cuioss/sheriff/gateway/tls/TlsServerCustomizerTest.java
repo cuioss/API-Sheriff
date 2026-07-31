@@ -53,6 +53,18 @@ class TlsServerCustomizerTest {
     private static final String SUITE_AES_256 = "TLS_AES_256_GCM_SHA384";
     private static final String SUITE_CHACHA20 = "TLS_CHACHA20_POLY1305_SHA256";
 
+    /**
+     * The verbatim {@code tls.cipher_suites} allowlist of
+     * {@code integration-tests/src/main/docker/sheriff-config/gateway.yaml}: two TLS 1.3 suites plus
+     * the ECDHE_RSA pair that covers TLS 1.2 against the suite's RSA server certificate. Validation
+     * that rejected any of these would break the containerised stack, so they are asserted here.
+     */
+    private static final List<String> IT_FIXTURE_SUITES = List.of(
+            "TLS_AES_256_GCM_SHA384",
+            "TLS_AES_128_GCM_SHA256",
+            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256");
+
     @Nested
     @DisplayName("min_version")
     class MinVersion {
@@ -131,6 +143,60 @@ class TlsServerCustomizerTest {
 
             assertTrue(options.getEnabledCipherSuites().isEmpty(),
                     "an omitted allowlist must not restrict the platform default suite selection");
+        }
+
+        @Test
+        @DisplayName("an unsupported cipher suite fails the boot (fail-closed)")
+        void unsupportedCipherSuiteFailsBoot() {
+            // Arrange — nothing downstream rejects this name: Vert.x binds the listener and the
+            // defect surfaces only as an SSLHandshakeException on every client connection.
+            TlsServerCustomizer customizer = customizerFor(
+                    TlsConfig.builder().cipherSuites(List.of("TLS_TOTALLY_BOGUS_SUITE")).build());
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> customizer.customizeHttpsServer(options),
+                    "an unsupported suite must not bind a listener that fails every handshake");
+
+            // Assert
+            assertTrue(failure.getMessage().contains("TLS_TOTALLY_BOGUS_SUITE"),
+                    "the abort message must name the offending suite: " + failure.getMessage());
+        }
+
+        @Test
+        @DisplayName("one bad entry among supported ones still fails the boot (no silent narrowing)")
+        void partiallyMistypedAllowlistFailsBoot() {
+            // Arrange — the dangerous case: the valid entries would still negotiate, so the typo
+            // would silently narrow the declared policy instead of announcing itself.
+            TlsServerCustomizer customizer = customizerFor(TlsConfig.builder()
+                    .cipherSuites(List.of(SUITE_AES_256, "TLS_AES_256_GCM_SHA385")).build());
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> customizer.customizeHttpsServer(options),
+                    "a single mistyped entry must abort rather than silently narrow the allowlist");
+
+            // Assert — the near-miss must be diagnosable, so the closest supported suite is named.
+            assertTrue(failure.getMessage().contains(SUITE_AES_256),
+                    "the abort message must offer the closest supported suite: " + failure.getMessage());
+        }
+
+        @Test
+        @DisplayName("the integration fixture's four-suite allowlist is accepted verbatim")
+        void integrationFixtureAllowlistIsAccepted() {
+            // Arrange — the exact list from integration-tests' gateway.yaml, proven in the
+            // containerised suite to negotiate a real handshake under a 1.2 floor.
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.2"))
+                    .cipherSuites(IT_FIXTURE_SUITES).build()).customizeHttpsServer(options);
+
+            // Assert
+            assertEquals(Set.copyOf(IT_FIXTURE_SUITES), options.getEnabledCipherSuites(),
+                    "validation must not reject the allowlist the integration stack actually negotiates");
         }
     }
 

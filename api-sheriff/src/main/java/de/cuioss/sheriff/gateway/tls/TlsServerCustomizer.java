@@ -15,11 +15,17 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
+import javax.net.ssl.SSLContext;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -42,6 +48,14 @@ import jakarta.inject.Inject;
  * <p>
  * Every mapping is a no-op when its key is absent, so an omitted {@code tls} block — or an omitted
  * individual key — leaves the corresponding Quarkus default untouched.
+ * <p>
+ * All three knobs are <em>fail-closed</em>: an unrecognized {@code min_version}, an unrecognized
+ * {@code alpn} identifier and a {@code cipher_suites} entry the JDK does not support each abort the
+ * boot with an actionable {@link IllegalStateException} rather than being silently ignored. The
+ * cipher check matters most, because an unsupported suite name is <em>not</em> rejected anywhere
+ * downstream: Vert.x binds the listener happily and the defect only surfaces as an
+ * {@code SSLHandshakeException} on every client connection — a listener that accepts TCP but can
+ * never complete a handshake, or, for a partly mistyped list, a silently narrowed allowlist.
  * <p>
  * This customizer governs the <em>terminated</em> listener only. The SNI front listener
  * ({@link SniFrontListener}) is a raw Vert.x {@code NetServer} that terminates nothing — it splits
@@ -111,15 +125,64 @@ public class TlsServerCustomizer implements HttpServerOptionsCustomizer {
 
     /**
      * Adds each declared cipher suite to the listener's allowlist; an empty list leaves the Quarkus
-     * default suite selection untouched.
+     * default suite selection untouched. Every declared suite is first checked against the JDK's own
+     * supported set, because nothing downstream performs that check: an unsupported name binds a
+     * listener that fails every handshake instead of refusing to start.
      */
     private static void applyCipherSuites(TlsConfig config, HttpServerOptions options) {
         List<String> cipherSuites = config.cipherSuites();
         if (cipherSuites.isEmpty()) {
             return;
         }
+        Set<String> supported = supportedCipherSuites();
+        for (String suite : cipherSuites) {
+            if (!supported.contains(suite)) {
+                List<String> closest = closestSupported(suite, supported);
+                throw new IllegalStateException(
+                        "Refusing to start — unsupported tls.cipher_suites entry '%s'; this JDK supports no such suite%s"
+                                .formatted(suite,
+                                        closest.isEmpty() ? "" : ", closest supported: " + closest));
+            }
+        }
         cipherSuites.forEach(options::addEnabledCipherSuite);
         LOGGER.debug("Terminated HTTPS listener cipher-suite allowlist: %s", cipherSuites);
+    }
+
+    /**
+     * The cipher suites the platform's default {@link SSLContext} can actually negotiate — the same
+     * set the {@code SSLEngine} backing this listener is built from, and therefore the only correct
+     * authority for validating a declared allowlist. Resolved per boot rather than cached in a static
+     * initializer so a native-image build cannot bake a build-host value into the executable.
+     */
+    private static Set<String> supportedCipherSuites() {
+        try {
+            return Set.of(SSLContext.getDefault().getSupportedSSLParameters().getCipherSuites());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(
+                    "Refusing to start — the platform default SSLContext is unavailable, so the declared "
+                            + "tls.cipher_suites allowlist cannot be validated",
+                    e);
+        }
+    }
+
+    /**
+     * Ranks the supported suites by how many underscore-separated tokens they share with the rejected
+     * name, returning the best three. Suites sharing only the universal {@code TLS} token are dropped,
+     * so a wholly unrelated string yields no misleading suggestion at all.
+     */
+    private static List<String> closestSupported(String declared, Set<String> supported) {
+        Set<String> declaredTokens = Arrays.stream(declared.toUpperCase(Locale.ROOT).split("_"))
+                .collect(Collectors.toSet());
+        return supported.stream()
+                .filter(candidate -> sharedTokens(candidate, declaredTokens) > 1)
+                .sorted(Comparator.comparingLong((String candidate) -> sharedTokens(candidate, declaredTokens))
+                        .reversed().thenComparing(Comparator.naturalOrder()))
+                .limit(3)
+                .toList();
+    }
+
+    private static long sharedTokens(String candidate, Set<String> declaredTokens) {
+        return Arrays.stream(candidate.split("_")).distinct().filter(declaredTokens::contains).count();
     }
 
     /**
