@@ -48,6 +48,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
@@ -125,6 +126,8 @@ public final class ConfigValidator {
     private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
+    private static final String SECURITY_DEFAULTS_AUTHORIZATION_POINTER =
+            "/security_defaults/max_authorization_header_value_length";
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -152,7 +155,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors));
 
     private final List<ValidationRule> rules;
 
@@ -222,6 +226,51 @@ public final class ConfigValidator {
                                 + "sub-budget of the admission pool and could never bind"));
             }
         });
+    }
+
+    /**
+     * Bounds the operator-declared {@code Authorization} header-value carve-out: a
+     * <em>declared</em> {@code security_defaults.max_authorization_header_value_length} must not fall
+     * below the resolved gateway-wide baseline {@code maxHeaderValueLength}.
+     * <p>
+     * The key exists to <em>raise</em> the non-skippable pre-route floor's header-value cap for
+     * {@code Authorization} values alone (ADR-0019), because a bearer token plus its {@code Bearer }
+     * prefix routinely exceeds the {@code strict} preset's cap and would otherwise be rejected before
+     * route selection. A value below the baseline is therefore not a carve-out at all but a per-header
+     * <em>tightening</em> expressed in the wrong place — tightening belongs on
+     * {@code security_defaults.profile} or on a route's {@code security_filter} — and it would
+     * silently make {@code Authorization} the single most-restricted header while reading like a
+     * relaxation key. That is always a misconfiguration rather than a deliberate posture, the same
+     * shape {@link #validateEdgeHardening} applies to the admission budget.
+     * <p>
+     * The comparison is genuinely cross-cutting and cannot move into the bundled JSON Schema: the
+     * baseline is the <em>resolved</em> profile's preset limit, which the schema cannot see. The
+     * schema owns the value range ({@code integer}, {@code minimum: 1}) alone. The baseline is
+     * resolved through the same {@link RouteTableBuilder#globalProfile} plus
+     * {@link SecurityProfile#limitsProfile} chain the edge performs, so the boot refusal and the
+     * runtime cap can never disagree.
+     * <p>
+     * An omitted key is never refused — it resolves to
+     * {@link SecurityDefaultsConfig#DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH}. No upper bound is
+     * enforced here: the gateway's 16 KiB inbound header-block transport limit already caps what can
+     * arrive, and it is owned by the edge layer — restating it as a second constant in this
+     * framework-agnostic class (ADR-0005) would fork the value.
+     */
+    private static void validateAuthorizationHeaderValueLength(GatewayConfig gateway, List<ConfigError> errors) {
+        gateway.securityDefaults()
+                .flatMap(SecurityDefaultsConfig::maxAuthorizationHeaderValueLength)
+                .ifPresent(declared -> {
+                    SecurityProfile global = RouteTableBuilder.globalProfile(gateway);
+                    int baseline = SecurityProfile.limitsProfile(global, global).preset().maxHeaderValueLength();
+                    if (declared < baseline) {
+                        errors.add(new ConfigError(GATEWAY_FILE, SECURITY_DEFAULTS_AUTHORIZATION_POINTER,
+                                ("max_authorization_header_value_length %d is below the resolved baseline "
+                                        + "max_header_value_length %d; the key raises the pre-route cap for "
+                                        + "Authorization values only and can never lower it — tighten through "
+                                        + "security_defaults.profile or a route security_filter instead")
+                                        .formatted(declared, baseline)));
+                    }
+                });
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {

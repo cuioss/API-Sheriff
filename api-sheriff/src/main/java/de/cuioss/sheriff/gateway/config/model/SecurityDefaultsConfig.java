@@ -32,18 +32,58 @@ import java.util.Optional;
  * {@code security_filter} — or one whose block omits {@code profile} — therefore inherits the value
  * carried here, and an entirely omitted {@code security_defaults} block resolves to
  * {@link SecurityProfile#DEFAULT_PROFILE}.
+ * <p>
+ * <strong>{@code max_authorization_header_value_length}.</strong> The budget backing the pre-route
+ * {@code Authorization} header-value carve-out. A bearer token is routinely larger than the resolved
+ * preset's {@code maxHeaderValueLength} — a Keycloak access token plus the {@code Bearer } prefix
+ * measures ~1028 characters against the {@code strict} preset's 1024 — so without a raised cap the
+ * non-skippable pre-route floor rejects every bearer request {@code 400} before route selection, and
+ * stage-4 bearer validation never runs. The value is operator-declared rather than a fixed constant
+ * because the right budget is a property of the deployment's identity provider, not of the gateway.
+ * It is boot-validated: a declared value below the resolved baseline {@code maxHeaderValueLength}
+ * would make the "carve-out" a tightening in disguise and is refused.
  *
  * @param profile the baseline security-filter profile, empty when omitted
+ * @param maxAuthorizationHeaderValueLength the {@code Authorization} header-value cap, empty when
+ *                                          omitted — resolve it through
+ *                                          {@link #effectiveMaxAuthorizationHeaderValueLength()}
+ *                                          rather than reading this component directly
  * @author API Sheriff Team
  * @since 1.0
  */
-public record SecurityDefaultsConfig(Optional<String> profile) {
+public record SecurityDefaultsConfig(Optional<String> profile,
+        Optional<Integer> maxAuthorizationHeaderValueLength) {
 
     /**
-     * Canonical constructor normalizing an absent {@code profile} to
-     * {@link Optional#empty()}.
+     * The {@code Authorization} header-value cap an omitted
+     * {@code max_authorization_header_value_length} resolves to.
+     * <p>
+     * The number is the {@code lenient} preset's own {@code maxHeaderValueLength}, chosen so the
+     * carve-out never admits a header value the loosest <em>shipped</em> profile would itself reject
+     * — the relaxation stays inside the product's existing envelope rather than inventing a wider
+     * one. It also sits comfortably inside the gateway's 16 KiB inbound header-block transport
+     * bound, so a value that clears this cap can still actually arrive; a larger default would
+     * promise headroom the transport never delivers. It remains a bounded cap, never an exemption.
+     */
+    public static final int DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH = 8192;
+
+    /**
+     * Canonical constructor normalizing an absent {@code profile} or
+     * {@code maxAuthorizationHeaderValueLength} to {@link Optional#empty()}.
      */
     public SecurityDefaultsConfig {
         profile = Objects.requireNonNullElse(profile, Optional.empty());
+        maxAuthorizationHeaderValueLength =
+                Objects.requireNonNullElse(maxAuthorizationHeaderValueLength, Optional.empty());
+    }
+
+    /**
+     * Resolves the {@code Authorization} header-value cap actually enforced at the pre-route floor.
+     *
+     * @return the declared {@code max_authorization_header_value_length}, or
+     *         {@link #DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH} when the key is omitted
+     */
+    public int effectiveMaxAuthorizationHeaderValueLength() {
+        return maxAuthorizationHeaderValueLength.orElse(DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH);
     }
 }

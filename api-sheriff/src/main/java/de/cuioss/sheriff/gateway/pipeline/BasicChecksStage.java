@@ -53,19 +53,37 @@ import org.jspecify.annotations.Nullable;
  * terminates in {@code handleReservedPath} before route selection and therefore never reaches the
  * parameter pipeline at all — so this stage no longer takes a reserved-path predicate.
  * <p>
- * <strong>The cookie-mode header-value carve-out.</strong> A cookie-mode BFF's sealed session cookie
- * is designed to a multi-kilobyte budget, which the default 2048-character header-value cap would
- * reject at the edge on every authenticated request. The stage therefore accepts an OPTIONAL
- * {@code cookieHeaderConfiguration} whose only difference from the default policy is a raised
- * {@code maxHeaderValueLength}, and applies it to the {@code Cookie} / {@code Set-Cookie} header
- * values ONLY — every other header keeps the default cap, and every other validator in the pipeline
- * (null-byte, control-character, injection-pattern) applies to the cookie header unchanged. A
- * bearer-only or server-mode gateway passes {@code null} and is byte-for-byte unaffected.
+ * <strong>Two header-value carve-outs.</strong> The cap every header value is measured against is the
+ * <em>resolved baseline</em> — whatever {@code security_defaults.profile} resolves to, 1024 characters
+ * under {@code strict} and 8192 under {@code lenient} — never a fixed absolute. Two header names are
+ * carved out of it, each by a dedicated value pipeline selected on the header NAME:
+ * <ul>
+ *   <li><strong>{@code Cookie} / {@code Set-Cookie}</strong> — a cookie-mode BFF's sealed session
+ *       cookie is designed to a multi-kilobyte budget the resolved baseline would reject at the edge
+ *       on every authenticated request. The OPTIONAL {@code cookieHeaderConfiguration} supplies the
+ *       raised cap; a bearer-only or server-mode gateway passes {@code null} and keeps the resolved
+ *       baseline on every header, byte-for-byte unaffected. Its budget key is
+ *       {@code oidc.session.max_cookie_size}.</li>
+ *   <li><strong>{@code Authorization}</strong> — a bearer token plus its {@code Bearer } prefix
+ *       routinely exceeds the {@code strict} baseline, which would reject every bearer request here,
+ *       before route selection and before bearer validation ever runs. Unlike the cookie carve-out
+ *       this configuration is <em>unconditional and non-null</em>: a bearer-capable gateway is every
+ *       gateway, so there is no mode that switches it off. Its budget key is
+ *       {@code security_defaults.max_authorization_header_value_length}.</li>
+ * </ul>
+ * Both carve-outs are bounded on the same three axes ADR-0019 states. <em>By header</em>: the raised
+ * cap reaches those header names only — every other header is measured at the resolved baseline.
+ * <em>By validator</em>: each carve-out configuration is seeded from the resolved baseline and differs
+ * from it in {@code maxHeaderValueLength} alone, so every non-length validator (null-byte,
+ * control-character, extended-ASCII, injection-pattern) still applies to the carved-out value exactly
+ * as to any other. <em>By deployment</em>: the cookie carve-out exists only in an active cookie-mode
+ * BFF, while the {@code Authorization} carve-out is unconditional — a genuinely weaker axis, not a
+ * parallel one.
  * <p>
- * The relaxation is necessarily <strong>gateway-wide, not per-anchor</strong>: this stage runs
- * BEFORE route selection, so no anchor is resolved yet. The configuration key that supplies the
- * budget ({@code oidc.session.max_cookie_size}) sits on the global session block for exactly that
- * reason — its placement must not be read as per-anchor enforcement.
+ * Both relaxations are necessarily <strong>gateway-wide, not per-anchor</strong>: this stage runs
+ * BEFORE route selection, so no anchor is resolved yet. Both configuration keys sit on global blocks
+ * ({@code oidc.session} and {@code security_defaults}) for exactly that reason — their placement must
+ * not be read as per-anchor enforcement.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -74,10 +92,12 @@ public final class BasicChecksStage {
 
     private static final String COOKIE_HEADER = "cookie";
     private static final String SET_COOKIE_HEADER = "set-cookie";
+    private static final String AUTHORIZATION_HEADER = "authorization";
 
     private final SecurityConfiguration configuration;
     private final PipelineFactory.PipelineSet pipelines;
     private final HttpSecurityValidator cookieHeaderValuePipeline;
+    private final HttpSecurityValidator authorizationHeaderValuePipeline;
 
     /**
      * @param configuration      the gateway's resolved baseline inbound validation policy
@@ -86,16 +106,24 @@ public final class BasicChecksStage {
      *                           header VALUES only, or {@code null} to validate them under
      *                           {@code configuration} like every other header. Supplied only by a
      *                           cookie-mode BFF gateway, whose sealed session cookie exceeds the
-     *                           default header-value cap
+     *                           resolved baseline header-value cap
+     * @param authorizationHeaderConfiguration the policy applied to {@code Authorization} header
+     *                           VALUES only. Unconditional and never {@code null}: every gateway is
+     *                           bearer-capable, so unlike the cookie carve-out there is no mode that
+     *                           switches it off
      */
     public BasicChecksStage(SecurityConfiguration configuration, SecurityEventCounter eventCounter,
-            @Nullable SecurityConfiguration cookieHeaderConfiguration) {
+            @Nullable SecurityConfiguration cookieHeaderConfiguration,
+            SecurityConfiguration authorizationHeaderConfiguration) {
         this.configuration = Objects.requireNonNull(configuration, "configuration");
         SecurityEventCounter counter = Objects.requireNonNull(eventCounter, "eventCounter");
+        Objects.requireNonNull(authorizationHeaderConfiguration, "authorizationHeaderConfiguration");
         this.pipelines = PipelineFactory.createCommonPipelines(configuration, counter);
         this.cookieHeaderValuePipeline = cookieHeaderConfiguration == null
                 ? this.pipelines.headerValuePipeline()
                 : PipelineFactory.createHeaderValuePipeline(cookieHeaderConfiguration, counter);
+        this.authorizationHeaderValuePipeline =
+                PipelineFactory.createHeaderValuePipeline(authorizationHeaderConfiguration, counter);
     }
 
     /**
@@ -139,11 +167,10 @@ public final class BasicChecksStage {
             for (Map.Entry<String, List<String>> header : headers.entrySet()) {
                 String name = header.getKey();
                 pipelines.headerNamePipeline().validate(name);
-                // The header NAME is already in hand here — that is the seam the cookie-mode
-                // carve-out hangs off. Only Cookie / Set-Cookie values may use the raised cap.
-                HttpSecurityValidator valuePipeline = isCookieHeader(name)
-                        ? cookieHeaderValuePipeline
-                        : pipelines.headerValuePipeline();
+                // The header NAME is already in hand here — that is the seam both carve-outs hang
+                // off. Only Authorization and Cookie / Set-Cookie values may use a raised cap;
+                // every other header falls through to the resolved baseline pipeline.
+                HttpSecurityValidator valuePipeline = valuePipelineFor(name);
                 for (String value : header.getValue()) {
                     valuePipeline.validate(value);
                 }
@@ -151,6 +178,25 @@ public final class BasicChecksStage {
         } catch (UrlSecurityException violation) {
             throw rejected(violation);
         }
+    }
+
+    /**
+     * The three-way header-name dispatch: {@code Authorization} and {@code Cookie} / {@code Set-Cookie}
+     * each resolve to their own carve-out pipeline, everything else to the resolved baseline. The two
+     * carve-out names are disjoint, so the order of the branches carries no precedence decision.
+     */
+    private HttpSecurityValidator valuePipelineFor(String name) {
+        if (isAuthorizationHeader(name)) {
+            return authorizationHeaderValuePipeline;
+        }
+        if (isCookieHeader(name)) {
+            return cookieHeaderValuePipeline;
+        }
+        return pipelines.headerValuePipeline();
+    }
+
+    private static boolean isAuthorizationHeader(String name) {
+        return AUTHORIZATION_HEADER.equalsIgnoreCase(name);
     }
 
     private static boolean isCookieHeader(String name) {

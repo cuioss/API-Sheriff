@@ -119,6 +119,16 @@ class ConfigValidatorTest {
         return RouteConfig.builder().id(id).match(match).build();
     }
 
+    /**
+     * A gateway declaring the given global {@code profile} and — when present — the
+     * {@code max_authorization_header_value_length} carve-out budget the boot rule bounds.
+     */
+    private static GatewayConfig gatewayWithAuthorizationCap(String profile, Optional<Integer> cap) {
+        return validGateway()
+                .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(profile), cap)))
+                .build();
+    }
+
     private static GatewayConfig gatewayWithPassthrough(Map<String, String> passthroughSni) {
         return validGateway()
                 .tls(Optional.of(TlsConfig.builder().passthroughSni(passthroughSni).build()))
@@ -459,6 +469,78 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), "A valid admission budget raises no violation, but got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject a max_authorization_header_value_length below the strict baseline")
+        void shouldRejectAuthorizationCapBelowStrictBaseline() {
+            // Arrange — strict resolves a 1024-character baseline; 512 would make the 'carve-out'
+            // a per-header tightening wearing a relaxation key's name.
+            GatewayConfig gateway = gatewayWithAuthorizationCap("strict", Optional.of(512));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            assertHasError(errors, "/security_defaults/max_authorization_header_value_length",
+                    "is below the resolved baseline max_header_value_length");
+            assertEquals(1, errors.size(), () -> "expected exactly one violation, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should reject a max_authorization_header_value_length below the lenient baseline")
+        void shouldRejectAuthorizationCapBelowLenientBaseline() {
+            // Arrange — the value that is legal under strict (2048 > 1024) is refused under lenient
+            // (2048 < 8192), which is what proves the rule compares against the RESOLVED profile
+            // rather than against a constant.
+            GatewayConfig gateway = gatewayWithAuthorizationCap("lenient", Optional.of(2048));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            // Act
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            assertHasError(errors, "/security_defaults/max_authorization_header_value_length",
+                    "is below the resolved baseline max_header_value_length");
+        }
+
+        @Test
+        @DisplayName("Should accept a max_authorization_header_value_length at or above the resolved baseline")
+        void shouldAcceptAuthorizationCapAtOrAboveBaseline() {
+            // Arrange — the matched positive half: 2048 clears the strict baseline, and the same
+            // value is the boundary case 'exactly at the baseline' under a 2048-capped comparison.
+            GatewayConfig above = gatewayWithAuthorizationCap("strict", Optional.of(2048));
+            GatewayConfig atBaseline = gatewayWithAuthorizationCap("strict", Optional.of(1024));
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            // Act
+            List<ConfigError> aboveErrors = validator.validate(above, List.of(endpoint), topologyWith("ORDERS"));
+            List<ConfigError> atBaselineErrors =
+                    validator.validate(atBaseline, List.of(endpoint), topologyWith("ORDERS"));
+
+            // Assert
+            assertTrue(aboveErrors.isEmpty(), () -> "a raised cap raises no violation, but got: " + aboveErrors);
+            assertTrue(atBaselineErrors.isEmpty(),
+                    () -> "a cap exactly at the baseline is not below it, but got: " + atBaselineErrors);
+        }
+
+        @Test
+        @DisplayName("Should never refuse an omitted max_authorization_header_value_length")
+        void shouldAcceptOmittedAuthorizationCap() {
+            // Arrange — an omitted key resolves to the documented default and is never a violation,
+            // under either profile.
+            GatewayConfig strict = gatewayWithAuthorizationCap("strict", Optional.empty());
+            GatewayConfig lenient = gatewayWithAuthorizationCap("lenient", Optional.empty());
+            GatewayConfig blockAbsent = validGateway().build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            // Act + Assert
+            assertAll("an omitted key never refuses",
+                    () -> assertTrue(validator.validate(strict, List.of(endpoint), topologyWith("ORDERS")).isEmpty()),
+                    () -> assertTrue(validator.validate(lenient, List.of(endpoint), topologyWith("ORDERS")).isEmpty()),
+                    () -> assertTrue(
+                            validator.validate(blockAbsent, List.of(endpoint), topologyWith("ORDERS")).isEmpty()));
         }
 
         @Test
@@ -1622,7 +1704,8 @@ class ConfigValidatorTest {
         private static GatewayConfig gatewayWithGlobalProfile(AnchorConfig anchorConfig, String globalProfile) {
             return validGateway()
                     .anchors(Map.of(anchorConfig.name(), anchorConfig))
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(globalProfile))))
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(globalProfile),
+                            Optional.empty())))
                     .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
                             IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
                     .build();
@@ -1721,7 +1804,8 @@ class ConfigValidatorTest {
             GatewayConfig gateway = validGateway()
                     .anchors(Map.of("open",
                             matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)))
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(NONE_PROFILE))))
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(NONE_PROFILE),
+                            Optional.empty())))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
                     Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),

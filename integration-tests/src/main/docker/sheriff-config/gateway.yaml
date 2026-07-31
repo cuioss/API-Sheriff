@@ -26,8 +26,19 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # parameters, 1024-character header values and parameter values, 1024-character paths) are the
 # floor the suite proves. The single `none`-mode route below is the only opt-out, and it is a
 # PARTIAL one.
+#
+# `max_authorization_header_value_length` bounds the `Authorization` header VALUE only, at the
+# non-skippable pre-route floor (BasicChecksStage) that runs BEFORE route selection. The strict
+# preset's 1024-character header-value cap cannot serve that header: a Keycloak-minted access token
+# plus the `Bearer ` prefix measures above it, so without this carve-out every bearer request is
+# rejected 400 before bearer validation ever runs. The key is gateway-wide because its enforcement
+# point precedes route selection — no anchor is resolved there, so it cannot be scoped per route.
+# Declared EXPLICITLY here, per the same convention as `profile` above, so the IT and benchmark
+# suites measure a pinned value rather than the omitted-key default. A declared value below the
+# resolved baseline cap is refused at boot.
 security_defaults:
   profile: strict
+  max_authorization_header_value_length: 8192
 tls:
   # ALPN advertises h2 alongside http/1.1 so the http2 benchmark aspect negotiates
   # HTTP/2 at the edge instead of silently falling back to HTTP/1.1 — a fallback
