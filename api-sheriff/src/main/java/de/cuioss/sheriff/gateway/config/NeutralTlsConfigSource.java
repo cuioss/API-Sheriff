@@ -236,13 +236,12 @@ public final class NeutralTlsConfigSource implements ConfigSource {
                 return null;
             }
             return policyBlocksOf(root);
-        }
-        /*TODO: Catch specific not Exception. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
-        catch (Exception e) {
             // Deliberately broad and deliberately silent at DEBUG: any parse or I/O failure here is
             // re-encountered by ConfigLoader moments later, which reports it as a collected,
             // located ConfigError and fails the boot. Rethrowing would replace that precise
             // diagnostic with a context-free failure from inside config-system construction.
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
+        } catch (Exception e) {
             LOGGER.debug(e, "Cannot pre-read %s — projecting no key", gateway);
             return null;
         }
