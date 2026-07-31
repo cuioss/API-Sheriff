@@ -52,7 +52,7 @@ import java.util.Optional;
  * @since 1.0
  */
 public record SecurityDefaultsConfig(Optional<String> profile,
-        Optional<Integer> maxAuthorizationHeaderValueLength) {
+Optional<Integer> maxAuthorizationHeaderValueLength) {
 
     /**
      * The {@code Authorization} header-value cap an omitted
