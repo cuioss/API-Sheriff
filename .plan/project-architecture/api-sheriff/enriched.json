@@ -4,7 +4,9 @@
     "Asset-serving hot path is deliberately virtual-thread-blocking (pipeline dispatched via virtualThreadExecutor; event-loop hop only for the write) and security guards re-resolve per request (root toRealPath TOCTOU check in DirectoryAssetSource) \u2014 decline review-bot suggestions to wrap in vertx.executeBlocking or to cache the resolved root, both recur and both are by-design.",
     "Verify review-bot claims that a Vert.x API does not exist against the green build before acting: gemini-code-assist repeatedly asserted compilation errors for real Vert.x methods (e.g. HttpServerResponse.ended()) on edge-relay code, and the project consistently accepts these as false positives when the whole-tree build and native ITs are green."
   ],
-  "insights": [],
+  "insights": [
+    "NeutralTlsConfigSource runs at a single ordinal above 300 so its projected quarkus.* TLS policy keys reliably outrank application.properties defaults, but it never emits quarkus.tls.key-store.* \u2014 key material stays deployment-bound. TlsServerCustomizer then binds min_version/cipher_suites/alpn onto the terminated HTTPS listener and fails closed at boot on an unsupported value; ManagementPlainHttpAudit (StartupEvent, WARN ApiSheriff-115) is the runtime tripwire for the one legitimate plain-HTTP management path, naming both downgrade routes."
+  ],
   "internal_dependencies": [],
   "key_dependencies": [
     "io.quarkus:quarkus-resteasy-jackson",
@@ -27,6 +29,15 @@
     },
     "de.cuioss.sheriff.api.quarkus": {
       "description": "CDI wiring: ApiSheriffProducer exposing application-scoped beans to the Quarkus container."
+    },
+    "de.cuioss.sheriff.gateway.config": {
+      "description": "Config sourcing and route-table assembly. NeutralTlsConfigSource is a SmallRye ConfigSource at a single ordinal above 300 that projects neutral gateway.yaml TLS POLICY keys into the quarkus.* namespace; it deliberately never writes quarkus.tls.key-store.*, so the management interface cannot silently inherit HTTPS from the default TLS registry bucket."
+    },
+    "de.cuioss.sheriff.gateway.config.model": {
+      "description": "Neutral configuration model records (GatewayConfig, RouteConfig, TlsConfig, SecurityHeadersConfig, etc.), including ManagementConfig \u2014 the neutral, policy-only management block (tls.enabled). It declares no port: ports stay deployment-bound, and a stray management.port is refused in-schema with a message naming quarkus.management.port / QUARKUS_MANAGEMENT_PORT."
+    },
+    "de.cuioss.sheriff.gateway.tls": {
+      "description": "Terminated-HTTPS listener security: SNI front listener, mTLS customizer, and TlsServerCustomizer, which binds the neutral gateway.yaml tls policy (min_version, cipher_suites, alpn) onto the terminated HTTPS listener \u2014 these keys had no production consumer before this plan, so the declared TLS floor and cipher allowlist were not in force; all three now fail closed at boot with an actionable message on an unsupported value. ManagementPlainHttpAudit is a StartupEvent observer that emits WARN ApiSheriff-115 when the management interface resolves to plain HTTP, naming both downgrade routes (the gateway.yaml key and the QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME override)."
     }
   },
   "purpose": "runtime",
@@ -174,6 +185,7 @@
   "tips": [
     "When deleting or moving a Java package's contents, package-info.java is a sibling that is easy to miss in consumer/deletion sweeps (caught here by the outline Q-Gate). Always include package-info.java in the deletion deliverable when a package is being emptied or removed.",
     "api-sheriff source uses Java unnamed variables ('_' in catch and lambda params, e.g. catch (IOException _), _ -> vertx.createHttpClient()) across edge/forward/asset packages. Unnamed variables (JEP 456) require compiler release >= 22. Keep maven.compiler.release at the project Java level (25); a stale or lowered -source below 22 fails compilation with 'unnamed variables are not supported in -source 21 (use -source 22 or higher)'.",
-    "JaCoCo enforces a 0.80 branch-coverage floor on api-sheriff and fails fast, which masks coverage failures in later modules (integration-tests was hidden behind it). When a coverage check fails here, establish provenance first with a baseline check against origin/main before treating it as branch-introduced - the 0.78 breach seen in plan benchmark-health-target was inherited debt from main, not new."
+    "JaCoCo enforces a 0.80 branch-coverage floor on api-sheriff and fails fast, which masks coverage failures in later modules (integration-tests was hidden behind it). When a coverage check fails here, establish provenance first with a baseline check against origin/main before treating it as branch-introduced - the 0.78 breach seen in plan benchmark-health-target was inherited debt from main, not new.",
+    "TLS-related config keys fall into three classes per doc/adr/0025-*: POLICY (neutral, gateway.yaml \u2014 min_version, cipher_suites, alpn, management.tls.enabled), DEPLOYMENT-BOUND (ports and trust material, environment-supplied), and BUILD-TIME (fixed at image build). Never add a new POLICY key that also carries a port or key-store path \u2014 that would re-introduce the pre-plan gap where a declared knob had no production consumer, or silently make the management interface inherit HTTPS from the default TLS registry bucket."
   ]
 }
