@@ -662,9 +662,18 @@ services:
     environment:
       - QUARKUS_PROFILE=it
       - LOG_FILE_PATH=/logs/quarkus-plain-mgmt.log
-      # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # This instance mounts the SHARED sheriff-config, whose gateway.yaml declares a non-empty
+      # passthrough_sni — so the SNI front listener claims the public port 8443 exactly as on the
+      # primary api-sheriff service, and the terminated HTTPS listener MUST be moved to the internal
+      # port or the two collide and boot fails with "Port 8443 seems to be in use by another
+      # process". The four other gateway instances escape this only because each overlays
+      # gateway.yaml with a variant declaring no passthrough_sni; this one deliberately does not
+      # overlay, so that the management opt-out is the single variable under test. Keep in lockstep
+      # with the primary service's identical setting — the invariant is documented at the
+      # passthrough_sni block in sheriff-config/gateway.yaml.
+      - QUARKUS_HTTP_SSL_PORT=8444
       # THE OPT-OUT. Selecting the key-less `plain-management` bucket takes the management interface
       # to plain HTTP; boot still succeeds and emits WARN ApiSheriff-115 naming the port.
       - QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management
