@@ -1,13 +1,52 @@
-= API Sheriff -- TLS Edge: Passthrough SNI and mTLS
+= API Sheriff -- TLS Edge: Policy, Passthrough SNI, mTLS and the Management Interface
 :toc:
 :toclevels: 2
 :sectnums:
 
-An operator guide to the two TLS-edge features: *SNI passthrough* (relay selected hostnames at L4
-without terminating) and *mTLS* (require and verify a client certificate on terminated
-connections). This topic describes how to *configure and operate* these keys; the authoritative
+An operator guide to the TLS edge: the *TLS policy keys* (protocol floor, cipher allowlist, ALPN),
+*SNI passthrough* (relay selected hostnames at L4 without terminating), *mTLS* (require and verify a
+client certificate on terminated connections), and the *management interface* (health and metrics on
+their own port). This topic describes how to *configure and operate* these keys; the authoritative
 field contract lives in the link:../configuration.adoc#_tls[Configuration Reference `tls` section],
 and the design rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic].
+
+Everything on this page follows one rule, recorded in
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]:
+*`gateway.yaml` names TLS policy; the deployment supplies ports and material.* Which side of that
+line a given knob falls on -- and what to set when it is on the deployment side -- is enumerated in
+link:environment-variable-overrides.adoc[Environment-variable overrides].
+
+== TLS policy on the terminated listener
+
+Three keys govern how the gateway terminates TLS. All three are optional; omitting a key leaves the
+runtime's own default in place.
+
+[source,yaml]
+----
+tls:
+  min_version: "1.3"               # "1.2" or "1.3"
+  cipher_suites:                   # OPTIONAL allowlist; omit to keep the runtime's selection
+    - TLS_AES_256_GCM_SHA384
+    - TLS_AES_128_GCM_SHA256
+  alpn: [h2, http/1.1]             # h2 | http/1.1 | http/1.0
+----
+
+Operating rules:
+
+* *`min_version` is a floor, not a pin.* `"1.2"` enables TLSv1.2 *and* TLSv1.3; `"1.3"` enables
+  TLSv1.3 only. Any other value fails the boot rather than being silently dropped.
+* *A cipher allowlist is a maintenance commitment.* Omitting `cipher_suites` is the recommended
+  default -- the runtime's selection tracks upstream deprecations for you. Once you list suites, that
+  list is frozen until you edit it, and a list that no enabled protocol offers produces a listener
+  that negotiates nothing. Keep it consistent with `min_version`.
+* *These keys govern the TERMINATED listener only.* They do not apply to a passthrough connection,
+  and no amount of configuration could make them: the front listener terminates nothing, so for a
+  passthrough hostname the *backend's* TLS policy is the effective one, end to end. If you need a
+  floor on a passthrough backend, set it on that backend.
+* *These keys are effective, and they are the only source.* There is deliberately no raw
+  `quarkus.tls.*` policy key left in the shipped configuration for them to compete with. The
+  disposition of every key that used to live there is recorded in
+  link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
 == Passthrough SNI
 
@@ -80,3 +119,86 @@ Plan trust-root rotation as a coordinated event: stage the new client certificat
 *before* switching `client_ca`, because the switch is atomic and unforgiving. For a single
 compromised client where you cannot rotate the whole fleet immediately, the compensating control is
 network-level (drop the client at the perimeter), not certificate-level.
+
+== The management interface (health and metrics)
+
+Health and metrics are served on a *separate port* from application traffic -- port `9000` by
+default -- so operations endpoints are not exposed on the public listener. *That port serves HTTPS
+by default, and HTTPS stays the default.*
+
+=== The single-port constraint
+
+The management interface has exactly *one* port. Unlike the main HTTP listener there is no
+management SSL port and no management "insecure requests" mode, so there is no simultaneous HTTPS
+listener to fall back to. Any TLS decision here is a decision about the *whole* management surface:
+turning TLS off takes health *and* metrics to plain HTTP together, and every consumer probing that
+port over HTTPS -- readiness gates, scrapers, load-balancer health checks -- breaks at the same
+moment. Plan the change accordingly; there is no partial posture and no gradual cutover.
+
+=== Turning it off, when you must
+
+Running operations endpoints in the clear behind a trusted network boundary is a legitimate
+deployment, so the downgrade is *possible*. It is not *silent*: a downgraded boot emits
+`ApiSheriff-115` at `WARN`, naming the port and what it breaks. The gateway does not refuse to start
+-- refusing would push operators toward a worse workaround (see the trap below).
+
+There are *two doors, and they open the same lever.* Both land on the same runtime key, so you use
+whichever fits how the deployment is configured -- never both, and never in expectation of one
+overriding the other.
+
+[cols="1,2,2", options="header"]
+|===
+| Door | How | Use it when
+
+| Neutral (`gateway.yaml`)
+| `management: { tls: { enabled: false } }`
+| The posture belongs to the configuration document you ship and review -- it is a property of this
+  gateway's role, not of one environment.
+
+| Deployment (environment)
+| `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`
+| The posture differs per environment and you would rather not fork `gateway.yaml` to express it.
+|===
+
+`plain-management` is a *named TLS bucket that carries no key material*, declared unconditionally in
+the shipped configuration. Selecting it *is* the disable: the name resolves, the runtime finds no
+key or certificate, and the management listener starts plain. Because it is runtime configuration,
+the same image serves both postures with no rebuild -- and a name that does not resolve fails the
+boot loudly rather than quietly falling back to something.
+
+Setting `management.tls.enabled: true`, or omitting the block entirely, *projects nothing at all*.
+That silence is deliberate and it is what keeps the environment door working: the two routes
+coexist rather than competing. To restore HTTPS, undo whichever door you opened.
+
+=== Why the escape hatch is a runtime key rather than a bespoke one
+
+It would have been possible to invent an API Sheriff-specific key that disables management TLS by
+blanking the certificate paths. That was rejected. A bespoke mechanism would make this project
+responsible for a certificate-blanking trick whose correctness depends on runtime internals, and --
+worse -- it would key the startup warning on *our own declaration* rather than on what the listener
+actually resolved. Such a warning reports the declaration, not the reality, and goes quiet the
+moment the downgrade arrives by any other route. `ApiSheriff-115` instead inspects the *observed
+effective state*, which is why it fires for either door and cannot drift.
+
+[WARNING]
+====
+*`quarkus.management.enabled=false` is NOT the way to get a plain probe endpoint.* It is the
+opposite of a fix, for two independent reasons:
+
+* It is *build-time fixed*, baked into the native image. You cannot change it on a built artifact,
+  so it is unavailable exactly when you would reach for it.
+* It does not remove TLS -- it *moves* health and metrics onto the main, TLS-terminated router. You
+  end up with an *HTTPS* probe endpoint on the application port, sharing the public listener's
+  policy and mTLS posture, which is further from a plain probe endpoint than where you started.
+
+Use the `plain-management` bucket, through either door above.
+====
+
+=== The port is not in gateway.yaml
+
+The management *port* is deployment-bound and stays at `quarkus.management.port` (default `9000`),
+overridable per deployment with `QUARKUS_MANAGEMENT_PORT`. Writing `management.port` in
+`gateway.yaml` is *refused at boot*, with an error at that exact key naming the property that does
+own it. The refusal is deliberate: a port declared in `gateway.yaml` would outrank the deployment's
+own environment variable, which is precisely the surprise the configuration model exists to prevent.
+See link:environment-variable-overrides.adoc[Environment-variable overrides] for the full split.

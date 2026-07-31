@@ -94,6 +94,64 @@ terminated listener. Selection is *fail-closed* (GW-06): anything not positively
 passthrough is terminated, never relayed. The front-listener internals and the fail-closed rationale
 are documented in the link:development/tls-edge.adoc[developer TLS-edge topic].
 
+[[_server_tls_policy_binding]]
+=== Server-TLS Policy Binding (Two Seams)
+
+`gateway.yaml` is the single effective source of server-TLS *policy*
+(link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]).
+Reaching the runtime takes *two different mechanisms*, because the two listeners do not share a
+seam. This is a structural fact of the runtime, not a design preference:
+
+[cols="1,2,2", options="header"]
+|===
+| Listener | Seam | Why it is the only one available
+
+| Terminated main HTTPS listener
+| `TlsServerCustomizer`, an `HttpServerOptionsCustomizer` bean mapping `tls.min_version`,
+  `tls.cipher_suites` and `tls.alpn` onto the listener's enabled protocol set, cipher allowlist and
+  ALPN protocols. `MtlsServerCustomizer` is its sibling for `tls.mtls`.
+| Quarkus enumerates customizer beans from the CDI container in `doServerStart` *after*
+  `createSslOptions` has run, so the customizer is the last writer and its result is what the
+  listener starts with. Declaring the same policy through `quarkus.tls.*` does not work here: that
+  registry is consulted only when the certificate also comes from it, and this gateway supplies its
+  certificate through `quarkus.http.ssl.certificate.*`.
+
+| Management interface
+| `NeutralTlsConfigSource`, a SmallRye `ConfigSource` projecting `management.tls.enabled: false`
+  onto `quarkus.management.tls-configuration-name`.
+| `VertxHttpRecorder.initializeManagementInterface` never enumerates `HttpServerOptionsCustomizer`
+  beans. The only lever left on that path is the configuration the recorder reads, so a config
+  source is the seam *by elimination*, not by preference.
+|===
+
+*The projecting source runs before CDI exists -- an ordering constraint, not an implementation
+detail.* A `ConfigSource` is instantiated while the configuration system itself is being built, long
+before the CDI container starts. `NeutralTlsConfigSource` therefore cannot inject `GatewayConfig`,
+its loader, or its validator: none of them exist yet. It re-reads `gateway.yaml` directly with
+SnakeYAML (under the same expansion-bomb caps as the authoritative loader,
+link:adr/0010-YAML_expansion_limits_enforced_in_a_compose-only_pre-pass_before_bind.adoc[ADR-0010])
+and parses only the `management` block. The consequences are deliberate:
+
+* *The duplication is bounded and one-directional.* The authoritative parse, schema validation and
+  semantic validation still happen exactly once, later, in `ConfigLoader` and `ConfigValidator`. The
+  early pass reads one block and emits at most one key.
+* *A malformed or absent document degrades silently here.* The loader re-encounters the same failure
+  moments later and reports it as a located, collected `ConfigError` that fails the boot. Throwing
+  from inside configuration-system construction would replace that precise diagnostic with a
+  context-free failure.
+* *An unexpected shape reads as "not explicitly disabled".* Because this parse precedes schema
+  validation, a `management` block that is not a map, or an `enabled` that is not a boolean, must not
+  be guessed at -- keeping TLS on is the fail-safe direction while the loader prepares the real error.
+
+*The source is single-ordinal and projects policy keys only.* Its ordinal sits above the
+environment-variable source's, because a policy named in `gateway.yaml` must take effect rather than
+being silently overridden by a deployment variable. That is safe only because the projected set
+contains *no* deployment-bound key: never a port, never trust material, and never
+`quarkus.tls.key-store.*` -- populating the default TLS registry bucket would make the management
+interface inherit HTTPS through `registry.getDefault()`, a path no configuration file mentions. A
+second, lower-ordinal source is rejected; the policy-keys-only constraint is what makes it
+unnecessary.
+
 === Configuration Subsystem
 
 Configuration is loaded once at startup from static files (see link:configuration.adoc[Configuration Model]),

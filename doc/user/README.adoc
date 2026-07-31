@@ -33,11 +33,14 @@ layer.
   Links to the Configuration Reference for the field contract and to the Architecture document
   for the gRPC error mapping.
 
-| link:tls-edge.adoc[TLS Edge -- Passthrough SNI and mTLS]
-| Configuring `tls.passthrough_sni` (relay selected hostnames at L4 without terminating) and
-  `tls.mtls` (require-and-verify a client certificate on terminated connections), plus the
-  emergency trust-root-replacement blast radius every operator must understand before relying on
-  mTLS. Links to the Configuration Reference for the field contract.
+| link:tls-edge.adoc[TLS Edge -- Policy, Passthrough SNI, mTLS and the Management Interface]
+| Configuring the TLS policy keys (`tls.min_version`, `tls.cipher_suites`, `tls.alpn`) and their
+  terminated-listener scope limit; `tls.passthrough_sni` (relay selected hostnames at L4 without
+  terminating) and `tls.mtls` (require-and-verify a client certificate on terminated connections),
+  plus the emergency trust-root-replacement blast radius every operator must understand before
+  relying on mTLS; and the management interface -- HTTPS by default, the single-port constraint, the
+  two doors onto the plain-HTTP opt-out, and why `quarkus.management.enabled=false` is not one of
+  them. Links to the Configuration Reference for the field contract.
 
 | link:bff-session.adoc[Server-Session BFF -- Operator Setup]
 | A task-oriented guide for standing up the server-session BFF (Variant 2): registering the OIDC
@@ -51,6 +54,13 @@ layer.
   trade-off, decrypt-only key rotation, the cookie size budget, what IdP-driven destruction cannot
   do in this variant, the login-leg session affinity, and the forced re-login on a sealed-cookie
   format bump. Links to the Configuration Reference for the `oidc` key contract.
+
+| link:environment-variable-overrides.adoc[Environment-Variable Overrides]
+| Which knobs the deployment owns and which `gateway.yaml` owns: the three-way classification
+  (policy / deployment-bound / build-time), the precedence rule and why it has no exceptions, the
+  enumerated deployment-bound variables (ports, certificate and trust material, the management TLS
+  selection), and an audit of where else the codebase offers a secure default with an override
+  route. Read it before assuming an environment variable can change a given behaviour.
 |===
 
 == Scope of This Layer

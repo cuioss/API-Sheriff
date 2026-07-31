@@ -125,8 +125,8 @@ file-and-JSON-pointer error before any immutable value object is built:
 
 | `schema/gateway.schema.json`
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
-  `security_headers`, `security_defaults`, `allowed_methods`, `anchors`, `upstream_defaults`,
-  `forwarded`, `edge_hardening`, `token_validation` and `oidc`.
+  `management`, `security_headers`, `security_defaults`, `allowed_methods`, `anchors`,
+  `upstream_defaults`, `forwarded`, `edge_hardening`, `token_validation` and `oidc`.
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
@@ -159,14 +159,27 @@ version: 1                         # config schema version; unknown values are r
 metadata:
   config_version: "2026-07-10.1"   # audit stamp only (see "Configuration Mode")
 
-tls:                               # connections are TLS-terminated except listed SNIs
+tls:                               # TLS POLICY for the terminated listener. Neutral names only:
+                                   #   ports and certificate/trust material stay deployment-
+                                   #   supplied and never appear here (ADR-0025)
   min_version: "1.3"
+  cipher_suites: []                # OPTIONAL allowlist, e.g.
+                                   #   [TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256].
+                                   #   Omit/empty => the runtime's own suite selection
   alpn: [h2, http/1.1]             # HTTP/2 (also carries gRPC) + HTTP/1.1
   passthrough_sni: {}              # SNI hostname -> topology alias, relayed at L4 without
                                    #   decryption, e.g. { legacy.example.com: LEGACY }
   mtls:
     enabled: false
     client_ca: /etc/sheriff/ca.pem
+
+management:                        # TLS policy for the management interface (health/metrics on
+                                   #   their own port). POLICY ONLY -- this block declares NO
+                                   #   port; the port is deployment-bound (see "management")
+  tls:
+    enabled: true                  # HTTPS is the default and the shipped posture. false takes
+                                   #   the WHOLE management surface to plain HTTP and emits a
+                                   #   loud boot WARN (ApiSheriff-115)
 
 security_headers:                  # response-header middleware (global default)
   hsts: { max_age: 31536000, include_subdomains: true }
@@ -791,15 +804,45 @@ the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
   passthrough (mapped SNIs) coexist on the same listener.
 
 | `min_version`
-| Minimum negotiated TLS version for terminated connections; `1.3` recommended, `1.2` floor.
+| Minimum negotiated TLS version for the *terminated* listener; `1.3` recommended, `1.2` floor.
+  A `1.2` floor enables TLSv1.2 and TLSv1.3; a `1.3` floor enables TLSv1.3 only. Any other value
+  fails the boot rather than being silently dropped. Omit the key to leave the runtime's own
+  default protocol set untouched.
+
+| `cipher_suites`
+| *Optional* cipher allowlist for the *terminated* listener, given as JSSE suite names (e.g.
+  `TLS_AES_256_GCM_SHA384`). Each listed suite is enabled; an omitted or empty list leaves the
+  runtime's own suite selection untouched, which is the recommended default -- an allowlist is a
+  commitment to maintain it as suites are deprecated. Declaring suites that no enabled protocol
+  offers yields a listener that negotiates nothing, so keep the list consistent with `min_version`.
 
 | `alpn`
-| Advertised ALPN protocols. `h2` also carries gRPC ("gRPCS" when TLS-terminated).
+| Advertised ALPN protocols for the *terminated* listener. `h2` also carries gRPC ("gRPCS" when
+  TLS-terminated). Accepted values are `h2`, `http/1.1` and `http/1.0`; any other identifier fails
+  the boot. An omitted or empty list leaves ALPN as the runtime configured it.
 
 | `mtls.*`
 | Require and verify client certificates against the given CA (terminated connections only --
   on passthrough the gateway never participates in the handshake).
 |===
+
+[[_tls_scope_limit]]
+*Scope limit -- these keys govern the terminated listener only.* `min_version`, `cipher_suites`
+and `alpn` are applied to the listener the gateway itself terminates. They do *not* and cannot
+apply to a passthrough connection: the SNI front listener terminates nothing -- it reassembles the
+ClientHello, reads the SNI, and either relays the still-encrypted stream at L4 or hands it to the
+terminated listener (link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]).
+For a passthrough hostname the *backend's* own TLS policy is the effective one, end to end. This is
+a statement of what the policy can mean, not a limitation more configuration could lift.
+
+*These keys are the single effective source.* The three policy keys above are bound onto the
+terminated listener by a customizer that runs after the runtime has built its SSL options, so what
+is written here is what the listener starts with. There is deliberately no raw `quarkus.tls.*`
+policy key left in `application.properties` for them to compete with -- see
+link:#_server_tls_key_verdicts[Server-TLS key verdicts] for the disposition of every key that used
+to live there, and
+link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
+for the classification rule that decides where a new knob belongs.
 
 *How SNI selection works.* Server Name Indication (RFC 6066) is the hostname the client sends
 in the *TLS ClientHello* -- in cleartext, before any encryption is established -- precisely so that a server
@@ -850,6 +893,128 @@ never participates in a passthrough handshake). Operating these keys -- includin
 trust-root-replacement blast radius -- is covered in the link:user/tls-edge.adoc[operator TLS-edge
 topic]; the front-listener architecture and the fail-closed (GW-06) rationale are covered in the
 link:development/tls-edge.adoc[developer TLS-edge topic].
+
+[[_management]]
+=== `management`
+
+The optional global `management` block carries the TLS policy of the *management interface* -- the
+separate port serving health and metrics. It follows the same rule as `tls`: neutral names for
+*policy*, nothing else.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `tls.enabled`
+| Whether the management interface serves over TLS. *Defaults to `true`*, which is also the shipped
+  posture -- HTTPS on the management port is the secure default and stays the default. Setting it to
+  `false` selects a key-less named TLS bucket, so the management listener starts on plain HTTP.
+
+| (no `port` key)
+| *This block declares no port, deliberately.* A `management.port` written in `gateway.yaml` is
+  *refused at boot* with a message naming `quarkus.management.port` /
+  `QUARKUS_MANAGEMENT_PORT` -- the property that does own it -- and
+  link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025].
+  The refusal is implemented in `schema/gateway.schema.json`: the `port` property is declared solely
+  in order to fail, so the actionable sentence lands at the `/management/port` JSON pointer rather
+  than surfacing as a generic unknown-key error against the parent object. The port default is
+  `9000`.
+|===
+
+*Why there is no port here.* The management block reaches the runtime through a configuration
+source whose ordinal sits deliberately above the environment's, so a policy named in `gateway.yaml`
+is not silently overridden by a deployment variable. A *port* projected at that ordinal would in
+turn silently override `QUARKUS_MANAGEMENT_PORT` -- the operator surprise the ordinal rule exists to
+prevent -- and the only way to let the environment win would be a second, lower-ordinal source that
+ADR-0025 rejects. The omission is therefore structural, and it is made discoverable by refusing the
+key rather than ignoring it.
+
+*The single-port constraint: a downgrade takes the whole surface.* Unlike the main HTTP listener,
+the management interface has exactly *one* port -- there is no management `ssl-port` and no
+management `insecure-requests` mode, so there is no simultaneous HTTPS listener to fall back to.
+`tls.enabled: false` therefore takes health *and* metrics to plain HTTP in their entirety, and every
+consumer probing that port over HTTPS breaks. That is why the downgrade is *audited with a loud
+boot `WARN`* (`ApiSheriff-115`, see link:LogMessages.adoc[Log Messages]) rather than passing
+silently -- and why it is a `WARN` and never a boot refusal: plain-HTTP management behind a trusted
+network boundary is a legitimate deployment.
+
+*Two doors, one lever.* The neutral key above and the deployment-level
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME` environment variable land on the *same* runtime key.
+`tls.enabled: true` and an omitted block both project *nothing*, which is exactly what keeps the
+deployment variable a working route. The operator guidance -- when the downgrade is legitimate, and
+why `quarkus.management.enabled=false` is *not* the way to get a plain probe endpoint -- lives in
+the link:user/tls-edge.adoc[operator TLS-edge topic].
+
+[[_server_tls_key_verdicts]]
+=== Server-TLS key verdicts
+
+`gateway.yaml` is the single effective source of server-TLS *policy*. The table below records the
+disposition of every raw `quarkus.*` server-TLS key that used to live in `application.properties`,
+classified by
+link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]'s
+three-way rule -- *policy* (neutral in `gateway.yaml`), *deployment-bound* (ports and material,
+supplied by the deployment), *build-time* (fixed when the image is built, never in the runtime
+surface). The two exceptions to the "no raw server-TLS policy key remains" bar are named explicitly;
+an undocumented exception would be a silent trim.
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Class | Disposition | Reason and destination
+
+| `quarkus.tls.protocols`
+| policy
+| deleted
+| Replaced by `tls.min_version`. The key never reached the listener: the runtime consults its TLS
+  registry only when the certificate also comes from the registry, and this gateway supplies its
+  certificate through `quarkus.http.ssl.certificate.*` -- so the declared floor was inert.
+
+| `quarkus.tls.cipher-suites`
+| policy
+| deleted
+| Replaced by `tls.cipher_suites`, inert for the same reason.
+
+| `quarkus.tls.alpn`
+| policy
+| deleted
+| Replaced by `tls.alpn`, inert for the same reason.
+
+| `quarkus.http.ssl.client-auth`
+| policy
+| deleted
+| Replaced by `tls.mtls`, which was already bound programmatically -- the customizer runs after the
+  runtime builds the SSL options and overwrites whatever this key had set, so `gateway.yaml` was
+  already the effective source and the key was misleading.
+
+| `quarkus.ssl.native`
+| *build-time*
+| *exception 1 -- relocated*
+| Declared in `api-sheriff/pom.xml`'s `native` profile. It is a GraalVM knob fixed when the image is
+  built, so `gateway.yaml` could never make it take effect and `application.properties` would only
+  make it look like a runtime key. It lives with the other build-time native properties, in the
+  profile that is active exactly when the knob has meaning.
+
+| `quarkus.http.ssl-port`
+| *deployment-bound*
+| *exception 2 -- retained*
+| Stays in `application.properties` as the default (`8443`), overridden per deployment by
+  `QUARKUS_HTTP_SSL_PORT`. Promoting it would break the
+  link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+  SNI split, where a deployment that enables `tls.passthrough_sni` moves the terminated listener to
+  the internal loopback port through exactly this variable -- a topology a `gateway.yaml`-owned port
+  could not express.
+
+| `quarkus.http.insecure-requests`
+| *deployment-bound*
+| *exception 2 -- retained*
+| Same class: a port/exposure knob the deployment owns, not TLS policy.
+|===
+
+Certificate, key and trust *material* is deployment-bound by the same rule and is likewise never
+promoted into `gateway.yaml` -- it arrives through `quarkus.http.ssl.certificate.*` and the
+`QUARKUS_*` environment contract, exactly as the JWKS trust profiles of
+link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+do. The full operator-facing split of what stays deployment-bound versus what `gateway.yaml` owns is
+in link:user/environment-variable-overrides.adoc[Environment-variable overrides].
 
 [[_protocols]]
 === `protocol`
