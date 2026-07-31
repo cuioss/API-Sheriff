@@ -38,6 +38,9 @@ import lombok.Builder;
  *                         by the validator)
  * @param metadata         the audit-stamp metadata, empty when omitted
  * @param tls              the TLS settings, empty when omitted
+ * @param management       the management-interface policy settings, empty when omitted. Carries TLS
+ *                         policy only and declares no port — the management port stays
+ *                         deployment-bound at {@code quarkus.management.port} (ADR-0025)
  * @param securityHeaders  the response-header middleware settings, empty when
  *                         omitted
  * @param securityDefaults the global security-filter baseline, empty when omitted
@@ -55,6 +58,7 @@ import lombok.Builder;
  */
 @Builder
 public record GatewayConfig(int version, Optional<Metadata> metadata, Optional<TlsConfig> tls,
+Optional<ManagementConfig> management,
 Optional<SecurityHeadersConfig> securityHeaders, Optional<SecurityDefaultsConfig> securityDefaults,
 List<HttpMethod> allowedMethods, Map<String, AnchorConfig> anchors, Optional<UpstreamDefaultsConfig> upstreamDefaults,
 Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc,
@@ -68,6 +72,7 @@ Optional<EdgeHardeningConfig> edgeHardening) {
     public GatewayConfig {
         metadata = Objects.requireNonNullElse(metadata, Optional.empty());
         tls = Objects.requireNonNullElse(tls, Optional.empty());
+        management = Objects.requireNonNullElse(management, Optional.empty());
         securityHeaders = Objects.requireNonNullElse(securityHeaders, Optional.empty());
         securityDefaults = Objects.requireNonNullElse(securityDefaults, Optional.empty());
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);

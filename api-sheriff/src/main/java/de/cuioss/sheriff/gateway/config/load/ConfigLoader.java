@@ -58,6 +58,7 @@ import com.networknt.schema.Error;
 import com.networknt.schema.InputFormat;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
+import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
 import org.jspecify.annotations.Nullable;
 import org.yaml.snakeyaml.LoaderOptions;
@@ -103,6 +104,15 @@ public final class ConfigLoader {
     private static final int MAX_YAML_NESTING_DEPTH = 100;
     private static final int MAX_YAML_ALIASES = 50;
     private static final int MAX_YAML_STRING_LENGTH = 1024 * 1024;
+    /**
+     * Enables the validator's {@code errorMessage} extension, which is OFF unless the keyword is
+     * named on the registry configuration. Naming it lets a schema attach an operator-facing sentence
+     * to a specific subschema, so a deliberate rejection reports <em>why</em> and <em>where the knob
+     * actually lives</em> at its own JSON Pointer, rather than surfacing as a generic unknown-key
+     * message raised against the parent object. {@code gateway.schema.json}'s {@code management.port}
+     * refusal is the first use.
+     */
+    private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key", "/oidc/session/previous_key");
@@ -125,7 +135,10 @@ public final class ConfigLoader {
         this.configDir = Objects.requireNonNull(configDir, "configDir");
         this.secretResolver = Objects.requireNonNull(secretResolver, "secretResolver");
         this.mapper = buildMapper();
-        SchemaRegistry registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
+        SchemaRegistry registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12,
+                builder -> builder.schemaRegistryConfig(SchemaRegistryConfig.builder()
+                        .errorMessageKeyword(ERROR_MESSAGE_KEYWORD)
+                        .build()));
         this.gatewaySchema = loadSchema(registry, "/schema/gateway.schema.json");
         this.endpointSchema = loadSchema(registry, "/schema/endpoint.schema.json");
     }
