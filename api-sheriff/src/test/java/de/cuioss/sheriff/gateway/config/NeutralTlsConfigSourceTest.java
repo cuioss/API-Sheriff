@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.stream.StreamSupport;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -63,7 +64,7 @@ class NeutralTlsConfigSourceTest {
 
     @Test
     @DisplayName("A document declaring both policy blocks projects no key")
-    void wellFormedDocumentProjectsNoKey() throws IOException {
+    void wellFormedDocumentProjectsNoKey() throws Exception {
         writeGateway("""
                 version: 1
                 tls:
@@ -93,7 +94,7 @@ class NeutralTlsConfigSourceTest {
 
     @Test
     @DisplayName("A malformed document degrades silently rather than failing the boot early")
-    void malformedDocumentProjectsNoKey() throws IOException {
+    void malformedDocumentProjectsNoKey() throws Exception {
         writeGateway("this: [is: not: valid: yaml");
 
         NeutralTlsConfigSource source = new NeutralTlsConfigSource(configDir);
@@ -111,7 +112,7 @@ class NeutralTlsConfigSourceTest {
             "quarkus.tls.key-store.p12.path",
             "quarkus.tls.trust-store.p12.path"
     })
-    void neverProjectsADeploymentBoundOrKeyMaterialKey(String forbiddenKey) throws IOException {
+    void neverProjectsADeploymentBoundOrKeyMaterialKey(String forbiddenKey) throws Exception {
         writeGateway("""
                 version: 1
                 tls:
@@ -146,7 +147,7 @@ class NeutralTlsConfigSourceTest {
     void providerYieldsExactlyOneSource() {
         var sources = new NeutralTlsConfigSource.Provider().getConfigSources(getClass().getClassLoader());
 
-        assertEquals(1, java.util.stream.StreamSupport.stream(sources.spliterator(), false).count(),
+        assertEquals(1, StreamSupport.stream(sources.spliterator(), false).count(),
                 "the ServiceLoader entry must contribute the single neutral source, no more");
     }
 }

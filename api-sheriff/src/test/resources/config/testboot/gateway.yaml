@@ -7,3 +7,15 @@
 version: 1
 metadata:
   config_version: "test-boot"
+# TokenValidatorProducer forces the shared @GatewayValidator TokenValidator eagerly at boot, and
+# that validator is built from THIS block — so a container boot needs it declared or startup aborts,
+# whatever the route table's auth requirements are. The offline static JWKS file needs no IdP and no
+# egress; the relative path mirrors the test certificates application.properties already reaches for.
+# Nothing here validates a token; the issuer only has to assemble.
+token_validation:
+  issuers:
+    - name: test-boot-static
+      issuer: https://idp.example.com/realms/testboot
+      jwks:
+        source: file
+        file: ../integration-tests/src/main/docker/certificates/test-jwks.json

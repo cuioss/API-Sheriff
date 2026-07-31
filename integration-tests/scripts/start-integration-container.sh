@@ -239,6 +239,34 @@ for gateway_instance in "api-sheriff-cookie:19002" "api-sheriff-cookie-2:19003" 
     done
 done
 
+# Wait for the plain-management instance (api-sheriff-plain-mgmt on 10448 / management 19005).
+#
+# It gets its OWN block rather than an entry in the loop above, and the reason is structural: the
+# loop's probe URL is hard-coded to https://, and this instance's whole purpose is that its
+# management port is PLAIN HTTP (it selects the key-less `plain-management` TLS bucket via
+# QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME). Adding it to the loop would probe https:// against a
+# plain listener and hang for the full 30 seconds. Keep the scheme here as http:// — if this probe
+# ever needs -k, the opt-out has silently stopped working and that is the bug, not the probe.
+echo "⏳ Waiting for the api-sheriff-plain-mgmt gateway instance to be ready..."
+for i in {1..30}; do
+    if curl -sf http://localhost:19005/q/health/live > /dev/null 2>&1; then
+        echo "✅ api-sheriff-plain-mgmt gateway instance is ready (management on PLAIN HTTP, deliberately)!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "❌ api-sheriff-plain-mgmt gateway instance failed to start within 30 seconds"
+        DIAG_DIR="target/failsafe-reports"
+        mkdir -p "$DIAG_DIR"
+        echo "----- $COMPOSE_BASE logs api-sheriff-plain-mgmt -----"
+        $COMPOSE_BASE logs --no-color api-sheriff-plain-mgmt 2>&1 | tee "$DIAG_DIR/api-sheriff-plain-mgmt-app.log"
+        curl -s http://localhost:19005/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-plain-mgmt-health.json"
+        echo ""
+        exit 1
+    fi
+    echo "⏳ Waiting for api-sheriff-plain-mgmt gateway... (attempt $i/30)"
+    sleep 1
+done
+
 # Extract native startup time from logs
 NATIVE_STARTUP=$($COMPOSE_BASE logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
 if [ ! -z "$NATIVE_STARTUP" ]; then
