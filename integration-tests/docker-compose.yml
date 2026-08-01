@@ -260,6 +260,13 @@ services:
       # `directory:` root in the asset endpoint config. A read-only mount into the
       # read_only container is fine — bind mounts are independent of the root fs.
       - ./src/main/docker/assets:/app/assets:ro
+      # Read-only mount of the demo SPA, authored by the sibling demo-client module
+      # (demo-client/src/main/resources/spa, plan-11 deliverable 4). Backs the
+      # /assets/demo directory asset route declared in endpoints/assets.yaml. The SPA has
+      # no build step, so the authored files ARE the served files — no dist/ and no build
+      # ordering. A relative path crossing to a sibling module follows the precedent the
+      # grpc-echo service already sets in this file (context: ..).
+      - ../demo-client/src/main/resources/spa:/app/demo:ro
       # Mount the dedicated log subdirectory (defaults to ./target/quarkus-logs).
       # The start-integration-container.sh script exports LOG_TARGET_DIR to this subdir
       # and world-writes only it (least privilege); this fallback keeps a standalone
@@ -464,6 +471,11 @@ services:
       - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
       - ./src/main/docker/sheriff-config-cookie/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
       - ./src/main/docker/assets:/app/assets:ro
+      # The demo SPA, same read-only mount as the primary instance (demo-client module,
+      # plan-11 deliverable 4). Both demo gateways serve the identical bundle, so the
+      # Playwright suite runs the SAME specs against both session modes — the only
+      # per-project difference is the base URL.
+      - ../demo-client/src/main/resources/spa:/app/demo:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
     security_opt:
       - no-new-privileges:true

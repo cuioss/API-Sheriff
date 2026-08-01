@@ -128,7 +128,20 @@ oidc:
   logout:
     path: /auth/logout
     post_logout_redirect_uri: https://localhost:10445/auth/logout/return
-    final_redirect: /
+    # Lands the browser on a real public page instead of a deny-by-default 404, kept in lockstep with
+    # the server-mode overlay so the Playwright suite asserts the SAME logout outcome in both session
+    # modes. Served by the /assets/demo asset route (endpoints/assets.yaml).
+    #
+    # It CANNOT simply be '/', for two independent and individually fatal reasons — a path_prefix: /
+    # anchor fails the pairwise-disjointness boot check fail-closed, and DirectoryAssetSource performs
+    # no directory-index resolution, so a bare '/' resolves to a directory and returns 404. The full
+    # reasoning is recorded once, on the server-mode overlay; see sheriff-config/gateway.yaml.
+    #
+    # NOTE for api-sheriff-cookie-2: that peer mounts this overlay VERBATIM but does not mount
+    # /app/demo, so its final_redirect names a path it cannot serve. That is harmless and deliberate —
+    # no login and no logout is ever driven against that instance; it only replays an already-sealed
+    # cookie on a steady-state GET, which is the portability property under test.
+    final_redirect: /assets/demo/landing.html
     # Registered in cookie mode too: the endpoint's capability gate answers a deliberate 404 here
     # (the stateless binding cannot honour IdP-driven sid/sub destruction), so the reserved path
     # never falls through to the proxy route table. BffCookieBackchannelDisabledIT asserts that.
