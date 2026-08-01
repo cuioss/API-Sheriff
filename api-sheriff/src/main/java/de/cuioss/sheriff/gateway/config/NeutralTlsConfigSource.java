@@ -248,7 +248,7 @@ public final class NeutralTlsConfigSource implements ConfigSource {
     }
 
     private static Map<String, Object> policyBlocksOf(Map<?, ?> root) {
-        Map<String, Object> blocks = new HashMap<>(POLICY_BLOCKS.size());
+        Map<String, Object> blocks = HashMap.newHashMap(POLICY_BLOCKS.size());
         for (String block : POLICY_BLOCKS) {
             if (root.get(block) instanceof Map<?, ?> value) {
                 blocks.put(block, value);
