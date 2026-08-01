@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>demo-client</artifactId>
+    <packaging>pom</packaging>
+    <name>API Sheriff Demo Client</name>
+    <description>Dependency-free demo SPA for the API Sheriff BFF plus the Playwright end-to-end suite that
+        drives it against the integration-tests stack. Demo and compose material only — never a shipped
+        default, never part of the production image or the native build.
+    </description>
+
+    <!-- This module carries NO Java. It exists to own the demo SPA sources, the Playwright suite and the
+         npm toolchain that runs them. Everything npm-related lives inside the 'e2e-demo' profile below,
+         so a default reactor build of this module is a genuine no-op: no Node download, no npm install,
+         no container, no artifact. See doc/development/demo-client.adoc for the full rationale. -->
+
+    <dependencies />
+
+    <properties>
+        <!-- ==== Java plugin suppression =================================================== -->
+        <!-- There is no Java here, so every inherited Java-oriented plugin is switched off. Without
+             these the module would still run compilation, javadoc, static analysis and coverage over
+             an empty source tree, costing time in every build for no signal. -->
+        <maven.compiler.skip>true</maven.compiler.skip>
+        <skipTests>true</skipTests>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <checkstyle.skip>true</checkstyle.skip>
+        <spotbugs.skip>true</spotbugs.skip>
+        <pmd.skip>true</pmd.skip>
+        <cpd.skip>true</cpd.skip>
+        <enforcer.skip>true</enforcer.skip>
+        <jacoco.skip>true</jacoco.skip>
+        <license.skip>true</license.skip>
+        <dependency-check.skip>true</dependency-check.skip>
+        <skip.openrewrite>true</skip.openrewrite>
+
+        <!-- Never publish this module to Maven Central: it is demo material, not a consumable
+             artifact. The effective switch is skipPublishing, NOT maven.deploy.skip — cui-java-parent
+             publishes through central-publishing-maven-plugin, whose own user property this is. The
+             same reasoning is recorded at integration-tests/pom.xml, where it was established. -->
+        <skipPublishing>true</skipPublishing>
+
+        <!-- ==== Node toolchain ============================================================ -->
+        <!-- Pinned so every developer and CI run uses one toolchain. frontend-maven-plugin
+             downloads it into target/ (installDirectory below), which the root .gitignore already
+             covers through its **/target pattern — no new ignore rule is needed for the toolchain. -->
+        <node.version>v22.14.0</node.version>
+        <npm.version>10.9.2</npm.version>
+        <version.frontend-maven-plugin>1.15.1</version.frontend-maven-plugin>
+
+        <!-- ==== The opt-in switch ========================================================= -->
+        <!-- Defaults to SKIP. Every execution in the e2e-demo profile carries this as its <skip>,
+             and the profile itself flips it to false. Two layers on purpose: the profile means a
+             default build has no executions to skip at all, and the property means an accidentally
+             activated profile still needs a deliberate override to run browsers. -->
+        <skipPlaywrightTests>true</skipPlaywrightTests>
+
+        <!-- ==== Stack coordinates ========================================================= -->
+        <!-- The published ports of the two demo gateway instances and of Keycloak, passed to the
+             suite as environment. Declared here so NO port number is restated inside JavaScript. -->
+        <demo.baseUrl.server>https://localhost:10443</demo.baseUrl.server>
+        <demo.baseUrl.cookie>https://localhost:10445</demo.baseUrl.cookie>
+        <demo.keycloak.url>https://localhost:1443</demo.keycloak.url>
+    </properties>
+
+    <profiles>
+        <!-- The ONLY place npm is touched. Activated explicitly with -Pe2e-demo; the standard
+             pull-request build and 'verify -Ppre-commit' never enter it, so neither downloads Node
+             nor starts a container. -->
+        <profile>
+            <id>e2e-demo</id>
+            <properties>
+                <skipPlaywrightTests>false</skipPlaywrightTests>
+            </properties>
+            <build>
+                <plugins>
+                    <!-- Tear down anything an aborted previous run left behind, before clean. -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>stop-dev-environment-pre-clean</id>
+                                <phase>pre-clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipPlaywrightTests}</skip>
+                                    <executable>./scripts/stop-dev-environment.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <!-- Nothing running is the normal case, not a failure. -->
+                                    <successCodes>
+                                        <successCode>0</successCode>
+                                        <successCode>1</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>start-dev-environment</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipPlaywrightTests}</skip>
+                                    <executable>./scripts/start-dev-environment.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>stop-dev-environment-post-integration-test</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipPlaywrightTests}</skip>
+                                    <executable>./scripts/stop-dev-environment.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <successCodes>
+                                        <successCode>0</successCode>
+                                        <successCode>1</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <plugin>
+                        <groupId>com.github.eirslett</groupId>
+                        <artifactId>frontend-maven-plugin</artifactId>
+                        <version>${version.frontend-maven-plugin}</version>
+                        <configuration>
+                            <!-- Keep the downloaded toolchain under target/ so it is already
+                                 git-ignored and is removed by 'mvn clean'. -->
+                            <installDirectory>${project.build.directory}</installDirectory>
+                            <skip>${skipPlaywrightTests}</skip>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>install-node-and-npm</id>
+                                <phase>initialize</phase>
+                                <goals>
+                                    <goal>install-node-and-npm</goal>
+                                </goals>
+                                <configuration>
+                                    <nodeVersion>${node.version}</nodeVersion>
+                                    <npmVersion>${npm.version}</npmVersion>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>npm-install</id>
+                                <phase>initialize</phase>
+                                <goals>
+                                    <goal>npm</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>install</arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>npm-lint-strict</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>npm</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>run lint:strict</arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>playwright-test</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>npx</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>--yes playwright test</arguments>
+                                    <environmentVariables>
+                                        <PLAYWRIGHT_BASE_URL_SERVER>${demo.baseUrl.server}</PLAYWRIGHT_BASE_URL_SERVER>
+                                        <PLAYWRIGHT_BASE_URL_COOKIE>${demo.baseUrl.cookie}</PLAYWRIGHT_BASE_URL_COOKIE>
+                                        <KEYCLOAK_HOST_URL>${demo.keycloak.url}</KEYCLOAK_HOST_URL>
+                                        <!-- Never spawn a report server: a blocked run in CI is
+                                             indistinguishable from a hang. -->
+                                        <PW_TEST_HTML_REPORT_OPEN>never</PW_TEST_HTML_REPORT_OPEN>
+                                    </environmentVariables>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
