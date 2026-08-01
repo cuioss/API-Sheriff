@@ -110,12 +110,20 @@ class BearerValidationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("a valid Keycloak bearer token is admitted and forwarded to the upstream")
     void validBearerTokenAdmittedAndForwarded() {
-        // Arrange — a real, full-size access token from the trusted integration realm
-        String accessToken = mintIntegrationRealmAccessToken();
+        // Arrange — a real, full-size access token from the trusted integration realm. The length
+        // assertion is what keeps this scenario a genuine regression control: the carve-out is only
+        // exercised when the header value actually exceeds the strict preset's 1024-character
+        // pre-route cap, so without it the test would pass vacuously — green while never reaching
+        // the code path it exists to prove — should the IdP ever mint a token short enough to be
+        // admitted by the baseline outright.
+        String authorization = "Bearer " + mintIntegrationRealmAccessToken();
+        assertTrue(authorization.length() > 1024,
+                () -> "the integration token must exceed the strict 1024-character baseline to exercise "
+                        + "the Authorization carve-out, but measured %d".formatted(authorization.length()));
 
         // Act
         var response = given()
-                .header("Authorization", "Bearer " + accessToken)
+                .header("Authorization", authorization)
                 .when()
                 .get("/secure/get")
                 .then()
