@@ -44,6 +44,19 @@ import org.junit.jupiter.api.Test;
  * <p>
  * Absent keys must remain no-ops, because an omitted {@code tls} block has to preserve today's
  * Quarkus defaults exactly.
+ * <p>
+ * Both fail-closed cipher checks are covered: a suite <em>name</em> the JDK does not know, and an
+ * allowlist that is <em>unreachable</em> under one of the listener's enabled protocols. The second
+ * one is asserted in both directions — a TLS 1.3-only list stranding TLSv1.2 and a TLS 1.2-only list
+ * stranding TLSv1.3 — plus a positive control proving the guard does not over-reject a coherent
+ * policy. Duplicate handling is asserted on the declared list; the sibling case of a JSSE provider
+ * reporting a duplicate <em>supported</em> name is not reachable without installing a custom security
+ * provider, so it is covered by construction ({@code Set.copyOf} over {@code Set.of}) rather than by
+ * a test.
+ * <p>
+ * The integration fixture's own allowlist is deliberately <em>not</em> mirrored here: that guard
+ * lives in the module owning the fixture ({@code CipherSuiteFixtureWiringTest} in integration-tests),
+ * where it reads {@code gateway.yaml} directly and cannot drift from it.
  */
 @DisplayName("TlsServerCustomizer")
 class TlsServerCustomizerTest {
@@ -52,18 +65,8 @@ class TlsServerCustomizerTest {
     private static final String TLS_V1_3 = "TLSv1.3";
     private static final String SUITE_AES_256 = "TLS_AES_256_GCM_SHA384";
     private static final String SUITE_CHACHA20 = "TLS_CHACHA20_POLY1305_SHA256";
-
-    /**
-     * The verbatim {@code tls.cipher_suites} allowlist of
-     * {@code integration-tests/src/main/docker/sheriff-config/gateway.yaml}: two TLS 1.3 suites plus
-     * the ECDHE_RSA pair that covers TLS 1.2 against the suite's RSA server certificate. Validation
-     * that rejected any of these would break the containerised stack, so they are asserted here.
-     */
-    private static final List<String> IT_FIXTURE_SUITES = List.of(
-            "TLS_AES_256_GCM_SHA384",
-            "TLS_AES_128_GCM_SHA256",
-            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256");
+    private static final String SUITE_ECDHE_RSA_AES_256 = "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384";
+    private static final String SUITE_ECDHE_RSA_AES_128 = "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256";
 
     @Nested
     @DisplayName("min_version")
@@ -125,13 +128,33 @@ class TlsServerCustomizerTest {
         @Test
         @DisplayName("declared suites become the listener allowlist")
         void declaredSuitesBecomeAllowlist() {
+            // Arrange — the floor is declared alongside the suites because these two are TLS 1.3-only:
+            // under the default 1.2/1.3 protocol set they would (correctly) fail the reachability guard.
             HttpServerOptions options = new HttpServerOptions();
 
-            customizerFor(TlsConfig.builder().cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build())
+            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+                    .cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build())
                     .customizeHttpsServer(options);
 
             assertEquals(Set.of(SUITE_AES_256, SUITE_CHACHA20), options.getEnabledCipherSuites(),
                     "each declared cipher suite must be enabled on the listener");
+        }
+
+        @Test
+        @DisplayName("a duplicate entry in the declared allowlist is tolerated")
+        void duplicateDeclaredSuiteIsTolerated() {
+            // Arrange — a repeated YAML entry is an operator typo with no security consequence; it
+            // must not abort the boot the way a Set.of(...) copy of the list would.
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+                    .cipherSuites(List.of(SUITE_AES_256, SUITE_AES_256, SUITE_CHACHA20)).build())
+                    .customizeHttpsServer(options);
+
+            // Assert
+            assertEquals(Set.of(SUITE_AES_256, SUITE_CHACHA20), options.getEnabledCipherSuites(),
+                    "a duplicate declaration must collapse into the allowlist rather than abort the boot");
         }
 
         @Test
@@ -184,19 +207,114 @@ class TlsServerCustomizerTest {
         }
 
         @Test
-        @DisplayName("the integration fixture's four-suite allowlist is accepted verbatim")
-        void integrationFixtureAllowlistIsAccepted() {
-            // Arrange — the exact list from integration-tests' gateway.yaml, proven in the
-            // containerised suite to negotiate a real handshake under a 1.2 floor.
+        @DisplayName("an allowlist spanning both enabled protocols is accepted under a 1.2 floor")
+        void allowlistSpanningBothProtocolsIsAccepted() {
+            // Arrange — the shape a 1.2 floor requires: TLS 1.3 suites for TLSv1.3 and the ECDHE_RSA
+            // pair for TLSv1.2. Neither check may reject a policy that is coherent on both protocols.
+            List<String> spanning = List.of(SUITE_AES_256, SUITE_ECDHE_RSA_AES_256);
             HttpServerOptions options = new HttpServerOptions();
 
             // Act
             customizerFor(TlsConfig.builder().minVersion(Optional.of("1.2"))
-                    .cipherSuites(IT_FIXTURE_SUITES).build()).customizeHttpsServer(options);
+                    .cipherSuites(spanning).build()).customizeHttpsServer(options);
 
             // Assert
-            assertEquals(Set.copyOf(IT_FIXTURE_SUITES), options.getEnabledCipherSuites(),
-                    "validation must not reject the allowlist the integration stack actually negotiates");
+            assertEquals(Set.copyOf(spanning), options.getEnabledCipherSuites(),
+                    "validation must not reject an allowlist every enabled protocol can negotiate");
+        }
+    }
+
+    /**
+     * The second fail-closed cipher check: every name may be JDK-supported and the listener still bind
+     * while a whole enabled protocol has nothing to negotiate. That is the same fail-open outcome an
+     * unsupported name produces — a listener that accepts TCP but completes no handshake — reached by
+     * a different operator error, so it must abort the boot identically.
+     */
+    @Nested
+    @DisplayName("cipher_suites reachability")
+    class CipherSuiteReachability {
+
+        @Test
+        @DisplayName("a TLS 1.3-only allowlist under a 1.2 floor fails the boot")
+        void tls13OnlyAllowlistUnderA12FloorFailsBoot() {
+            // Arrange — the concrete hazard: a 1.2 floor enables TLSv1.2 as well as TLSv1.3, so these
+            // two valid TLS 1.3 suite names leave every TLS 1.2 client unable to complete a handshake.
+            TlsServerCustomizer customizer = customizerFor(TlsConfig.builder()
+                    .minVersion(Optional.of("1.2"))
+                    .cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build());
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> customizer.customizeHttpsServer(options),
+                    "an allowlist no enabled protocol can negotiate must not bind a listener");
+
+            // Assert — the message has to name the stranded protocol and both knobs that resolve it.
+            assertAll("actionable abort",
+                    () -> assertTrue(failure.getMessage().contains(TLS_V1_2),
+                            "the abort must name the stranded protocol: " + failure.getMessage()),
+                    () -> assertTrue(failure.getMessage().contains("tls.min_version"),
+                            "the abort must point at tls.min_version: " + failure.getMessage()),
+                    () -> assertTrue(failure.getMessage().contains("tls.cipher_suites"),
+                            "the abort must point at tls.cipher_suites: " + failure.getMessage()));
+        }
+
+        @Test
+        @DisplayName("the guard reads the listener's effective protocol set, so it fires without min_version")
+        void tls13OnlyAllowlistUnderDefaultProtocolsFailsBoot() {
+            // Arrange — no floor is declared, so the enabled set is the Vert.x default (TLSv1.2 and
+            // TLSv1.3). That is still the set the listener binds with, so it is the set to check.
+            TlsServerCustomizer customizer = customizerFor(
+                    TlsConfig.builder().cipherSuites(List.of(SUITE_AES_256)).build());
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> customizer.customizeHttpsServer(options),
+                    "an omitted floor must not exempt the allowlist from the reachability check");
+
+            // Assert
+            assertTrue(failure.getMessage().contains(TLS_V1_2),
+                    "the abort must name the stranded default protocol: " + failure.getMessage());
+        }
+
+        @Test
+        @DisplayName("a TLS 1.3-only allowlist is accepted once the 1.3 floor excludes TLSv1.2")
+        void tls13OnlyAllowlistUnderA13FloorIsAccepted() {
+            // Arrange — the same allowlist that strands TLSv1.2 above is correct here, because the
+            // floor removes TLSv1.2 from the enabled set entirely. The guard must not over-reject.
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+                    .cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build())
+                    .customizeHttpsServer(options);
+
+            // Assert
+            assertAll("coherent 1.3-only policy",
+                    () -> assertEquals(Set.of(TLS_V1_3), options.getEnabledSecureTransportProtocols()),
+                    () -> assertEquals(Set.of(SUITE_AES_256, SUITE_CHACHA20),
+                            options.getEnabledCipherSuites()));
+        }
+
+        @Test
+        @DisplayName("a TLS 1.2-only allowlist under a 1.2 floor strands TLSv1.3 and fails the boot")
+        void tls12OnlyAllowlistUnderA12FloorFailsBoot() {
+            // Arrange — the mirror case, proving the guard checks every enabled protocol rather than
+            // just the lowest one: these ECDHE suites cannot be negotiated under TLSv1.3.
+            TlsServerCustomizer customizer = customizerFor(TlsConfig.builder()
+                    .minVersion(Optional.of("1.2"))
+                    .cipherSuites(List.of(SUITE_ECDHE_RSA_AES_256, SUITE_ECDHE_RSA_AES_128)).build());
+            HttpServerOptions options = new HttpServerOptions();
+
+            // Act
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> customizer.customizeHttpsServer(options),
+                    "an allowlist that strands the upper protocol must abort just as loudly");
+
+            // Assert
+            assertTrue(failure.getMessage().contains(TLS_V1_3),
+                    "the abort must name the stranded protocol: " + failure.getMessage());
         }
     }
 

@@ -39,6 +39,12 @@ import org.junit.jupiter.api.Test;
  * The real accept / reject handshake behaviour (valid cert, wrong CA, no cert) is proven as an
  * integration behaviour test in deliverable 4 (GW-06 behaviour, not a flag read); this test governs
  * only the deterministic option mapping, so it needs no running TLS server.
+ * <p>
+ * The sibling claim that no raw {@code quarkus.http.ssl.client-auth} default is shipped is NOT
+ * asserted here: its mechanism lives in the property files, which a unit test against a bare
+ * {@link HttpServerOptions} cannot reach. {@code SingleSourceTlsContractTest} owns that guarantee by
+ * scanning the {@code quarkus.http.ssl} namespace, so an assertion here could only re-state the
+ * Vert.x library default.
  */
 @DisplayName("MtlsServerCustomizer")
 class MtlsServerCustomizerTest {
@@ -102,25 +108,6 @@ class MtlsServerCustomizerTest {
         // Act + Assert
         assertThrows(IllegalStateException.class, () -> customizer.customizeHttpsServer(options),
                 "enabled mTLS without a client_ca trust anchor must not start a require-client-auth listener");
-    }
-
-    @Test
-    @DisplayName("client-auth is owned solely by the mTLS customizer, not by a raw configuration default")
-    void clientAuthIsOwnedByTheMtlsCustomizer() {
-        // Arrange — a listener whose client-auth was left at the framework default, as it now is
-        // since quarkus.http.ssl.client-auth was deleted from application.properties: gateway.yaml's
-        // tls.mtls block is the single source, and it is this customizer that puts it in force.
-        HttpServerOptions options = new HttpServerOptions();
-        assertEquals(ClientAuth.NONE, options.getClientAuth(),
-                "with no raw client-auth key declared, the listener starts with client-auth off");
-
-        // Act
-        customizerFor(mtls(true, Optional.of(CLIENT_CA_PATH))).customizeHttpsServer(options);
-
-        // Assert
-        assertEquals(ClientAuth.REQUIRED, options.getClientAuth(),
-                "the customizer alone raises client-auth, so no raw quarkus.http.ssl.client-auth default is needed");
-        assertNotNull(options.getTrustOptions(), "the trust anchor comes from gateway.yaml's client_ca");
     }
 
     private static MtlsServerCustomizer customizerFor(TlsConfig.Mtls mtls) {
