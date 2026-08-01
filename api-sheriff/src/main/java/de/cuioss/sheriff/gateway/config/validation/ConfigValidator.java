@@ -237,11 +237,20 @@ public final class ConfigValidator {
      * {@code Authorization} values alone (ADR-0019), because a bearer token plus its {@code Bearer }
      * prefix routinely exceeds the {@code strict} preset's cap and would otherwise be rejected before
      * route selection. A value below the baseline is therefore not a carve-out at all but a per-header
-     * <em>tightening</em> expressed in the wrong place — tightening belongs on
-     * {@code security_defaults.profile} or on a route's {@code security_filter} — and it would
+     * <em>tightening</em> expressed through the one key that cannot express one, and it would
      * silently make {@code Authorization} the single most-restricted header while reading like a
      * relaxation key. That is always a misconfiguration rather than a deliberate posture, the same
      * shape {@link #validateEdgeHardening} applies to the admission budget.
+     * <p>
+     * The refusal deliberately offers no downward path, because none exists: neither remedy an
+     * operator might reach for can lower an {@code Authorization} value cap. A route's
+     * {@code security_filter} cannot, since
+     * {@code ThoroughChecksStage.carveOutConfigurationFor} floors the effective cap back up to
+     * {@code max(routeConfig.maxHeaderValueLength(), budget)} for the carved-out header name; and
+     * {@code security_defaults.profile} cannot either, since the budget resolves through
+     * {@link SecurityDefaultsConfig#effectiveMaxAuthorizationHeaderValueLength()} — the declared key
+     * or the fixed {@link SecurityDefaultsConfig#DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH} —
+     * and does not track the profile at all. Both govern general header values instead.
      * <p>
      * The comparison is genuinely cross-cutting and cannot move into the bundled JSON Schema: the
      * baseline is the <em>resolved</em> profile's preset limit, which the schema cannot see. The
@@ -266,8 +275,10 @@ public final class ConfigValidator {
                         errors.add(new ConfigError(GATEWAY_FILE, SECURITY_DEFAULTS_AUTHORIZATION_POINTER,
                                 ("max_authorization_header_value_length %d is below the resolved baseline "
                                         + "max_header_value_length %d; the key raises the pre-route cap for "
-                                        + "Authorization values only and can never lower it — tighten through "
-                                        + "security_defaults.profile or a route security_filter instead")
+                                        + "Authorization values only and can never lower it — declare at least "
+                                        + "the baseline here, as security_defaults.profile and a route "
+                                        + "security_filter bound general header values rather than the "
+                                        + "Authorization carve-out")
                                         .formatted(declared, baseline)));
                     }
                 });

@@ -1956,9 +1956,12 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * `security_defaults.max_authorization_header_value_length`, when declared, must not be *below* the
   resolved baseline `max_header_value_length` (1024 under `strict`, 8192 under `lenient`). The key
   exists to *raise* the pre-route cap for `Authorization` values; a lower value is not a carve-out at
-  all but a per-header *tightening* expressed in the wrong place -- tightening belongs on
-  `security_defaults.profile` or on a route's `security_filter` -- and it would silently make
-  `Authorization` the single most-restricted header while reading like a relaxation key. The
-  comparison uses the *resolved* profile, which is why it is a boot rule rather than a schema range;
-  the schema owns only the `integer` / `minimum: 1` range. An omitted key is never refused -- it
-  resolves to the default `8192`.
+  all but a per-header *tightening* expressed through the one key that cannot express one, and it
+  would silently make `Authorization` the single most-restricted header while reading like a
+  relaxation key. The refusal offers no downward path because none exists: a route's
+  `security_filter` cannot lower the `Authorization` cap (the post-route re-run floors it back up to
+  `max(route max_header_value_length, budget)` for that header name), and `security_defaults.profile`
+  cannot either (the budget is this key or its fixed `8192` default, and does not track the profile).
+  Both bound *general* header values instead. The comparison uses the *resolved* profile, which is
+  why it is a boot rule rather than a schema range; the schema owns only the `integer` /
+  `minimum: 1` range. An omitted key is never refused -- it resolves to the default `8192`.
