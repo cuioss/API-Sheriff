@@ -1247,6 +1247,19 @@ public class GatewayEdgeRoute {
      * injection-pattern) still applies to the cookie value. It remains a deliberate relaxation of an
      * inbound hardening control, held as narrow as the pre-route position allows.
      * <p>
+     * <strong>The cap is {@code max}-bounded, so the carve-out can only ever ADMIT MORE length.</strong>
+     * The effective cap is {@code max(baseline.maxHeaderValueLength(), budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}.
+     * Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
+     * gateway: the shipped default budget
+     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4096) plus the overhead is 4608,
+     * below that profile's 8192 baseline, so a cookie-mode BFF rejected {@code 400} every request
+     * whose {@code Cookie} value sat between the two — while every OTHER header on the same gateway
+     * was admitted to 8192. No operator misconfiguration was required. The {@code max} restores
+     * ADR-0019's stated bound, "the direction of change is admit-more-length-only", and matches the
+     * two sibling sites: {@code ThoroughChecksStage.carveOutConfigurationFor} caps at
+     * {@code max(routeCap, budget)} post-route, and {@code ConfigValidator} refuses a below-baseline
+     * {@code Authorization} budget outright at boot.
+     * <p>
      * The returned policy is handed to {@link ThoroughChecksStage} as well as to
      * {@link BasicChecksStage}: the post-route stage re-validates every header under the ROUTE's
      * configuration whenever that configuration diverges from the baseline, so it needs the same
@@ -1283,13 +1296,18 @@ public class GatewayEdgeRoute {
         }
         int budget = session.flatMap(OidcConfig.Session::maxCookieSize)
                 .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        // max(), not an outright set: a carve-out may only ever ADMIT MORE length. The default budget
+        // plus the overhead is 4608, which sits BELOW the lenient profile's 8192 baseline, so setting
+        // the cap outright turned this carve-out into a per-header TIGHTENING on every shipped-default
+        // lenient cookie-mode gateway. Same bound as ThoroughChecksStage.carveOutConfigurationFor.
+        int cap = Math.max(baseline.maxHeaderValueLength(), budget + COOKIE_HEADER_OVERHEAD_BYTES);
         // Seeded component-by-component from the RESOLVED baseline, so this differs from it in
         // maxHeaderValueLength and nothing else — which is what makes ADR-0019's "only the length cap
         // changes" bound structurally true. Seeding from SecurityConfiguration.builder() instead (its
         // defaults being the dropped `default` preset) silently relaxed failOnSuspiciousPatterns,
         // allowExtendedAscii and caseSensitiveComparison for cookie values on a strict gateway.
         return SecurityConfigurations.builderSeededFrom(baseline)
-                .maxHeaderValueLength(budget + COOKIE_HEADER_OVERHEAD_BYTES)
+                .maxHeaderValueLength(cap)
                 .build();
     }
 

@@ -252,6 +252,53 @@ This also removes a secure-design pressure the divergence created: an operator h
 most plausibly have raised that route's `max_header_value_length`, relaxing *every* header on the route
 — precisely the blunt, gateway-widening relaxation the name-scoped carve-out exists to avoid.
 
+== Amendment: the admit-more-length-only direction is now enforced at all three sites
+
+*This record is amended, not superseded.* No bound changes; the *direction of change* stated
+immediately above — `admit-more-length-only, for exactly two header names` — is now honoured at every
+site that derives a carved-out cap, rather than at two of the three.
+
+The amendment above bounded the *post-route* re-run with `max(route cap, budget)` and called that
+`max` load-bearing. The *pre-route* cookie site was left setting its cap outright from the budget, and
+that made it the sole outlier. The shipped default triggers the divergence with no operator
+misconfiguration at all: the default cookie budget (4096) plus the fixed 512-byte header overhead is
+4608, which sits *below* the `lenient` preset's 8192 baseline. On a `lenient` cookie-mode gateway the
+carve-out therefore *lowered* the cap for `Cookie` / `Set-Cookie` — rejecting `400` every request whose
+cookie value fell between 4609 and 8192, while every *other* header on the same gateway was admitted to
+8192. A relaxation key that tightens exactly the header it names is the failure shape this record has
+already corrected once, in "The correction: 'only the length cap changes' was not true".
+
+The correction: the pre-route cookie cap is `max(resolved baseline maxHeaderValueLength, budget +
+header overhead)`. The three sites that can move a carved-out cap now share one invariant:
+
+[cols="1,2,2", options="header"]
+|===
+| Site | Bound | Mechanism
+
+| Pre-route `Cookie` / `Set-Cookie`
+| `max(baseline cap, budget + overhead)`
+| Silent `max` — the budget is a *codec transport* property with its own floor/ceiling validation, so
+  a value below the baseline is a legitimate cookie budget rather than an operator error, and clamping
+  it is the correct, non-surprising response.
+
+| Pre-route `Authorization`
+| Declared budget, with a below-baseline value refused at boot
+| *Loud refusal*, deliberately not a silent `max`. The key
+  (`security_defaults.max_authorization_header_value_length`) is by name a *relaxation* knob on a
+  gateway-wide block, so a below-baseline value is a misconfiguration and is worth a boot diagnostic;
+  an omitted key resolves to 8192, at or above every shipped baseline. Adding a silent `max` here
+  would trade that diagnostic for silent coercion.
+
+| Post-route re-run (both names)
+| `max(route cap, budget)`
+| Silent `max` — a route that raised its own cap keeps it, and a route at or below the baseline still
+  admits the carved-out header to the budget.
+|===
+
+The two mechanisms differ on purpose and the difference is the point: *no site may lower a cap*, but
+where the lower value is an operator error it is refused rather than quietly clamped. The direction of
+change is admit-more-length-only at every one of them.
+
 == Consequences
 
 === Positive

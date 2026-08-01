@@ -544,12 +544,27 @@ class GatewayEdgeRouteTest {
      * {@code allowExtendedAscii} and {@code caseSensitiveComparison} on a strict gateway. The
      * component sweep below is exhaustive and reflection-driven, so a future cui-http component is
      * covered without editing this test.
+     * <p>
+     * The cookie tests are a matched control pair over ADR-0019's second bound — the DIRECTION of
+     * change is admit-more-length-only. The strict baseline is the positive control (the cap is
+     * genuinely raised, so the {@code max} did not neutralise the carve-out); the lenient baseline is
+     * the regression control (the cap must stay at the higher baseline rather than dropping to the
+     * smaller cookie budget). Each carries an explicit precondition assertion, so neither can pass
+     * vacuously if a preset's cap moves relative to the shipped default budget.
      */
     @Nested
     @DisplayName("pre-route header-value carve-outs (Authorization and Cookie)")
     class HeaderCarveOutConfiguration {
 
         private static final int DECLARED_AUTHORIZATION_CAP = 12_000;
+
+        /** Mirrors the private {@code GatewayEdgeRoute.COOKIE_HEADER_OVERHEAD_BYTES}. */
+        private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
+
+        /** The cap the shipped-default cookie budget derives — 4608, deliberately compared against
+         * BOTH baselines below so the max() bound is pinned from above and from below. */
+        private static final int DEFAULT_COOKIE_HEADER_CAP =
+                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET + COOKIE_HEADER_OVERHEAD_BYTES;
 
         @Test
         @DisplayName("the Authorization carve-out differs from a strict baseline in the length cap alone")
@@ -625,28 +640,35 @@ class GatewayEdgeRouteTest {
         }
 
         @Test
-        @DisplayName("the cookie carve-out differs from a strict baseline in the length cap alone")
-        void cookieCarveOutSeededFromStrictBaseline() {
-            // Arrange — the regression this assertion exists for: on a strict gateway the cookie
-            // carve-out used to be built from the builder defaults, quietly relaxing three further
-            // validators the ADR promised were untouched.
+        @DisplayName("the cookie carve-out RAISES a strict baseline to the budget plus the header overhead")
+        void cookieCarveOutRaisesAStrictBaseline() {
+            // Arrange — the positive half of the max()-bound control pair, and the regression this
+            // assertion originally existed for: on a strict gateway the cookie carve-out used to be
+            // built from the builder defaults, quietly relaxing three further validators the ADR
+            // promised were untouched.
             SecurityConfiguration baseline = SecurityConfiguration.strict();
 
             // Act
             SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
                     cookieModeGateway(), activeCookieRuntime(), baseline);
 
-            // Assert
+            // Assert — the max() must not neutralise the carve-out where it is genuinely needed
             assertNotNull(carveOut, "an active cookie-mode BFF gets a carve-out");
-            assertTrue(carveOut.maxHeaderValueLength() > SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET,
+            assertTrue(baseline.maxHeaderValueLength() < DEFAULT_COOKIE_HEADER_CAP,
+                    "control precondition: the strict baseline must sit BELOW the default cookie cap");
+            assertEquals(DEFAULT_COOKIE_HEADER_CAP, carveOut.maxHeaderValueLength(),
                     "the cap must admit the whole sealed-cookie budget plus the header overhead");
             assertDiffersFromBaselineInCapAlone(baseline, carveOut);
         }
 
         @Test
-        @DisplayName("the cookie carve-out differs from a lenient baseline in the length cap alone")
-        void cookieCarveOutSeededFromLenientBaseline() {
-            // Arrange
+        @DisplayName("the cookie carve-out never LOWERS a lenient baseline to the smaller cookie budget")
+        void cookieCarveOutNeverLowersALenientBaseline() {
+            // Arrange — the regression half of the control pair. The shipped DEFAULT budget (4096)
+            // plus the 512-byte overhead is 4608, which sits BELOW the lenient preset's 8192 baseline,
+            // so setting the cap outright turned this carve-out into a per-header TIGHTENING: a
+            // cookie-mode BFF on a lenient gateway rejected 400 every Cookie value between 4609 and
+            // 8192 while admitting every other header to 8192. No misconfiguration required.
             SecurityConfiguration baseline = SecurityConfiguration.lenient();
 
             // Act
@@ -655,7 +677,13 @@ class GatewayEdgeRouteTest {
 
             // Assert
             assertNotNull(carveOut);
-            assertDiffersFromBaselineInCapAlone(baseline, carveOut);
+            assertTrue(baseline.maxHeaderValueLength() > DEFAULT_COOKIE_HEADER_CAP,
+                    "control precondition: the lenient baseline must sit ABOVE the default cookie cap, "
+                            + "otherwise this test cannot observe a lowering");
+            assertEquals(baseline.maxHeaderValueLength(), carveOut.maxHeaderValueLength(),
+                    "a carve-out may only ever ADMIT MORE length — it must keep the higher baseline cap");
+            assertEquals(baseline, carveOut,
+                    "with the cap already sufficient the carve-out policy is the baseline itself");
         }
 
         /**
