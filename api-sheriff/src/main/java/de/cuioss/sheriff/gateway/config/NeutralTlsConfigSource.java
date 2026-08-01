@@ -53,8 +53,11 @@ import org.yaml.snakeyaml.Yaml;
  * environment-variable source's 300, because a policy this source projects has to win over the same
  * knob supplied as a deployment environment variable — otherwise a policy named in
  * {@code gateway.yaml} would silently not take effect. That is safe only because of the
- * policy-keys-only constraint below: no deployment-bound knob is ever projected, so nothing an
- * operator sets in the environment can be outranked by surprise.
+ * policy-keys-only constraint below: no deployment-bound knob is ever projected, so nothing the
+ * deployment owns — ports, trust material, key material — can be outranked by surprise. The one
+ * policy key this source does project is reachable from the environment as
+ * {@code QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME}, and that sharing is by design: when both doors
+ * set it, {@code gateway.yaml} wins, which is what the higher ordinal exists to guarantee.
  * <p>
  * <strong>Hard constraint — never project {@code quarkus.tls.key-store.*} (or any other key
  * material into the DEFAULT TLS registry bucket).</strong> {@code HttpServerOptionsUtils}'

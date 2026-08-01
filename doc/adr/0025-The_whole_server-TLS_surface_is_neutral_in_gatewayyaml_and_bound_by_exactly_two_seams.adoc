@@ -154,10 +154,20 @@ Two sources with two precedences is a rule no operator can hold in their head an
 state without a table of exceptions.
 
 The classification above is what makes the second source unnecessary. The source projects *policy keys
-only*: never a port, never trust material, never key material. Nothing an operator supplies from the
-environment is in the projected set, so nothing can be outranked by surprise. A single ordinal is
+only*: never a port, never trust material, never key material. No deployment-bound knob is ever in the
+projected set, so nothing the deployment owns can be outranked by surprise. A single ordinal is
 therefore both sufficient and safer, and policy-keys-only is a standing invariant of the source rather
 than a description of its current contents.
+
+One projected policy key is reachable from the environment as well, and deliberately so. The
+management TLS-configuration-name key is a policy key by class, and it is simultaneously the
+deployment door onto the plain-HTTP opt-out --
+<<two-doors-onto-one-lever,two doors onto one lever>>, below, describes that arrangement from the
+operator's side. When both doors set it, the `gateway.yaml` value wins, because the projecting source
+sits above the environment. That is the ordinal rule doing exactly what it exists for: the document
+the operator wrote takes effect. It is not an exception to the surprise-freedom above, which is a
+statement about deployment-bound knobs -- ports, trust material and key material -- and those the
+source never projects at all.
 
 One hard prohibition falls out of this and is worth stating separately, because its failure mode is
 silent in the dangerous direction: *the source must never project key material into the default TLS
@@ -168,6 +178,7 @@ the HTTP-SSL certificate keys -- so management TLS is exactly what the managemen
 it is. Populating the default bucket from anywhere would switch the management interface to HTTPS
 through a path no configuration file mentions. This is asserted by test, not assumed.
 
+[#two-doors-onto-one-lever]
 === Management HTTPS is the default, and the opt-out is runtime-native
 
 The management interface serves over TLS by default, on the deployment-bound management port. The
