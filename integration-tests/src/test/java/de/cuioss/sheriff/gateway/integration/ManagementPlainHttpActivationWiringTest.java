@@ -71,7 +71,8 @@ class ManagementPlainHttpActivationWiringTest {
 
     private static final String OPT_OUT_SERVICE = "api-sheriff-plain-mgmt";
     private static final String BUCKET = "plain-management";
-    private static final String SELECTION = "QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=" + BUCKET;
+    private static final String SELECTION_VARIABLE = "QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME";
+    private static final String SELECTION = SELECTION_VARIABLE + "=" + BUCKET;
     /** Every gateway instance in the compose topology is named after the application. */
     private static final String GATEWAY_SERVICE_PREFIX = "api-sheriff";
 
@@ -120,11 +121,24 @@ class ManagementPlainHttpActivationWiringTest {
         // Act + Assert
         for (String service : httpsServices) {
             List<String> environment = environment(service);
-            assertFalse(environment.stream().anyMatch(e -> e.startsWith("QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=")),
+            assertFalse(environment.stream().anyMatch(ManagementPlainHttpActivationWiringTest::selectsManagementTls),
                     () -> service + " must NOT select a management TLS configuration name — the "
                             + "https + -k readiness gate and the k6 health benchmarks depend on its "
                             + "management port staying HTTPS");
         }
+    }
+
+    @Test
+    @DisplayName("the activation predicate recognises the bare compose entry as well as KEY=value")
+    void theActivationPredicateRecognisesBothComposeListForms() {
+        // The negative control above can only fire if its predicate recognises every list form
+        // compose accepts; a predicate that saw only KEY=value would pass green on a bare entry.
+        assertTrue(selectsManagementTls(SELECTION_VARIABLE),
+                "a BARE compose entry resolves its value from the host shell at compose-up time and "
+                        + "must count as an activation");
+        assertTrue(selectsManagementTls(SELECTION), "the KEY=value form must count as an activation");
+        assertFalse(selectsManagementTls(SELECTION_VARIABLE + "_SUFFIX=x"),
+                "a longer variable that merely shares the prefix is a different setting");
     }
 
     @Test
@@ -155,6 +169,18 @@ class ManagementPlainHttpActivationWiringTest {
                 "no DEFAULT quarkus.tls.key-store.* bucket may be declared: the management interface "
                         + "falls back to the default registry bucket and would inherit HTTPS through a "
                         + "path no configuration file mentions (upstream quarkus issue 43380)");
+    }
+
+    /**
+     * Whether a compose {@code environment} entry activates the management TLS configuration name.
+     * <p>
+     * Both list forms count. Compose accepts {@code KEY=value} <em>and</em> a BARE {@code KEY} entry
+     * whose value is resolved from the host shell at {@code compose up} time — so an {@code =}-anchored
+     * prefix alone would let a bare entry activate plain-HTTP management from a host value while this
+     * negative control still passed green.
+     */
+    private static boolean selectsManagementTls(String entry) {
+        return SELECTION_VARIABLE.equals(entry) || entry.startsWith(SELECTION_VARIABLE + "=");
     }
 
     private static List<String> shippedPropertyLines() throws IOException {
