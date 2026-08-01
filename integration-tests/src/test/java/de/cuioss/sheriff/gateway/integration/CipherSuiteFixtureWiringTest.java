@@ -75,9 +75,9 @@ class CipherSuiteFixtureWiringTest {
         List<String> declared = declaredCipherSuites();
 
         assertFalse(declared.isEmpty(),
-                "gateway.yaml must declare tls.cipher_suites — an empty or absent list would make the "
-                        + "support assertion below vacuously true while the stack silently falls back "
-                        + "to the platform default selection this fixture exists to override");
+                "gateway.yaml must declare tls.cipher_suites — an empty or absent list means the stack "
+                        + "silently falls back to the platform default selection this fixture exists "
+                        + "to override");
     }
 
     @Test
@@ -86,9 +86,14 @@ class CipherSuiteFixtureWiringTest {
         // Arrange — the same authority TlsServerCustomizer validates against at boot.
         Set<String> supported = Set.copyOf(
                 Arrays.asList(SSLContext.getDefault().getSupportedSSLParameters().getCipherSuites()));
+        List<String> declared = declaredCipherSuites();
+        assertFalse(declared.isEmpty(),
+                "gateway.yaml declares no cipher suites — the support assertion below would pass "
+                        + "without checking anything, so this precondition is asserted here rather "
+                        + "than left to a sibling test that a rename or deletion could remove");
 
         // Act
-        List<String> unsupported = declaredCipherSuites().stream()
+        List<String> unsupported = declared.stream()
                 .filter(suite -> !supported.contains(suite))
                 .toList();
 
