@@ -580,22 +580,10 @@ class GatewayEdgeRouteTest {
                     gatewayWithAuthorizationCap(Optional.of(DECLARED_AUTHORIZATION_CAP)), baseline);
 
             // Assert
-            assertEquals(DECLARED_AUTHORIZATION_CAP, carveOut.maxHeaderValueLength());
-            assertNotEquals(baseline.maxHeaderValueLength(), carveOut.maxHeaderValueLength());
-            assertDiffersFromBaselineInCapAlone(baseline, carveOut);
-        }
-
-        @Test
-        @DisplayName("the Authorization carve-out honours a declared max_authorization_header_value_length")
-        void authorizationCarveOutHonoursDeclaredBudget() {
-            // Arrange + Act
-            SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
-                    gatewayWithAuthorizationCap(Optional.of(DECLARED_AUTHORIZATION_CAP)),
-                    SecurityConfiguration.strict());
-
-            // Assert
             assertEquals(DECLARED_AUTHORIZATION_CAP, carveOut.maxHeaderValueLength(),
                     "the operator-declared budget wins over the default");
+            assertNotEquals(baseline.maxHeaderValueLength(), carveOut.maxHeaderValueLength());
+            assertDiffersFromBaselineInCapAlone(baseline, carveOut);
         }
 
         @Test

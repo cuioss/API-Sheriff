@@ -299,6 +299,8 @@ class BasicChecksStageTest {
         void admitsBearerTokenAboveBaselineCap() {
             // Arrange — the regression itself: a real access token plus the 'Bearer ' prefix lands
             // above the strict 1024 cap, which rejected every bearer request 400 at this floor.
+            // strictStage carries NO cookie configuration, so this doubles as the proof that the
+            // Authorization carve-out has no mode axis: it is present on a bearer-only gateway.
             String value = "Bearer " + "a".repeat(2000);
             PipelineRequest request = requestWithHeader("Authorization", value);
 
@@ -341,17 +343,6 @@ class BasicChecksStageTest {
 
             // Assert
             assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
-        }
-
-        @Test
-        @DisplayName("is present on a bearer-only gateway — the carve-out has no mode axis")
-        void isPresentWithoutACookieCarveOut() {
-            // Arrange — unlike the cookie carve-out there is no mode that switches this one off;
-            // strictStage is built with NO cookie configuration at all.
-            PipelineRequest request = requestWithHeader("Authorization", "Bearer " + "a".repeat(2000));
-
-            // Act + Assert
-            assertDoesNotThrow(() -> strictStage.process(request));
         }
     }
 
