@@ -14,6 +14,13 @@
 #
 # Test-only material: the shipped default profile trusts no such CA. Passwords are non-secret test
 # fixtures matching the MtlsHandshakeIT / Failsafe defaults.
+#
+# The three retained artifacts are TRACKED in git, so regenerating them unconditionally would rewrite
+# tracked files with fresh random key material on every integration-test run and leave the working
+# tree dirty for reasons unrelated to the change in flight. This script therefore regenerates only
+# when the material is absent or close to expiry, mirroring the sibling scripts/build-native-if-
+# needed.sh guard bound to the same pre-integration-test phase. Force a regeneration with --force or
+# MTLS_CERTS_FORCE=true.
 
 set -e
 
@@ -22,7 +29,62 @@ CERT_DIR="${SCRIPT_DIR}"
 VALIDITY=730
 SUBJ_SUFFIX="/OU=Integration Testing/O=API-Sheriff/L=Berlin/ST=Berlin/C=DE"
 
-echo "Generating mTLS client certificate material in ${CERT_DIR}..."
+# Regenerate when the trust anchor expires within this window. The material is issued with a 730-day
+# validity, so a 30-day margin is ample and still stops a stale checkout silently running with
+# expired certificates.
+RENEWAL_MARGIN_SECONDS=$((30 * 24 * 60 * 60))
+
+# The artifacts this script retains (see the trailing cleanup): the trust anchor plus the two client
+# keystores. All three are produced by a single generation pass, so any one of them missing means the
+# whole set must be rebuilt.
+RETAINED_ARTIFACTS=(
+    "${CERT_DIR}/mtls-client-ca.crt"
+    "${CERT_DIR}/mtls-client.p12"
+    "${CERT_DIR}/mtls-wrong.p12"
+)
+
+FORCE=false
+if [[ "${1:-}" == "--force" || "${MTLS_CERTS_FORCE:-}" == "true" ]]; then
+    FORCE=true
+fi
+
+# Sets REGENERATION_REASON and returns 0 when the material must be rebuilt, 1 when it is usable as-is.
+regeneration_needed() {
+    if [[ "${FORCE}" == "true" ]]; then
+        REGENERATION_REASON="forced"
+        return 0
+    fi
+
+    local artifact
+    for artifact in "${RETAINED_ARTIFACTS[@]}"; do
+        if [[ ! -f "${artifact}" ]]; then
+            REGENERATION_REASON="missing $(basename "${artifact}")"
+            return 0
+        fi
+    done
+
+    # All three artifacts are issued in one pass with the same validity, so the CA certificate's
+    # expiry is representative of the set — and unlike the PKCS#12 keystores it can be inspected
+    # without a password. A non-zero exit here also covers unreadable/corrupt material, which is
+    # why the reason below names those causes too rather than asserting expiry. The two keystores
+    # are checked for PRESENCE ONLY: they are tracked in git, so a truncated one is not a
+    # normal-operation state, and when it does occur MtlsHandshakeIT fails loudly on keystore load
+    # with --force as the one-step recovery. Nothing here may claim more than it checked.
+    if ! openssl x509 -checkend "${RENEWAL_MARGIN_SECONDS}" -noout -in "${CERT_DIR}/mtls-client-ca.crt" >/dev/null; then
+        REGENERATION_REASON="mtls-client-ca.crt unreadable, unparseable, or expiring within $((RENEWAL_MARGIN_SECONDS / 86400)) days"
+        return 0
+    fi
+
+    return 1
+}
+
+if ! regeneration_needed; then
+    echo "mTLS client material: all three artifacts present, mtls-client-ca.crt readable and not expiring within $((RENEWAL_MARGIN_SECONDS / 86400)) days - skipping regeneration."
+    echo "  (pass --force, or set MTLS_CERTS_FORCE=true, to regenerate deliberately)"
+    exit 0
+fi
+
+echo "Generating mTLS client certificate material in ${CERT_DIR} (${REGENERATION_REASON})..."
 
 # Clean any prior material so regeneration is deterministic.
 rm -f "${CERT_DIR}"/mtls-client-ca.crt "${CERT_DIR}"/mtls-client-ca.key \

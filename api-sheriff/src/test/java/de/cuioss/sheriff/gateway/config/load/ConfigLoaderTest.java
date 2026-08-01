@@ -40,6 +40,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 
 import org.junit.jupiter.api.Test;
@@ -473,6 +474,80 @@ class ConfigLoaderTest {
                                 && error.pointer().contains("security_defaults")),
                 () -> "expected a schema violation naming the security_defaults key, got: "
                         + exception.errors());
+    }
+
+    /**
+     * The {@code max_authorization_header_value_length} value RANGE is owned by the bundled JSON
+     * Schema ({@code integer}, {@code minimum: 1}), so an out-of-range value is refused at bind time,
+     * before the configuration validator's cross-cutting baseline comparison ever runs.
+     */
+    @ParameterizedTest(name = "security_defaults.max_authorization_header_value_length ''{0}'' fails the boot")
+    @ValueSource(strings = {"0", "-1", "\"not-a-number\""})
+    void rejectsOutOfRangeAuthorizationHeaderValueLength(String value) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_defaults:
+                  profile: strict
+                  max_authorization_header_value_length: %s
+                """.formatted(value));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("security_defaults")),
+                () -> "expected a schema violation naming the security_defaults key, got: "
+                        + exception.errors());
+    }
+
+    /**
+     * The end-to-end proof that the snake-cased key binds to the record component without an explicit
+     * Jackson annotation — {@code ConfigLoader} binds under {@code PropertyNamingStrategies.SNAKE_CASE},
+     * so the mapping is by convention and would break silently if that strategy ever changed.
+     */
+    @Test
+    void bindsDeclaredAuthorizationHeaderValueLength() throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_defaults:
+                  profile: strict
+                  max_authorization_header_value_length: 12000
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert
+        SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults().orElseThrow();
+        assertEquals(Optional.of(12000), securityDefaults.maxAuthorizationHeaderValueLength(),
+                "the snake_cased key binds to the record component with no explicit annotation");
+        assertEquals(12000, securityDefaults.effectiveMaxAuthorizationHeaderValueLength(),
+                "a declared budget is what the carve-out enforces");
+    }
+
+    @Test
+    void resolvesOmittedAuthorizationHeaderValueLengthToTheDefault() throws Exception {
+        // Arrange — the matched negative half: an omitted key must bind empty and resolve to the
+        // documented default rather than to zero or to a bind failure.
+        writeConfig("gateway.yaml", """
+                version: 1
+                security_defaults:
+                  profile: strict
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert
+        SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults().orElseThrow();
+        assertEquals(Optional.empty(), securityDefaults.maxAuthorizationHeaderValueLength());
+        assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
+                securityDefaults.effectiveMaxAuthorizationHeaderValueLength());
     }
 
     @ParameterizedTest(name = "anchor security_filter.profile ''{0}'' fails the boot")

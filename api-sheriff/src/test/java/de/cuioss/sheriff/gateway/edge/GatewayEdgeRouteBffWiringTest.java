@@ -467,8 +467,12 @@ class GatewayEdgeRouteBffWiringTest {
                 .build();
     }
 
-    /** The server-mode seam over an in-memory store, standing in for whichever binding is in force. */
-    private static SessionBinding serverBinding(SessionStore store) {
+    /**
+     * The server-mode seam over an in-memory store, standing in for whichever binding is in force.
+     * Package-private so {@code GatewayEdgeRouteTest} can obtain an active runtime for the
+     * cookie-mode carve-out assertions without duplicating this assembly.
+     */
+    static SessionBinding serverBinding(SessionStore store) {
         return new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1)));
     }
@@ -478,8 +482,12 @@ class GatewayEdgeRouteBffWiringTest {
      * handler is real, but the seams that would reach the confidential-client engine throw or no-op,
      * so the paths these tests drive (no-session, no-input, live-session short-circuit) never touch a
      * live IdP.
+     * <p>
+     * Package-private so {@code GatewayEdgeRouteTest} can assert the cookie-mode header carve-out —
+     * which is gated on {@link BffRuntime#isActive()} — against a real active runtime rather than
+     * duplicating this assembly.
      */
-    private static BffRuntime activeRuntime(SessionBinding binding) {
+    static BffRuntime activeRuntime(SessionBinding binding) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
         Duration ttl = Duration.ofHours(1);

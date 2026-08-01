@@ -156,7 +156,12 @@
       "additionalProperties": false,
       "description": "Global inbound-filter baseline. An omitted block — or a block without 'profile' — resolves the gateway-wide profile to 'strict'. 'none' is a partial disable: it turns off only the url-parameter name/value validation and the per-route pipeline re-run, and is refused at boot on effectively-authenticated and BFF routes (see ADR-0024).",
       "properties": {
-        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] }
+        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] },
+        "max_authorization_header_value_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Budget for the pre-route 'Authorization' header-value carve-out (ADR-0019). A bearer token plus the 'Bearer ' prefix routinely exceeds the resolved profile's header-value cap (~1028 characters against strict's 1024), which the non-skippable pre-route floor would otherwise reject 400 before route selection. Defaults to 8192 when omitted. Boot-refused when declared below the resolved baseline max_header_value_length, since that would make the carve-out a tightening in disguise."
+        }
       }
     },
     "allowed_methods": {

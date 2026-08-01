@@ -1188,6 +1188,99 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Optional `Content-Type` allowlist for request bodies.
 |===
 
+[[_preset_limits]]
+==== Preset limits
+
+The two presets are not just "tight" and "loose" labels -- they carry concrete numbers, and a route
+that declares no limit key of its own lands exactly on them. Because an omitted `security_defaults`
+block resolves to `strict`, the `strict` column is what an undeclared deployment actually enforces.
+
+[cols="3,1,1"]
+|===
+| Limit | `strict` | `lenient`
+
+| `max_body_bytes` (`maxBodySize`)
+| 1 MiB (1048576)
+| 10 MiB (10485760)
+
+| `max_query_params` (`maxParameterCount`)
+| 20
+| 500
+
+| `max_header_count` (`maxHeaderCount`)
+| 20
+| 100
+
+| `max_param_value_length` (`maxParameterValueLength`)
+| 1024
+| 8192
+
+| `max_header_value_length` (`maxHeaderValueLength`)
+| 1024
+| 8192
+
+| path length (`maxPathLength`)
+| 1024
+| 8192
+
+| parameter / header / cookie *name* length
+| 64
+| 256
+
+| cookie value length / cookie count
+| 1024 / 10
+| 8192 / 50
+|===
+
+All length limits are measured in *characters* -- the `cui-http` unit -- not bytes. The presets also
+differ in their non-length validators: `strict` normalizes Unicode, compares case-sensitively, fails
+on suspicious patterns, and permits neither double encoding, control characters, nor extended ASCII;
+`lenient` inverts each of those. Neither preset ever permits null bytes.
+
+[[_pre_route_header_carve_outs]]
+==== Pre-route header-name carve-outs
+
+The *non-skippable pre-route floor* measures every inbound header value against the resolved
+baseline `max_header_value_length` above. Two header names are carved out of that cap, each by a
+dedicated value pipeline selected on the header *name*. Both carve-outs are declared on gateway-wide
+blocks, because the floor runs *before route selection* -- no anchor is resolved at that point, so
+neither relaxation can be scoped per route or per anchor
+(link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]).
+
+[cols="1,2,2"]
+|===
+| Header | Budget key | Bound
+
+| `Cookie` / `Set-Cookie`
+| `oidc.session.max_cookie_size` (plus a fixed cookie-header overhead)
+| Present *only* in an active cookie-mode BFF; a bearer-only or server-mode gateway keeps the
+  resolved baseline on every header. A sealed session cookie is designed to a multi-kilobyte budget
+  the baseline would otherwise reject on every authenticated request.
+
+| `Authorization`
+| `security_defaults.max_authorization_header_value_length` (default `8192`)
+| *Unconditional* -- every gateway is bearer-capable, so there is no mode that switches it off. A
+  bearer token plus its `Bearer ` prefix routinely exceeds the `strict` baseline of 1024 characters,
+  which would reject every bearer request `400` before bearer validation ever runs.
+|===
+
+*Only the length cap changes.* Each carve-out configuration is seeded from the resolved baseline and
+overrides `max_header_value_length` alone, so every non-length validator -- null-byte,
+control-character, extended-ASCII and injection-pattern checks -- still applies to the carved-out
+value exactly as to any other header. That bound is enforced *structurally* by the seeding, not by
+convention.
+
+*Both carve-outs survive the post-route re-run.* A route whose `security_filter` resolves to a
+configuration differing from the gateway baseline -- a route declaring nothing more than a raised
+`max_body_bytes` already qualifies -- has its headers re-validated after route selection under that
+route's own configuration. That re-validation applies the *same* two carve-outs, so the raised cap
+reaches `Authorization` and `Cookie` / `Set-Cookie` values on *every* route, not only on routes
+without a `security_filter` block. The post-route cap is `max(route max_header_value_length, budget)`:
+a route that raises its own cap above the budget keeps its higher cap, and the carve-out never lowers
+a route's own cap. Everything else is unchanged -- the re-run seeds each carve-out from the *route's*
+configuration, so every non-length validator stays on the route's setting, and the two header names
+are the only ones affected.
+
 *The framework body-size floor.* `max_body_bytes` is a cap the gateway applies *on top of* an
 underlying HTTP-framework limit, `quarkus.http.limits.max-body-size`. The framework limit is the
 floor every declared cap sits under: a route cannot accept more than the floor allows, whatever it
@@ -1513,10 +1606,13 @@ ignored when no route's effective auth is `require: session`.
   The raised cap is scoped twice, and is *not* a general widening of inbound header validation:
 
   * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it. A bearer-only or
-    `session.mode: server` gateway keeps the 2048-character default on every header, unchanged.
+    `session.mode: server` gateway keeps the resolved baseline `max_header_value_length` on every
+    header, unchanged (see <<_preset_limits>> for the per-preset figure).
   * *By header* -- within a cookie-mode gateway only `Cookie` and `Set-Cookie` header *values* use
-    the raised cap. Every other header keeps the default, and every non-length validator
-    (null-byte, control-character, injection-pattern) still applies to the cookie value.
+    the raised cap. Every other header keeps the resolved baseline, and every non-length validator
+    (null-byte, control-character, injection-pattern) still applies to the cookie value. The
+    `Authorization` carve-out described in <<_pre_route_header_carve_outs>> is the one other
+    exception, and it is independent of session mode.
 
   [IMPORTANT]
   ====
@@ -1753,7 +1849,26 @@ set has exactly three members:
 |===
 
 *An omitted `security_defaults` block -- or a block omitting `profile` -- resolves to `strict`*, the
-fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly.
+fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly. The
+concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
+
+The block carries one further key:
+
+[cols="1,4"]
+|===
+| Key | Meaning
+
+| `max_authorization_header_value_length`
+| *Integer, minimum `1`, default `8192`.* The budget for the `Authorization` header-value carve-out
+  (see link:#_pre_route_header_carve_outs[Pre-route header-name carve-outs]). It raises the
+  header-value cap for `Authorization` values *only*; every other header stays on the resolved
+  baseline. The default is the `lenient` preset's own header-value ceiling, so the carve-out never
+  admits a value the loosest shipped profile would itself reject. It sits on the gateway-wide
+  `security_defaults` block because the floor that first enforces it runs before route selection --
+  its placement must not be read as per-anchor enforcement. The same budget is applied by the
+  post-route re-run, so the raised cap reaches `Authorization` values on every route, including one
+  declaring its own `security_filter`.
+|===
 
 [IMPORTANT]
 ====
@@ -2038,3 +2153,15 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   value could never bind and would silently disable the sub-cap the operator meant to impose. The
   comparison uses the *effective* values; because an omitted relay cap is derived from the admission
   cap it can only be tripped by an *explicitly declared* relay cap.
+* `security_defaults.max_authorization_header_value_length`, when declared, must not be *below* the
+  resolved baseline `max_header_value_length` (1024 under `strict`, 8192 under `lenient`). The key
+  exists to *raise* the pre-route cap for `Authorization` values; a lower value is not a carve-out at
+  all but a per-header *tightening* expressed through the one key that cannot express one, and it
+  would silently make `Authorization` the single most-restricted header while reading like a
+  relaxation key. The refusal offers no downward path because none exists: a route's
+  `security_filter` cannot lower the `Authorization` cap (the post-route re-run floors it back up to
+  `max(route max_header_value_length, budget)` for that header name), and `security_defaults.profile`
+  cannot either (the budget is this key or its fixed `8192` default, and does not track the profile).
+  Both bound *general* header values instead. The comparison uses the *resolved* profile, which is
+  why it is a boot rule rather than a schema range; the schema owns only the `integer` /
+  `minimum: 1` range. An omitted key is never refused -- it resolves to the default `8192`.

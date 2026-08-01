@@ -20,11 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.RecordComponent;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
@@ -39,16 +42,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -523,6 +530,219 @@ class GatewayEdgeRouteTest {
             // Assert
             assertEquals(preset, resolved,
                     "seeding the builder from the %s preset must round-trip to that preset".formatted(profile));
+        }
+    }
+
+    /**
+     * The two pre-route header-value carve-outs the edge hands to {@code BasicChecksStage}. Both are
+     * asserted directly rather than through a booted edge, whose assembled stages are not observable.
+     * <p>
+     * The load-bearing assertion is that each carve-out differs from the <em>resolved baseline</em> in
+     * {@code maxHeaderValueLength} and in nothing else — ADR-0019's "only the length cap changes"
+     * bound. It was NOT true of the cookie carve-out before this change: seeding it from
+     * {@code SecurityConfiguration.builder()} silently also relaxed {@code failOnSuspiciousPatterns},
+     * {@code allowExtendedAscii} and {@code caseSensitiveComparison} on a strict gateway. The
+     * component sweep below is exhaustive and reflection-driven, so a future cui-http component is
+     * covered without editing this test.
+     * <p>
+     * The cookie tests are a matched control pair over ADR-0019's second bound — the DIRECTION of
+     * change is admit-more-length-only. The strict baseline is the positive control (the cap is
+     * genuinely raised, so the {@code max} did not neutralise the carve-out); the lenient baseline is
+     * the regression control (the cap must stay at the higher baseline rather than dropping to the
+     * smaller cookie budget). Each carries an explicit precondition assertion, so neither can pass
+     * vacuously if a preset's cap moves relative to the shipped default budget.
+     */
+    @Nested
+    @DisplayName("pre-route header-value carve-outs (Authorization and Cookie)")
+    class HeaderCarveOutConfiguration {
+
+        private static final int DECLARED_AUTHORIZATION_CAP = 12_000;
+
+        /** Mirrors the private {@code GatewayEdgeRoute.COOKIE_HEADER_OVERHEAD_BYTES}. */
+        private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
+
+        /** The cap the shipped-default cookie budget derives — 4608, deliberately compared against
+         * BOTH baselines below so the max() bound is pinned from above and from below. */
+        private static final int DEFAULT_COOKIE_HEADER_CAP =
+                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET + COOKIE_HEADER_OVERHEAD_BYTES;
+
+        @Test
+        @DisplayName("the Authorization carve-out differs from a strict baseline in the length cap alone")
+        void authorizationCarveOutSeededFromStrictBaseline() {
+            // Arrange — a bearer-only gateway declaring no security_defaults block at all
+            SecurityConfiguration baseline = SecurityConfiguration.strict();
+
+            // Act
+            SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+                    GatewayConfig.builder().version(1).build(), baseline);
+
+            // Assert
+            assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
+                    carveOut.maxHeaderValueLength(), "an omitted key resolves to the documented default");
+            assertNotEquals(baseline.maxHeaderValueLength(), carveOut.maxHeaderValueLength(),
+                    "the carve-out must actually raise the strict cap — otherwise it relaxes nothing");
+            assertDiffersFromBaselineInCapAlone(baseline, carveOut);
+        }
+
+        @Test
+        @DisplayName("the Authorization carve-out differs from a lenient baseline in the length cap alone")
+        void authorizationCarveOutSeededFromLenientBaseline() {
+            // Arrange — a declared budget, so the cap genuinely differs from the lenient preset's own
+            SecurityConfiguration baseline = SecurityConfiguration.lenient();
+
+            // Act
+            SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+                    gatewayWithAuthorizationCap(Optional.of(DECLARED_AUTHORIZATION_CAP)), baseline);
+
+            // Assert
+            assertEquals(DECLARED_AUTHORIZATION_CAP, carveOut.maxHeaderValueLength(),
+                    "the operator-declared budget wins over the default");
+            assertNotEquals(baseline.maxHeaderValueLength(), carveOut.maxHeaderValueLength());
+            assertDiffersFromBaselineInCapAlone(baseline, carveOut);
+        }
+
+        @Test
+        @DisplayName("the Authorization carve-out falls back to the default when the key is omitted")
+        void authorizationCarveOutFallsBackToTheDefault() {
+            // Arrange — a security_defaults block that declares a profile but omits the budget key,
+            // which is a different shape from an entirely absent block and must resolve identically.
+
+            // Act
+            SecurityConfiguration blockPresent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+                    gatewayWithAuthorizationCap(Optional.empty()), SecurityConfiguration.strict());
+            SecurityConfiguration blockAbsent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+                    GatewayConfig.builder().version(1).build(), SecurityConfiguration.strict());
+
+            // Assert
+            assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
+                    blockPresent.maxHeaderValueLength(),
+                    "a declared block omitting the key resolves to the default");
+            assertEquals(blockAbsent, blockPresent,
+                    "an omitted key and an omitted block resolve to the same policy");
+        }
+
+        @Test
+        @DisplayName("the cookie carve-out is absent for a gateway that is not an active cookie-mode BFF")
+        void cookieCarveOutIsAbsentOutsideCookieMode() {
+            // Arrange — the three ways to miss the mode: no BFF runtime at all, an active runtime on a
+            // gateway declaring no session block, and an active runtime whose declared mode is server.
+            // Only the last actually invokes isCookieMode(); the middle one is answered by orElse(false)
+            // before the predicate is reached, so on its own it leaves the defect-prone branch untested.
+
+            // Act
+            SecurityConfiguration inertRuntime = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    cookieModeGateway(), BffRuntime.inert(), SecurityConfiguration.strict());
+            SecurityConfiguration sessionAbsent = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    GatewayConfig.builder().version(1).build(), activeCookieRuntime(),
+                    SecurityConfiguration.strict());
+            SecurityConfiguration serverMode = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    sessionModeGateway(OidcConfig.Session.MODE_SERVER), activeCookieRuntime(),
+                    SecurityConfiguration.strict());
+
+            // Assert
+            assertNull(inertRuntime, "a bearer-only gateway keeps the resolved baseline on every header");
+            assertNull(sessionAbsent,
+                    "a gateway declaring no session block keeps the resolved baseline on every header");
+            assertNull(serverMode,
+                    "an active server-mode BFF keeps the resolved baseline on every header");
+        }
+
+        @Test
+        @DisplayName("the cookie carve-out RAISES a strict baseline to the budget plus the header overhead")
+        void cookieCarveOutRaisesAStrictBaseline() {
+            // Arrange — the positive half of the max()-bound control pair, and the regression this
+            // assertion originally existed for: on a strict gateway the cookie carve-out used to be
+            // built from the builder defaults, quietly relaxing three further validators the ADR
+            // promised were untouched.
+            SecurityConfiguration baseline = SecurityConfiguration.strict();
+
+            // Act
+            SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    cookieModeGateway(), activeCookieRuntime(), baseline);
+
+            // Assert — the max() must not neutralise the carve-out where it is genuinely needed
+            assertNotNull(carveOut, "an active cookie-mode BFF gets a carve-out");
+            assertTrue(baseline.maxHeaderValueLength() < DEFAULT_COOKIE_HEADER_CAP,
+                    "control precondition: the strict baseline must sit BELOW the default cookie cap");
+            assertEquals(DEFAULT_COOKIE_HEADER_CAP, carveOut.maxHeaderValueLength(),
+                    "the cap must admit the whole sealed-cookie budget plus the header overhead");
+            assertDiffersFromBaselineInCapAlone(baseline, carveOut);
+        }
+
+        @Test
+        @DisplayName("the cookie carve-out never LOWERS a lenient baseline to the smaller cookie budget")
+        void cookieCarveOutNeverLowersALenientBaseline() {
+            // Arrange — the regression half of the control pair. The shipped DEFAULT budget (4096)
+            // plus the 512-byte overhead is 4608, which sits BELOW the lenient preset's 8192 baseline,
+            // so setting the cap outright turned this carve-out into a per-header TIGHTENING: a
+            // cookie-mode BFF on a lenient gateway rejected 400 every Cookie value between 4609 and
+            // 8192 while admitting every other header to 8192. No misconfiguration required.
+            SecurityConfiguration baseline = SecurityConfiguration.lenient();
+
+            // Act
+            SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    cookieModeGateway(), activeCookieRuntime(), baseline);
+
+            // Assert
+            assertNotNull(carveOut);
+            assertTrue(baseline.maxHeaderValueLength() > DEFAULT_COOKIE_HEADER_CAP,
+                    "control precondition: the lenient baseline must sit ABOVE the default cookie cap, "
+                            + "otherwise this test cannot observe a lowering");
+            assertEquals(baseline.maxHeaderValueLength(), carveOut.maxHeaderValueLength(),
+                    "a carve-out may only ever ADMIT MORE length — it must keep the higher baseline cap");
+            assertEquals(baseline, carveOut,
+                    "with the cap already sufficient the carve-out policy is the baseline itself");
+        }
+
+        /**
+         * Exhaustive component sweep: every {@link SecurityConfiguration} record component except
+         * {@code maxHeaderValueLength} must carry the resolved baseline's value. Reflection rather
+         * than a hand-written list so a component added by a cui-http upgrade is covered here the
+         * moment it exists.
+         */
+        private void assertDiffersFromBaselineInCapAlone(SecurityConfiguration baseline,
+                SecurityConfiguration carveOut) {
+            for (RecordComponent component : SecurityConfiguration.class.getRecordComponents()) {
+                if ("maxHeaderValueLength".equals(component.getName())) {
+                    continue;
+                }
+                Object baselineValue = assertDoesNotThrow(() -> component.getAccessor().invoke(baseline));
+                Object carveOutValue = assertDoesNotThrow(() -> component.getAccessor().invoke(carveOut));
+                assertEquals(baselineValue, carveOutValue,
+                        "carve-out component '%s' must stay on the resolved baseline — only the length cap changes"
+                                .formatted(component.getName()));
+            }
+        }
+
+        private GatewayConfig gatewayWithAuthorizationCap(Optional<Integer> cap) {
+            return GatewayConfig.builder().version(1)
+                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"), cap)))
+                    .build();
+        }
+
+        private GatewayConfig cookieModeGateway() {
+            return sessionModeGateway(OidcConfig.Session.MODE_COOKIE);
+        }
+
+        /**
+         * A gateway declaring an {@code oidc.session} block at the given mode. Parameterised over the
+         * mode so a server-mode gateway can be built too: only a gateway that actually declares a
+         * session block reaches {@link OidcConfig.Session#isCookieMode()} at all — one without an
+         * {@code oidc} block is answered by the {@code orElse(false)} before the predicate is invoked.
+         */
+        private GatewayConfig sessionModeGateway(String mode) {
+            return GatewayConfig.builder().version(1)
+                    .oidc(Optional.of(OidcConfig.builder()
+                            .session(Optional.of(OidcConfig.Session.builder()
+                                    .mode(Optional.of(mode))
+                                    .build()))
+                            .build()))
+                    .build();
+        }
+
+        private BffRuntime activeCookieRuntime() {
+            return GatewayEdgeRouteBffWiringTest.activeRuntime(
+                    GatewayEdgeRouteBffWiringTest.serverBinding(new InMemorySessionStore(16)));
         }
     }
 

@@ -88,7 +88,7 @@ class ConfigModelContractTest {
                 .tls(Optional.of(tlsConfig()))
                 .management(Optional.of(managementConfig()))
                 .securityHeaders(Optional.of(securityHeadersConfig()))
-                .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"))))
+                .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192))))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(Optional.of(UpstreamDefaultsConfig.defaults()))
@@ -296,9 +296,17 @@ class ConfigModelContractTest {
                                     List.of("Accept"), Optional.of(false)),
                             new SecurityHeadersConfig.Cors(Optional.of(false), List.of("b"), List.of("POST"),
                                     List.of("Authorization"), Optional.of(true))),
-                    voCase("SecurityDefaultsConfig", new SecurityDefaultsConfig(Optional.of("strict")),
-                            new SecurityDefaultsConfig(Optional.of("strict")),
-                            new SecurityDefaultsConfig(Optional.of("lenient"))),
+                    // Two cases so the record contract is proven to discriminate on BOTH components:
+                    // an unequal instance differing only in 'profile' would leave the newer
+                    // max_authorization_header_value_length component silently out of equals().
+                    voCase("SecurityDefaultsConfig (profile)",
+                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
+                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
+                            new SecurityDefaultsConfig(Optional.of("lenient"), Optional.of(8192))),
+                    voCase("SecurityDefaultsConfig (max_authorization_header_value_length)",
+                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
+                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
+                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(4096))),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),

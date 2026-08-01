@@ -59,6 +59,8 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
@@ -317,15 +319,25 @@ public class GatewayEdgeRoute {
         // ThoroughChecksStage, so a reserved path never reaches it (ADR-0019, amended).
         this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
+        // Both header-value carve-outs are resolved ONCE and handed to BOTH stages that measure a
+        // header value. Stage 3 re-validates every header under the ROUTE's configuration whenever
+        // that configuration diverges from the baseline, so without the same two policies it would
+        // undo the carve-outs one stage later — and it runs before the authentication stage, so an
+        // Authorization value is still present when it does.
+        SecurityConfiguration cookieHeaderConfiguration =
+                cookieHeaderConfigurationFor(gatewayConfig, bffRuntime, defaultConfiguration);
+        SecurityConfiguration authorizationHeaderConfiguration =
+                authorizationHeaderConfigurationFor(gatewayConfig, defaultConfiguration);
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
-                cookieHeaderConfigurationFor(gatewayConfig, bffRuntime));
+                cookieHeaderConfiguration, authorizationHeaderConfiguration);
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
                 gatewayConfig.tls().map(TlsConfig::passthroughSni).map(Map::keySet).orElse(Set.of()));
         this.routeSelectionStage = new RouteSelectionStage(routes);
         this.verbGateStage = new VerbGateStage();
-        this.thoroughChecksStage = new ThoroughChecksStage(defaultConfiguration, securityEventCounter);
+        this.thoroughChecksStage = new ThoroughChecksStage(defaultConfiguration, securityEventCounter,
+                cookieHeaderConfiguration, authorizationHeaderConfiguration);
         // A server-mode BFF wires the session-aware AuthenticationStage so a require:session route is
         // served through the SessionAuthenticationStage (D4) rather than failing at request time; a
         // bearer-only gateway keeps the no-session constructor unchanged.
@@ -1215,29 +1227,65 @@ public class GatewayEdgeRoute {
      * {@code null} for every gateway that is not an active cookie-mode BFF.
      * <p>
      * <strong>Why this exists.</strong> Stage 1 validates every inbound header value against the
-     * cui-http default {@code maxHeaderValueLength} of 2048 characters, while a cookie-mode BFF's
-     * sealed session cookie is designed to a multi-kilobyte budget. Encoded as two independent
-     * constants, the two limits contradicted each other inside the same product: every request
-     * carrying a live sealed cookie was rejected {@code 400} at the edge before any BFF logic ran.
-     * The single declared budget ({@code oidc.session.max_cookie_size}, defaulting to
+     * resolved baseline {@code maxHeaderValueLength} — whatever {@code security_defaults.profile}
+     * resolves to, 1024 characters under {@code strict} and 8192 under {@code lenient} — while a
+     * cookie-mode BFF's sealed session cookie is designed to a multi-kilobyte budget. Encoded as two
+     * independent constants, the two limits contradicted each other inside the same product: every
+     * request carrying a live sealed cookie was rejected {@code 400} at the edge before any BFF logic
+     * ran. The single declared budget ({@code oidc.session.max_cookie_size}, defaulting to
      * {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) now drives BOTH ends of the round
      * trip — the codec's seal-time budget and this pre-route cap.
      * <p>
      * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only or server-mode gateway
-     * gets {@code null} and keeps the 2048 default on every header, exactly as before. By HEADER:
-     * within a cookie-mode gateway the raised cap applies to the {@code Cookie} / {@code Set-Cookie}
-     * values only — {@link BasicChecksStage} keeps the default policy for every other header, and
-     * every non-length validator (null-byte, control-character, injection-pattern) still applies to
-     * the cookie value. It remains a deliberate relaxation of an inbound hardening control, held as
-     * narrow as the pre-route position allows.
+     * gets {@code null}, so no cookie carve-out exists there and its {@code Cookie} /
+     * {@code Set-Cookie} values are measured at the resolved baseline like any other header. By
+     * HEADER: within a cookie-mode gateway the raised cap reaches the {@code Cookie} /
+     * {@code Set-Cookie} values only. {@link BasicChecksStage} selects the value pipeline on the
+     * header NAME across three branches — an {@code Authorization} value takes the separate,
+     * unconditional carve-out of {@link #authorizationHeaderConfigurationFor}, and every OTHER header
+     * keeps the resolved baseline policy. Every non-length validator (null-byte, control-character,
+     * injection-pattern) still applies to the cookie value. It remains a deliberate relaxation of an
+     * inbound hardening control, held as narrow as the pre-route position allows.
+     * <p>
+     * <strong>The cap is {@code max}-bounded, so the carve-out can only ever ADMIT MORE length.</strong>
+     * The effective cap is {@code max(baseline.maxHeaderValueLength(), budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}.
+     * Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
+     * gateway: the shipped default budget
+     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4096) plus the overhead is 4608,
+     * below that profile's 8192 baseline, so a cookie-mode BFF rejected {@code 400} every request
+     * whose {@code Cookie} value sat between the two — while every OTHER header on the same gateway
+     * was admitted to 8192. No operator misconfiguration was required. The {@code max} restores
+     * ADR-0019's stated bound, "the direction of change is admit-more-length-only", and matches the
+     * two sibling sites: {@code ThoroughChecksStage.carveOutConfigurationFor} caps at
+     * {@code max(routeCap, budget)} post-route, and {@code ConfigValidator} refuses a below-baseline
+     * {@code Authorization} budget outright at boot.
+     * <p>
+     * The returned policy is handed to {@link ThoroughChecksStage} as well as to
+     * {@link BasicChecksStage}: the post-route stage re-validates every header under the ROUTE's
+     * configuration whenever that configuration diverges from the baseline, so it needs the same
+     * budget or it would undo this carve-out one stage later. Only the policy's
+     * {@code maxHeaderValueLength} is read there, as the budget; the remaining dimensions applied
+     * post-route come from the route's own configuration.
      * <p>
      * <strong>Recorded constraint — enforcement is gateway-wide, not per-anchor.</strong> Stage 1
      * runs BEFORE route selection and this bean holds the whole route table, so no anchor exists at
      * that point. The configuration key lives on the global {@code oidc.session} block for exactly
      * that reason; its placement must not be read as per-anchor enforcement.
+     * <p>
+     * Package-private rather than private so the seeding is asserted directly by
+     * {@code GatewayEdgeRouteTest} instead of only through a booted edge, matching the precedent
+     * {@link #securityPostureFor} sets.
+     *
+     * @param gatewayConfig the bound gateway document supplying the cookie budget
+     * @param bffRuntime    the BFF runtime whose active-cookie-mode state gates the carve-out
+     * @param baseline      the gateway's resolved baseline configuration the returned policy is
+     *                      seeded from, so it differs from the baseline in
+     *                      {@code maxHeaderValueLength} and nothing else
+     * @return the {@code Cookie} / {@code Set-Cookie} value policy, or {@code null} for a gateway
+     *         that is not an active cookie-mode BFF
      */
-    private static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
-            BffRuntime bffRuntime) {
+    static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
+            BffRuntime bffRuntime, SecurityConfiguration baseline) {
         Optional<OidcConfig.Session> session = gatewayConfig.oidc().flatMap(OidcConfig::session);
         // The SHARED cookie-mode predicate on the config model — never a locally-declared constant
         // compared here. A private constant plus a local comparison is what let this cap relax for a
@@ -1248,10 +1296,64 @@ public class GatewayEdgeRoute {
         }
         int budget = session.flatMap(OidcConfig.Session::maxCookieSize)
                 .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
-        // SecurityConfiguration.builder() with no overrides IS SecurityConfiguration.defaults(), so
-        // this differs from the gateway default in maxHeaderValueLength and nothing else.
-        return SecurityConfiguration.builder()
-                .maxHeaderValueLength(budget + COOKIE_HEADER_OVERHEAD_BYTES)
+        // max(), not an outright set: a carve-out may only ever ADMIT MORE length. The default budget
+        // plus the overhead is 4608, which sits BELOW the lenient profile's 8192 baseline, so setting
+        // the cap outright turned this carve-out into a per-header TIGHTENING on every shipped-default
+        // lenient cookie-mode gateway. Same bound as ThoroughChecksStage.carveOutConfigurationFor.
+        int cap = Math.max(baseline.maxHeaderValueLength(), budget + COOKIE_HEADER_OVERHEAD_BYTES);
+        // Seeded component-by-component from the RESOLVED baseline, so this differs from it in
+        // maxHeaderValueLength and nothing else — which is what makes ADR-0019's "only the length cap
+        // changes" bound structurally true. Seeding from SecurityConfiguration.builder() instead (its
+        // defaults being the dropped `default` preset) silently relaxed failOnSuspiciousPatterns,
+        // allowExtendedAscii and caseSensitiveComparison for cookie values on a strict gateway.
+        return SecurityConfigurations.builderSeededFrom(baseline)
+                .maxHeaderValueLength(cap)
+                .build();
+    }
+
+    /**
+     * Derives the pre-route {@code Authorization} header-value policy from the gateway document.
+     * <p>
+     * <strong>Why this exists.</strong> A bearer token plus its {@code Bearer } prefix routinely
+     * exceeds the resolved baseline {@code maxHeaderValueLength} — a Keycloak access token measures
+     * above the {@code strict} preset's 1024-character cap — so without a raised cap Stage 1, the
+     * non-skippable pre-route floor, rejects every bearer request {@code 400} before route selection
+     * and bearer validation never runs at all.
+     * <p>
+     * <strong>The relaxation is scoped, but unconditionally present.</strong> By HEADER: the raised
+     * cap reaches {@code Authorization} values only. By VALIDATOR: the returned configuration is
+     * seeded from {@code baseline} and overrides {@code maxHeaderValueLength} alone, so every
+     * non-length validator still applies. Unlike the cookie carve-out there is no MODE axis — every
+     * gateway is bearer-capable, so this policy is always built and never {@code null}. That axis is
+     * genuinely weaker than the cookie carve-out's, not equivalent to it.
+     * <p>
+     * As with the cookie carve-out, the returned policy is handed to {@link ThoroughChecksStage} as
+     * well as to {@link BasicChecksStage}, so the raised cap survives the post-route re-run a route
+     * with a divergent {@code security_filter} triggers — a route declaring nothing more than a
+     * raised {@code max_body_bytes} already diverges. Without that, the floor would admit a bearer
+     * token and the very next stage would reject it, still ahead of bearer validation.
+     * <p>
+     * The budget comes from the operator-declared {@code security_defaults.max_authorization_header_value_length},
+     * defaulting to {@link SecurityDefaultsConfig#DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH}. It
+     * sits on the gateway-wide {@code security_defaults} block because Stage 1 runs before route
+     * selection, so no anchor exists at that point; a declared value below the resolved baseline is
+     * refused at boot by {@code ConfigValidator}.
+     * <p>
+     * Package-private for the same reason as {@link #cookieHeaderConfigurationFor}.
+     *
+     * @param gatewayConfig the bound gateway document supplying the declared budget
+     * @param baseline      the gateway's resolved baseline configuration the returned policy is
+     *                      seeded from
+     * @return the {@code Authorization} value policy, differing from {@code baseline} in
+     *         {@code maxHeaderValueLength} alone
+     */
+    static SecurityConfiguration authorizationHeaderConfigurationFor(GatewayConfig gatewayConfig,
+            SecurityConfiguration baseline) {
+        int budget = gatewayConfig.securityDefaults()
+                .map(SecurityDefaultsConfig::effectiveMaxAuthorizationHeaderValueLength)
+                .orElse(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH);
+        return SecurityConfigurations.builderSeededFrom(baseline)
+                .maxHeaderValueLength(budget)
                 .build();
     }
 
@@ -1288,11 +1390,12 @@ public class GatewayEdgeRoute {
      * builder is seeded component-by-component from {@code preset} because the cui-http
      * {@link SecurityConfiguration} exposes no preset-seeded builder — {@link SecurityConfiguration#builder()}
      * starts from {@code defaults()}, so seeding explicitly is the only way an undeclared dimension
-     * keeps the preset's value instead of silently reverting to the default policy.
+     * keeps the preset's value instead of silently reverting to the default policy. The component
+     * list lives once, in {@link SecurityConfigurations#builderSeededFrom(SecurityConfiguration)}.
      */
     private static SecurityConfiguration applyDeclaredLimits(SecurityConfiguration preset,
             SecurityFilterConfig filter) {
-        SecurityConfigurationBuilder builder = builderSeededFrom(preset);
+        SecurityConfigurationBuilder builder = SecurityConfigurations.builderSeededFrom(preset);
         filter.maxBodyBytes().ifPresent(value -> builder.maxBodySize(value.longValue()));
         filter.maxQueryParams().ifPresent(builder::maxParameterCount);
         filter.maxHeaderCount().ifPresent(builder::maxHeaderCount);
@@ -1308,40 +1411,6 @@ public class GatewayEdgeRoute {
             builder.allowedContentTypes(Set.copyOf(filter.allowedContentTypes()));
         }
         return builder.build();
-    }
-
-    /**
-     * Returns a {@link SecurityConfigurationBuilder} carrying every component of {@code preset}, so
-     * a caller overriding one dimension leaves the other twenty-three on the preset's values. Copies
-     * the record's full component set deliberately: an omitted component would silently fall back to
-     * the {@code defaults()} policy the builder starts from.
-     */
-    private static SecurityConfigurationBuilder builderSeededFrom(SecurityConfiguration preset) {
-        return SecurityConfiguration.builder()
-                .maxPathLength(preset.maxPathLength())
-                .allowDoubleEncoding(preset.allowDoubleEncoding())
-                .maxParameterNameLength(preset.maxParameterNameLength())
-                .maxParameterValueLength(preset.maxParameterValueLength())
-                .maxHeaderNameLength(preset.maxHeaderNameLength())
-                .maxHeaderValueLength(preset.maxHeaderValueLength())
-                .maxCookieNameLength(preset.maxCookieNameLength())
-                .maxCookieValueLength(preset.maxCookieValueLength())
-                .maxBodySize(preset.maxBodySize())
-                .allowNullBytes(preset.allowNullBytes())
-                .allowControlCharacters(preset.allowControlCharacters())
-                .allowExtendedAscii(preset.allowExtendedAscii())
-                .normalizeUnicode(preset.normalizeUnicode())
-                .caseSensitiveComparison(preset.caseSensitiveComparison())
-                .failOnSuspiciousPatterns(preset.failOnSuspiciousPatterns())
-                .requireSecureCookies(preset.requireSecureCookies())
-                .requireHttpOnlyCookies(preset.requireHttpOnlyCookies())
-                .maxParameterCount(preset.maxParameterCount())
-                .maxHeaderCount(preset.maxHeaderCount())
-                .maxCookieCount(preset.maxCookieCount())
-                .allowedHeaderNames(preset.allowedHeaderNames())
-                .blockedHeaderNames(preset.blockedHeaderNames())
-                .allowedContentTypes(preset.allowedContentTypes())
-                .blockedContentTypes(preset.blockedContentTypes());
     }
 
     /**
