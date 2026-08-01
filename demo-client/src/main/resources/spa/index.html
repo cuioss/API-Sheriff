@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>API Sheriff -- BFF Demo Client</title>
+    <!--
+      app.css and app.js are plain relative assets served by the gateway itself, under the same
+      /assets/demo anchor as this page. The gateway sets the content type from the file extension
+      and adds X-Content-Type-Options: nosniff, so no inline <script> and no inline <style> is
+      needed here -- and none is used.
+    -->
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app__header">
+        <h1>API Sheriff BFF Demo</h1>
+        <p class="app__lede">
+          A dependency-free sample of the browser-facing contract: the gateway serves this page,
+          so it is same-origin with the reserved <code>/auth</code> paths and can exercise them
+          with a plain <code>fetch</code>.
+        </p>
+      </header>
+
+      <section class="panel" aria-labelledby="session-heading">
+        <h2 id="session-heading">Session</h2>
+        <p class="status" data-testid="status">Loading&hellip;</p>
+        <p>
+          State: <strong data-testid="auth-state">unknown</strong>
+        </p>
+        <div class="actions">
+          <button type="button" data-testid="login" hidden>Log in</button>
+          <button type="button" data-testid="logout" hidden>Log out</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="view-heading">
+        <h2 id="view-heading">Claim view</h2>
+        <p class="hint">
+          The <code>claims</code> parameter selects what the info endpoint discloses. The operator
+          &mdash; never this client &mdash; decides what is allowed; the last option deliberately
+          asks for a claim outside the allowlist so the <code>403</code> is a visible state.
+        </p>
+        <div class="actions">
+          <label for="claim-view">View</label>
+          <select id="claim-view" data-testid="claim-view"></select>
+          <button type="button" data-testid="apply-view">Request</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="response-heading">
+        <h2 id="response-heading">Last response</h2>
+        <dl class="kv" data-testid="response">
+          <dt>Status</dt>
+          <dd data-testid="response-status">&mdash;</dd>
+          <dt>Content-Type</dt>
+          <dd data-testid="response-content-type">&mdash;</dd>
+          <dt>Cache-Control</dt>
+          <dd data-testid="response-cache-control">&mdash;</dd>
+        </dl>
+        <p class="problem" data-testid="problem" hidden></p>
+      </section>
+
+      <section class="panel" aria-labelledby="claims-heading">
+        <h2 id="claims-heading">Disclosed claims</h2>
+        <dl class="kv" data-testid="claims">
+          <dd class="empty">No claims disclosed.</dd>
+        </dl>
+      </section>
+
+      <section class="panel" aria-labelledby="metadata-heading">
+        <h2 id="metadata-heading">Session metadata</h2>
+        <dl class="kv" data-testid="session">
+          <dd class="empty">No live session.</dd>
+        </dl>
+      </section>
+
+      <footer class="app__footer">
+        <p>
+          No token material is displayed, stored or logged here &mdash; the endpoint discloses
+          none, and the session cookie is <code>HttpOnly</code> and belongs to the gateway.
+        </p>
+      </footer>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
