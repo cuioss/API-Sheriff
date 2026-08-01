@@ -85,6 +85,12 @@ import org.jspecify.annotations.Nullable;
  * BEFORE route selection, so no anchor is resolved yet. Both configuration keys sit on global blocks
  * ({@code oidc.session} and {@code security_defaults}) for exactly that reason — their placement must
  * not be read as per-anchor enforcement.
+ * <p>
+ * <strong>Both carve-outs are honoured post-route too.</strong> They are declared here, but this is
+ * not the only stage that measures a header value: {@link ThoroughChecksStage} re-validates every
+ * header under the ROUTE's configuration whenever that configuration diverges from the gateway
+ * baseline, and it repeats this same three-way dispatch so neither carve-out is undone one stage
+ * later. See that class for the {@code max}-bounded per-route cap.
  *
  * @author API Sheriff Team
  * @since 1.0

@@ -1070,6 +1070,17 @@ control-character, extended-ASCII and injection-pattern checks -- still applies 
 value exactly as to any other header. That bound is enforced *structurally* by the seeding, not by
 convention.
 
+*Both carve-outs survive the post-route re-run.* A route whose `security_filter` resolves to a
+configuration differing from the gateway baseline -- a route declaring nothing more than a raised
+`max_body_bytes` already qualifies -- has its headers re-validated after route selection under that
+route's own configuration. That re-validation applies the *same* two carve-outs, so the raised cap
+reaches `Authorization` and `Cookie` / `Set-Cookie` values on *every* route, not only on routes
+without a `security_filter` block. The post-route cap is `max(route max_header_value_length, budget)`:
+a route that raises its own cap above the budget keeps its higher cap, and the carve-out never lowers
+a route's own cap. Everything else is unchanged -- the re-run seeds each carve-out from the *route's*
+configuration, so every non-length validator stays on the route's setting, and the two header names
+are the only ones affected.
+
 *The framework body-size floor.* `max_body_bytes` is a cap the gateway applies *on top of* an
 underlying HTTP-framework limit, `quarkus.http.limits.max-body-size`. The framework limit is the
 floor every declared cap sits under: a route cannot accept more than the floor allows, whatever it
@@ -1645,13 +1656,15 @@ The block carries one further key:
 | Key | Meaning
 
 | `max_authorization_header_value_length`
-| *Integer, minimum `1`, default `8192`.* The budget for the pre-route `Authorization` header-value
-  carve-out (see link:#_pre_route_header_carve_outs[Pre-route header-name carve-outs]). It raises the
+| *Integer, minimum `1`, default `8192`.* The budget for the `Authorization` header-value carve-out
+  (see link:#_pre_route_header_carve_outs[Pre-route header-name carve-outs]). It raises the
   header-value cap for `Authorization` values *only*; every other header stays on the resolved
   baseline. The default is the `lenient` preset's own header-value ceiling, so the carve-out never
   admits a value the loosest shipped profile would itself reject. It sits on the gateway-wide
-  `security_defaults` block because the floor that enforces it runs before route selection -- its
-  placement must not be read as per-anchor enforcement.
+  `security_defaults` block because the floor that first enforces it runs before route selection --
+  its placement must not be read as per-anchor enforcement. The same budget is applied by the
+  post-route re-run, so the raised cap reaches `Authorization` values on every route, including one
+  declaring its own `security_filter`.
 |===
 
 [IMPORTANT]
