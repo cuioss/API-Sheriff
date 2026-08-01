@@ -29,6 +29,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import javax.net.ssl.SSLException;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -88,7 +89,13 @@ class ManagementPlainHttpOptOutIT {
                 .GET()
                 .build();
 
-        assertThrows(IOException.class, () -> client.send(request, HttpResponse.BodyHandlers.discarding()),
+        // SSLException, not IOException: ConnectException, HttpConnectTimeoutException and a DNS
+        // failure are all IOException, so the broader type would also pass when NOTHING is listening
+        // on the port — reporting success for the wrong reason, which is the outcome this IT exists to
+        // rule out. A TLS handshake against a plain listener raises SSLException specifically, and the
+        // sibling managementServesHealthOverPlainHttp is the matched positive control proving the port
+        // does answer.
+        assertThrows(SSLException.class, () -> client.send(request, HttpResponse.BodyHandlers.discarding()),
                 "a plain listener cannot complete a TLS handshake; if this succeeds the instance is "
                         + "serving HTTPS and the opt-out silently did nothing");
     }

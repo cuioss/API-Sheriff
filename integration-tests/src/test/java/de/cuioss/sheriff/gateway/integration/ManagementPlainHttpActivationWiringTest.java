@@ -43,6 +43,12 @@ import org.junit.jupiter.api.Test;
  * plain HTTP against a listener that is not the one under test. Lesson 2026-07-25-15-001 — an opt-in
  * runtime feature needs a deployment-activation assertion, not only a component test.
  * <p>
+ * The negative control derives the instance set from {@code docker-compose.yml} rather than
+ * enumerating it. A hand-maintained list could not fire for the very case the control exists for — a
+ * newly added gateway instance that sets the activation variable by accident would simply be absent
+ * from the enumeration. Because a derived set can also silently become empty, the control asserts its
+ * own non-emptiness before looping.
+ * <p>
  * The selection is only half the mechanism. The named bucket must also exist in the shipped
  * {@code application.properties} and must carry <em>no key material</em>: an unresolvable name fails
  * the boot outright, and a name that resolves to a bucket carrying a certificate would keep
@@ -66,9 +72,8 @@ class ManagementPlainHttpActivationWiringTest {
     private static final String OPT_OUT_SERVICE = "api-sheriff-plain-mgmt";
     private static final String BUCKET = "plain-management";
     private static final String SELECTION = "QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=" + BUCKET;
-    private static final List<String> HTTPS_SERVICES = List.of(
-            "api-sheriff", "api-sheriff-mtls", "api-sheriff-cookie", "api-sheriff-cookie-2",
-            "api-sheriff-ws-admission");
+    /** Every gateway instance in the compose topology is named after the application. */
+    private static final String GATEWAY_SERVICE_PREFIX = "api-sheriff";
 
     @Test
     @DisplayName("the opt-out instance selects the key-less TLS bucket")
@@ -101,7 +106,19 @@ class ManagementPlainHttpActivationWiringTest {
     @Test
     @DisplayName("no other gateway instance activates the opt-out")
     void noOtherInstanceActivatesTheOptOut() throws Exception {
-        for (String service : HTTPS_SERVICES) {
+        // Arrange — derived from the compose file itself, so an instance added there is covered
+        // without a manual edit here. A hand-maintained enumeration could not fire for exactly the
+        // case this negative control exists for: a NEWLY added instance that sets the variable.
+        List<String> httpsServices = otherGatewayServices();
+
+        // Guard the control itself: if the derivation ever yields nothing, the loop below would pass
+        // vacuously and report success while asserting about no service at all.
+        assertFalse(httpsServices.isEmpty(),
+                "the derived gateway-instance set must not be empty — an empty set turns this negative "
+                        + "control into a vacuous pass");
+
+        // Act + Assert
+        for (String service : httpsServices) {
             List<String> environment = environment(service);
             assertFalse(environment.stream().anyMatch(e -> e.startsWith("QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=")),
                     () -> service + " must NOT select a management TLS configuration name — the "
@@ -163,15 +180,31 @@ class ManagementPlainHttpActivationWiringTest {
         return ((List<?>) ports).stream().map(String::valueOf).toList();
     }
 
+    /**
+     * Every gateway instance in the compose topology except the opt-out one — the set that must stay
+     * on HTTPS management. Derived from the compose file so it cannot drift from the deployment.
+     */
+    private static List<String> otherGatewayServices() throws IOException {
+        return services().keySet().stream()
+                .filter(name -> name.startsWith(GATEWAY_SERVICE_PREFIX))
+                .filter(name -> !OPT_OUT_SERVICE.equals(name))
+                .sorted()
+                .toList();
+    }
+
     @SuppressWarnings("unchecked")
-    private static Object service(String service) throws IOException {
+    private static Map<String, Object> services() throws IOException {
         Map<String, Object> compose;
         try (InputStream in = Files.newInputStream(MODULE.resolve("docker-compose.yml"))) {
             compose = new Yaml().loadAs(in, Map.class);
         }
         Object services = compose.get("services");
         assertInstanceOf(Map.class, services, "docker-compose.yml must declare services");
-        Object node = ((Map<String, Object>) services).get(service);
+        return (Map<String, Object>) services;
+    }
+
+    private static Object service(String service) throws IOException {
+        Object node = services().get(service);
         assertNotNull(node, "docker-compose.yml must declare the '" + service + "' service");
         return node;
     }
