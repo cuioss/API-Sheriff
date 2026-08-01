@@ -176,6 +176,15 @@ services:
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
 
+    # Declares the scheme this instance's MANAGEMENT interface speaks. start-integration-container.sh
+    # discovers every api-sheriff* service from the resolved Compose model and builds its readiness
+    # probe URL from this label plus the host port published against container port 9000 — so the
+    # readiness gate restates no service name and no port number, and adding, removing or renumbering
+    # an instance here needs no script edit. The label is the single source of truth for the scheme:
+    # the script must never infer it from the service name.
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
     ports:
       - "10443:8443"  # External test port for integration tests
       - "19000:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
@@ -317,6 +326,10 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
     ports:
       - "10444:8443"  # External test port for MtlsHandshakeIT (test.mtls.port)
       - "19001:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
@@ -405,6 +418,10 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
     ports:
       - "10445:8443"  # External test port for the Bff*Cookie*IT suite (test.cookie.port)
       - "19002:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
@@ -494,6 +511,10 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
     ports:
       - "10446:8443"  # External test port for BffCookieStatelessnessIT's peer instance
       - "19003:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
@@ -571,6 +592,10 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
     ports:
       - "10447:8443"  # External test port for the exhaustion regression (test.ws.admission.port)
       - "19004:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
@@ -656,6 +681,15 @@ services:
       - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
       - -Djavax.net.ssl.trustStorePassword=localhost-trust
       - -Djavax.net.ssl.trustStoreType=PKCS12
+    # This instance's whole purpose is that its management interface is PLAIN HTTP: it selects the
+    # key-less `plain-management` TLS bucket via QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME. The label
+    # is what lets the host-side readiness probe use http:// here and https:// everywhere else from
+    # ONE loop — the scheme difference is data, not a special case in the script. The probe must never
+    # need -k against this port: if it ever does, the plain-management opt-out has silently stopped
+    # working and THAT is the bug, not the probe.
+    labels:
+      de.cuioss.sheriff.management-scheme: "http"
+
     ports:
       - "10448:8443"  # External test port for the plain-management opt-out (test.plain.mgmt.port)
       - "19005:9000"  # Management interface — PLAIN HTTP on this instance only, deliberately
@@ -718,8 +752,9 @@ services:
           memory: 256M
           cpus: '1.0'
     # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh — in its OWN http:// block, never in the
-    # https-hard-coded loop that gates 19000-19004.
+    # gated host-side by start-integration-container.sh, in the same Compose-derived loop as every
+    # other api-sheriff* instance — the http:// probe comes from this service's management-scheme
+    # label above, not from a branch on its name.
     networks:
       - api-sheriff
     restart: unless-stopped

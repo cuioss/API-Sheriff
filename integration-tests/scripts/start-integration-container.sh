@@ -100,12 +100,12 @@ echo "🐳 Starting Keycloak first (the Quarkus $MODE gateway starts only after 
 # Wait for Keycloak to be ready first
 echo "⏳ Waiting for Keycloak to be ready..."
 for i in {1..120}; do
-    if curl -k -s https://localhost:1090/health/ready > /dev/null 2>&1; then
+    if curl -k -s --connect-timeout 2 --max-time 5 https://localhost:1090/health/ready > /dev/null 2>&1; then
         echo "✅ Keycloak is ready!"
         break
     fi
-    if [ $i -eq 120 ]; then
-        echo "❌ Keycloak failed to become ready within 120 seconds"
+    if [ "$i" -eq 120 ]; then
+        echo "❌ Keycloak failed to become ready within 120 attempts"
         echo "Check logs with: ${COMPOSE_BASE} logs keycloak"
         exit 1
     fi
@@ -120,12 +120,12 @@ echo "🐳 Starting the gateway ($MODE) and remaining containers..."
 # Wait for the go-httpbin upstream backend (proxy target) to be ready
 echo "⏳ Waiting for go-httpbin upstream to be ready..."
 for i in {1..30}; do
-    if curl -sf http://localhost:18080/status/200 > /dev/null 2>&1; then
+    if curl -sf --connect-timeout 2 --max-time 5 http://localhost:18080/status/200 > /dev/null 2>&1; then
         echo "✅ go-httpbin upstream is ready!"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "❌ go-httpbin upstream failed to start within 30 seconds"
+    if [ "$i" -eq 30 ]; then
+        echo "❌ go-httpbin upstream failed to start within 30 attempts"
         echo "Check logs with: ${COMPOSE_BASE} logs go-httpbin"
         exit 1
     fi
@@ -137,12 +137,12 @@ done
 if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
     echo "⏳ Waiting for nginx-static backend to be ready..."
     for i in {1..30}; do
-        if curl -sf http://localhost:18081/ > /dev/null 2>&1; then
+        if curl -sf --connect-timeout 2 --max-time 5 http://localhost:18081/ > /dev/null 2>&1; then
             echo "✅ nginx-static backend is ready!"
             break
         fi
-        if [ $i -eq 30 ]; then
-            echo "❌ nginx-static backend failed to start within 30 seconds"
+        if [ "$i" -eq 30 ]; then
+            echo "❌ nginx-static backend failed to start within 30 attempts"
             echo "Check logs with: ${COMPOSE_BASE} logs nginx-static"
             exit 1
         fi
@@ -151,121 +151,129 @@ if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
     done
 fi
 
-# Wait for Quarkus service to be ready and measure startup time
-echo "⏳ Waiting for Quarkus service to be ready..."
+# Wait for every gateway instance to become ready.
+#
+# The instance set, each instance's published management port, and the scheme its management
+# interface speaks are all DERIVED from the resolved Compose model — none of them is restated here.
+# An earlier version hand-maintained a "service:port" list plus a separate block for the plain-HTTP
+# instance, under a comment instructing the reader to keep the list in lockstep with
+# docker-compose.yml. A hardcoded list that must mirror a set defined elsewhere is a defect unless it
+# is derived from that source, so it is derived: adding, removing or renumbering an api-sheriff*
+# service needs no edit in this file.
+#
+# The scheme comes from each service's de.cuioss.sheriff.management-scheme label rather than from its
+# name, and that is what collapses the plain-management special case into this one loop. That
+# instance is probed over http:// with NO -k: if it ever needs -k, the plain-management opt-out has
+# silently stopped working and THAT is the bug, not the probe.
+#
+# Every instance must be waited on, not just the primary one: the suites drive the TLS ports
+# directly — MtlsHandshakeIT, the Bff*Cookie*IT suites (BffCookieStatelessnessIT drives BOTH cookie
+# instances in one test), WebSocketProxyIT's relay-exhaustion regression against the low-admission
+# instance — so an unwaited instance is a race that surfaces as a connection refusal in the IT phase
+# rather than as a start-up failure here.
+echo "⏳ Discovering gateway readiness targets from the Compose model..."
+if ! READINESS_TARGETS="$($COMPOSE_CMD config --format json | python3 -c '
+import json
+import sys
+
+SCHEME_LABEL = "de.cuioss.sheriff.management-scheme"
+MANAGEMENT_CONTAINER_PORT = "9000"
+
+try:
+    model = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
+             "version supporting `config --format json`." % exc)
+
+services = {name: spec for name, spec in (model.get("services") or {}).items()
+            if name.startswith("api-sheriff")}
+if not services:
+    sys.exit("no api-sheriff* services found in the resolved Compose model — refusing to run with a "
+             "readiness gate that would probe nothing")
+
+rows = []
+problems = []
+for name in sorted(services):
+    spec = services[name]
+    scheme = (spec.get("labels") or {}).get(SCHEME_LABEL)
+    published = [port.get("published") for port in (spec.get("ports") or [])
+                 if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
+    usable = True
+    if scheme not in ("http", "https"):
+        problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
+        usable = False
+    if len(published) != 1:
+        problems.append("%s: expected exactly one host port published against container port %s, "
+                        "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
+        usable = False
+    if usable:
+        rows.append("%s %s %s" % (name, scheme, published[0]))
+
+if problems:
+    sys.exit("gateway readiness discovery failed:\n  " + "\n  ".join(problems))
+
+sys.stdout.write("\n".join(rows) + "\n")
+')"; then
+    echo "❌ Could not derive the gateway readiness targets from docker-compose.yml (see the error above)"
+    exit 1
+fi
+
+# Belt-and-braces vacuity guard. The discovery above already refuses an empty service set, and this
+# repeats the check at the consuming end: a silently empty target list would turn the whole readiness
+# gate into a no-op that passes green, which is strictly worse than the hand-maintained list this
+# loop replaced.
+if [[ -z "${READINESS_TARGETS//[[:space:]]/}" ]]; then
+    echo "❌ Gateway readiness discovery produced no targets — refusing to proceed with a readiness gate that probes nothing"
+    exit 1
+fi
+
+echo "⏳ Waiting for the discovered gateway instances to be ready..."
 START_TIME=$(date +%s)
-for i in {1..30}; do
-    # -k is load-bearing: the management interface is HTTPS-only (single port, self-signed
-    # localhost bundle). Without it curl fails certificate validation and this wait degrades into
-    # a silent 30-attempt timeout against a perfectly healthy container.
-    if curl -skf https://localhost:19000/q/health/live > /dev/null 2>&1; then
-        END_TIME=$(date +%s)
-        TOTAL_TIME=$((END_TIME - START_TIME))
-        echo "✅ Quarkus service is ready!"
-        echo "📈 Actual startup time: ${TOTAL_TIME}s (container + application)"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo "❌ Quarkus service failed to start within 30 seconds"
-        # Capture the app container log + health payloads so a startup failure is
-        # diagnosable from CI artifacts (uploaded via the failsafe-reports folder).
-        DIAG_DIR="target/failsafe-reports"
-        mkdir -p "$DIAG_DIR"
-        echo "----- $COMPOSE_BASE logs api-sheriff -----"
-        $COMPOSE_BASE logs --no-color api-sheriff 2>&1 | tee "$DIAG_DIR/api-sheriff-app.log"
-        echo "----- /q/health -----"
-        curl -sk https://localhost:19000/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-health.json"
-        echo ""
-        exit 1
-    fi
-    echo "⏳ Waiting for Quarkus... (attempt $i/30)"
-    sleep 1
-done
+GATEWAY_COUNT=0
+while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+    [[ -z "$GATEWAY_SERVICE" ]] && continue
+    GATEWAY_COUNT=$((GATEWAY_COUNT + 1))
 
-# Wait for the dedicated mTLS gateway instance (api-sheriff-mtls) to be ready. It reuses the same
-# native image and reaches readiness offline (static-file JWKS), published on management port 19001.
-# MtlsHandshakeIT connects to its TLS port 10444, so it must be up before the IT phase.
-echo "⏳ Waiting for the mTLS gateway instance to be ready..."
-for i in {1..30}; do
-    if curl -skf https://localhost:19001/q/health/live > /dev/null 2>&1; then
-        echo "✅ mTLS gateway instance is ready!"
-        break
+    GATEWAY_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
+    GATEWAY_DIAG_OPTS=(-s --connect-timeout 2 --max-time 5)
+    if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
+        # -k is load-bearing on the HTTPS instances: their management interface serves a self-signed
+        # localhost bundle, and without it curl fails certificate validation and this wait degrades
+        # into a silent 30-attempt timeout against a perfectly healthy container.
+        GATEWAY_PROBE_OPTS+=(-k)
+        GATEWAY_DIAG_OPTS+=(-k)
     fi
-    if [ $i -eq 30 ]; then
-        echo "❌ mTLS gateway instance failed to start within 30 seconds"
-        DIAG_DIR="target/failsafe-reports"
-        mkdir -p "$DIAG_DIR"
-        echo "----- $COMPOSE_BASE logs api-sheriff-mtls -----"
-        $COMPOSE_BASE logs --no-color api-sheriff-mtls 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-app.log"
-        curl -sk https://localhost:19001/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-mtls-health.json"
-        echo ""
-        exit 1
-    fi
-    echo "⏳ Waiting for mTLS gateway... (attempt $i/30)"
-    sleep 1
-done
+    GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
 
-# Wait for the remaining dedicated gateway instances: the two cookie-mode instances
-# (api-sheriff-cookie on 10445 / management 19002, and its key-sharing peer api-sheriff-cookie-2 on
-# 10446 / management 19003) and the low-admission-budget instance (api-sheriff-ws-admission on
-# 10447 / management 19004). All reuse the same native image and reach readiness offline
-# (static-file JWKS). Their suites drive the TLS ports directly — the Bff*Cookie*IT suites, with
-# BffCookieStatelessnessIT driving BOTH cookie instances in one test, and WebSocketProxyIT's relay
-# exhaustion regression driving the low-cap instance — so an unwaited instance is a race that
-# surfaces as a connection refusal in the IT phase, not as a start-up failure here. Mirrors the
-# mTLS block above exactly; keep the list in lockstep with the api-sheriff* services in
-# docker-compose.yml.
-for gateway_instance in "api-sheriff-cookie:19002" "api-sheriff-cookie-2:19003" "api-sheriff-ws-admission:19004"; do
-    GATEWAY_SERVICE="${gateway_instance%%:*}"
-    GATEWAY_MGMT_PORT="${gateway_instance##*:}"
-    echo "⏳ Waiting for the ${GATEWAY_SERVICE} gateway instance to be ready..."
+    echo "⏳ Waiting for ${GATEWAY_SERVICE} (management ${GATEWAY_MGMT_SCHEME} on ${GATEWAY_MGMT_PORT})..."
     for i in {1..30}; do
-        if curl -skf "https://localhost:${GATEWAY_MGMT_PORT}/q/health/live" > /dev/null 2>&1; then
+        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/live" > /dev/null 2>&1; then
             echo "✅ ${GATEWAY_SERVICE} gateway instance is ready!"
             break
         fi
-        if [ $i -eq 30 ]; then
-            echo "❌ ${GATEWAY_SERVICE} gateway instance failed to start within 30 seconds"
+        if [ "$i" -eq 30 ]; then
+            echo "❌ ${GATEWAY_SERVICE} gateway instance failed to start within 30 attempts"
+            # Capture the container log + health payload so a startup failure is diagnosable from CI
+            # artifacts (uploaded via the failsafe-reports folder).
             DIAG_DIR="target/failsafe-reports"
             mkdir -p "$DIAG_DIR"
             echo "----- $COMPOSE_BASE logs ${GATEWAY_SERVICE} -----"
-            $COMPOSE_BASE logs --no-color "${GATEWAY_SERVICE}" 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-app.log"
-            curl -sk "https://localhost:${GATEWAY_MGMT_PORT}/q/health" 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-health.json"
+            $COMPOSE_BASE logs --no-color "${GATEWAY_SERVICE}" </dev/null 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-app.log"
+            echo "----- ${GATEWAY_MGMT_URL}/q/health -----"
+            curl "${GATEWAY_DIAG_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health" 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-health.json"
             echo ""
             exit 1
         fi
-        echo "⏳ Waiting for ${GATEWAY_SERVICE} gateway... (attempt $i/30)"
+        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/30)"
         sleep 1
     done
-done
+done <<< "$READINESS_TARGETS"
 
-# Wait for the plain-management instance (api-sheriff-plain-mgmt on 10448 / management 19005).
-#
-# It gets its OWN block rather than an entry in the loop above, and the reason is structural: the
-# loop's probe URL is hard-coded to https://, and this instance's whole purpose is that its
-# management port is PLAIN HTTP (it selects the key-less `plain-management` TLS bucket via
-# QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME). Adding it to the loop would probe https:// against a
-# plain listener and hang for the full 30 seconds. Keep the scheme here as http:// — if this probe
-# ever needs -k, the opt-out has silently stopped working and that is the bug, not the probe.
-echo "⏳ Waiting for the api-sheriff-plain-mgmt gateway instance to be ready..."
-for i in {1..30}; do
-    if curl -sf http://localhost:19005/q/health/live > /dev/null 2>&1; then
-        echo "✅ api-sheriff-plain-mgmt gateway instance is ready (management on PLAIN HTTP, deliberately)!"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo "❌ api-sheriff-plain-mgmt gateway instance failed to start within 30 seconds"
-        DIAG_DIR="target/failsafe-reports"
-        mkdir -p "$DIAG_DIR"
-        echo "----- $COMPOSE_BASE logs api-sheriff-plain-mgmt -----"
-        $COMPOSE_BASE logs --no-color api-sheriff-plain-mgmt 2>&1 | tee "$DIAG_DIR/api-sheriff-plain-mgmt-app.log"
-        curl -s http://localhost:19005/q/health 2>&1 | tee "$DIAG_DIR/api-sheriff-plain-mgmt-health.json"
-        echo ""
-        exit 1
-    fi
-    echo "⏳ Waiting for api-sheriff-plain-mgmt gateway... (attempt $i/30)"
-    sleep 1
-done
+TOTAL_TIME=$(($(date +%s) - START_TIME))
+echo "✅ All ${GATEWAY_COUNT} gateway instances are ready!"
+# The instances were all started by the same `compose up -d` above and come up concurrently, so this
+# is the wall-clock time until the slowest of them answered, not the sum of their startup times.
+echo "📈 Actual startup time: ${TOTAL_TIME}s (container + application, ${GATEWAY_COUNT} instances in parallel)"
 
 # Extract native startup time from logs
 NATIVE_STARTUP=$($COMPOSE_BASE logs api-sheriff 2>/dev/null | grep "started in" | sed -n 's/.*started in \([0-9.]*\)s.*/\1/p' | tail -1)
@@ -283,12 +291,16 @@ echo ""
 echo "🎉 API Sheriff Integration Benchmark Environment is running!"
 echo ""
 echo "📱 Application URLs:"
-echo "  🔍 Health Check:   https://localhost:19000/q/health"
-echo "  📊 Metrics:        https://localhost:19000/q/metrics"
+# Listed from the SAME discovered targets the readiness loop probed, so this stays correct when an
+# instance is added, removed or renumbered — and so it cannot claim management is HTTPS-only, which
+# the plain-management instance makes false.
+while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+    [[ -z "$GATEWAY_SERVICE" ]] && continue
+    echo "  🔍 ${GATEWAY_SERVICE} management: ${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}/q/health (metrics at /q/metrics)"
+done <<< "$READINESS_TARGETS"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"
 echo ""
-echo "🧪 Quick test commands (management is HTTPS-only with a self-signed cert — -k is required):"
-echo "  curl -skf https://localhost:19000/q/health/live"
+echo "🧪 Quick test commands (an https:// management port serves a self-signed cert — -k is required there):"
 echo "  curl -k https://localhost:1090/health/ready"
 echo ""
 echo "🛑 To stop: ./scripts/stop-integration-container.sh"
