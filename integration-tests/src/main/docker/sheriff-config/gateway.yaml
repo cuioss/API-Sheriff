@@ -29,6 +29,25 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 security_defaults:
   profile: strict
 tls:
+  # TLS POLICY for the terminated listener, single-sourced from this document and bound onto the
+  # listener by tls/TlsServerCustomizer (ADR-0025). Declared here rather than left implicit so the
+  # integration stack actually EXERCISES a gateway.yaml-sourced protocol floor and cipher allowlist
+  # — the keys these replaced were raw quarkus.tls.* properties that never reached the listener, so
+  # a fixture that declares nothing would prove only that the absence of policy is harmless.
+  #
+  # The floor is 1.2 rather than 1.3 deliberately: it enables TLSv1.2 AND TLSv1.3, so the suite's
+  # mixed clients keep negotiating and the assertion under test is that the DECLARED policy is in
+  # force, not that the strictest possible policy is survivable.
+  min_version: "1.2"
+  # The allowlist spans both enabled protocols on purpose. TLS_AES_* are TLS 1.3 suites; the
+  # ECDHE_RSA pair covers TLS 1.2 against the RSA server certificate the certificates/ scripts
+  # generate. Listing only 1.3 suites under a 1.2 floor would leave TLS 1.2 with nothing to
+  # negotiate — a listener that silently accepts no 1.2 handshake at all.
+  cipher_suites:
+    - TLS_AES_256_GCM_SHA384
+    - TLS_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
   # ALPN advertises h2 alongside http/1.1 so the http2 benchmark aspect negotiates
   # HTTP/2 at the edge instead of silently falling back to HTTP/1.1 — a fallback
   # would report an h2 number that was never measured over h2.

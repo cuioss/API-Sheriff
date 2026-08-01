@@ -306,7 +306,8 @@ class SheriffMetricsTest {
         private GatewayConfig configWith(Optional<Metadata> metadata, Optional<TokenValidationConfig> tokenValidation,
                 Optional<OidcConfig> oidc) {
             return new GatewayConfig(1, metadata, Optional.empty(), Optional.empty(), Optional.empty(),
-                    null, null, Optional.empty(), Optional.empty(), tokenValidation, oidc, Optional.empty());
+                    Optional.empty(), null, null, Optional.empty(), Optional.empty(), tokenValidation, oidc,
+                    Optional.empty());
         }
     }
 

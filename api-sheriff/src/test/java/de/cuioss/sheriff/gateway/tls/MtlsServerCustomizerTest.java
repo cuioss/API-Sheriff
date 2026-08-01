@@ -39,6 +39,12 @@ import org.junit.jupiter.api.Test;
  * The real accept / reject handshake behaviour (valid cert, wrong CA, no cert) is proven as an
  * integration behaviour test in deliverable 4 (GW-06 behaviour, not a flag read); this test governs
  * only the deterministic option mapping, so it needs no running TLS server.
+ * <p>
+ * The sibling claim that no raw {@code quarkus.http.ssl.client-auth} default is shipped is NOT
+ * asserted here: its mechanism lives in the property files, which a unit test against a bare
+ * {@link HttpServerOptions} cannot reach. {@code SingleSourceTlsContractTest} owns that guarantee by
+ * scanning the {@code quarkus.http.ssl} namespace, so an assertion here could only re-state the
+ * Vert.x library default.
  */
 @DisplayName("MtlsServerCustomizer")
 class MtlsServerCustomizerTest {

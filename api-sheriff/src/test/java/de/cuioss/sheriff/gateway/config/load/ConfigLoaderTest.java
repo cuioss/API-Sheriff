@@ -55,6 +55,17 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 class ConfigLoaderTest {
 
+    /**
+     * The operator-facing sentence {@code gateway.schema.json} attaches to the always-failing
+     * {@code management.port} subschema through the {@code errorMessage} extension. Copied verbatim
+     * from the schema — the point of the assertion is that the schema's own sentence, not a generic
+     * unknown-key message, reaches the operator.
+     */
+    private static final String MANAGEMENT_PORT_REJECTION =
+            "the management port is deployment-bound and is not settable in gateway.yaml: "
+                    + "set quarkus.management.port (environment QUARKUS_MANAGEMENT_PORT, default 9000) "
+                    + "instead — see ADR-0025";
+
     @TempDir
     Path configDir;
 
@@ -88,6 +99,10 @@ class ConfigLoaderTest {
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST, HttpMethod.PUT, HttpMethod.DELETE),
                 gateway.allowedMethods());
         assertEquals(Optional.of("1.3"), gateway.tls().orElseThrow().minVersion());
+        assertEquals(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"),
+                gateway.tls().orElseThrow().cipherSuites(),
+                "the neutral tls.cipher_suites allowlist must bind from gateway.yaml");
+        assertEquals(List.of("h2", "http/1.1"), gateway.tls().orElseThrow().alpn());
         assertEquals(new UpstreamDefaultsConfig(true, false), gateway.upstreamDefaults().orElseThrow());
         assertEquals(Optional.of("s3cr3t"), gateway.oidc().orElseThrow().clientSecret());
         assertEquals(1, gateway.tokenValidation().orElseThrow().issuers().size());
@@ -363,6 +378,40 @@ class ConfigLoaderTest {
 
         assertTrue(loaded.gateway().forwarded().orElseThrow().trustedProxies().isEmpty(),
                 "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
+    }
+
+    @Test
+    void acceptsPolicyOnlyManagementBlock() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                management:
+                  tls:
+                    enabled: true
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertTrue(loaded.gateway().management().orElseThrow().tls().orElseThrow().enabled(),
+                "a policy-only management block must bind without a port component");
+    }
+
+    @Test
+    void rejectsManagementPortNamingTheDeploymentKnobAtItsOwnPointer() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                management:
+                  port: 9100
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("/management/port")
+                                && error.message().contains(MANAGEMENT_PORT_REJECTION)),
+                () -> "expected the management.port rejection to carry the deployment-knob sentence at "
+                        + "its own JSON Pointer, got: " + exception.errors());
     }
 
     @Test

@@ -26,6 +26,8 @@ import lombok.Builder;
  * The global {@code tls} block of {@code gateway.yaml}.
  *
  * @param minVersion     the minimum negotiated TLS version, empty when omitted
+ * @param cipherSuites   the terminated listener's cipher-suite allowlist, empty
+ *                       when omitted
  * @param alpn           the advertised ALPN protocols, empty when omitted
  * @param passthroughSni a map of SNI hostname to topology alias relayed at L4
  *                       without decryption, empty when omitted
@@ -34,8 +36,8 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record TlsConfig(Optional<String> minVersion, List<String> alpn, Map<String, String> passthroughSni,
-Optional<Mtls> mtls) {
+public record TlsConfig(Optional<String> minVersion, List<String> cipherSuites, List<String> alpn,
+Map<String, String> passthroughSni, Optional<Mtls> mtls) {
 
     /**
      * Canonical constructor defensively copying collections and normalizing absent
@@ -43,6 +45,7 @@ Optional<Mtls> mtls) {
      */
     public TlsConfig {
         minVersion = Objects.requireNonNullElse(minVersion, Optional.empty());
+        cipherSuites = cipherSuites == null ? List.of() : List.copyOf(cipherSuites);
         alpn = alpn == null ? List.of() : List.copyOf(alpn);
         passthroughSni = passthroughSni == null ? Map.of() : Map.copyOf(passthroughSni);
         mtls = Objects.requireNonNullElse(mtls, Optional.empty());

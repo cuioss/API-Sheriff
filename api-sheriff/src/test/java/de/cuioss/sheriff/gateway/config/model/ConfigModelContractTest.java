@@ -86,6 +86,7 @@ class ConfigModelContractTest {
                 .version(1)
                 .metadata(Optional.of(new Metadata(Optional.of("2024-01"))))
                 .tls(Optional.of(tlsConfig()))
+                .management(Optional.of(managementConfig()))
                 .securityHeaders(Optional.of(securityHeadersConfig()))
                 .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"))))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
@@ -97,9 +98,16 @@ class ConfigModelContractTest {
                 .build();
     }
 
+    private static ManagementConfig managementConfig() {
+        return ManagementConfig.builder()
+                .tls(Optional.of(new ManagementConfig.ManagementTls(true)))
+                .build();
+    }
+
     private static TlsConfig tlsConfig() {
         return TlsConfig.builder()
                 .minVersion(Optional.of("TLSv1.3"))
+                .cipherSuites(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"))
                 .alpn(List.of("h2", "http/1.1"))
                 .passthroughSni(Map.of("internal.example.com", "internal-alias"))
                 .mtls(Optional.of(new TlsConfig.Mtls(true, Optional.of("/etc/ca.pem"))))
@@ -269,6 +277,10 @@ class ConfigModelContractTest {
                     voCase("Metadata", new Metadata(Optional.of("v1")), new Metadata(Optional.of("v1")),
                             new Metadata(Optional.of("v2"))),
                     voCase("TlsConfig", tlsConfig(), tlsConfig(), TlsConfig.builder().build()),
+                    voCase("ManagementConfig", managementConfig(), managementConfig(),
+                            ManagementConfig.builder().build()),
+                    voCase("ManagementConfig.ManagementTls", new ManagementConfig.ManagementTls(true),
+                            new ManagementConfig.ManagementTls(true), new ManagementConfig.ManagementTls(false)),
                     voCase("TlsConfig.Mtls", new TlsConfig.Mtls(true, Optional.of("/ca")),
                             new TlsConfig.Mtls(true, Optional.of("/ca")), new TlsConfig.Mtls(false, Optional.empty())),
                     voCase("SecurityHeadersConfig", securityHeadersConfig(), securityHeadersConfig(),
@@ -419,8 +431,8 @@ class ConfigModelContractTest {
         @Test
         void gatewayConfigBuilderMatchesConstructor() {
             GatewayConfig viaCtor = new GatewayConfig(2, Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), List.of(HttpMethod.GET), Map.of("api", anchorConfig()), Optional.empty(),
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+                    Optional.empty(), Optional.empty(), List.of(HttpMethod.GET), Map.of("api", anchorConfig()),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .anchors(Map.of("api", anchorConfig())).build();
             assertEquals(viaCtor, viaBuilder);
@@ -445,9 +457,11 @@ class ConfigModelContractTest {
 
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
-            GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null);
+            GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
+                    null);
             assertTrue(cfg.metadata().isEmpty());
             assertTrue(cfg.tls().isEmpty());
+            assertTrue(cfg.management().isEmpty());
             assertTrue(cfg.securityHeaders().isEmpty());
             assertTrue(cfg.securityDefaults().isEmpty());
             assertTrue(cfg.allowedMethods().isEmpty());
@@ -548,8 +562,9 @@ class ConfigModelContractTest {
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
             assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
             assertTrue(new ForwardConfig(null, null, null).setHeaders().isEmpty());
-            assertTrue(new TlsConfig(null, null, null, null).alpn().isEmpty());
-            assertTrue(new TlsConfig(null, null, null, null).passthroughSni().isEmpty());
+            assertTrue(new TlsConfig(null, null, null, null, null).cipherSuites().isEmpty());
+            assertTrue(new TlsConfig(null, null, null, null, null).alpn().isEmpty());
+            assertTrue(new TlsConfig(null, null, null, null, null).passthroughSni().isEmpty());
             assertTrue(new MatchConfig("/p", null, null, null).methods().isEmpty());
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());

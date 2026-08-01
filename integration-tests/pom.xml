@@ -262,6 +262,17 @@
                                              upgrades can never exhaust anything and the test would
                                              pass whether or not the permits are returned. -->
                                         <test.ws.admission.port>10447</test.ws.admission.port>
+                                        <!-- Plain-HTTP management opt-out: the dedicated
+                                             api-sheriff-plain-mgmt instance publishes its management
+                                             port on 19005 and serves it over PLAIN HTTP. Without
+                                             this, ManagementPlainHttpOptOutIT would fall back to the
+                                             primary instance's HTTPS management port and its
+                                             "refuses HTTPS" assertion would be asserting the
+                                             opposite of the truth. The log directory is where the
+                                             compose stack writes the instance log the WARN
+                                             assertion greps. -->
+                                        <test.plain.mgmt.management.port>19005</test.plain.mgmt.management.port>
+                                        <test.log.dir>${project.build.directory}/quarkus-logs</test.log.dir>
                                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                                     </systemPropertyVariables>
                                     <skipITs>${skipITs}</skipITs>

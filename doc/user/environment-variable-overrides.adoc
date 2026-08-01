@@ -1,0 +1,412 @@
+= API Sheriff -- Environment-Variable Overrides
+:toc:
+:toclevels: 3
+:sectnums:
+
+Which knobs the *deployment* owns, which `gateway.yaml` owns, and which are fixed before either gets
+a say. Read this page before assuming an environment variable can change a given behaviour -- for
+several of the gateway's settings it cannot, and for a few the reason is structural rather than an
+oversight.
+
+The rule this page documents is recorded in
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025];
+the field-level contract for every `gateway.yaml` key is in the
+link:../configuration.adoc[Configuration Reference].
+
+== The three classes
+
+Every configuration knob belongs to exactly one of three classes, and its class decides where it
+lives. Knowing the class answers "can I set this from the environment?" before you go looking.
+
+[cols="1,2,2", options="header"]
+|===
+| Class | What it is | Where it lives
+
+| *Policy*
+| A security or behavioural decision this gateway makes -- one that is the same in every environment
+  the same document is deployed into. The TLS protocol floor, the cipher allowlist, ALPN, mTLS,
+  whether the management interface serves over TLS, the inbound-filter mode, the admission budgets.
+| `gateway.yaml`, under *neutral names*. No key in that document -- and no part of the JSON schema
+  that validates it -- names the underlying runtime, so the document stays portable.
+
+| *Deployment-bound*
+| A value that is genuinely different per environment, or that is secret. Certificate and private
+  key material, trust anchors, and *every port*.
+| Supplied by the deployment: environment variables and mounted files. Deliberately *not* promoted
+  into `gateway.yaml`, so the document you commit carries no secrets and no environment specifics.
+
+| *Build-time*
+| A knob that is fixed when the artifact is built and cannot be changed on a built image.
+| The build configuration (`api-sheriff/pom.xml`). It never appears in the runtime configuration
+  surface at all, because putting it there would only make it *look* settable.
+|===
+
+== The precedence rule (and why it has no exceptions)
+
+`gateway.yaml` policy is projected into the runtime by a configuration source whose ordinal sits
+*above* the environment-variable source. In plain terms: *for a policy key, `gateway.yaml` wins over
+an environment variable.* It has to -- otherwise a policy you wrote, reviewed and committed could be
+silently overridden by a variable someone set on a container.
+
+That would be an unpleasant rule if it applied to everything, so it does not. *The projecting source
+emits policy keys only.* It never emits a port, never emits trust material, and never emits key
+material. Because no deployment-bound knob is ever in the projected set, nothing you set from the
+environment can be outranked by surprise.
+
+The result is a rule with exactly two branches and no exception table:
+
+* *Policy* -> `gateway.yaml` wins.
+* *Everything else* -> the environment wins, exactly as it always did.
+
+A second configuration source at a lower ordinal -- so that the environment could win for *some*
+policy keys -- was considered and rejected. It would make precedence a per-key property no operator
+could predict and no document could state without a list of special cases.
+
+== Deployment-bound: what you set from the environment
+
+=== Ports
+
+*Every port is deployment-bound*, without exception. None of them can be written in `gateway.yaml`,
+and `management.port` is *refused at boot* if you try -- with an error naming the property that does
+own it, so the omission is discoverable rather than silent.
+
+[cols="2,1,3", options="header"]
+|===
+| Variable | Default | What it moves
+
+| `QUARKUS_HTTP_PORT`
+| `8080`
+| The plain-HTTP application listener.
+
+| `QUARKUS_HTTP_SSL_PORT`
+| `8443`
+| The *terminated* HTTPS listener. This is the variable the SNI passthrough topology moves: a
+  deployment that enables `tls.passthrough_sni` gives the public TLS port to the front listener and
+  sets this to the internal loopback port (`8444`). A `gateway.yaml`-owned port could not express
+  that split, which is the concrete reason this knob was never promoted.
+
+| `QUARKUS_MANAGEMENT_PORT`
+| `9000`
+| The management interface (health and metrics). See
+  link:tls-edge.adoc[TLS Edge] for why the neutral `management` block declares no port.
+
+| `SHERIFF_TLS_PUBLIC_PORT`
+| `8443`
+| The public port the SNI front listener binds when `tls.passthrough_sni` is non-empty. Neutral
+  name, deployment-supplied value -- port, therefore deployment-bound.
+
+| `SHERIFF_TLS_INTERNAL_HTTPS_PORT`
+| `8444`
+| The internal loopback port the terminated listener moves to under the passthrough topology.
+|===
+
+=== Certificate, key and trust material
+
+Material is deployment-bound for the same reason trust anchors are in
+link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]:
+it is secret, environment-specific, and the runtime already implements loading, format handling and
+rotation competently. Re-implementing that behind a neutral key would produce a second, weaker
+implementation and put secrets in the document you commit.
+
+[cols="2,3", options="header"]
+|===
+| Variable | Supplies
+
+| `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` +
+  `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES`
+| The terminated listener's server certificate and private key.
+
+| `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES` +
+  `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES`
+| The management interface's certificate and key. Deliberately not set in the shipped configuration:
+  they are container paths that would break every non-container run.
+
+| `QUARKUS_TLS_<PROFILE>_TRUST__STORE_*`
+| Trust anchors bound to a *logical trust-profile name* that `gateway.yaml` refers to by name only
+  (`jwks.tls_profile`). The document names the profile; the deployment binds it to material.
+  Copy the exact spelling from the shipped compose files rather than deriving it: a bucket name is a
+  configuration *map key*, and its environment-variable encoding is not a plain dot-to-underscore
+  substitution (the shipped stack uses `QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH`).
+|===
+
+[IMPORTANT]
+====
+*Never declare a default `quarkus.tls.key-store.*` bucket -- anywhere.* The management interface
+falls back to the *default* TLS registry bucket when no configuration name is selected, and takes
+that fallback only when the default bucket actually carries key material. This project's default
+bucket is empty (the server certificate arrives through `quarkus.http.ssl.certificate.*`), which is
+what keeps management TLS exactly what the management configuration says it is. Populating the
+default bucket would switch the management interface to HTTPS through a path no configuration file
+mentions.
+====
+
+=== The management TLS selection
+
+[cols="2,3", options="header"]
+|===
+| Variable | Effect
+
+| `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME`
+| Selects a named TLS bucket for the management interface. Set to `plain-management` -- a bucket the
+  shipped configuration declares with *no key material* -- to take the management interface to plain
+  HTTP. This is the *deployment door* onto the same lever as `gateway.yaml`'s
+  `management.tls.enabled: false`; both land on the same runtime key. The neutral key projects
+  *nothing* when it is absent or `true`, which is precisely what keeps this variable working.
+|===
+
+A downgrade by either route emits `ApiSheriff-115` at `WARN` on boot, naming the port and what
+breaks. See link:tls-edge.adoc[TLS Edge] for when the downgrade is legitimate, and for why
+`QUARKUS_MANAGEMENT_ENABLED=false` is *not* an equivalent shortcut.
+
+=== Topology and endpoint enablement
+
+Topology aliases and endpoint enablement are also deployment-supplied, but through a different --
+and deliberately *visible* -- mechanism: an in-file `${VAR}` placeholder written in the configuration
+document (link:../adr/0004-topology-indirection.adoc[ADR-0004] Amendment A1). An environment value
+reaches these fields only through an explicit placeholder, never through an invisible lookup, so
+reading the file tells you every override point. The conventional names are `TOPOLOGY_<ALIAS>` and
+`ENDPOINT_<ID>_ENABLED`; the contract is in
+link:../configuration.adoc#_topology[Configuration Reference -- Topology].
+
+=== The configuration directory
+
+`SHERIFF_CONFIG_DIR` (default `config`) selects the directory holding `gateway.yaml`,
+`endpoints/`, and `topology.properties`. It is necessarily deployment-bound -- it is the pointer to
+the configuration itself, so it cannot live inside it.
+
+== Build-time: fixed before the environment gets a say
+
+These cannot be changed on a built image. If you find yourself reaching for one at deploy time, the
+answer is a different mechanism, not a different variable.
+
+[cols="2,3", options="header"]
+|===
+| Knob | Why it is build-time, and what to do instead
+
+| `quarkus.ssl.native`
+| A GraalVM knob enabling SSL support in the native image; fixed when the image is built. It lives in
+  `api-sheriff/pom.xml`'s `native` profile -- the configuration that is active exactly when the knob
+  has meaning. `gateway.yaml` could never make it take effect, and putting it in
+  `application.properties` would only make it look like a runtime key.
+
+| `quarkus.management.enabled`
+| Build-time fixed *and* a trap: setting it `false` does not give you a plain probe endpoint, it
+  moves health and metrics onto the main TLS-terminated router. Use the `plain-management` bucket
+  instead -- see link:tls-edge.adoc[TLS Edge].
+|===
+
+== Audit: secure defaults and their override routes elsewhere
+
+The management-TLS pair above is one instance of a general shape: *a security-relevant default, plus
+some route by which an operator can change it.* This section is a sweep of the rest of the runtime
+surface asking the same question of each area -- what is the default, what is its security posture,
+what is the override route, and is that route deployment-bound *by necessity* (a port, material, or a
+build-time knob) or merely *by accident* (a policy knob that simply never got a neutral name).
+
+Read it as a map of what you can and cannot change, and of where the answer is "nothing, by design".
+
+=== Terminated-listener TLS policy
+
+[cols="1,1,1,2", options="header"]
+|===
+| Setting | Default | Posture | Override route
+
+| `tls.min_version`
+| runtime default (unset)
+| The runtime's own floor applies until you declare one. Declaring `"1.2"` or `"1.3"` is the
+  stronger posture because it is *stated* rather than inherited.
+| *Neutral* -- `gateway.yaml`. Deployment-bound by *accident* only in one narrow sense: a deployment
+  may still set `QUARKUS_HTTP_SSL_PROTOCOLS`, and that route works *until* `gateway.yaml` declares
+  `min_version`, at which point the neutral key wins. Not by ordinal: for the terminated listener the
+  mechanism is `TlsServerCustomizer` overwriting the options *after* the runtime has built them, so
+  the neutral key is simply the last writer. (Ordinal is the mechanism for the *management* key only,
+  where a config source projects it.) Do not rely on both.
+
+| `tls.cipher_suites`
+| runtime default (unset)
+| The runtime's selection tracks upstream deprecation. An allowlist is *not* automatically stronger
+  -- it is a posture you then own and must maintain.
+| *Neutral* -- `gateway.yaml`. No shipped raw key competes with it; as with `min_version`, a
+  deployment-supplied `QUARKUS_HTTP_SSL_CIPHER_SUITES` still applies until `gateway.yaml` declares
+  the list.
+
+| `tls.alpn`
+| runtime default (unset)
+| Not a security posture so much as a protocol-negotiation one.
+| *Neutral* -- `gateway.yaml`.
+|===
+
+=== mTLS (`tls.mtls`)
+
+* *Default:* off. No client certificate is requested.
+* *Posture:* off is the correct default -- mTLS is an opt-in trust model, not a hardening step, and
+  turning it on without staged client certificates locks out the entire fleet.
+* *Override route:* *neutral*, `gateway.yaml` only. `tls.mtls.enabled` switches the terminated
+  listener to require-and-verify against `client_ca`. There is deliberately *no*
+  `quarkus.http.ssl.client-auth` key in the shipped configuration: the customizer runs after the
+  runtime builds the SSL options and overwrites whatever that key had set, so a deployment-level
+  client-auth value would be silently ineffective. Leaving it out is what stops that lie being told.
+* *Deployment-bound by necessity?* The *trust anchor path* is, being material. The *decision* is not,
+  and is correctly neutral.
+* *Operator caveat:* mTLS here is require-and-verify or off -- no optional/want mode -- and
+  `client_ca` is a single global anchor with no CRL or OCSP. Revocation is trust-root rotation, which
+  is all-or-nothing. See link:tls-edge.adoc[TLS Edge].
+
+=== Listener topology and the SNI split
+
+* *Defaults:* `sheriff.tls.public-port` `8443`, `sheriff.tls.internal-https-port` `8444`. The SNI
+  front listener is *not started at all* unless `tls.passthrough_sni` is non-empty -- the default
+  topology is a single terminated listener with zero overhead.
+* *Posture:* the split is fail-closed by construction. An empty, malformed, or unmatched SNI takes
+  the *terminated* path, never the passthrough one, so an ambiguous ClientHello cannot reach the more
+  permissive disposition.
+* *Override route:* *split by class, correctly.* Which hostnames pass through is *policy* and lives
+  in `gateway.yaml`; the *ports* are deployment-bound and live in the environment.
+* *Deployment-bound by necessity?* Yes -- these are ports, and the passthrough topology is precisely
+  the case that proves it: enabling passthrough requires moving the terminated listener to the
+  internal port, which only a deployment-supplied value can express.
+
+=== JWKS trust and egress
+
+* *Defaults:* `allowed_egress_hosts` absent (the secure default: a JWKS URL resolving to a loopback,
+  link-local, site-local, any-local, multicast or unique-local address is *refused*), and
+  `tls_profile` absent (the JVM default trust store).
+* *Posture:* both defaults are the secure ones, and both widenings are opt-in and
+  default-preserving. `allowed_egress_hosts` is host-exact with no wildcard or suffix form, so the
+  widening cannot be broadened by a typo.
+* *Override route:* *neutral*, `gateway.yaml` -- and this is the pattern the whole configuration
+  model follows (link:../adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]).
+  The document names a logical trust *profile*; the deployment binds that name to anchors.
+* *Deployment-bound by necessity?* The anchors are (material). The profile *name* is not, and is
+  correctly neutral. An unresolvable profile *fails startup* rather than falling back to default
+  trust -- a trust decision that silently degrades is worse than one that refuses to start.
+
+=== Token validation
+
+* *Default:* the shipped default profile configures *no* issuer; deployments supply their own.
+* *Posture:* the validator is assembled *eagerly at boot*, not lazily on the first bearer request, so
+  a misconfigured issuer -- an unresolvable trust profile, a missing JWKS source -- aborts startup
+  rather than surfacing later as a stream of token rejections that look like a client problem. This
+  is a deliberate fail-fast choice and it is load-bearing: an `@ApplicationScoped` producer is
+  injected as a lazy proxy, so the startup observer must actively invoke a method on it to force
+  assembly. Removing that call would silently restore lazy behaviour with every test still green.
+* *Override route:* *neutral*, `gateway.yaml`'s `token_validation` block.
+* *Deployment-bound by necessity?* No. Issuer identity, audience and JWKS location are policy and are
+  correctly neutral; only trust material is deployment-supplied.
+
+[NOTE]
+====
+*Inconclusive -- the parallel `sheriff.token.issuers.*` property surface.* The gateway builds its own
+validator from `gateway.yaml` and qualifies it, so it coexists with the unqualified validator the
+token-validation extension builds from its own `sheriff.token.issuers.*` property surface. The
+integration profile configures the latter, and its documented purpose there is the extension's *JWKS
+readiness check*. What this audit could *not* establish by reading alone is what that readiness check
+reports in a shipped deployment that configures no issuer on the property surface at all. Treat the
+interaction between the two surfaces as unverified rather than assuming either that it is fine or
+that it is broken; it wants an experiment, not a doc claim.
+====
+
+=== Inbound filter modes
+
+* *Default:* an omitted `security_defaults` block resolves to `strict`. This is a *tightening*
+  relative to earlier releases -- see the "Inbound Filter Modes" migration notes in the
+  link:README.adoc[Operator Guide index].
+* *Posture:* secure by default, and the weakest mode is bounded rather than open-ended. `none` is a
+  *partial* disable: it turns off exactly the url-parameter name/value validation and the per-route
+  pipeline re-run, and nothing else -- the pre-route floor, the body cap and the path allowlist all
+  still apply. It is additionally *refused at boot* on effectively-authenticated and BFF routes, so
+  the weakening cannot reach the surfaces where it would matter most.
+* *Override route:* *neutral*, `gateway.yaml`, per route or anchor. There is no environment route,
+  and an unrecognised value is a hard boot failure with no fallback.
+* *Deployment-bound by necessity?* No, and it should not be -- an inbound-validation posture that
+  could be relaxed by an environment variable would be a weakening with no audit trail in the
+  document under review.
+
+=== Request limits and admission budgets
+
+[cols="1,1,1,2", options="header"]
+|===
+| Setting | Default | Posture | Override route
+
+| `edge_hardening.admission_cap`
+| 2048
+| Bounds in-flight requests so a flood cannot spawn unbounded virtual threads; excess is refused
+  `503` before dispatch.
+| *Neutral* -- `gateway.yaml`. Sizing depends on traffic shape, which is why the operator owns it.
+
+| `edge_hardening.websocket_relay_cap`
+| a quarter of the effective `admission_cap`
+| A relay holds its permit for the connection's lifetime, so without a second bound a modest number
+  of long-lived relays would starve ordinary HTTP traffic. The derived default keeps the
+  three-quarters-for-HTTP reservation at *every* admission cap.
+| *Neutral* -- `gateway.yaml`.
+
+| Per-route `max_body_bytes`
+| the resolved profile's preset
+| The declared cap is the effective one; the framework floor is derived from it and validated
+  fail-closed at boot, so a declared cap can never be silently clipped by the framework
+  (link:../adr/0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023]).
+| *Neutral* per route, with `QUARKUS_HTTP_LIMITS_MAX_BODY_SIZE` as the deployment-side *floor* that
+  must be at least as large. This is one place where a deployment value and a document value must be
+  kept consistent -- the boot check refuses the mismatch rather than clipping silently.
+
+| Header block, request line, chunk size, idle reap, drain window
+| 16 KiB / 8 KiB / 16 KiB / 60 s / 25 s
+| Fixed secure defaults that fail fast on abusive framing before a request is admitted.
+| *None -- deliberately not operator-configurable.* These are protocol-safety bounds rather than
+  capacity choices, so there is no route to change them and no environment variable to look for. If
+  you are hunting for one, the answer is that it does not exist by design.
+|===
+
+=== Response headers and CORS
+
+* *Default:* CORS is *disabled unless configured*. The other response-header controls (HSTS,
+  nosniff, frame-deny) are declared explicitly in `gateway.yaml`.
+* *Posture:* deny-by-default. A cross-origin SPA must enable CORS deliberately, with credentials,
+  rather than inheriting a permissive default.
+* *Override route:* *neutral*, `gateway.yaml`, resolved at gateway -> anchor level only. Endpoints and
+  routes deliberately cannot override it, because response headers and the CORS preflight answer are
+  emitted *before* route selection -- there is no route yet whose policy could apply.
+* *Deployment-bound by necessity?* No, and correctly so: an allowed-origin list is policy.
+
+=== What the sweep did not find
+
+No key in the shipped `application.properties` was found to be *inert* -- declared or bound with no
+production consumer -- after the changes this document accompanies. The inert keys that motivated the
+neutral surface (`quarkus.tls.protocols`, `quarkus.tls.cipher-suites`, `quarkus.tls.alpn`,
+`quarkus.http.ssl.client-auth`) are gone, and their reappearance is now a failing build rather than a
+review-time catch. The two neutral port keys (`sheriff.tls.public-port`,
+`sheriff.tls.internal-https-port`) were checked and do have production consumers.
+
+That is a statement about this file at this revision, not a general guarantee. The sweep read the
+shipped runtime properties, the TLS and configuration subsystems, and the operator-facing defaults
+above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
+
+== Quick answers
+
+[cols="2,3", options="header"]
+|===
+| "Can I set ... from the environment?" | Answer
+
+| The TLS protocol floor or cipher suites
+| You should not -- they are *policy*. Write `tls.min_version` / `tls.cipher_suites` in
+  `gateway.yaml`. An environment variable naming the same runtime knob is outranked *once the neutral
+  key is declared*, and still applies while it is omitted, so setting both is how you end up unsure
+  which one is in force. See link:#_terminated_listener_tls_policy[the terminated-listener table].
+
+| Whether management serves HTTPS
+| Yes, via `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME` -- or in `gateway.yaml` via
+  `management.tls.enabled`. Both doors, one lever. Pick one.
+
+| Any port
+| Yes -- every port is deployment-bound. `gateway.yaml` owns none of them.
+
+| Certificates, keys, trust anchors
+| Yes -- all material is deployment-supplied; `gateway.yaml` never carries material. For JWKS trust it
+  names a *profile* the deployment binds. The one exception is `tls.mtls.client_ca`, which names a
+  filesystem *path* to a deployment-mounted CA bundle -- a reference to material, still not the
+  material itself.
+
+| Native-image SSL support
+| No -- build-time. It is set in the Maven `native` profile.
+|===

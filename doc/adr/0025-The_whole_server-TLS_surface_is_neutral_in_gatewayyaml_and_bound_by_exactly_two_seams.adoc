@@ -1,0 +1,412 @@
+= ADR-0025: The whole server-TLS surface is neutral in gateway.yaml and bound by exactly two seams
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Every server-TLS knob is classified as policy, deployment-bound, or build-time; policy is named neutrally in gateway.yaml and reaches the runtime through exactly two seams — an HttpServerOptionsCustomizer for the terminated listener and one single-ordinal, policy-keys-only ConfigSource for the management interface — while ports, certificate and trust material stay deployment-supplied and build-time knobs leave the runtime surface entirely.
+// tags: configuration-surface, tls, management-interface, layering, portability, config-source-ordinal, secure-by-default, framework-seam, build-time-config
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+settled the layering question for one surface: the JWKS client's egress allowlist and TLS trust.
+`gateway.yaml` names intent in API Sheriff's own vocabulary, the deployment supplies material, and
+exactly one component maps between them. That ruling was stated about `token_validation`, and it was
+correct there. It was never stated as a *general* rule, and the gateway's own server-side TLS surface
+grew up on the other side of that gap.
+
+The server-TLS surface is larger and structurally different from the JWKS one. It spans four distinct
+concerns that a flat "put it in `gateway.yaml`" or "leave it in framework configuration" answer
+handles badly:
+
+* *Policy* -- the protocol floor, the cipher allowlist, the advertised ALPN protocols, whether client
+  certificates are required, whether the management interface serves over TLS. These are security
+  decisions the product makes, identical in every environment the same document is deployed into.
+* *Key and trust material* -- server certificates, private keys, trust anchors. Environment-specific,
+  secret, and already handled competently by the runtime's own loading, format and rotation support.
+* *Ports* -- which port the terminated listener binds, which port the management interface binds,
+  which port the SNI front listener owns. Environment-specific, and in this gateway load-bearing for
+  topology rather than for security policy.
+* *Build-time knobs* -- configuration fixed when the native image is built, which no runtime document
+  can influence at all.
+
+Two structural facts make the choice point sharp rather than a matter of taste.
+
+*First: a neutral name that binds nothing is worse than a raw framework key.* A configuration surface
+can declare a TLS protocol floor and a cipher allowlist through the runtime's own registry keys and
+have them reach no listener at all: the runtime consults its TLS-registry configuration only when the
+server certificate is *also* supplied through that registry, and a gateway that supplies its
+certificate through the HTTP-SSL certificate keys instead never passes that guard. The declared floor
+and allowlist are then inert. That is not a cosmetic defect. A declared TLS floor reads as enforcement
+to every reviewer, operator and auditor who sees it, and it is precisely the kind of claim a security
+gateway must not make falsely. Any surface this project offers for TLS policy therefore has to be
+*bound*, and the binding has to be asserted rather than assumed.
+
+*Second: the two listeners do not share a seam.* The terminated main HTTPS listener is configured
+through `HttpServerOptionsCustomizer` beans, which the runtime enumerates from the CDI container in
+`doServerStart` *after* it has built the SSL options -- so a customizer can observe and overwrite what
+the configuration produced. The management interface is initialised on a different path that never
+enumerates those beans at all. A single mechanism cannot reach both listeners. Whatever surface
+`gateway.yaml` exposes must therefore be bound twice, by two different mechanisms, and each mechanism
+has to be justified as the only one available on its path rather than chosen for symmetry.
+
+The management interface adds a third fact of its own: it has exactly *one* port. Unlike the main HTTP
+listener, the runtime's management configuration declares no separate SSL port and no
+insecure-requests mode. There is no simultaneous plain listener to fall back to, so a management TLS
+decision is necessarily a decision about the whole management surface -- health and metrics together.
+
+== Decision
+
+*Every server-TLS knob belongs to exactly one of three classes, and its class determines where it
+lives. Policy lives in `gateway.yaml` under neutral names and reaches the runtime through exactly two
+seams. Ports and material stay deployment-supplied. Build-time knobs leave the runtime surface
+entirely.*
+
+This is
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]'s
+ruling restated as a general rule and extended from the JWKS trust surface to the whole server-TLS
+surface. ADR-0011 remains Accepted and is *extended*, not superseded: its JWKS-specific mechanisms are
+unchanged, and this decision generalises the principle they instantiate.
+
+=== The three-way classification
+
+[cols="1,3", options="header"]
+|===
+| Class | Rule
+
+| *Policy*
+| Named neutrally in `gateway.yaml`. Covers the protocol floor, the cipher allowlist, ALPN, mTLS, and
+  whether the management interface serves over TLS. No `gateway.yaml` key, and no part of the JSON
+  schema that validates it, names the runtime.
+
+| *Deployment-bound*
+| Supplied by the deployment and never promoted into `gateway.yaml`. Covers certificate and private
+  key material, trust material, and *every* port. Neutral deployment-side names the product already
+  owns stay where they are; runtime keys keep their environment-variable contract.
+
+| *Build-time*
+| Lives in the build configuration and never appears in the runtime configuration surface at all.
+|===
+
+The classification is not a filing convention. It is what makes the ordinal rule below safe.
+
+=== Policy reaches the runtime through exactly two seams
+
+[cols="1,2,2", options="header"]
+|===
+| Listener | Seam | Why it is the only one available
+
+| Terminated main HTTPS listener
+| An `HttpServerOptionsCustomizer` bean mapping the resolved `tls` block onto the listener's enabled
+  protocol set, cipher allowlist and ALPN protocols.
+| The runtime enumerates customizer beans from the CDI container *after* building the SSL options, so
+  the customizer is the last writer and its result is what the listener starts with. Declaring the
+  same policy through the runtime's TLS-registry keys does not work on this gateway, because the
+  registry is consulted only when the certificate also comes from it.
+
+| Management interface
+| A SmallRye `ConfigSource` parsing `gateway.yaml` and projecting the management TLS policy onto the
+  runtime key that governs it.
+| The management interface is initialised on a path that never enumerates `HttpServerOptionsCustomizer`
+  beans. The only lever left on that path is the configuration the recorder reads, so a config source
+  is the seam by elimination, not by preference.
+|===
+
+Neither seam is interchangeable with the other. The customizer cannot reach management; the config
+source is the wrong instrument for the terminated listener, where a live bean can observe what the
+configuration actually produced.
+
+The policy source cannot read the bound configuration model. A `ConfigSource` is constructed while the
+configuration system itself is being built, long before CDI exists, so the model, its loader and its
+validator are all unavailable to it. It therefore re-reads `gateway.yaml` directly and parses only the
+policy blocks it projects from -- a deliberate, bounded duplication of a small slice of parsing, not a
+second configuration pipeline. The authoritative parse, schema validation and semantic validation
+still happen exactly once, later. A malformed or absent document is ignored at this stage on purpose:
+the loader re-encounters the same failure moments later and reports it as a located, collected error,
+and failing earlier would replace that diagnostic with a context-free failure from inside
+configuration-system construction.
+
+=== The projecting source is single-ordinal and projects policy keys only
+
+The config source sits at an ordinal above the environment-variable source. It has to: a policy named
+in `gateway.yaml` must take effect, and an ordinal at or below the environment's would let a
+deployment variable silently win over the document the operator wrote.
+
+Outranking the environment for *everything* would be an operator surprise, and the obvious remedy -- a
+second source at a lower ordinal carrying the keys the environment should still win -- is rejected.
+Two sources with two precedences is a rule no operator can hold in their head and no document can
+state without a table of exceptions.
+
+The classification above is what makes the second source unnecessary. The source projects *policy keys
+only*: never a port, never trust material, never key material. No deployment-bound knob is ever in the
+projected set, so nothing the deployment owns can be outranked by surprise. A single ordinal is
+therefore both sufficient and safer, and policy-keys-only is a standing invariant of the source rather
+than a description of its current contents.
+
+One projected policy key is reachable from the environment as well, and deliberately so. The
+management TLS-configuration-name key is a policy key by class, and it is simultaneously the
+deployment door onto the plain-HTTP opt-out --
+<<two-doors-onto-one-lever,two doors onto one lever>>, below, describes that arrangement from the
+operator's side. When both doors set it, the `gateway.yaml` value wins, because the projecting source
+sits above the environment. That is the ordinal rule doing exactly what it exists for: the document
+the operator wrote takes effect. It is not an exception to the surprise-freedom above, which is a
+statement about deployment-bound knobs -- ports, trust material and key material -- and those the
+source never projects at all.
+
+One hard prohibition falls out of this and is worth stating separately, because its failure mode is
+silent in the dangerous direction: *the source must never project key material into the default TLS
+registry bucket.* The runtime's management-interface lookup falls back to the default registry bucket
+when no configuration name is selected, and takes that fallback only when the default bucket actually
+carries key material. This project's default bucket is empty -- the server certificate arrives through
+the HTTP-SSL certificate keys -- so management TLS is exactly what the management configuration says
+it is. Populating the default bucket from anywhere would switch the management interface to HTTPS
+through a path no configuration file mentions. This is asserted by test, not assumed.
+
+[#two-doors-onto-one-lever]
+=== Management HTTPS is the default, and the opt-out is runtime-native
+
+The management interface serves over TLS by default, on the deployment-bound management port. The
+posture is secure-by-default and is deliberately not inverted to the runtime's own plain-by-default
+shape.
+
+Taking management to plain HTTP stays possible, because running operations endpoints in the clear
+behind a trusted boundary is a legitimate deployment, but it stops being silent. There are two doors
+onto it, and they are the same lever:
+
+* *The neutral door* -- declaring the management TLS policy off in `gateway.yaml`, which the config
+  source projects onto the runtime's management TLS-configuration-name key, selecting a named TLS
+  bucket that carries no key material.
+* *The deployment door* -- setting that same runtime key directly as an environment variable.
+
+Because the neutral key projects *nothing* when it is absent or set to the secure value, the
+deployment door keeps working unchanged. The two are alternative routes onto one key, not two
+competing mechanisms with a precedence puzzle between them.
+
+The mechanism itself is runtime-native rather than bespoke. Selecting a bucket with no key material
+*is* a disable: the named lookup resolves, the key material is null-guarded rather than throwing, and
+the recorder swaps in the plain options because no key/certificate options were produced. It is
+runtime configuration, so the same native image serves both postures with no rebuild, and misuse is
+legible -- an unresolvable name fails the boot with an error naming the exact missing property.
+
+The downgrade is *audited, not refused*. A startup observer emits a loud `WARN` naming what the
+downgrade breaks. The audit is keyed on the *observed effective state* -- the TLS material the listener
+actually resolved -- rather than on any configuration key, because an audit keyed on a key reports a
+comfortable fiction the moment that key is renamed, superseded, or reached by a different route.
+
+=== The neutral management block declares no port
+
+The neutral management block carries TLS policy only. It declares no port, and a port written there is
+refused at boot with a message naming the runtime property and environment variable that do own it.
+
+The omission is structural, not cosmetic. A management port declared in `gateway.yaml` could only
+reach the runtime through the same projecting source, whose ordinal is above the environment's -- so it
+would silently override the deployment's own port variable, which is exactly the surprise the ordinal
+rule exists to prevent. The only way to let the environment win would be the second, lower-ordinal
+source that is rejected above. Refusing the key with an actionable message is the alternative to
+silently ignoring it: the deliberate absence becomes discoverable by the operator rather than
+presenting as a key that does nothing.
+
+=== Named consequences, so the boundary is auditable
+
+A classification rule is only enforceable if its exceptions are named. Three consequences are part of
+the decision:
+
+* *The terminated listener's port and its plain-HTTP handling stay deployment-bound.* Promoting the SSL
+  port into `gateway.yaml` would break the
+  link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+  SNI split, in which a deployment that enables passthrough gives the public TLS port to the front
+  listener and moves the terminated listener to an internal port through that very variable. A
+  `gateway.yaml`-owned port could not express that topology.
+* *The management port stays deployment-bound*, for the ordinal reason above.
+* *The native-image SSL knob is build-time and leaves the runtime surface entirely.* It is fixed when
+  the image is built, so `gateway.yaml` could never make it take effect and the runtime properties file
+  would only make it look like a runtime key. It is declared in the build's `native` profile -- the
+  configuration that is active exactly when the knob has meaning.
+
+=== Scope: policy applies to the terminated listener
+
+The TLS floor, cipher allowlist and ALPN policy govern the *terminated* listener. The SNI front
+listener of
+link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+terminates nothing -- it reassembles the ClientHello, reads the SNI, and either relays opaquely at L4
+or hands the still-encrypted stream on -- so it neither applies nor could apply a cipher allowlist. For
+a passthrough hostname the backend's own TLS policy is the effective one, end to end. Scoping the
+policy to the terminated listener is therefore a statement of what the policy *can* mean, not a
+limitation that more code could lift.
+
+== Consequences
+
+=== Positive
+
+* Declared TLS policy is in force. The floor and the cipher allowlist reach the listener through an
+  asserted seam, so the configuration surface no longer claims an enforcement it does not perform.
+* One document states the gateway's TLS posture. An operator or auditor reads the policy in one place,
+  in the product's vocabulary, instead of reconstructing it from runtime keys whose effectiveness
+  depends on how the certificate happens to be supplied.
+* The classification makes new knobs decidable. "Is this policy, deployment-bound, or build-time?" has
+  an answer before the key is named, so the surface grows by rule rather than by precedent.
+* A single ordinal keeps precedence explainable: `gateway.yaml` wins for policy, the environment wins
+  for everything else, and there is no third case.
+* The secure-by-default posture is preserved with a real escape hatch. The management downgrade is
+  reachable, runtime-native, settable at container start in JVM and native images alike, and loud.
+* Ports and material stay out of the document operators commit, so the same `gateway.yaml` moves
+  across environments unedited and carries no secrets.
+
+=== Negative
+
+* Policy is bound by two different mechanisms. A maintainer changing the surface must know which
+  listener a key targets and therefore which seam carries it; the seams are not interchangeable.
+* The config source parses `gateway.yaml` a second time, before the authoritative loader runs. The
+  duplication is bounded to the policy blocks and deliberately silent on failure, but it is a second
+  reader of the same document and must stay in step with the first.
+* The management downgrade is all-or-nothing. Because the management interface has exactly one port,
+  taking it off TLS takes health and metrics off TLS together; there is no partial posture.
+* Two doors onto the management TLS decision means a reader of `gateway.yaml` alone cannot tell whether
+  a deployment variable has selected the downgrade. The startup `WARN` on observed effective state is
+  the compensating mechanism.
+
+=== Risks
+
+* *A future key projected outside the policy class.* The whole precedence argument rests on the
+  projected set containing no deployment-bound key. A single port or key-material addition to the
+  source would silently invert the environment's precedence. Mitigated by asserting the forbidden key
+  classes absent by name, and by pinning the projected set's cardinality so an addition is a visible
+  diff.
+* *Silent HTTPS inheritance on the management interface.* Declaring a default TLS registry bucket
+  anywhere would make management inherit HTTPS through the registry fallback, with no configuration
+  file mentioning it. Mitigated by an explicit assertion that no default bucket is declared.
+* *Drift between the two `gateway.yaml` readers.* The pre-configuration parse and the authoritative
+  loader read the same document with different machinery. Mitigated by keeping the early parse narrow
+  -- only the policy blocks, only the keys it projects -- so the overlap it must keep in step with is
+  small.
+* *An operator reaching for the wrong disable.* Disabling the management interface outright is not the
+  way to get a plain-HTTP probe endpoint: it is build-time fixed, so it cannot be changed on a built
+  image, and it moves health and metrics onto the main TLS-terminated router -- producing an HTTPS probe
+  endpoint rather than a plain one. Mitigated by documenting the trap where the opt-out is documented.
+
+== Alternatives Considered
+
+=== Leave TLS policy in raw runtime keys
+
+Keep the protocol floor and cipher allowlist in the runtime properties file under the runtime's own key
+names and add no neutral surface at all.
+
+Rejected because those keys are inert on this gateway. The runtime consults its TLS-registry
+configuration only when the certificate is supplied through the registry, and this gateway supplies it
+through the HTTP-SSL certificate keys, so the declared floor and allowlist never reach the listener.
+Retaining them would preserve a configuration surface that reads as enforcement while enforcing
+nothing -- the worst available outcome for a security gateway, and strictly worse than declaring no
+policy at all.
+
+=== Reference the runtime's named TLS configuration directly from gateway.yaml
+
+Let `gateway.yaml` carry the runtime's own TLS-configuration name, removing the projecting source.
+
+Rejected on the same layering ground
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+rejected it for the JWKS surface: it makes the product's configuration language depend on the identity
+of the framework beneath it, so a change of runtime invalidates documents the product told operators to
+write. The projecting source is the bounded price of keeping the configuration contract independent of
+its substrate.
+
+=== A second, lower-ordinal config source
+
+Split the projection across two sources -- one above the environment for keys `gateway.yaml` must win,
+one below it for keys the environment should still win.
+
+Rejected because it makes precedence a per-key property that no operator can predict and no document
+can state without an exception table. The three-way classification removes the need entirely: with only
+policy keys projected, there is no key for which the environment ought to win, so there is nothing for
+a second source to carry.
+
+=== Promote ports into gateway.yaml
+
+Treat ports as part of the neutral surface, so one document describes the whole listener topology.
+
+Rejected on two independent grounds. Structurally, a projected port would outrank the deployment's own
+port variable at the single ordinal, which is the operator surprise the ordinal rule exists to prevent.
+Concretely, the ADR-0017 SNI split works by having a deployment move the terminated listener to an
+internal port through that variable -- a topology a `gateway.yaml`-owned port could not express.
+
+=== A bespoke gateway.yaml key that disables management TLS by blanking the certificate
+
+Introduce a product-specific acknowledgement key whose presence causes the projecting source to emit
+blank management certificate paths, forcing the listener to start plain.
+
+Rejected because it is a bespoke mechanism where a runtime-native one exists, and because it inverts
+the audit relationship. It makes the product responsible for a certificate-blanking trick whose
+correctness depends on internal runtime behaviour, and it would key the startup warning on the
+product's own declaration rather than on what the listener actually resolved -- so the warning would
+report the declaration, not the reality, and would go quiet the moment the downgrade arrived by any
+other route.
+
+=== Refuse to boot on a management TLS downgrade
+
+Treat plain-HTTP management as a configuration error and fail the boot.
+
+Rejected because plain-HTTP management behind a trusted boundary is a legitimate deployment, and a
+gateway that refuses it forces operators into a worse workaround -- most likely disabling the
+management interface entirely, which moves health and metrics onto the TLS-terminated main router and
+is build-time fixed besides. A loud, effective-state-keyed `WARN` keeps the deployment possible while
+removing its silence, which is the property that actually matters.
+
+=== A validation rule for the refused management port
+
+Reject a `management.port` key through the configuration validator rather than in the JSON schema.
+
+Rejected because the rule would be unreachable. Loading returns on the first schema failure and never
+reaches the validation stage, so a validator rule for a key the schema already rejects can never run.
+Declaring the key in the schema solely in order to refuse it is what puts the actionable message at the
+key's own location, rather than surfacing a generic unknown-key error against its parent.
+
+=== The runtime's management TLS-configuration-name key, considered and adopted
+
+Selecting a named TLS configuration for the management interface was initially rejected on two grounds:
+that such a key can only *select* a TLS configuration and never *disable* TLS, and that using it would
+relocate deployment certificate material into a product-declared bucket.
+
+Both objections fail against the mechanism as it actually behaves, and the key is therefore adopted as
+the opt-out described above. Selecting a bucket that carries no key material *is* a disable -- the lookup
+resolves, the absent key material is null-guarded rather than throwing, and the recorder substitutes
+the plain options because no key/certificate options were produced. The second objection does not arise
+for the same reason: the selected bucket is empty of material by construction, so no certificate is
+relocated anywhere. Recording the reversal matters because both objections are plausible readings of
+the key's name, and a future reader who re-derives them would otherwise re-reject a mechanism that
+works.
+
+The unifying principle across these alternatives: a configuration surface earns its neutrality by being
+*bound*, and it earns its precedence by being *narrow*. Options that add a name without a binding, or a
+binding without a bounded key set, fail in one of those two directions.
+
+== References
+
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the neutral-name ruling for the JWKS trust and egress surface, which this decision extends to the
+  whole server-TLS surface
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+  -- the SNI split whose port-ownership contract requires the terminated listener's port to stay
+  deployment-bound, and whose front listener terminates nothing
+* link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
+  runtime-specific assembly at the boundary rather than in the framework-agnostic core
+* link:../configuration.adoc[Configuration reference] -- the `tls` and `management` field contracts and
+  the per-key verdict table naming every disposition
+* link:../architecture.adoc[Architecture] -- the two binding seams and the ordering constraint that the
+  projecting config source runs before CDI
+* link:../user/tls-edge.adoc[TLS edge (operator guide)] -- the neutral TLS policy keys and the
+  plain-HTTP management opt-out

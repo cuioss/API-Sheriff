@@ -93,6 +93,29 @@ public final class ConfigLogMessages {
                 .identifier(102)
                 .template("trusted_proxies entry '%s' covers a very broad address range (prefix /%s) — review whether such broad proxy trust is intended")
                 .build();
+
+        /**
+         * The management interface resolved to plain HTTP at startup.
+         * <p>
+         * This reports the <em>observed effective state</em>, not a declared intention: the audit
+         * inspects what the management listener actually resolved to, so the warning cannot drift
+         * away from reality when the activation route changes. The management interface has exactly
+         * one port, so the downgrade takes health and metrics in their entirety — there is no
+         * simultaneous HTTPS listener, and every consumer probing that port over HTTPS breaks.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: a plain-HTTP management port behind a
+         * trusted network boundary is a legitimate deployment, and blocking it would be wrong. The
+         * template names the port only; it must never carry certificate paths or bucket contents.
+         * <p>
+         * The remedy names <em>both</em> doors onto the downgrade, because the audit observes the
+         * effective state and cannot tell which one was used: the neutral {@code gateway.yaml} key and
+         * the deployment environment variable land on the same Quarkus key (ADR-0025).
+         */
+        public static final LogRecord MANAGEMENT_PLAIN_HTTP = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(115)
+                .template("Management interface is serving PLAIN HTTP on port %s — health and metrics are unencrypted and every HTTPS consumer of that port will fail. Expose it only behind a trusted boundary; restore the HTTPS default by setting management.tls.enabled back to true in gateway.yaml, or by removing a QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME override supplied by the deployment")
+                .build();
     }
 
     /**
