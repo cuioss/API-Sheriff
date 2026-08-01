@@ -211,6 +211,24 @@ cap alone. The bound is therefore enforced *structurally* — by the seeding, wh
 drop a validator — rather than by an unchecked comment asserting it. Decision (b)'s "By validator"
 axis is true for the first time, and true for both carve-outs.
 
+=== The post-amendment limit, restated
+
+*This restatement answers this record's own Risks bullet* "Relaxation creep", which enumerates the
+bound as "one header pair, one validator, one deployment mode". Two of those three clauses describe
+the state *before* this amendment. The original bullet is left as written and corrected here in
+prose, exactly as the "Misreading the configuration key's placement" risk is retired above rather
+than edited.
+
+The limit now accepted is *two header names* — `Cookie` / `Set-Cookie` and `Authorization` — *one
+validator*, the length cap, and a *deployment-mode axis that binds the cookie carve-out alone*: the
+`Authorization` carve-out is unconditional, so there is no mode axis to bound it. Only the "one
+validator" clause survives unchanged, and it is the clause that bullet actually spends — a future
+request to relax a *different* validator is still a separate decision requiring its own record.
+
+The Risks bullet is therefore to be read together with this restatement. The residual exposure this
+record claims to keep "explicitly enumerable rather than emergent" is the exposure enumerated here,
+not the narrower one the unedited bullet describes.
+
 == Amendment: both carve-outs are honoured by the post-route re-run, so the by-header bound holds on every route
 
 *This record is amended, not superseded.* The two carve-outs' *bounds* are unchanged; what changes is

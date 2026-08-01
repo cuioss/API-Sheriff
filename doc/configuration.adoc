@@ -1406,10 +1406,13 @@ ignored when no route's effective auth is `require: session`.
   The raised cap is scoped twice, and is *not* a general widening of inbound header validation:
 
   * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it. A bearer-only or
-    `session.mode: server` gateway keeps the 2048-character default on every header, unchanged.
+    `session.mode: server` gateway keeps the resolved baseline `max_header_value_length` on every
+    header, unchanged (see <<_preset_limits>> for the per-preset figure).
   * *By header* -- within a cookie-mode gateway only `Cookie` and `Set-Cookie` header *values* use
-    the raised cap. Every other header keeps the default, and every non-length validator
-    (null-byte, control-character, injection-pattern) still applies to the cookie value.
+    the raised cap. Every other header keeps the resolved baseline, and every non-length validator
+    (null-byte, control-character, injection-pattern) still applies to the cookie value. The
+    `Authorization` carve-out described in <<_pre_route_header_carve_outs>> is the one other
+    exception, and it is independent of session mode.
 
   [IMPORTANT]
   ====

@@ -32,6 +32,7 @@ import de.cuioss.http.security.database.AttackTestCase;
 import de.cuioss.http.security.database.OWASPTop10AttackDatabase;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -408,20 +409,11 @@ class BasicChecksStageTest {
 
     /**
      * Mirrors the production seeding: a configuration identical to {@code baseline} in every
-     * dimension except {@code maxHeaderValueLength}. Building the carve-out from
-     * {@code SecurityConfiguration.builder()} instead is the defect this suite guards against, so
-     * the fixtures must not take that shortcut either.
+     * dimension except {@code maxHeaderValueLength}. Routed through the shared production seam so the
+     * fixture cannot drift from the component set the production carve-outs copy.
      */
     private static SecurityConfiguration withHeaderValueCap(SecurityConfiguration baseline, int cap) {
-        return new SecurityConfiguration(baseline.maxPathLength(), baseline.allowDoubleEncoding(),
-                baseline.maxParameterNameLength(), baseline.maxParameterValueLength(),
-                baseline.maxHeaderNameLength(), cap, baseline.maxCookieNameLength(),
-                baseline.maxCookieValueLength(), baseline.maxBodySize(), baseline.allowNullBytes(),
-                baseline.allowControlCharacters(), baseline.allowExtendedAscii(), baseline.normalizeUnicode(),
-                baseline.caseSensitiveComparison(), baseline.failOnSuspiciousPatterns(),
-                baseline.requireSecureCookies(), baseline.requireHttpOnlyCookies(), baseline.maxParameterCount(),
-                baseline.maxHeaderCount(), baseline.maxCookieCount(), baseline.allowedHeaderNames(),
-                baseline.blockedHeaderNames(), baseline.allowedContentTypes(), baseline.blockedContentTypes());
+        return SecurityConfigurations.builderSeededFrom(baseline).maxHeaderValueLength(cap).build();
     }
 
     private static PipelineRequest requestWithHeader(String name, String value) {

@@ -508,8 +508,8 @@ class ConfigValidatorTest {
         @Test
         @DisplayName("Should accept a max_authorization_header_value_length at or above the resolved baseline")
         void shouldAcceptAuthorizationCapAtOrAboveBaseline() {
-            // Arrange — the matched positive half: 2048 clears the strict baseline, and the same
-            // value is the boundary case 'exactly at the baseline' under a 2048-capped comparison.
+            // Arrange — the matched positive half: 2048 clears the strict 1024 baseline, and 1024 is
+            // the boundary case 'exactly at the baseline', which is not below it and is not refused.
             GatewayConfig above = gatewayWithAuthorizationCap("strict", Optional.of(2048));
             GatewayConfig atBaseline = gatewayWithAuthorizationCap("strict", Optional.of(1024));
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));

@@ -624,19 +624,27 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("the cookie carve-out is absent for a gateway that is not an active cookie-mode BFF")
         void cookieCarveOutIsAbsentOutsideCookieMode() {
-            // Arrange — the two ways to miss the mode: no BFF runtime at all, and an active runtime
-            // whose session mode is not cookie.
+            // Arrange — the three ways to miss the mode: no BFF runtime at all, an active runtime on a
+            // gateway declaring no session block, and an active runtime whose declared mode is server.
+            // Only the last actually invokes isCookieMode(); the middle one is answered by orElse(false)
+            // before the predicate is reached, so on its own it leaves the defect-prone branch untested.
 
             // Act
             SecurityConfiguration inertRuntime = GatewayEdgeRoute.cookieHeaderConfigurationFor(
                     cookieModeGateway(), BffRuntime.inert(), SecurityConfiguration.strict());
-            SecurityConfiguration serverMode = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration sessionAbsent = GatewayEdgeRoute.cookieHeaderConfigurationFor(
                     GatewayConfig.builder().version(1).build(), activeCookieRuntime(),
+                    SecurityConfiguration.strict());
+            SecurityConfiguration serverMode = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+                    sessionModeGateway(OidcConfig.Session.MODE_SERVER), activeCookieRuntime(),
                     SecurityConfiguration.strict());
 
             // Assert
             assertNull(inertRuntime, "a bearer-only gateway keeps the resolved baseline on every header");
-            assertNull(serverMode, "a non-cookie-mode gateway keeps the resolved baseline on every header");
+            assertNull(sessionAbsent,
+                    "a gateway declaring no session block keeps the resolved baseline on every header");
+            assertNull(serverMode,
+                    "an active server-mode BFF keeps the resolved baseline on every header");
         }
 
         @Test
@@ -713,10 +721,20 @@ class GatewayEdgeRouteTest {
         }
 
         private GatewayConfig cookieModeGateway() {
+            return sessionModeGateway(OidcConfig.Session.MODE_COOKIE);
+        }
+
+        /**
+         * A gateway declaring an {@code oidc.session} block at the given mode. Parameterised over the
+         * mode so a server-mode gateway can be built too: only a gateway that actually declares a
+         * session block reaches {@link OidcConfig.Session#isCookieMode()} at all — one without an
+         * {@code oidc} block is answered by the {@code orElse(false)} before the predicate is invoked.
+         */
+        private GatewayConfig sessionModeGateway(String mode) {
             return GatewayConfig.builder().version(1)
                     .oidc(Optional.of(OidcConfig.builder()
                             .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of(OidcConfig.Session.MODE_COOKIE))
+                                    .mode(Optional.of(mode))
                                     .build()))
                             .build()))
                     .build();
