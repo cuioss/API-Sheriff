@@ -218,15 +218,6 @@ sys.stdout.write("\n".join(rows) + "\n")
     exit 1
 fi
 
-# Belt-and-braces vacuity guard. The discovery above already refuses an empty service set, and this
-# repeats the check at the consuming end: a silently empty target list would turn the whole readiness
-# gate into a no-op that passes green, which is strictly worse than the hand-maintained list this
-# loop replaced.
-if [[ -z "${READINESS_TARGETS//[[:space:]]/}" ]]; then
-    echo "❌ Gateway readiness discovery produced no targets — refusing to proceed with a readiness gate that probes nothing"
-    exit 1
-fi
-
 echo "⏳ Waiting for the discovered gateway instances to be ready..."
 START_TIME=$(date +%s)
 GATEWAY_COUNT=0
