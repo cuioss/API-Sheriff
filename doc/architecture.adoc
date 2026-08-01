@@ -548,11 +548,21 @@ Metrics are exposed as Prometheus data via Quarkus Micrometer on the *management
 (`quarkus.management.enabled=true`; port `9000` is the Quarkus management-interface default),
 keeping the operational surface off the public data-plane port.
 
-The management port is served over *HTTPS*. Quarkus' management interface has exactly one port --
-its configuration declares no `ssl-port` and no `insecure-requests` key, unlike `quarkus.http` --
-so supplying `quarkus.management.ssl.certificate.*` converts port `9000` itself to HTTPS rather
-than adding a second listener. The consequence is that no plain-HTTP management surface remains:
-every scraper and probe must speak TLS.
+The management port is served over *HTTPS* by default, and that is the posture API Sheriff ships.
+Quarkus' management interface has exactly one port -- its configuration declares no `ssl-port` and
+no `insecure-requests` key, unlike `quarkus.http` -- so supplying
+`quarkus.management.ssl.certificate.*` converts port `9000` itself to HTTPS rather than adding a
+second listener.
+
+A deliberate opt-out exists for deployments that run operations endpoints in the clear behind a
+trusted boundary: `management.tls.enabled: false` in `gateway.yaml`, or its deployment twin
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME` set directly. Both select a TLS bucket carrying no key
+material, which is what takes the listener plain. The single-port consequence carries over
+unchanged -- because there is only one management port, a downgrade takes health *and* metrics
+together, and there is no partial posture. The downgrade is never silent: boot announces it with
+WARN `ApiSheriff-115`, keyed on the TLS material the listener actually resolved rather than on any
+configuration key. See link:configuration.adoc#_management[the management section of the
+configuration reference] for the full rule.
 
 The manifest requires *paths, errors, and average timing*. These map to:
 
@@ -588,12 +598,13 @@ OpenTelemetry tracing is a planned (post-MVP) hook per the manifest and is not p
 initial metrics surface.
 
 *Health.* SmallRye Health serves the aggregate check (`/q/health`) and liveness/readiness
-(`/q/health/live`, `/q/health/ready`) on the same management port, and therefore over the same
-HTTPS single-port surface described above. Readiness reflects the loaded-and-validated
-configuration and, for the BFF variants, the ability to reach the configured issuer at startup.
-The management port is not exposed publicly, so health and metrics endpoints carry no
-authentication of their own -- TLS now additionally protects them in transit, but it is transport
-protection, not authentication. Data-plane routes such as a public `/health` proxy are ordinary
+(`/q/health/live`, `/q/health/ready`) on the same management port, and therefore shares whatever
+posture that single port has -- HTTPS by default, plain HTTP if the opt-out above is taken. That
+sharing is the point: health cannot be downgraded separately from metrics, because they are the
+same listener. Readiness reflects the loaded-and-validated configuration and, for the BFF variants,
+the ability to reach the configured issuer at startup. The management port is not exposed publicly,
+so health and metrics endpoints carry no authentication of their own -- TLS, where it is in force,
+protects them in transit, but that is transport protection, not authentication. Data-plane routes such as a public `/health` proxy are ordinary
 routes and need an explicit `auth: { require: none }`.
 
 [[_protocol_support]]

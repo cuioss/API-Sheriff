@@ -217,13 +217,18 @@ Read it as a map of what you can and cannot change, and of where the answer is "
   stronger posture because it is *stated* rather than inherited.
 | *Neutral* -- `gateway.yaml`. Deployment-bound by *accident* only in one narrow sense: a deployment
   may still set `QUARKUS_HTTP_SSL_PROTOCOLS`, and that route works *until* `gateway.yaml` declares
-  `min_version`, at which point the neutral key wins by ordinal. Do not rely on both.
+  `min_version`, at which point the neutral key wins. Not by ordinal: for the terminated listener the
+  mechanism is `TlsServerCustomizer` overwriting the options *after* the runtime has built them, so
+  the neutral key is simply the last writer. (Ordinal is the mechanism for the *management* key only,
+  where a config source projects it.) Do not rely on both.
 
 | `tls.cipher_suites`
 | runtime default (unset)
 | The runtime's selection tracks upstream deprecation. An allowlist is *not* automatically stronger
   -- it is a posture you then own and must maintain.
-| *Neutral* -- `gateway.yaml`, and there is no raw key left to compete with it.
+| *Neutral* -- `gateway.yaml`. No shipped raw key competes with it; as with `min_version`, a
+  deployment-supplied `QUARKUS_HTTP_SSL_CIPHER_SUITES` still applies until `gateway.yaml` declares
+  the list.
 
 | `tls.alpn`
 | runtime default (unset)
@@ -384,8 +389,10 @@ above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
 | "Can I set ... from the environment?" | Answer
 
 | The TLS protocol floor or cipher suites
-| No -- they are *policy*. Write `tls.min_version` / `tls.cipher_suites` in `gateway.yaml`. An
-  environment variable naming the same runtime knob would be outranked.
+| You should not -- they are *policy*. Write `tls.min_version` / `tls.cipher_suites` in
+  `gateway.yaml`. An environment variable naming the same runtime knob is outranked *once the neutral
+  key is declared*, and still applies while it is omitted, so setting both is how you end up unsure
+  which one is in force. See link:#_terminated_listener_tls_policy[the terminated-listener table].
 
 | Whether management serves HTTPS
 | Yes, via `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME` -- or in `gateway.yaml` via
@@ -395,7 +402,10 @@ above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
 | Yes -- every port is deployment-bound. `gateway.yaml` owns none of them.
 
 | Certificates, keys, trust anchors
-| Yes -- all material is deployment-supplied. `gateway.yaml` names trust *profiles*, never material.
+| Yes -- all material is deployment-supplied; `gateway.yaml` never carries material. For JWKS trust it
+  names a *profile* the deployment binds. The one exception is `tls.mtls.client_ca`, which names a
+  filesystem *path* to a deployment-mounted CA bundle -- a reference to material, still not the
+  material itself.
 
 | Native-image SSL support
 | No -- build-time. It is set in the Maven `native` profile.

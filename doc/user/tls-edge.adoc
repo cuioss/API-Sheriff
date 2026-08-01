@@ -37,14 +37,21 @@ Operating rules:
   TLSv1.3 only. Any other value fails the boot rather than being silently dropped.
 * *A cipher allowlist is a maintenance commitment.* Omitting `cipher_suites` is the recommended
   default -- the runtime's selection tracks upstream deprecations for you. Once you list suites, that
-  list is frozen until you edit it, and a list that no enabled protocol offers produces a listener
-  that negotiates nothing. Keep it consistent with `min_version`.
+  list is frozen until you edit it. Keep it consistent with `min_version`: a list that leaves one of
+  the enabled protocols with nothing to negotiate is refused at boot, naming the stranded protocol,
+  rather than binding a listener that fails every handshake from that protocol's clients. A `"1.2"`
+  floor enables TLSv1.3 too, so a TLS 1.2-only list strands TLSv1.3 just as a TLS 1.3-only list
+  strands TLSv1.2. An unsupported suite *name* is refused the same way.
 * *These keys govern the TERMINATED listener only.* They do not apply to a passthrough connection,
   and no amount of configuration could make them: the front listener terminates nothing, so for a
   passthrough hostname the *backend's* TLS policy is the effective one, end to end. If you need a
   floor on a passthrough backend, set it on that backend.
-* *These keys are effective, and they are the only source.* There is deliberately no raw
-  `quarkus.tls.*` policy key left in the shipped configuration for them to compete with. The
+* *These keys are effective, and they win once you declare them.* Each one is bound onto the listener
+  after the runtime has built its options, so a declared key is the last writer. The binding is per
+  key: a key you *omit* leaves the runtime's own resolution in force, which a deployment-supplied
+  variable such as `QUARKUS_HTTP_SSL_PROTOCOLS` can still reach. There is deliberately no raw
+  `quarkus.tls.*` policy key left in the shipped configuration -- the competing route is a deployment
+  variable, not something API Sheriff ships. Declare the key here rather than setting both. The
   disposition of every key that used to live there is recorded in
   link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
@@ -99,6 +106,16 @@ tls:
 A connection presenting no certificate, or one that does not chain to `client_ca`, is rejected at
 the *TLS handshake* -- before any HTTP is exchanged. There is no application-level fallback and no
 "optional/want" mode: mTLS is require-and-verify or off.
+
+*Why a path appears here at all.* Elsewhere this guide says `gateway.yaml` carries no certificate or
+trust material, and that still holds: `client_ca` is a *reference*, not material. It names the
+filesystem location where the deployment mounted its CA bundle; the bundle itself is
+deployment-supplied and deployment-rotated, and never appears in the document. The document therefore
+still moves between environments unedited, provided the mount point is stable -- keep the path a
+stable convention (a fixed mount point) rather than an environment-specific one, or you have made
+`gateway.yaml` environment-specific through the back door. This is a named exception to the
+neutral-names rule, recorded in
+link:../configuration.adoc#_client_ca_carve_out[the `client_ca` carve-out].
 
 == Operator Consideration: Emergency Trust-Root Replacement
 

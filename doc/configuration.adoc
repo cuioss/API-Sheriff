@@ -160,8 +160,10 @@ metadata:
   config_version: "2026-07-10.1"   # audit stamp only (see "Configuration Mode")
 
 tls:                               # TLS POLICY for the terminated listener. Neutral names only:
-                                   #   ports and certificate/trust material stay deployment-
-                                   #   supplied and never appear here (ADR-0025)
+                                   #   ports and certificate/key material stay deployment-supplied
+                                   #   and never appear here (ADR-0025). One named exception:
+                                   #   mtls.client_ca below REFERENCES a trust anchor by path --
+                                   #   see "the client_ca carve-out"
   min_version: "1.3"
   cipher_suites: []                # OPTIONAL allowlist, e.g.
                                    #   [TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256].
@@ -813,8 +815,12 @@ the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
 | *Optional* cipher allowlist for the *terminated* listener, given as JSSE suite names (e.g.
   `TLS_AES_256_GCM_SHA384`). Each listed suite is enabled; an omitted or empty list leaves the
   runtime's own suite selection untouched, which is the recommended default -- an allowlist is a
-  commitment to maintain it as suites are deprecated. Declaring suites that no enabled protocol
-  offers yields a listener that negotiates nothing, so keep the list consistent with `min_version`.
+  commitment to maintain it as suites are deprecated. Two operator errors are refused at boot rather
+  than producing a listener that binds and then fails every handshake: a suite name this JDK does not
+  support, and a list that leaves one of the protocols enabled by `min_version` with nothing to
+  negotiate. The second is easy to hit -- a `1.2` floor also enables TLSv1.3, so an allowlist of only
+  TLS 1.2 suites (or only TLS 1.3 suites) strands one of them. Keep the list consistent with
+  `min_version`, or the boot aborts naming the stranded protocol.
 
 | `alpn`
 | Advertised ALPN protocols for the *terminated* listener. `h2` also carries gRPC ("gRPCS" when
@@ -826,6 +832,23 @@ the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
   on passthrough the gateway never participates in the handshake).
 |===
 
+[[_client_ca_carve_out]]
+*The `client_ca` carve-out.* `mtls.client_ca` is the one key in this block that points at trust
+material, so it needs stating precisely rather than being waved past. What `gateway.yaml` carries is
+a *reference* -- a filesystem path naming where the deployment mounted its CA bundle -- never the
+material itself. The bundle is deployment-supplied, deployment-mounted and deployment-rotated; the
+document commits only to the location, which is why it still moves between environments unedited as
+long as the mount point is stable.
+
+link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]'s
+three-way rule classifies trust *material* as deployment-bound and does not, as written, distinguish
+a path reference to that material from the material itself. This carve-out is therefore recorded here
+as an explicitly named exception rather than as a rule the ADR already carries. Note the contrast with
+the JWKS surface, where
+link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+has `tls_profile` name a *profile* the deployment binds to material, keeping the path out of the
+document entirely; `mtls.client_ca` does not currently have that indirection.
+
 [[_tls_scope_limit]]
 *Scope limit -- these keys govern the terminated listener only.* `min_version`, `cipher_suites`
 and `alpn` are applied to the listener the gateway itself terminates. They do *not* and cannot
@@ -835,12 +858,22 @@ terminated listener (link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_li
 For a passthrough hostname the *backend's* own TLS policy is the effective one, end to end. This is
 a statement of what the policy can mean, not a limitation more configuration could lift.
 
-*These keys are the single effective source.* The three policy keys above are bound onto the
-terminated listener by a customizer that runs after the runtime has built its SSL options, so what
-is written here is what the listener starts with. There is deliberately no raw `quarkus.tls.*`
-policy key left in `application.properties` for them to compete with -- see
-link:#_server_tls_key_verdicts[Server-TLS key verdicts] for the disposition of every key that used
-to live there, and
+[[_tls_precedence]]
+*These keys are the effective source when they are declared.* Each of the three policy keys above is
+bound onto the terminated listener by a customizer that runs after the runtime has built its SSL
+options, so what is written here is what the listener starts with. The binding is *per key*, and the
+customizer is a no-op for any key `gateway.yaml` omits -- so an omitted key leaves the runtime's own
+resolution in force, including a deployment-supplied environment variable naming the same runtime
+knob. Declaring `tls.min_version` makes it authoritative over `QUARKUS_HTTP_SSL_PROTOCOLS`; omitting
+it leaves that variable effective. This is not theoretical: the `api-sheriff-mtls` integration
+instance pins TLS 1.2 exactly that way today.
+
+Read that as a statement about *precedence*, not as a retraction of the single-source claim. There is
+deliberately no raw `quarkus.tls.*` policy key left in `application.properties` -- that remains true,
+and it is what removed the inert shipped surface. The route that can still compete is a
+deployment-supplied `quarkus.http.ssl.*` variable, which is a different mechanism from a shipped key.
+See link:#_server_tls_key_verdicts[Server-TLS key verdicts] for the disposition of every key that
+used to live there, and
 link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
 for the classification rule that decides where a new knob belongs.
 
@@ -948,7 +981,9 @@ the link:user/tls-edge.adoc[operator TLS-edge topic].
 [[_server_tls_key_verdicts]]
 === Server-TLS key verdicts
 
-`gateway.yaml` is the single effective source of server-TLS *policy*. The table below records the
+`gateway.yaml` is the effective source of server-TLS *policy* for every policy key it declares; a key
+it omits falls back to the runtime's own resolution, which a deployment-supplied environment variable
+can still reach (see link:#_tls_precedence[the precedence rule above]). The table below records the
 disposition of every raw `quarkus.*` server-TLS key that used to live in `application.properties`,
 classified by
 link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]'s
