@@ -65,9 +65,13 @@ regeneration_needed() {
 
     # All three artifacts are issued in one pass with the same validity, so the CA certificate's
     # expiry is representative of the set — and unlike the PKCS#12 keystores it can be inspected
-    # without a password. A non-zero exit here also covers unreadable/corrupt material.
+    # without a password. A non-zero exit here also covers unreadable/corrupt material, which is
+    # why the reason below names those causes too rather than asserting expiry. The two keystores
+    # are checked for PRESENCE ONLY: they are tracked in git, so a truncated one is not a
+    # normal-operation state, and when it does occur MtlsHandshakeIT fails loudly on keystore load
+    # with --force as the one-step recovery. Nothing here may claim more than it checked.
     if ! openssl x509 -checkend "${RENEWAL_MARGIN_SECONDS}" -noout -in "${CERT_DIR}/mtls-client-ca.crt" >/dev/null; then
-        REGENERATION_REASON="mtls-client-ca.crt expires within $((RENEWAL_MARGIN_SECONDS / 86400)) days"
+        REGENERATION_REASON="mtls-client-ca.crt unreadable, unparseable, or expiring within $((RENEWAL_MARGIN_SECONDS / 86400)) days"
         return 0
     fi
 
@@ -75,7 +79,7 @@ regeneration_needed() {
 }
 
 if ! regeneration_needed; then
-    echo "mTLS client material already present and valid - skipping regeneration."
+    echo "mTLS client material: all three artifacts present, mtls-client-ca.crt readable and not expiring within $((RENEWAL_MARGIN_SECONDS / 86400)) days - skipping regeneration."
     echo "  (pass --force, or set MTLS_CERTS_FORCE=true, to regenerate deliberately)"
     exit 0
 fi
