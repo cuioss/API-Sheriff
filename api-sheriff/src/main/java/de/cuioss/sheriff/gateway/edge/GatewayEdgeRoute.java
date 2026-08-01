@@ -1227,12 +1227,15 @@ public class GatewayEdgeRoute {
      * trip — the codec's seal-time budget and this pre-route cap.
      * <p>
      * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only or server-mode gateway
-     * gets {@code null} and keeps the resolved baseline on every header, exactly as before. By HEADER:
-     * within a cookie-mode gateway the raised cap applies to the {@code Cookie} / {@code Set-Cookie}
-     * values only — {@link BasicChecksStage} keeps the baseline policy for every other header, and
-     * every non-length validator (null-byte, control-character, injection-pattern) still applies to
-     * the cookie value. It remains a deliberate relaxation of an inbound hardening control, held as
-     * narrow as the pre-route position allows.
+     * gets {@code null}, so no cookie carve-out exists there and its {@code Cookie} /
+     * {@code Set-Cookie} values are measured at the resolved baseline like any other header. By
+     * HEADER: within a cookie-mode gateway the raised cap reaches the {@code Cookie} /
+     * {@code Set-Cookie} values only. {@link BasicChecksStage} selects the value pipeline on the
+     * header NAME across three branches — an {@code Authorization} value takes the separate,
+     * unconditional carve-out of {@link #authorizationHeaderConfigurationFor}, and every OTHER header
+     * keeps the resolved baseline policy. Every non-length validator (null-byte, control-character,
+     * injection-pattern) still applies to the cookie value. It remains a deliberate relaxation of an
+     * inbound hardening control, held as narrow as the pre-route position allows.
      * <p>
      * <strong>Recorded constraint — enforcement is gateway-wide, not per-anchor.</strong> Stage 1
      * runs BEFORE route selection and this bean holds the whole route table, so no anchor exists at

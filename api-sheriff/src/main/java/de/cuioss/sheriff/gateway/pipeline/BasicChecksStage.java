@@ -61,8 +61,9 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>{@code Cookie} / {@code Set-Cookie}</strong> — a cookie-mode BFF's sealed session
  *       cookie is designed to a multi-kilobyte budget the resolved baseline would reject at the edge
  *       on every authenticated request. The OPTIONAL {@code cookieHeaderConfiguration} supplies the
- *       raised cap; a bearer-only or server-mode gateway passes {@code null} and keeps the resolved
- *       baseline on every header, byte-for-byte unaffected. Its budget key is
+ *       raised cap; a bearer-only or server-mode gateway passes {@code null}, so no cookie carve-out
+ *       exists there and its {@code Cookie} / {@code Set-Cookie} values are measured at the resolved
+ *       baseline like any other header. Its budget key is
  *       {@code oidc.session.max_cookie_size}.</li>
  *   <li><strong>{@code Authorization}</strong> — a bearer token plus its {@code Bearer } prefix
  *       routinely exceeds the {@code strict} baseline, which would reject every bearer request here,
