@@ -1,0 +1,169 @@
+= ADR-0025: A security bound declared at one inbound-validation stage is re-asserted at every later stage that re-validates the same input
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A bound declared at one inbound-validation stage — a carve-out, a relaxation, a cap — is either re-asserted at every later stage that re-validates the same input or explicitly delegated to it; the derivation is owned by one shared seam so the stages cannot silently disagree
+// tags: security, input-validation, pipeline-stages, invariants, defence-in-depth, configuration-derivation, blast-radius
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+Inbound validation is not one check but a sequence of stages either side of route selection. A
+pre-route floor runs before any route is known, so it must measure every request against the
+gateway-wide baseline. A post-route stage re-validates the same request under the route's own
+configuration whenever that configuration diverges from the baseline. Both stages measure the same
+inbound properties of the same request; they differ only in which configuration they measure it
+against.
+
+That shape is deliberate and is not going away: routing must decide on canonicalised, validated
+input, so some validation necessarily precedes it, and a route that declares its own security
+posture must have that posture applied, so some validation necessarily follows it.
+
+The shape creates a failure mode that has no natural detector. When a deliberate exception is
+granted — a carve-out admitting a longer value for one named header, a bound stated as a guarantee —
+it is granted *at a stage*. The stage that grants it is visible, reviewed and documented. The later
+stage that re-derives its own configuration from a different source is not obviously part of that
+decision at all, and it independently arrives at a stricter answer. The request is admitted by the
+stage that was reasoned about and rejected by the stage that was not.
+
+Nothing about this is loud. Every stage is individually correct against its own configuration. No
+validator is missing. The exception's record is accurate about the stage it names. The defect exists
+only in the *relationship* between stages, and the relationship is exactly what no single stage's
+code, tests or documentation describes. The same is true of derivation: when two stages each
+construct their own copy of a multi-component configuration object, the copies agree only for as
+long as someone remembers both exist, and a component added to one is silently dropped by the other.
+
+The question this record settles is what a validation stage owes a bound that some other stage
+declared.
+
+== Decision
+
+*A bound declared at one inbound-validation stage is either re-asserted at every later stage that
+re-validates the same input, or explicitly delegated to a named later stage. Silence is not a third
+option, and the derivation that realises the bound is owned by one shared seam rather than
+reconstructed per stage.*
+
+Three obligations follow, and they are jointly what makes the property hold.
+
+=== Re-assert or delegate, never assume
+
+A stage that re-validates an input another stage already validated inherits every bound asserted
+about that input. Either it applies the bound under its own configuration, or the declaring record
+names the stage the check moves to and what that stage validates instead. The delegation form is
+legitimate and is used: a request terminating at a gateway-owned handler never reaches the
+post-route stage, and its parameter validation moves to a handler that knows each parameter's
+grammar — a check strictly more precise than the generic one. What is not legitimate is a bound
+that simply stops at a stage boundary because no one asked where it stopped.
+
+=== One derivation seam, not one per stage
+
+Where several stages must derive the same policy from different configurations, the derivation is
+written once and parameterised by the configuration, not copied per stage. A shared seam takes the
+stage's own resolved configuration and applies the exception to it, so each stage's answer differs
+in exactly the way the stages differ — the configuration it was handed — and in no other way. This
+is what makes a bound like "only the length cap changes" structurally true rather than
+comment-asserted: a seeding that carries every component forward cannot silently drop one, whereas
+a per-stage copy of a component list is a list that must be maintained twice and will not be.
+
+=== The direction of a relaxation is uniform across sites
+
+A relaxation must relax at every site that honours it. A site deriving a *stricter* value than the
+bound it implements has inverted the exception's purpose, and it does so most easily at a site whose
+configuration differs from the one the bound was reasoned against. Each site therefore states its
+direction explicitly. Where a value below the baseline is a legitimate input from another subsystem,
+the site clamps; where it is an operator error, the site refuses fail-closed at boot rather than
+quietly clamping, so the diagnostic is not traded away for uniformity of mechanism.
+
+== Consequences
+
+=== Positive
+
+* A relaxation's stated blast radius is its actual blast radius at every stage, so the enumeration a
+  reviewer reads is the one the gateway enforces.
+* A defect in the relationship between stages becomes a defect in one shared seam, where it is
+  reviewable and testable, rather than an emergent property of two independently correct components.
+* Adding a validation stage, or adding a carve-out to an existing one, has an explicit obligation
+  attached: enumerate the stages that re-validate the same input and state each one's position.
+* A configuration object gaining a component propagates to every derived policy automatically,
+  instead of silently reverting the new component to a default at whichever site was not updated.
+
+=== Negative
+
+* Every new carve-out costs more than its declaring site: the author must walk the pipeline and
+  state a position per stage, even where the position is "unchanged".
+* A shared derivation seam couples the stages that consume it. A change to the seam is a change to
+  every stage, which is the intended trade but is a real constraint on changing one stage alone.
+* Uniform direction does not imply uniform mechanism — clamping at one site and boot refusal at
+  another is deliberate, and the asymmetry has to be stated at each site or it reads as an
+  inconsistency.
+
+=== Risks
+
+* *Stage inventory drift.* The obligation is only as good as the enumeration of stages that
+  re-validate a given input. A newly added stage that re-derives its own policy reintroduces exactly
+  the failure this record addresses, and it does so silently.
+* *Delegation without a receiver.* The delegate form moves a check rather than removing it, so it
+  holds only while the named receiver actually performs it. A delegation whose receiver never
+  implements the check is indistinguishable, from the pipeline's perspective, from an omission.
+* *Seam erosion.* A stage under pressure to differ "just slightly" from the shared derivation is the
+  first step back to per-stage copies. The seam's value is that it has no per-stage branch.
+
+== Alternatives Considered
+
+*Let each stage derive its own policy from its own configuration, and document the relationship.*
+This is the smallest possible arrangement and keeps every stage independently comprehensible.
+Rejected because documentation is the mechanism that has already been observed to fail in exactly
+this position: a bound stated as a guarantee in prose, with nothing structural upholding it,
+diverged from the shipped behaviour without any check noticing. Prose cannot enforce a relationship
+between two components that never reference each other.
+
+*Collapse validation into a single stage so no relationship exists.* This removes the failure class
+outright rather than managing it. Rejected because it is not achievable: routing must decide on
+validated input, and a route's own declared posture must be applied to it, so at least one check
+must precede route selection and at least one must follow it. Deferring all validation until after
+routing means routing on unvalidated input, which is a strictly worse exposure than the one being
+avoided.
+
+*Make the later stage simply skip inputs an earlier stage already accepted.* This would make the
+first decision final and needs no shared derivation at all. Rejected because it discards the entire
+purpose of per-route posture: a route stricter than the gateway would no longer be stricter, and the
+route-level configuration surface would silently stop meaning anything for every property the floor
+also checks. It fixes the disagreement by deleting one side of it.
+
+*Enforce the property with a test per carve-out rather than a structural seam.* Tests are cheap and
+name the invariant explicitly. Rejected as the primary mechanism because a test asserts the cases
+someone thought to write; the failure mode here is precisely a stage or a component nobody thought
+about. Tests remain valuable as controls, but they detect a known instance rather than preventing
+the class.
+
+The rejected options divide into two kinds. One kind removes the relationship by removing a
+capability the architecture needs — per-route posture, or validation ahead of routing. The other
+kind leaves the relationship in place and relies on someone remembering it. The chosen position
+keeps both stages and both capabilities, and makes the relationship a component with a name.
+
+== Generalisation
+
+Wherever the same input is validated more than once against different configurations, an exception
+granted at one validation point is a statement about the input, not about the point. The diagnostic
+question when granting one is: *which other component re-examines this same input, and under which
+configuration?* Each answer is either "it applies the same exception, derived from its own
+configuration" or "the exception is delegated to it and it validates the input another way". A
+component that answers neither is where the exception ends, and it will end there quietly.
+
+== References
+
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the header-value relaxations] -- the concrete carve-outs whose per-site positions this record generalises. Not superseded; ADR-0019 remains authoritative for each carve-out's bounds.
+* link:0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- fixes which checks live at which stage, and so establishes the multi-stage shape this record constrains.
+* link:../architecture.adoc[Architecture] -- the inbound pipeline's stages and their position relative to route selection.
+* link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] -- the operator-facing surface of the carve-outs and their per-site bounds.
