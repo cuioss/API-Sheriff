@@ -1,4 +1,4 @@
-= ADR-0024: Inbound filter modes — `none` is a partial disable retaining the body cap and path allowlist, and is refused on authenticated and BFF routes
+= ADR-0024: Inbound filter modes — `minimal` is a partial disable retaining the body cap and path allowlist, and is refused on authenticated and BFF routes
 :toc: left
 :toclevels: 2
 :sectnums:
@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The inbound-filter mode set is strict/lenient/none with an omitted profile resolving to strict; none is a bounded PARTIAL disable turning off only the url-parameter name/value validation and the per-route pipeline re-run, retaining the pre-route floor, the body cap and the path allowlist, and refused fail-closed at boot on effectively-authenticated and BFF routes
+// summary: The inbound-filter mode set is strict/lenient/minimal with an omitted profile resolving to strict; minimal is a bounded PARTIAL disable turning off only the url-parameter name/value validation and the per-route pipeline re-run, retaining the pre-route floor, the body cap and the path allowlist, and refused fail-closed at boot on effectively-authenticated and BFF routes
 // tags: security, input-validation, security-profile, inbound-filter, fail-closed, blast-radius, boot-validation, partial-disable
 // affects: api-sheriff
 // supersedes:
@@ -50,7 +50,7 @@ resolved until after the floor has run. This is the same structural argument
 link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]
 makes about the cookie-header cap, reached from the opposite direction.
 
-*A `none` route can be an authenticated route.* Because the profile sits on a route or anchor while
+*A `minimal` route can be an authenticated route.* Because the profile sits on a route or anchor while
 the auth floor may come from a route, an endpoint, or an anchor, nothing structurally prevents an
 operator from disabling parameter validation on a surface that mediates a session or a bearer token.
 That combination is never a deliberate posture — it is the shape a misconfiguration takes — and it is
@@ -59,16 +59,16 @@ isolation.
 
 == Decision
 
-*The mode set is `strict` / `lenient` / `none`. `none` is a bounded partial disable with a normative
-closed list of what it turns off, and it is refused at boot on effectively-authenticated and BFF
-routes.*
+*The mode set is `strict` / `lenient` / `minimal`. `minimal` is a bounded partial disable with a
+normative closed list of what it turns off, and it is refused at boot on effectively-authenticated and
+BFF routes.*
 
 Four coupled decisions follow.
 
-=== (1) The canonical mode set is strict / lenient / none, and an omitted profile resolves to strict
+=== (1) The canonical mode set is strict / lenient / minimal, and an omitted profile resolves to strict
 
 `default` is *removed* from the value space. Every remaining mode names a policy the reader can look
-up: `strict` and `lenient` are backed by their cui-http presets, and `none` is defined by decision
+up: `strict` and `lenient` are backed by their cui-http presets, and `minimal` is defined by decision
 (3) below.
 
 An omitted `security_defaults` block — or a block that omits `profile` — resolves to `strict`. The
@@ -83,19 +83,19 @@ second copy of an enumeration is a second thing to keep in sync, and the failure
 between two range gates is that the looser one silently wins. One gate, at the boundary where the
 document is bound.
 
-=== (2) `none` is a partial disable, bounded structurally and by policy
+=== (2) `minimal` is a partial disable, bounded structurally and by policy
 
-`none` disables *validation*. It is not a statement about *limits*, and it is not a bypass.
+`minimal` disables *validation*. It is not a statement about *limits*, and it is not a bypass.
 
 Two independent bounds hold it in place.
 
 *The structural bound.* The pre-route floor — path canonicalisation, header name and value
 validation, and the parameter- and header-*count* caps — runs for every request regardless of
 profile, because route selection hard-requires the canonical path it produces. No profile value can
-reach it. A `none` route is therefore still rejected for an encoded path separator, an over-cap
+reach it. A `minimal` route is therefore still rejected for an encoded path separator, an over-cap
 parameter count, and an oversized header value, exactly as a `strict` route is.
 
-*The policy bound.* `max_body_bytes` and `allowed_paths` are *retained* under `none`. Both are
+*The policy bound.* `max_body_bytes` and `allowed_paths` are *retained* under `minimal`. Both are
 enforced by the post-route stage, so unlike the floor they *could* have been placed behind the
 profile gate; they deliberately are not. Neither is an injection defence: a body cap is a resource
 guard against exhaustion, and a path allowlist is an authorisation-shaped surface restriction. An
@@ -103,14 +103,14 @@ operator asking to stop validating parameter values is not asking to remove a de
 or to widen the route's reachable surface, and reading one request as the other is the kind of
 over-delivery that turns an escape hatch into a hole.
 
-`none` therefore still needs a concrete limits policy. Since it names no preset of its own, a `none`
-route resolves its limits from the nearest non-`none` profile in its fallback chain, landing on
-`strict` when the whole chain is `none` — so the retained body cap always has a concrete number to
-enforce.
+`minimal` therefore still needs a concrete limits policy. Since it names no preset of its own, a
+`minimal` route resolves its limits from the nearest non-`minimal` profile in its fallback chain,
+landing on `strict` when the whole chain is `minimal` — so the retained body cap always has a
+concrete number to enforce.
 
-=== (3) The closed list of what `none` disables is normative
+=== (3) The closed list of what `minimal` disables is normative
 
-`none` disables exactly two things:
+`minimal` disables exactly two things:
 
 . the url-parameter *name* and *value* validation — relocated into the post-route stage so it runs
   under the route's own configuration and under this gate;
@@ -119,16 +119,16 @@ enforce.
 
 *Nothing else.* This list is the definition of the mode, not a description of the current
 implementation: adding a third item to it is a change to this ADR, not a refactor. Anything absent
-from the list keeps running under `none` — the pre-route floor, the body cap, the path allowlist,
+from the list keeps running under `minimal` — the pre-route floor, the body cap, the path allowlist,
 authentication, the method gate, the terminal-action rules, and the response-side envelope.
 
 Note what item (2) is and is not. The re-run is skipped because a route's *divergent* second pass is
 part of the profile-gated half; the *baseline* path and header validation performed by the floor has
 already run and is not repeated by it.
 
-=== (4) `none` is refused fail-closed at boot on effectively-authenticated and BFF routes
+=== (4) `minimal` is refused fail-closed at boot on effectively-authenticated and BFF routes
 
-A route whose effective profile resolves to `none` fails the boot when either
+A route whose effective profile resolves to `minimal` fails the boot when either
 
 * its *effective access level* is `authenticated`, or
 * its resolving anchor's *type* is `bff`.
@@ -151,8 +151,9 @@ link:0013-anchor-type-access-axes.adoc[ADR-0013] a `bff` anchor must be `access:
 today it is already covered by the first dimension; it is named separately so the refusal survives
 any future relaxation of that matrix rule.
 
-The global case needs no separate rule. A `security_defaults.profile: none` reaching an authenticated
-or BFF route through the fallback chain resolves to `none` at that route and is refused identically.
+The global case needs no separate rule. A `security_defaults.profile: minimal` reaching an
+authenticated or BFF route through the fallback chain resolves to `minimal` at that route and is
+refused identically.
 
 === Relationship to existing records
 
@@ -178,6 +179,9 @@ as a supersession, because the observable relaxation is unchanged.
   a token- or session-bearing surface fails at startup rather than serving weakened traffic.
 * The blast radius is reviewable rather than emergent: the closed list in decision (3) is a
   specification an implementation can be checked against.
+* The mode name states the residual posture rather than denying it. `minimal` reads as "the least
+  validation this gateway performs", which is what the mode actually is, so the name no longer works
+  against the closed list it labels.
 
 === Negative
 
@@ -186,9 +190,16 @@ as a supersession, because the observable relaxation is unchanged.
   parameter-value length and path length all drop, and suspicious-pattern failure turns on. A
   deployment relying on the looser incidental values must now declare `lenient` explicitly — which is
   the point — but it is still a break, and it lands without a deprecation window.
-* `none` is a name that over-promises. An operator reading "none" will reasonably expect the filter to
-  be off, and it is not; the documentation must carry that correction everywhere the value appears,
-  and a reader who skips the documentation will guess wrong.
+* *The mode was originally named `none`, and that name was wrong.* An operator reading "none" would
+  reasonably expect the filter to be off, and it is not: the pre-route floor, the body cap and the
+  path allowlist all keep running. A name that has to be corrected everywhere it appears is a defect
+  in the name, not a documentation burden to be absorbed — so the value was renamed to `minimal`,
+  which describes the residual posture instead of contradicting it. The correction is a *breaking
+  configuration change*: the schema enum no longer admits `none` at any of its three profile sites, so
+  a deployment declaring `profile: none` fails boot with a value-range violation rather than
+  silently resolving. It lands without a deprecation window, consistent with the project's pre-1.0
+  posture. Note that `auth.require: none` is a *different* knob in a different value space and is
+  untouched by this rename.
 * The closed list is a maintenance obligation. A future change moving a check across the profile gate
   is a change to this record, and nothing in the type system enforces that.
 * Two gates now govern the same knob — the schema owns the value range, the validator owns the posture
@@ -196,17 +207,18 @@ as a supersession, because the observable relaxation is unchanged.
 
 === Risks
 
-* *Mode-name misreading in production.* The likeliest failure is an operator setting `none` believing
-  it disables the filter and later discovering the body cap still rejects. Mitigated by the
-  documentation, and by the fact that this direction of surprise is the safe one: the mode enforces
-  more than expected, never less.
+* *Mode-name misreading in production.* The original `none` spelling invited an operator to believe
+  the filter was off and to discover later that the body cap still rejects. The rename to `minimal`
+  addresses the cause rather than mitigating the symptom, but the residual risk is not zero: an
+  operator may still under-estimate how much `minimal` leaves running. That direction of surprise is
+  the safe one — the mode enforces more than expected, never less.
 * *Erosion of the closed list.* Each future request to move "just one more" check behind the profile
   gate is individually plausible and collectively turns the partial disable into the wholesale one
   this record rejects. The list is the limit, not a starting point.
 * *The refusal being read as the whole guard.* The refusal covers authenticated and BFF routes. A
-  `none` route on a genuinely public surface is permitted, and its parameter values really are
+  `minimal` route on a genuinely public surface is permitted, and its parameter values really are
   unvalidated — the operator still owns that decision. The refusal narrows the blast radius; it does
-  not make `none` safe everywhere.
+  not make `minimal` safe everywhere.
 * *Baseline drift between the floor and a route.* The floor runs under the gateway-wide profile while
   each route runs under its own, so a deployment lowering the global baseline to `lenient` loosens the
   floor for *every* route, including `strict` ones, because the floor precedes route selection. This
@@ -220,21 +232,29 @@ reviewed: it names a deferral rather than a policy, and it silently became the b
 configuration omitting a global posture — putting the loosest-by-accident value where the
 safest-by-construction one belongs.
 
-*Make `none` a wholesale skip of the post-route stage.* This is the simplest possible semantics — one
-branch, no closed list to maintain, and it matches what the name suggests. Rejected because it
-over-delivers on the request that motivates the mode. An operator asking to stop validating parameter
-values is not asking to remove the body cap or to widen the route's reachable surface, and a mode
-granting all three cannot be reviewed as a bounded relaxation: its residual exposure becomes
+*Keep the `none` spelling and correct it in prose.* This is what the record originally did: it named
+the over-promise as a Negative consequence and pushed the correction into every place the value
+appears. Rejected because a name that must be contradicted wherever it is read is a defect in the
+name. The prose correction is unbounded — it has to reach the schema description, the configuration
+reference, the user guide and every configuration comment — and a reader who skips any one of them
+guesses wrong in the unsafe direction. `minimal` costs one breaking rename and buys a name that needs
+no correction at all.
+
+*Make `minimal` a wholesale skip of the post-route stage.* This is the simplest possible semantics —
+one branch, no closed list to maintain, and it matches what the original name suggested. Rejected
+because it over-delivers on the request that motivates the mode. An operator asking to stop validating
+parameter values is not asking to remove the body cap or to widen the route's reachable surface, and a
+mode granting all three cannot be reviewed as a bounded relaxation: its residual exposure becomes
 "everything the stage would have done", which is not enumerable. The closed list costs a maintenance
 obligation and buys a reviewable blast radius; that trade is the whole point of the record.
 
-*Let `none` reach the pre-route floor too.* Rejected as *not achievable* rather than merely
+*Let `minimal` reach the pre-route floor too.* Rejected as *not achievable* rather than merely
 undesirable: route selection consumes the canonical path the floor produces, so a request whose
 profile suppressed the floor would have no path to select a route with — and no route means no profile
 to read. The impossibility is structural and worth stating explicitly, because "make the off switch
 actually turn everything off" is the obvious next request.
 
-*Warn instead of refusing `none` on authenticated and BFF routes.* This preserves operator autonomy
+*Warn instead of refusing `minimal` on authenticated and BFF routes.* This preserves operator autonomy
 and breaks no existing configuration. Rejected because a boot WARN on a security posture is a signal
 nobody reads: the deployment serves weakened traffic in the meantime, and the combination has no
 legitimate use that would justify the escape. Where a warning is the right instrument the gateway
@@ -255,10 +275,11 @@ check.
 
 The rejected alternatives divide cleanly. One group widens the escape hatch past the requirement that
 motivates it — the wholesale skip, reaching the floor, keeping `default` — while the other refuses to
-commit to a bound at all, whether by warning instead of refusing or by checking a weaker predicate
-than the real one. The chosen position is the narrowest disable satisfying the operator's actual
-requirement, with a normative list of what it gives up and a boot refusal on the one combination that
-is never deliberate.
+commit to a bound at all, whether by warning instead of refusing, by checking a weaker predicate
+than the real one, or by leaving a misleading name in place and correcting it in prose. The chosen
+position is the narrowest disable satisfying the operator's actual requirement, under a name that
+states what it leaves running, with a normative list of what it gives up and a boot refusal on the one
+combination that is never deliberate.
 
 == References
 
@@ -266,6 +287,6 @@ is never deliberate.
 * link:0009-asymmetric-alias-resolution-failure.adoc[ADR-0009 -- Asymmetric alias-resolution failure] -- establishes the configuration validator as the single authoritative reporter whose all-violations pass the boot refusal collects into.
 * link:0013-anchor-type-access-axes.adoc[ADR-0013 -- Anchor type and access axes] -- the type and access classification the BFF refusal dimension reads. Not superseded.
 * link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the cookie-header relaxation] -- the same structural argument about pre-route scoping; amended, not superseded, by this record.
-* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap is the effective one] -- defines the cap this record retains under `none`, including the framework floor it sits under and the 413 a breach renders. Not superseded.
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap is the effective one] -- defines the cap this record retains under `minimal`, including the framework floor it sits under and the 413 a breach renders. Not superseded.
 * link:../architecture.adoc[Architecture] -- the three-stage inbound pipeline this record's bounds are expressed against.
 * link:../configuration.adoc[Configuration Reference] -- the `security_defaults` and `security_filter` blocks carrying the `profile` knob.

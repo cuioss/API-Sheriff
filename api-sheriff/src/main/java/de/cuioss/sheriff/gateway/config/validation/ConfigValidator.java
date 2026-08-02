@@ -91,7 +91,7 @@ import org.jspecify.annotations.Nullable;
  * auth block. These collect into the same shared list and never fail fast.
  * <p>
  * The fail-closed inbound-filter mode refusal (ADR-0024) adds one more: a route whose effective
- * {@code profile} resolves to {@code none} must be neither effectively authenticated nor anchored
+ * {@code profile} resolves to {@code minimal} must be neither effectively authenticated nor anchored
  * under a {@code type: bff} anchor. The {@code profile} <em>value range</em> is owned by the bundled
  * JSON Schema, so no post-binding range rule exists here — only this posture refusal.
  * <p>
@@ -147,7 +147,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSecurityProfileNone(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateSecurityProfileMinimal(gateway, endpoints, errors),
             ConfigValidator::validateTerminalAction,
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
@@ -648,8 +648,8 @@ public final class ConfigValidator {
 
     /**
      * Rule: the fail-closed inbound-filter mode refusal (ADR-0024). A route whose effective
-     * {@code profile} resolves to {@link SecurityProfile#NONE} must be neither effectively
-     * authenticated nor anchored under a {@code type: bff} anchor. {@code none} drops the
+     * {@code profile} resolves to {@link SecurityProfile#MINIMAL} must be neither effectively
+     * authenticated nor anchored under a {@code type: bff} anchor. {@code minimal} drops the
      * url-parameter name/value validation, and dropping it in front of a token- or session-bearing
      * surface is never a deliberate posture — so the boot fails rather than serving the weakened
      * route.
@@ -659,27 +659,27 @@ public final class ConfigValidator {
      * endpoint may legally <em>strengthen</em> a {@code public}-access anchor's auth floor (ADR-0007
      * forbids weakening it, not strengthening it), and reading the anchor's static {@code access}
      * would under-refuse exactly those routes. The gateway-wide case needs no separate rule: a
-     * {@code security_defaults.profile: none} reaching an authenticated or BFF route through the
-     * fallback resolves to {@code none} here and is refused identically.
+     * {@code security_defaults.profile: minimal} reaching an authenticated or BFF route through the
+     * fallback resolves to {@code minimal} here and is refused identically.
      * <p>
      * The message names the route, the refusing dimension and the remedy, and echoes no configured
      * scalar value. Every violation collects into the shared list; the rule never fails fast
      * (ADR-0009).
      */
-    private static void validateSecurityProfileNone(GatewayConfig gateway, List<EndpointConfig> endpoints,
+    private static void validateSecurityProfileMinimal(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
-                if (effectiveProfile(gateway, route, anchor) != SecurityProfile.NONE) {
+                if (effectiveProfile(gateway, route, anchor) != SecurityProfile.MINIMAL) {
                     continue;
                 }
-                List<String> refusals = noneRefusalDimensions(gateway, endpoint, route, anchor);
+                List<String> refusals = minimalRefusalDimensions(gateway, endpoint, route, anchor);
                 if (!refusals.isEmpty()) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            ("route '%s' resolves inbound-filter profile 'none' but %s; 'none' is refused on "
+                            ("route '%s' resolves inbound-filter profile 'minimal' but %s; 'minimal' is refused on "
                                     + "authenticated and bff routes — declare profile 'strict' or 'lenient' for this "
-                                    + "route, or stop routing it through a 'none' fallback")
+                                    + "route, or stop routing it through a 'minimal' fallback")
                                     .formatted(route.id(), String.join(" and ", refusals))));
                 }
             }
@@ -687,11 +687,11 @@ public final class ConfigValidator {
     }
 
     /**
-     * The dimensions on which a {@code profile: none} route is refused: an effectively-authenticated
-     * access level, a {@code type: bff} anchor, or both. An empty list means the route may legally
-     * run under {@code none}.
+     * The dimensions on which a {@code profile: minimal} route is refused: an
+     * effectively-authenticated access level, a {@code type: bff} anchor, or both. An empty list
+     * means the route may legally run under {@code minimal}.
      */
-    private static List<String> noneRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
+    private static List<String> minimalRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route, @Nullable AnchorConfig anchor) {
         List<String> refusals = new ArrayList<>();
         AuthConfig auth = effectiveAuth(gateway, endpoint, route);

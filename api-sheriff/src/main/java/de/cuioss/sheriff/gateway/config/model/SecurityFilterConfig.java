@@ -27,12 +27,12 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * An omitted {@code profile} inherits the gateway-wide value from
  * {@code security_defaults} (which itself resolves to {@link SecurityProfile#DEFAULT_PROFILE} when
- * omitted). A {@code none} profile disables only the url-parameter name/value validation and the
+ * omitted). A {@code minimal} profile disables only the url-parameter name/value validation and the
  * per-route pipeline re-run — the limits below, including {@code max_body_bytes}, keep being
- * enforced against the nearest non-{@code none} profile's preset.
+ * enforced against the nearest non-{@code minimal} profile's preset.
  *
  * @param profile              the inbound-filter mode — {@code strict} / {@code lenient} /
- *                             {@code none}, see {@link SecurityProfile} — {@code null} when the
+ *                             {@code minimal}, see {@link SecurityProfile} — {@code null} when the
  *                             {@code security_defaults} fallback applies
  * @param allowedPaths         the path allowlist entries, empty when none
  * @param maxHeaderCount       the maximum header count, {@code null} when omitted

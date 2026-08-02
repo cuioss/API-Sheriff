@@ -219,7 +219,7 @@ class ThoroughChecksStageTest {
 
     /**
      * The relocated url-parameter validation: it now runs here, under the ROUTE's configuration,
-     * for every non-{@code none} route — unconditionally, because it is the only run rather than a
+     * for every non-{@code minimal} route — unconditionally, because it is the only run rather than a
      * re-run.
      */
     @Nested
@@ -280,12 +280,12 @@ class ThoroughChecksStageTest {
     }
 
     /**
-     * The {@code none} partial-disable matrix. The closed list of what {@code none} turns off is the
-     * relocated parameter validation and the pipeline re-run — and nothing else.
+     * The {@code minimal} partial-disable matrix. The closed list of what {@code minimal} turns off is
+     * the relocated parameter validation and the pipeline re-run — and nothing else.
      */
     @Nested
-    @DisplayName("profile: none — the partial disable")
-    class NoneModePartialDisable {
+    @DisplayName("profile: minimal — the partial disable")
+    class MinimalModePartialDisable {
 
         @Test
         @DisplayName("still enforces the body cap")
@@ -298,7 +298,7 @@ class ThoroughChecksStageTest {
                     .declaredContentLength(cap + 1)
                     .build();
             request.canonicalPath("/api/orders");
-            request.selectedRoute(route(SecurityProfile.NONE, defaultConfiguration));
+            request.selectedRoute(route(SecurityProfile.MINIMAL, defaultConfiguration));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -313,7 +313,7 @@ class ThoroughChecksStageTest {
         void stillEnforcesAllowedPaths() {
             // Arrange
             PipelineRequest request = requestFor("/api/other",
-                    route(SecurityProfile.NONE, defaultConfiguration));
+                    route(SecurityProfile.MINIMAL, defaultConfiguration));
 
             // Act
             List<String> allowedPaths = List.of("/api/orders");
@@ -325,17 +325,17 @@ class ThoroughChecksStageTest {
         }
 
         @Test
-        @DisplayName("accepts a parameter name and value a non-none route rejects")
+        @DisplayName("accepts a parameter name and value a non-minimal route rejects")
         void acceptsParameterValidationTheModeDisables() {
-            // Arrange — both halves of the relocated validation are off under 'none'
+            // Arrange — both halves of the relocated validation are off under 'minimal'
             PipelineRequest request = requestWithParameters(
                     Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE),
                             REJECTED_PARAMETER_NAME, List.of("ok")),
-                    route(SecurityProfile.NONE, defaultConfiguration));
+                    route(SecurityProfile.MINIMAL, defaultConfiguration));
 
             // Act + Assert
             assertDoesNotThrow(() -> stage.process(request, List.of()),
-                    "'none' disables the relocated url-parameter name/value validation");
+                    "'minimal' disables the relocated url-parameter name/value validation");
         }
 
         @Test
@@ -343,16 +343,16 @@ class ThoroughChecksStageTest {
         void skipsPipelineReRun() {
             // Arrange — a divergent strict config over a path the re-run would reject
             PipelineRequest request = requestFor("/api/../etc/passwd",
-                    route(SecurityProfile.NONE, SecurityConfiguration.strict()));
+                    route(SecurityProfile.MINIMAL, SecurityConfiguration.strict()));
 
             // Act + Assert
             assertDoesNotThrow(() -> stage.process(request, List.of()),
-                    "'none' disables the per-route pipeline re-run");
+                    "'minimal' disables the per-route pipeline re-run");
         }
 
         @Test
-        @DisplayName("a strict route rejects the very path and parameters the none route accepted")
-        void strictRouteStillRejectsWhatNoneAccepts() {
+        @DisplayName("a strict route rejects the very path and parameters the minimal route accepted")
+        void strictRouteStillRejectsWhatMinimalAccepts() {
             // Arrange — the control case that makes the two assertions above meaningful
             PipelineRequest divergentPath = requestFor("/api/../etc/passwd",
                     route(SecurityProfile.STRICT, SecurityConfiguration.strict()));
@@ -362,9 +362,9 @@ class ThoroughChecksStageTest {
 
             // Act + Assert
             assertThrows(GatewayException.class, () -> stage.process(divergentPath, List.of()),
-                    "the same path is rejected once the profile is not 'none'");
+                    "the same path is rejected once the profile is not 'minimal'");
             assertThrows(GatewayException.class, () -> stage.process(badParameters, List.of()),
-                    "the same parameters are rejected once the profile is not 'none'");
+                    "the same parameters are rejected once the profile is not 'minimal'");
         }
     }
 
@@ -401,16 +401,16 @@ class ThoroughChecksStageTest {
         }
 
         @Test
-        @DisplayName("leaves the header name unvalidated under profile: none — the closed disable list is unchanged")
-        void skipsHeaderNameValidationUnderNone() {
-            // Arrange — the same stricter route policy, this time on a 'none' route
+        @DisplayName("leaves the header name unvalidated under profile: minimal — the closed disable list is unchanged")
+        void skipsHeaderNameValidationUnderMinimal() {
+            // Arrange — the same stricter route policy, this time on a 'minimal' route
             PipelineRequest request = requestWithHeaders(
                     Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
-                    route(SecurityProfile.NONE, stricterHeaderNamePolicy()));
+                    route(SecurityProfile.MINIMAL, stricterHeaderNamePolicy()));
 
-            // Act + Assert — reRunPipelines IS item two of what 'none' disables, in its entirety
+            // Act + Assert — reRunPipelines IS item two of what 'minimal' disables, in its entirety
             assertDoesNotThrow(() -> stage.process(request, List.of()),
-                    "'none' skips the whole skippable half, header names included");
+                    "'minimal' skips the whole skippable half, header names included");
         }
 
         @Test

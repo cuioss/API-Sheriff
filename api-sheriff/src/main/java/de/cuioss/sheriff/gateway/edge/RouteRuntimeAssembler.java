@@ -210,13 +210,13 @@ public final class RouteRuntimeAssembler {
      * A route's resolved inbound-filter posture: the effective {@link SecurityProfile} and the
      * concrete cui-http {@link SecurityConfiguration} that carries its limits.
      * <p>
-     * The configuration is always present — even under {@link SecurityProfile#NONE}, which
+     * The configuration is always present — even under {@link SecurityProfile#MINIMAL}, which
      * disables validation but never limits, so the retained {@code max_body_bytes} guard keeps a
      * concrete {@code maxBodySize} to enforce.
      *
      * @param profile       the effective mode after the
      *                      {@code security_filter → security_defaults} fallback
-     * @param configuration the limits policy: the nearest non-{@code none} profile's preset, with
+     * @param configuration the limits policy: the nearest non-{@code minimal} profile's preset, with
      *                      the route's declared limit overrides applied on top
      */
     public record SecurityPosture(SecurityProfile profile, SecurityConfiguration configuration) {

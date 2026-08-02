@@ -609,19 +609,21 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void acceptsTheNoneProfileAtEveryEnumSite() throws Exception {
-        // Arrange — the newly admitted member of the mode set, declared at all three sites at once
+    void acceptsTheMinimalProfileAtEveryEnumSite() throws Exception {
+        // Arrange — the partial-disable member of the mode set, declared at all three sites at once.
+        // The endpoint's `auth.require: none` rides along deliberately: it is a DIFFERENT knob in a
+        // different value space, so the profile rename must leave it accepted and unchanged.
         writeConfig("gateway.yaml", """
                 version: 1
                 security_defaults:
-                  profile: none
+                  profile: minimal
                 anchors:
                   api:
                     path_prefix: /api
                     type: proxy
                     access: public
                     security_filter:
-                      profile: none
+                      profile: minimal
                 """);
         writeConfig("endpoints/orders.yaml", """
                 endpoint:
@@ -634,18 +636,20 @@ class ConfigLoaderTest {
                       match:
                         path_prefix: /orders
                       security_filter:
-                        profile: none
+                        profile: minimal
                 """);
 
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert
-        assertEquals("none", loaded.gateway().securityDefaults().profile());
-        assertEquals("none",
+        assertEquals("minimal", loaded.gateway().securityDefaults().profile());
+        assertEquals("minimal",
                 loaded.gateway().anchors().get("api").securityFilter().profile());
-        assertEquals("none", loaded.endpoints().getFirst().routes().getFirst()
+        assertEquals("minimal", loaded.endpoints().getFirst().routes().getFirst()
                 .securityFilter().profile());
+        assertEquals("none", loaded.endpoints().getFirst().auth().require(),
+                "auth.require: none is a different knob and survives the profile rename");
     }
 
     @Test

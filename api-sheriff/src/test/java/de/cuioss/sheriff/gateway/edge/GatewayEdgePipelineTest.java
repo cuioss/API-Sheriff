@@ -76,8 +76,8 @@ import org.junit.jupiter.api.Test;
 class GatewayEdgePipelineTest {
 
     private static final String ORIGIN = "https://app.example";
-    /** The {@code max_body_bytes} the {@code profile: none} route declares, retained under that mode. */
-    private static final int NONE_ROUTE_BODY_CAP = 1024;
+    /** The {@code max_body_bytes} the {@code profile: minimal} route declares, retained under that mode. */
+    private static final int MINIMAL_ROUTE_BODY_CAP = 1024;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -108,7 +108,7 @@ class GatewayEdgePipelineTest {
         RouteTable routeTable = new RouteTable(List.of(
                 route("secure", "/secure", "bearer", upstreamPort, HttpMethod.GET),
                 route("echo", "/echo", "none", upstreamPort, HttpMethod.GET, HttpMethod.POST),
-                noneModeRoute(upstreamPort)));
+                minimalModeRoute(upstreamPort)));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
@@ -264,24 +264,25 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("profile: none disables only the url-parameter validation — the strict route still rejects it")
-    void noneRouteAcceptsParameterValueTheStrictRouteRejects() throws Exception {
+    @DisplayName("profile: minimal disables only the url-parameter validation — the strict route still rejects it")
+    void minimalRouteAcceptsParameterValueTheStrictRouteRejects() throws Exception {
         // Arrange — a '/' inside a parameter value is refused by the url-parameter pipeline
 
         // Act
         Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders?return_to=%2Fhome",
                 Map.of(), null);
-        Response onNoneRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed?return_to=%2Fhome",
+        Response onMinimalRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed?return_to=%2Fhome",
                 Map.of(), null);
 
         // Assert
         assertEquals(400, onStrictRoute.status(), "the strict-baseline route rejects the parameter value");
-        assertEquals(200, onNoneRoute.status(), "the none-mode route accepts it — that is what 'none' turns off");
+        assertEquals(200, onMinimalRoute.status(),
+                "the minimal-mode route accepts it — that is what 'minimal' turns off");
     }
 
     @Test
-    @DisplayName("profile: none is still governed by the whole pre-route floor")
-    void noneRouteIsStillGovernedByThePreRouteFloor() throws Exception {
+    @DisplayName("profile: minimal is still governed by the whole pre-route floor")
+    void minimalRouteIsStillGovernedByThePreRouteFloor() throws Exception {
         // Arrange — the floor runs before route selection and no profile can switch it off
         int paramCap = SecurityProfile.DEFAULT_PROFILE.preset().maxParameterCount();
         int headerCap = SecurityProfile.DEFAULT_PROFILE.preset().maxHeaderValueLength();
@@ -297,26 +298,27 @@ class GatewayEdgePipelineTest {
                 Map.of("X-Custom", "a".repeat(headerCap + 1)), null);
 
         // Assert
-        assertEquals(400, overCapParameters.status(), "the parameter-count cap still applies under 'none'");
-        assertEquals(400, encodedSeparator.status(), "the canonical-path guard still applies under 'none'");
-        assertEquals(400, oversizedHeader.status(), "header-value validation still applies under 'none'");
+        assertEquals(400, overCapParameters.status(), "the parameter-count cap still applies under 'minimal'");
+        assertEquals(400, encodedSeparator.status(), "the canonical-path guard still applies under 'minimal'");
+        assertEquals(400, oversizedHeader.status(), "header-value validation still applies under 'minimal'");
     }
 
     @Test
-    @DisplayName("profile: none still enforces max_body_bytes and allowed_paths")
-    void noneRouteStillEnforcesBodyCapAndAllowedPaths() throws Exception {
-        // Arrange — the two per-route enforcements the operator deliberately retained under 'none'
+    @DisplayName("profile: minimal still enforces max_body_bytes and allowed_paths")
+    void minimalRouteStillEnforcesBodyCapAndAllowedPaths() throws Exception {
+        // Arrange — the two per-route enforcements the operator deliberately retained under 'minimal'
 
         // Act
         Response overCapBody = send(io.vertx.core.http.HttpMethod.POST, "/open/allowed", Map.of(),
-                "a".repeat(NONE_ROUTE_BODY_CAP + 1));
+                "a".repeat(MINIMAL_ROUTE_BODY_CAP + 1));
         Response outsideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/elsewhere", Map.of(), null);
         Response insideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed", Map.of(), null);
 
-        // Assert — the body cap is the gateway's own 413, the allowlist miss a 400; 'none' changes neither
-        assertEquals(413, overCapBody.status(), "'none' is a validation statement, never a limits statement");
-        assertEquals(400, outsideAllowlist.status(), "the path allowlist survives 'none'");
-        assertEquals(200, insideAllowlist.status(), "a benign in-allowlist request on the none route is served");
+        // Assert — the body cap is the gateway's own 413, the allowlist miss a 400; 'minimal' changes neither
+        assertEquals(413, overCapBody.status(), "'minimal' is a validation statement, never a limits statement");
+        assertEquals(400, outsideAllowlist.status(), "the path allowlist survives 'minimal'");
+        assertEquals(200, insideAllowlist.status(),
+                "a benign in-allowlist request on the minimal route is served");
     }
 
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
@@ -350,15 +352,15 @@ class GatewayEdgePipelineTest {
     }
 
     /**
-     * A {@code profile: none} route carrying both retained per-route enforcements — a
+     * A {@code profile: minimal} route carrying both retained per-route enforcements — a
      * {@code max_body_bytes} cap and an {@code allowed_paths} allowlist — so the partial-disable
      * semantics are executable rather than merely documented.
      */
-    private static ResolvedRoute noneModeRoute(int upstreamPort) {
+    private static ResolvedRoute minimalModeRoute(int upstreamPort) {
         SecurityFilterConfig filter = SecurityFilterConfig.builder()
-                .profile("none")
+                .profile("minimal")
                 .allowedPaths(List.of("/open/allowed"))
-                .maxBodyBytes(NONE_ROUTE_BODY_CAP)
+                .maxBodyBytes(MINIMAL_ROUTE_BODY_CAP)
                 .build();
         return ResolvedRoute.builder()
                 .id("open")

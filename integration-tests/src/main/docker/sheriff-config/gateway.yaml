@@ -24,7 +24,7 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Every route that declares no `security_filter.profile` resolves to this value — including the
 # /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
 # parameters, 1024-character header values and parameter values, 1024-character paths) are the
-# floor the suite proves. The single `none`-mode route below is the only opt-out, and it is a
+# floor the suite proves. The single `minimal`-mode route below is the only opt-out, and it is a
 # PARTIAL one.
 #
 # `max_authorization_header_value_length` bounds the `Authorization` header VALUE only, at the

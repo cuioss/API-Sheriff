@@ -128,7 +128,7 @@ class RouteRuntimeTest {
             RouteRuntime runtime = runtimeBuilder().build();
 
             // Assert — never null (which would NPE in the ThoroughChecksStage branch) and never
-            // NONE (which would silently disable validation on a route nobody configured).
+            // MINIMAL (which would silently disable validation on a route nobody configured).
             assertEquals(SecurityProfile.STRICT, runtime.getSecurityProfile(),
                     "an omitted profile resolves to the most restrictive mode");
             assertTrue(runtime.getSecurityProfile().skippableValidationEnabled(),
@@ -140,15 +140,15 @@ class RouteRuntimeTest {
         void shouldCarryExplicitProfile() {
             // Arrange + Act
             RouteRuntime lenient = runtimeBuilder().securityProfile(SecurityProfile.LENIENT).build();
-            RouteRuntime none = runtimeBuilder().securityProfile(SecurityProfile.NONE).build();
+            RouteRuntime minimal = runtimeBuilder().securityProfile(SecurityProfile.MINIMAL).build();
 
             // Assert
             assertEquals(SecurityProfile.LENIENT, lenient.getSecurityProfile(),
                     "an explicitly resolved LENIENT overrides the builder default");
-            assertEquals(SecurityProfile.NONE, none.getSecurityProfile(),
-                    "an explicitly resolved NONE overrides the builder default");
-            assertFalse(none.getSecurityProfile().skippableValidationEnabled(),
-                    "the NONE route reports its skippable half as disabled");
+            assertEquals(SecurityProfile.MINIMAL, minimal.getSecurityProfile(),
+                    "an explicitly resolved MINIMAL overrides the builder default");
+            assertFalse(minimal.getSecurityProfile().skippableValidationEnabled(),
+                    "the MINIMAL route reports its skippable half as disabled");
         }
 
         @Test

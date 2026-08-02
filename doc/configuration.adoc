@@ -195,9 +195,9 @@ security_headers:                  # response-header middleware (global default)
     allow_credentials: true
 
 security_defaults:                 # baseline inbound filter mode; overridable per route/anchor
-  profile: strict                  # strict | lenient | none   (omitted block => strict)
-                                   # 'none' is a PARTIAL disable, not an off switch:
-                                   # see "The `none` mode" below for the closed definition
+  profile: strict                  # strict | lenient | minimal   (omitted block => strict)
+                                   # 'minimal' is a PARTIAL disable, not an off switch:
+                                   # see "The `minimal` mode" below for the closed definition
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
                                    #   (global default). An anchor or endpoint may REPLACE this
@@ -1148,12 +1148,12 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Config field | cui-http mapping | Notes
 
 | `profile`
-| `SecurityConfiguration.strict()` / `lenient()`; `none` maps to *no preset*
+| `SecurityConfiguration.strict()` / `lenient()`; `minimal` maps to *no preset*
 | The inbound-filter mode. `strict` and `lenient` are baseline presets that the limits below
-  override individually. `none` is a *dispatch mode*, not a preset: it carries no
-  `SecurityConfiguration` of its own and inherits its limits from the nearest non-`none` profile in
-  the fallback chain (landing on `strict` when the whole chain is `none`), which is what keeps its
-  retained `max_body_bytes` cap concrete. See link:#_the_none_mode[The `none` mode].
+  override individually. `minimal` is a *dispatch mode*, not a preset: it carries no
+  `SecurityConfiguration` of its own and inherits its limits from the nearest non-`minimal` profile in
+  the fallback chain (landing on `strict` when the whole chain is `minimal`), which is what keeps its
+  retained `max_body_bytes` cap concrete. See link:#_the_minimal_mode[The `minimal` mode].
 
 | `max_body_bytes`
 | *(gateway-enforced, under a framework floor)*
@@ -1179,7 +1179,7 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Traversal / encoding / character / pattern checks. Run twice under different policies: once in the
   *non-skippable pre-route floor* under the gateway-wide baseline (this is the run that produces the
   canonical path), and again *post-route* under the route's own configuration when that configuration
-  diverges from the baseline. Only the second, divergent run is switched off by `profile: none`; the
+  diverges from the baseline. Only the second, divergent run is switched off by `profile: minimal`; the
   floor's run cannot be switched off by any profile value.
 
 | `allowed_header_names` / `blocked_header_names`
@@ -1908,10 +1908,10 @@ set has exactly three members:
 | The relaxed posture, backed by `SecurityConfiguration.lenient()`. Even this preset never permits
   null bytes, and path traversal is blocked regardless of configuration.
 
-| `none`
+| `minimal`
 | A *partial* disable of the per-route validation. It is not an off switch -- see
-  link:#_the_none_mode[The `none` mode] for the closed definition of what it does and does not turn
-  off.
+  link:#_the_minimal_mode[The `minimal` mode] for the closed definition of what it does and does not
+  turn off.
 |===
 
 *An omitted `security_defaults` block -- or a block omitting `profile` -- resolves to `strict`*, the
@@ -1951,7 +1951,7 @@ an out-of-range value is rejected when the document is bound.
 anchor's profile -- the block is replaced whole, never merged. Any explicit limit keys in the winning
 block override the resolved preset's limits individually.
 
-*Fail-closed rule.* A route whose *effective* profile resolves to `none` *fails the boot* when either
+*Fail-closed rule.* A route whose *effective* profile resolves to `minimal` *fails the boot* when either
 
 * its effective access level is `authenticated`, or
 * its resolving anchor's `type` is `bff`.
@@ -1961,42 +1961,42 @@ legally strengthen a `public` anchor's auth floor (link:adr/0007-anchor-scoped-p
 forbids weakening a floor, not strengthening one), and such a route is authenticated in effect while
 its anchor still reads `access: public`. The refusal collects into the all-violations pass with every
 other configuration error and names the route, the refusing dimension, and the remedy. A
-`security_defaults.profile: none` that reaches such a route through the fallback chain is refused
+`security_defaults.profile: minimal` that reaches such a route through the fallback chain is refused
 identically -- there is no separate global exemption.
 
-[[_the_none_mode]]
-==== The `none` mode
+[[_the_minimal_mode]]
+==== The `minimal` mode
 
-`none` is a statement about *validation*, never about *limits*. The following two lists are the
+`minimal` is a statement about *validation*, never about *limits*. The following two lists are the
 *normative closed definition* of the mode, not illustrative examples: anything absent from the
 disabled list keeps running.
 
-*Still enforced under `none` -- without exception:*
+*Still enforced under `minimal` -- without exception:*
 
 * The entire *non-skippable pre-route floor*: raw-path canonicalisation and validation, header name
   and value validation, and the query-parameter and header *count* caps. The floor cannot be made
   skippable because route selection consumes the canonical path it produces -- so an encoded path
   separator, an over-cap parameter count and an oversized header value are all still rejected `400`
-  on a `none` route.
+  on a `minimal` route.
 * `max_body_bytes` -- a resource guard against exhaustion, not an injection defence.
 * `allowed_paths` -- a surface restriction, not an injection defence.
 * The verb gate (`allowed_methods`), authentication and the auth floor, CSRF, the forward-policy
   allowlists, the terminal-action rules, and the response-side security-header envelope.
 
-*Disabled under `none` -- exactly these two, and nothing else:*
+*Disabled under `minimal` -- exactly these two, and nothing else:*
 
 . The *url-parameter name and value validation* (the post-route run under the route's own
   configuration).
 . The *per-route pipeline re-run* -- the second pass of the path and header pipelines that a route
   whose configuration diverges from the gateway baseline would otherwise perform.
 
-Because `none` carries no preset of its own, a `none` route resolves its limits from the nearest
-non-`none` profile in its fallback chain, landing on `strict` when the whole chain is `none`. That is
-what gives the retained `max_body_bytes` cap a concrete number to enforce.
+Because `minimal` carries no preset of its own, a `minimal` route resolves its limits from the nearest
+non-`minimal` profile in its fallback chain, landing on `strict` when the whole chain is `minimal`.
+That is what gives the retained `max_body_bytes` cap a concrete number to enforce.
 
 The rationale for each bound -- and the alternatives rejected, including a wholesale skip of the
 post-route stage -- is recorded in
-link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
+link:adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 
 [[_allowed_methods]]
 === `allowed_methods`
@@ -2101,7 +2101,7 @@ directive), and the NiFi-proprietary `X-ProxyScheme/-Host/-Port/-ContextPath`. P
 *Sanitization (fail-safe, never throws).* Every honored value passes the `cui-http`
 header-value pipeline (CR/LF, NUL, control characters, over-length, suspicious patterns; the
 pipeline is configured from the *gateway-wide* `security_defaults` profile -- forwarded-header
-handling is gateway-wide, so no per-route `profile`, `none` included, changes it), plus fixed
+handling is gateway-wide, so no per-route `profile`, `minimal` included, changes it), plus fixed
 fail-secure field guards that no profile can relax: scheme must be `http`/`https`, port `1..65535`, host
 must carry no path separators or whitespace, and the context-path rejects protocol-relative
 (`//host`) and backslash values on the *raw* value, before the sanitization pipeline -- whose

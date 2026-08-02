@@ -32,30 +32,30 @@ endpoint:
         headers_allow: ["Content-Type"]
         query_allow: ["probe", "page", "size", "req"]
 
-    # --- The profile: none partial-disable route (ADR-0024) -----------------
+    # --- The profile: minimal partial-disable route (ADR-0024) ---------------
     # Rides the SAME public, effectively-unauthenticated 'api' anchor and the endpoint's
-    # require: none posture, so the boot refusal (none on an effectively-authenticated or
+    # require: none posture, so the boot refusal (minimal on an effectively-authenticated or
     # type: bff route) does not apply. It is deliberately NOT under bff-session, secure or
     # assets-secure.
     #
-    # `none` is a PARTIAL disable, and this route is shaped to prove exactly that: it
-    # declares BOTH a body cap and a path allowlist, neither of which `none` turns off.
+    # `minimal` is a PARTIAL disable, and this route is shaped to prove exactly that: it
+    # declares BOTH a body cap and a path allowlist, neither of which `minimal` turns off.
     # SecurityProfileModeIT asserts the full matrix against it — a url-parameter value the
     # strict /proxy route rejects passes here, while the pre-route floor (encoded separator,
     # query-parameter count cap), the body cap and the allowlist all still reject.
-    - id: httpbin-none-mode
+    - id: httpbin-minimal-mode
       match:
-        path_prefix: /proxy/none-mode
+        path_prefix: /proxy/minimal-mode
       upstream:
-        path: /anything/none-mode
+        path: /anything/minimal-mode
       security_filter:
-        profile: none
+        profile: minimal
         # A deliberately small cap so a modest test body trips it: the cap is enforced under
-        # `none` exactly as under `strict`, because a resource guard is not an injection defence.
+        # `minimal` exactly as under `strict`, because a resource guard is not an injection defence.
         max_body_bytes: 1024
-        # One wildcard segment: /proxy/none-mode/<action> is admitted, a deeper path is not
-        # (the matcher compares segment counts exactly). Enforced under `none` unchanged.
-        allowed_paths: ["/proxy/none-mode/{action}"]
+        # One wildcard segment: /proxy/minimal-mode/<action> is admitted, a deeper path is not
+        # (the matcher compares segment counts exactly). Enforced under `minimal` unchanged.
+        allowed_paths: ["/proxy/minimal-mode/{action}"]
       forward:
         headers_allow: ["Content-Type"]
         # return_to carries the parameter value the strict routes reject; allow-listing it lets

@@ -1399,10 +1399,10 @@ public class GatewayEdgeRoute {
      * {@code security_filter → security_defaults} fallback, plus the cui-http
      * {@link SecurityConfiguration} carrying its limits.
      * <p>
-     * The limits are seeded from the <em>preset</em> of the nearest non-{@code none} profile in the
+     * The limits are seeded from the <em>preset</em> of the nearest non-{@code minimal} profile in the
      * chain (see {@link SecurityProfile#limitsProfile}), never from bare builder defaults, and only
      * the dimensions the route actually declared are overridden on top — so an undeclared dimension
-     * lands exactly on the resolved preset rather than below it. A {@code none} route therefore
+     * lands exactly on the resolved preset rather than below it. A {@code minimal} route therefore
      * still carries a concrete, enforceable {@code maxBodySize}.
      * <p>
      * Invoked for every route, including one that declares no {@code security_filter} block at all,

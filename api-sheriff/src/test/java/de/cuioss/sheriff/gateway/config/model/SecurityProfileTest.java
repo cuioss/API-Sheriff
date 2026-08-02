@@ -32,17 +32,18 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
-@DisplayName("SecurityProfile — the canonical strict/lenient/none inbound-filter mode set")
+@DisplayName("SecurityProfile — the canonical strict/lenient/minimal inbound-filter mode set")
 class SecurityProfileTest {
 
     @ParameterizedTest
     @CsvSource({
             "strict,STRICT",
             "lenient,LENIENT",
-            "none,NONE",
+            "minimal,MINIMAL",
             "STRICT,STRICT",
             "Lenient,LENIENT",
-            "  none  ,NONE"
+            "MINIMAL,MINIMAL",
+            "  minimal  ,MINIMAL"
     })
     @DisplayName("Should parse every accepted value case-insensitively")
     void shouldParseAcceptedValues(String raw, SecurityProfile expected) {
@@ -56,10 +57,11 @@ class SecurityProfileTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"default", "DEFAULT", "off", "disabled", "strictest", "", "  "})
-    @DisplayName("Should reject the dropped 'default' preset and every unknown value")
+    @ValueSource(strings = {"default", "DEFAULT", "none", "NONE", "off", "disabled", "strictest", "", "  "})
+    @DisplayName("Should reject the dropped 'default' preset, the renamed 'none' and every unknown value")
     void shouldRejectUnknownValues(String raw) {
-        // Arrange - 'default' was dropped with this plan; the rest were never members
+        // Arrange - 'default' was dropped and 'none' was renamed to 'minimal'; the rest were never
+        // members. 'none' must NOT resolve: it survives only as the unrelated auth.require value.
 
         // Act
         Optional<SecurityProfile> parsed = SecurityProfile.parse(raw);
@@ -89,37 +91,37 @@ class SecurityProfileTest {
     }
 
     @Test
-    @DisplayName("Should refuse a preset for NONE — 'none' contributes no limits policy")
-    void shouldRefusePresetForNone() {
+    @DisplayName("Should refuse a preset for MINIMAL — 'minimal' contributes no limits policy")
+    void shouldRefusePresetForMinimal() {
         // Act
-        IllegalStateException refused = assertThrows(IllegalStateException.class, SecurityProfile.NONE::preset,
-                "NONE.preset() is a programming error, not a silent fallback");
+        IllegalStateException refused = assertThrows(IllegalStateException.class, SecurityProfile.MINIMAL::preset,
+                "MINIMAL.preset() is a programming error, not a silent fallback");
 
         // Assert
-        assertTrue(refused.getMessage().contains("none"),
+        assertTrue(refused.getMessage().contains("minimal"),
                 "the refusal names the offending mode so the boot log is diagnosable");
     }
 
     @Test
-    @DisplayName("Should resolve the limits profile to the nearest non-none entry of the chain")
-    void shouldResolveLimitsProfileToNearestNonNone() {
-        // Arrange + Act + Assert - the route's own profile wins whenever it is not 'none'
+    @DisplayName("Should resolve the limits profile to the nearest non-minimal entry of the chain")
+    void shouldResolveLimitsProfileToNearestNonMinimal() {
+        // Arrange + Act + Assert - the route's own profile wins whenever it is not 'minimal'
         assertEquals(SecurityProfile.LENIENT,
                 SecurityProfile.limitsProfile(SecurityProfile.LENIENT, SecurityProfile.STRICT),
-                "a declared non-none profile supplies its own limits");
+                "a declared non-minimal profile supplies its own limits");
         assertEquals(SecurityProfile.STRICT,
-                SecurityProfile.limitsProfile(SecurityProfile.STRICT, SecurityProfile.NONE),
-                "a declared non-none profile is unaffected by a 'none' fallback");
+                SecurityProfile.limitsProfile(SecurityProfile.STRICT, SecurityProfile.MINIMAL),
+                "a declared non-minimal profile is unaffected by a 'minimal' fallback");
 
-        // A 'none' route inherits the limits of the next level down …
+        // A 'minimal' route inherits the limits of the next level down …
         assertEquals(SecurityProfile.LENIENT,
-                SecurityProfile.limitsProfile(SecurityProfile.NONE, SecurityProfile.LENIENT),
-                "a 'none' route takes the nearest non-none profile's limits");
+                SecurityProfile.limitsProfile(SecurityProfile.MINIMAL, SecurityProfile.LENIENT),
+                "a 'minimal' route takes the nearest non-minimal profile's limits");
 
-        // … and lands on STRICT when the whole chain is 'none'.
+        // … and lands on STRICT when the whole chain is 'minimal'.
         assertEquals(SecurityProfile.STRICT,
-                SecurityProfile.limitsProfile(SecurityProfile.NONE, SecurityProfile.NONE),
-                "an all-none chain falls back to STRICT, so the body cap stays enforceable");
+                SecurityProfile.limitsProfile(SecurityProfile.MINIMAL, SecurityProfile.MINIMAL),
+                "an all-minimal chain falls back to STRICT, so the body cap stays enforceable");
     }
 
     @ParameterizedTest
@@ -131,17 +133,17 @@ class SecurityProfileTest {
 
         // Assert
         assertTrue(resolved.maxBodySize() > 0,
-                "every mode — 'none' included — resolves a concrete, enforceable body cap");
+                "every mode — 'minimal' included — resolves a concrete, enforceable body cap");
     }
 
     @Test
-    @DisplayName("Should disable the skippable validation half only for NONE")
-    void shouldGateSkippableValidationOnNoneOnly() {
+    @DisplayName("Should disable the skippable validation half only for MINIMAL")
+    void shouldGateSkippableValidationOnMinimalOnly() {
         // Act + Assert
         assertTrue(SecurityProfile.STRICT.skippableValidationEnabled(), "STRICT runs the full check set");
         assertTrue(SecurityProfile.LENIENT.skippableValidationEnabled(), "LENIENT runs the full check set");
-        assertFalse(SecurityProfile.NONE.skippableValidationEnabled(),
-                "NONE is the one mode that skips the url-parameter validation and the pipeline re-run");
+        assertFalse(SecurityProfile.MINIMAL.skippableValidationEnabled(),
+                "MINIMAL is the one mode that skips the url-parameter validation and the pipeline re-run");
     }
 
     @Test

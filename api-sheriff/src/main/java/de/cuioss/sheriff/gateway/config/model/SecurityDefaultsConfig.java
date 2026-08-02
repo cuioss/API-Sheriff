@@ -21,7 +21,7 @@ import org.jspecify.annotations.Nullable;
  * The global {@code security_defaults} block of {@code gateway.yaml}.
  * <p>
  * {@code profile} selects the gateway-wide inbound-filter mode — {@code strict} /
- * {@code lenient} / {@code none}, see {@link SecurityProfile}. The value range is enforced by the
+ * {@code lenient} / {@code minimal}, see {@link SecurityProfile}. The value range is enforced by the
  * bundled JSON Schema (an unrecognized value, the dropped {@code default} preset included, fails
  * boot there), not by this model and not by the configuration validator.
  * <p>

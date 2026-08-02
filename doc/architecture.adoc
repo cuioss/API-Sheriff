@@ -43,8 +43,8 @@ what they can see and in what configuration can switch off:
   url-parameter name and value validation, plus the divergent path/header pipeline re-run -- is gated
   by the route's inbound-filter `profile`.
 
-*What `profile: none` costs, exactly.* `none` is a *partial* disable
-(link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]),
+*What `profile: minimal` costs, exactly.* `minimal` is a *partial* disable
+(link:adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]),
 and describing it as "skipping the thorough checks" is wrong in both directions. Its blast radius is
 closed and consists of exactly two items: the url-parameter name and value validation, and the
 per-route pipeline re-run. Everything else still runs -- the whole pre-route floor (so an encoded path
@@ -52,7 +52,7 @@ separator, an over-cap parameter count and an oversized header value are still r
 `max_body_bytes` cap, the `allowed_paths` allowlist, authentication, the verb gate, the
 terminal-action rules and the response envelope. Because a body cap is a resource guard and a path
 allowlist is a surface restriction, neither is treated as an injection defence and neither rides the
-profile switch. A route whose effective profile resolves to `none` is additionally *refused at boot*
+profile switch. A route whose effective profile resolves to `minimal` is additionally *refused at boot*
 when it is effectively authenticated or sits under a `type: bff` anchor.
 
 image::resources/diagrams/request-pipeline.svg[Inbound request pipeline: TLS edge, security filter, route match, authenticate, forward policy, then upstream, align=center]
@@ -191,24 +191,24 @@ always-dispatched post-route per-route stage whose validation half is profile-ga
 | Parameter and header *count* caps | pre-route floor | no
 | `max_body_bytes` cap | post-route | no -- a resource guard, not an injection defence
 | `allowed_paths` allowlist | post-route | no -- a surface restriction, not an injection defence
-| url-parameter *name* and *value* validation | post-route | *yes* -- off under `none`
-| Divergent path/header pipeline re-run | post-route | *yes* -- off under `none`
+| url-parameter *name* and *value* validation | post-route | *yes* -- off under `minimal`
+| Divergent path/header pipeline re-run | post-route | *yes* -- off under `minimal`
 |===
 
 The parameter *count* cap stays in the floor even though the values it bounds are validated
 post-route: a collection limit is a DoS guard that does not depend on a per-route policy.
 
-*Profiles.* The mode set is `strict` / `lenient` / `none`, on the gateway-wide `security_defaults`
+*Profiles.* The mode set is `strict` / `lenient` / `minimal`, on the gateway-wide `security_defaults`
 block and on any `security_filter` block. An omitted block -- or a block omitting `profile` --
 resolves to `strict`, the fail-closed choice. Two layers validate the setting, and they own
 different halves: the value *range* is enforced by the bundled JSON Schema's `profile` enum, so an
 unrecognized value fails the boot before binding and no post-binding range rule exists; the
-configuration validator owns the *posture* rule -- the fail-closed refusal of an effective `none`
-on an effectively-authenticated or `type: bff` route (see *What `profile: none` costs, exactly.*
-above). `none` contributes no limits policy of its own, so a `none` route takes its limits from the
-nearest non-`none` profile in its fallback chain (landing on `strict` when the whole chain is
-`none`), which is what keeps its retained body cap concrete. See
-link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
+configuration validator owns the *posture* rule -- the fail-closed refusal of an effective `minimal`
+on an effectively-authenticated or `type: bff` route (see *What `profile: minimal` costs, exactly.*
+above). `minimal` contributes no limits policy of its own, so a `minimal` route takes its limits from
+the nearest non-`minimal` profile in its fallback chain (landing on `strict` when the whole chain is
+`minimal`), which is what keeps its retained body cap concrete. See
+link:adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 
 Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
 
@@ -218,8 +218,8 @@ Wiring (see link:technical_aspects.adoc[Technical Aspects] for the full API):
   counts) -- the DoS guard a per-value pipeline cannot express.
 * A shared, immutable `SecurityConfiguration` supplies the tunable limits. The gateway sources it
   from the resolved profile's preset (`strict()` / `lenient()`), overlaid with any explicit
-  `security_filter` limit keys -- never from bare builder defaults. `none` has no preset of its own
-  and inherits the nearest non-`none` one (see *Profiles* above).
+  `security_filter` limit keys -- never from bare builder defaults. `minimal` has no preset of its own
+  and inherits the nearest non-`minimal` one (see *Profiles* above).
 * A single `de.cuioss.http.security.monitoring.SecurityEventCounter` is passed into every
   pipeline; it auto-increments on each violation, and its counts feed the gateway metrics.
 

@@ -34,19 +34,20 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>An omitted block resolves to {@link #STRICT}</strong> ({@link #DEFAULT_PROFILE}).
  *       When {@code security_defaults} is absent, or present without a {@code profile}, the
  *       gateway-wide effective profile is {@code STRICT} — the fail-closed choice.</li>
- *   <li><strong>{@link #NONE} contributes no limits policy.</strong> {@code none} is a statement
- *       about <em>validation</em>, never about <em>limits</em>: a {@code none} route still needs a
- *       concrete {@link SecurityConfiguration} so the retained {@code max_body_bytes} guard has a
- *       {@code maxBodySize} to enforce. {@link #preset()} therefore refuses to answer for
- *       {@code NONE}; callers resolve the limits policy through
+ *   <li><strong>{@link #MINIMAL} contributes no limits policy.</strong> {@code minimal} is a
+ *       statement about <em>validation</em>, never about <em>limits</em>: a {@code minimal} route
+ *       still needs a concrete {@link SecurityConfiguration} so the retained {@code max_body_bytes}
+ *       guard has a {@code maxBodySize} to enforce. {@link #preset()} therefore refuses to answer
+ *       for {@code MINIMAL}; callers resolve the limits policy through
  *       {@link #limitsProfile(SecurityProfile, SecurityProfile)}, which walks to the nearest
- *       non-{@code none} profile in the fallback chain and lands on {@code STRICT} when the whole
- *       chain is {@code none}.</li>
+ *       non-{@code minimal} profile in the fallback chain and lands on {@code STRICT} when the whole
+ *       chain is {@code minimal}.</li>
  * </ol>
  * <p>
- * {@code none} is a <strong>partial</strong> disable, not "the inbound filter is off": it turns off
- * exactly the url-parameter name/value validation and the per-route pipeline re-run. The pre-route
- * floor, {@code max_body_bytes} and {@code allowed_paths} all keep running under it. See ADR-0024.
+ * {@code minimal} is a <strong>partial</strong> disable, not "the inbound filter is off": it turns
+ * off exactly the url-parameter name/value validation and the per-route pipeline re-run. The
+ * pre-route floor, {@code max_body_bytes} and {@code allowed_paths} all keep running under it. See
+ * ADR-0024.
  * <p>
  * Immutable and thread-safe.
  *
@@ -66,7 +67,7 @@ public enum SecurityProfile {
      * are skipped, while the pre-route floor, the body cap and the path allowlist keep running.
      * Refused at boot on effectively-authenticated and BFF routes.
      */
-    NONE;
+    MINIMAL;
 
     /**
      * The profile an omitted {@code security_defaults} block — or a {@code security_defaults} block
@@ -96,24 +97,24 @@ public enum SecurityProfile {
 
     /**
      * Resolves the profile whose preset supplies the <em>limits</em> policy for a route, by walking
-     * to the nearest non-{@link #NONE} entry of the {@code effective → fallback} chain and landing
-     * on {@link #STRICT} when every level is {@code NONE}. This is what keeps a {@code none} route's
-     * body cap and collection limits concrete and enforceable.
+     * to the nearest non-{@link #MINIMAL} entry of the {@code effective → fallback} chain and landing
+     * on {@link #STRICT} when every level is {@code MINIMAL}. This is what keeps a {@code minimal}
+     * route's body cap and collection limits concrete and enforceable.
      *
      * @param effective the route's (or the gateway's) effective profile
      * @param fallback  the next profile down the chain — the gateway-wide profile for a route
-     * @return the profile to take the limits policy from; never {@link #NONE}
+     * @return the profile to take the limits policy from; never {@link #MINIMAL}
      */
     public static SecurityProfile limitsProfile(SecurityProfile effective, SecurityProfile fallback) {
-        if (effective != NONE) {
+        if (effective != MINIMAL) {
             return effective;
         }
-        return fallback != NONE ? fallback : STRICT;
+        return fallback != MINIMAL ? fallback : STRICT;
     }
 
     /**
      * @return the backing cui-http preset for this mode
-     * @throws IllegalStateException when called on {@link #NONE}, which contributes no limits
+     * @throws IllegalStateException when called on {@link #MINIMAL}, which contributes no limits
      *                               policy — resolve one through
      *                               {@link #limitsProfile(SecurityProfile, SecurityProfile)} first
      */
@@ -121,17 +122,17 @@ public enum SecurityProfile {
         return switch (this) {
             case STRICT -> SecurityConfiguration.strict();
             case LENIENT -> SecurityConfiguration.lenient();
-            case NONE -> throw new IllegalStateException(
-                    "profile 'none' has no cui-http preset; resolve the limits profile via limitsProfile(..)");
+            case MINIMAL -> throw new IllegalStateException(
+                    "profile 'minimal' has no cui-http preset; resolve the limits profile via limitsProfile(..)");
         };
     }
 
     /**
      * @return {@code true} when the skippable half of the per-route checks — the url-parameter
      *         name/value validation and the pipeline re-run — is active; {@code false} only for
-     *         {@link #NONE}
+     *         {@link #MINIMAL}
      */
     public boolean skippableValidationEnabled() {
-        return this != NONE;
+        return this != MINIMAL;
     }
 }

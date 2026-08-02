@@ -677,7 +677,7 @@ class RouteTableBuilderTest {
             builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
             // Assert — the old logPosture printed the literal "none" as a placeholder for unset, which
-            // now reads as the real 'none' mode and would misreport every knob-less route.
+            // would misreport every knob-less route as the real partial-disable mode ('minimal').
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='lenient'");
         }
 
@@ -703,14 +703,14 @@ class RouteTableBuilderTest {
                     .securityDefaults(new SecurityDefaultsConfig("strict", null))
                     .build();
             RouteConfig declared = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
-                    .securityFilter(filter("none")).build();
+                    .securityFilter(filter("minimal")).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(declared)).build();
 
             // Act
             builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
             // Assert
-            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='none'");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='minimal'");
         }
 
         @Test

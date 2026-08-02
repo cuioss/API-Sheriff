@@ -108,7 +108,7 @@ how to *work in* the codebase that implements it.
 The inbound filter is *two stages split across route selection*, not one. A contributor changing
 anything in this area needs the four structural reasons below, because each one is a constraint that
 looks arbitrary until you know it. The decision record is
-link:../adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024];
+link:../adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024];
 the operator-facing behaviour is in
 link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`].
 
@@ -120,7 +120,7 @@ the *gateway-wide* resolved configuration, for every request, before route selec
 
 `ThoroughChecksStage` is the *post-route per-route stage*. It is *always dispatched*, but only part of
 its work is switchable: it unconditionally enforces the route's `max_body_bytes` cap and its
-`allowed_paths` allowlist, then returns early when the route's profile is `NONE`, skipping the
+`allowed_paths` allowlist, then returns early when the route's profile is `MINIMAL`, skipping the
 url-parameter name/value validation and the divergent pipeline re-run.
 
 === Why the url-parameter validation was relocated post-route
@@ -143,16 +143,16 @@ Route selection therefore hard-requires the floor to have run: a request whose p
 floor would have no canonical path to match a route against -- and with no route, there is no profile
 to read in the first place.
 
-This is a circular dependency, not a policy preference. Any proposal to let `profile: none` reach the
+This is a circular dependency, not a policy preference. Any proposal to let `profile: minimal` reach the
 floor is not merely undesirable, it is unimplementable in this pipeline shape. The parameter *count*
 cap stays in the floor for the same reason it is safe there: a collection limit is a DoS guard that
 needs no per-route policy.
 
-=== Why the `none` branch lives inside `ThoroughChecksStage`, not at the dispatch site
+=== Why the `minimal` branch lives inside `ThoroughChecksStage`, not at the dispatch site
 
 It would be easy to test the profile at the call site and skip dispatching the stage at all. That is
 wrong, and the current shape is deliberate: `max_body_bytes` and `allowed_paths` are enforced *inside*
-the stage and must run under `none`, so skipping the dispatch would silently drop both.
+the stage and must run under `minimal`, so skipping the dispatch would silently drop both.
 
 Keeping the branch inside the stage means the *stage itself* owns the closed list of what the mode
 disables, immediately adjacent to the unconditional checks it must not affect. A future contributor
@@ -173,7 +173,7 @@ instead is the wrong fix.
 
 === Why the boot refusal keys on the effective access level
 
-`ConfigValidator`'s `none`-refusal rule derives the access level through
+`ConfigValidator`'s `minimal`-refusal rule derives the access level through
 `RouteTableBuilder.effectiveAccessLevel` -- the same seam the route table uses -- rather than reading
 `AnchorConfig.access` directly.
 
