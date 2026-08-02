@@ -192,9 +192,14 @@ jobs:
       # The registry path is HARDCODED LOWERCASE on purpose: ${{ github.repository }} yields
       # cuioss/API-Sheriff and GHCR rejects the uppercase, so deriving it from the context would fail
       # at push time.
+      # Credentials reach the shell through the environment, never through `${{ }}` expansion inside
+      # the script body — expression interpolation into a run block is a script-injection sink.
       - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
       - name: Tag and push both release tags
         env:
@@ -294,6 +299,33 @@ jobs:
           echo "::error::Published image did not become live within 120s."
           docker logs api-sheriff-smoke
           exit 1
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # KEYLESS OIDC SIGNING, BY DIGEST — the last act of the lane, after the push and after the
+      # smoke, so the signed artifact is provably the tested and published one. Never sign a tag: a
+      # tag is a mutable pointer, so signing one signs nothing durable. The signature is stored in
+      # the registry alongside the image (the Sigstore sha256-<digest>.sig convention); there is no
+      # key store, no COSIGN_PRIVATE_KEY and no new secret. `id-token: write` is declared on this job.
+      #
+      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES. Both are derived from THIS job's identity
+      # and will change silently if this workflow file is renamed or a release is dispatched from a
+      # ref other than main:
+      #
+      #   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      #   --certificate-identity    https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main
+      #
+      # The identity names release.yml ITSELF, not the org reusable workflow, because publish-image
+      # is a local job in this caller. doc/user/container-image.adoc publishes the same two strings
+      # to operators; this comment is what keeps the two copies from drifting.
+      #
+      # SLSA provenance and any further attestation are deliberately out of scope.
+      - name: Sign the published digest (keyless)
+        env:
+          DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          cosign sign --yes "ghcr.io/cuioss/api-sheriff@${DIGEST}"
 
       # `|| true` is a deliberate guard, not sloppiness: this step runs on EVERY outcome, including
       # the paths where the smoke step failed before `docker run` and there is nothing to remove.
