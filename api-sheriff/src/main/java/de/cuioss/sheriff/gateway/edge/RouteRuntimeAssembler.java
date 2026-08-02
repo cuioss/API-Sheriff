@@ -21,7 +21,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
 
@@ -44,6 +43,7 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Boot-time assembler compiling the frozen {@link RouteTable} into immutable
@@ -52,9 +52,9 @@ import io.vertx.core.http.HttpClient;
  * <ul>
  *   <li>one resolved {@linkplain SecurityPosture security posture} — effective
  *       {@link SecurityProfile} plus its cui-http {@link SecurityConfiguration} — per distinct
- *       {@code Optional<}{@link SecurityFilterConfig}{@code >} shape. The posture is resolved for
- *       <em>every</em> route, including one that declares no {@code security_filter} block at all,
- *       so a gateway-wide {@code profile} reaches a block-less route;</li>
+ *       {@link SecurityFilterConfig} shape ({@code null} being its own shape). The posture is
+ *       resolved for <em>every</em> route, including one that declares no {@code security_filter}
+ *       block at all, so a gateway-wide {@code profile} reaches a block-less route;</li>
  *   <li>one Vert.x {@link HttpClient} per distinct {@linkplain UpstreamTarget upstream-target tuple}
  *       (scheme, host, port) — routes sharing a tuple hold the same client reference;</li>
  *   <li>one SmallRye Fault-Tolerance {@link Guard} per distinct {@linkplain ResilienceShape
@@ -105,7 +105,7 @@ public final class RouteRuntimeAssembler {
         Objects.requireNonNull(guardFactory, "guardFactory");
         Objects.requireNonNull(assetSourceFactory, "assetSourceFactory");
 
-        Map<Optional<SecurityFilterConfig>, SecurityPosture> securityCache = new HashMap<>();
+        Map<@Nullable SecurityFilterConfig, SecurityPosture> securityCache = new HashMap<>();
         Map<UpstreamTarget, HttpClient> clientCache = new HashMap<>();
         Map<ResilienceShape, Guard> guardCache = new HashMap<>();
         List<RouteRuntime> runtimes = new ArrayList<>();
@@ -113,9 +113,11 @@ public final class RouteRuntimeAssembler {
         for (ResolvedRoute route : table.routes()) {
             ProtocolProcessor processor = protocolRegistry.require(route.protocol(), route.id());
 
-            // Resolved for EVERY route, not only inside effectiveSecurityFilter().map(...): a
-            // gateway-wide profile must also govern a route that declares no security_filter block.
-            SecurityPosture posture = securityCache.computeIfAbsent(route.effectiveSecurityFilter(),
+            // Resolved for EVERY route, including one whose effective filter is null: a gateway-wide
+            // profile must also govern a route that declares no security_filter block. The cache is a
+            // HashMap precisely because it must key that absent shape under the null key.
+            SecurityFilterConfig effectiveFilter = route.effectiveSecurityFilter();
+            SecurityPosture posture = securityCache.computeIfAbsent(effectiveFilter,
                     securityConfigFactory::create);
 
             RouteRuntime.RouteRuntimeBuilder runtime = RouteRuntime.builder()
@@ -126,14 +128,14 @@ public final class RouteRuntimeAssembler {
                     .effectiveAllowedMethods(toMethodSet(route.effectiveAllowedMethods()))
                     .effectiveAuth(route.effectiveAuth())
                     .requiredScopes(route.effectiveAuth().requiredScopes())
-                    // Both set unconditionally: RouteRuntime's @Builder.Default STRICT exists for the
-                    // builder's test call sites, never as a stand-in for the production resolution.
+                    // Both set unconditionally: RouteRuntime's @Builder.Default STRICT and its null
+                    // securityConfiguration default exist for the builder's test call sites, never as
+                    // a stand-in for the production resolution.
                     .securityProfile(posture.profile())
-                    .securityConfiguration(Optional.of(posture.configuration()))
+                    .securityConfiguration(posture.configuration())
                     .securityHeaders(route.effectiveSecurityHeaders())
                     .effectiveForward(route.effectiveForward())
-                    .effectiveAllowedPaths(route.effectiveSecurityFilter()
-                            .map(SecurityFilterConfig::allowedPaths).orElse(List.of()))
+                    .effectiveAllowedPaths(effectiveFilter == null ? List.of() : effectiveFilter.allowedPaths())
                     .retryEnabled(route.retryEnabled())
                     .notModifiedEnabled(route.notModifiedEnabled())
                     .effectiveAllowedOrigins(route.effectiveAllowedOrigins())
@@ -142,13 +144,15 @@ public final class RouteRuntimeAssembler {
             // A route resolves exactly one terminal action (ADR-0014). An asset route builds its
             // live source and skips the Vert.x client / resilience-guard dedup entirely — its
             // egress rides the source's own SSRF-controlled fetch seam, not the proxy data plane.
-            Optional<ResolvedAsset> asset = route.asset();
-            if (asset.isPresent()) {
-                runtime.assetSource(Optional.of(assetSourceFactory.create(asset.get())));
+            ResolvedAsset asset = route.asset();
+            if (asset != null) {
+                runtime.assetSource(assetSourceFactory.create(asset));
             } else {
-                ResolvedUpstream resolvedUpstream = route.upstream().orElseThrow(() -> new GatewayException(
-                        EventType.CONFIG_INVALID,
-                        "Route '" + route.id() + "' resolves no terminal action (neither upstream nor asset)"));
+                ResolvedUpstream resolvedUpstream = route.upstream();
+                if (resolvedUpstream == null) {
+                    throw new GatewayException(EventType.CONFIG_INVALID,
+                            "Route '" + route.id() + "' resolves no terminal action (neither upstream nor asset)");
+                }
                 // gRPC requires HTTP/2 end-to-end, so the forced-h2 flag joins the client-sharing tuple:
                 // a gRPC route to host:port holds a distinct forced-h2 client from an HTTP/1.1 route to
                 // the same host:port.
@@ -156,9 +160,9 @@ public final class RouteRuntimeAssembler {
                 HttpClient client = clientCache.computeIfAbsent(target, clientFactory::create);
                 ResilienceShape shape = new ResilienceShape(target, route.retryEnabled());
                 Guard guard = guardCache.computeIfAbsent(shape, guardFactory::create);
-                runtime.upstream(Optional.of(resolvedUpstream))
-                        .httpClient(Optional.of(client))
-                        .resilienceGuard(Optional.of(guard));
+                runtime.upstream(resolvedUpstream)
+                        .httpClient(client)
+                        .resilienceGuard(guard);
             }
 
             runtimes.add(runtime.build());
@@ -229,17 +233,18 @@ public final class RouteRuntimeAssembler {
 
     /**
      * Factory resolving one {@link SecurityPosture} for a security-filter shape. Invoked for every
-     * route, so {@code filter} is {@link Optional#empty()} for a route that declares no
+     * route, so {@code filter} is {@code null} for a route that declares no
      * {@code security_filter} block and the gateway-wide fallback applies.
      */
     @FunctionalInterface
     public interface SecurityConfigurationFactory {
 
         /**
-         * @param filter the route's effective security-filter shape, empty when it declares none
+         * @param filter the route's effective security-filter shape, {@code null} when it declares
+         *               none
          * @return the resolved posture
          */
-        SecurityPosture create(Optional<SecurityFilterConfig> filter);
+        SecurityPosture create(@Nullable SecurityFilterConfig filter);
     }
 
     /**

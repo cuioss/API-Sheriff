@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,7 +27,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -52,8 +52,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@link EndpointConfig}, {@link RouteConfig}, {@link ResolvedRoute}),</li>
  *   <li>the Lombok {@code @Builder} produces instances equal to the canonical
  *       constructor,</li>
- *   <li>the canonical constructors normalize absent optionals to
- *       {@link Optional#empty()} and absent collections to empty collections,</li>
+ *   <li>a {@link org.jspecify.annotations.Nullable} component round-trips
+ *       {@code null} and the canonical constructors normalize absent collections to
+ *       empty collections,</li>
  *   <li>collection components are defensively copied into unmodifiable copies,</li>
  *   <li>mandatory fields are rejected with a {@link NullPointerException},</li>
  *   <li>the {@link HttpMethod} and {@link Protocol} enum contracts, including the
@@ -74,9 +75,9 @@ class ConfigModelContractTest {
                 .pathPrefix("/api")
                 .type(AnchorType.PROXY)
                 .access(AccessLevel.AUTHENTICATED)
-                .auth(Optional.of(auth()))
-                .securityFilter(Optional.of(securityFilterConfig()))
-                .securityHeaders(Optional.of(securityHeadersConfig()))
+                .auth(auth())
+                .securityFilter(securityFilterConfig())
+                .securityHeaders(securityHeadersConfig())
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .build();
     }
@@ -84,43 +85,43 @@ class ConfigModelContractTest {
     private static GatewayConfig gatewayConfig() {
         return GatewayConfig.builder()
                 .version(1)
-                .metadata(Optional.of(new Metadata(Optional.of("2024-01"))))
-                .tls(Optional.of(tlsConfig()))
-                .management(Optional.of(managementConfig()))
-                .securityHeaders(Optional.of(securityHeadersConfig()))
-                .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192))))
+                .metadata(new Metadata("2024-01"))
+                .tls(tlsConfig())
+                .management(managementConfig())
+                .securityHeaders(securityHeadersConfig())
+                .securityDefaults(new SecurityDefaultsConfig("strict", 8192))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
-                .upstreamDefaults(Optional.of(UpstreamDefaultsConfig.defaults()))
-                .forwarded(Optional.of(new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both"))))
-                .tokenValidation(Optional.of(tokenValidationConfig()))
-                .oidc(Optional.of(oidcConfig()))
+                .upstreamDefaults(UpstreamDefaultsConfig.defaults())
+                .forwarded(new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"))
+                .tokenValidation(tokenValidationConfig())
+                .oidc(oidcConfig())
                 .build();
     }
 
     private static ManagementConfig managementConfig() {
         return ManagementConfig.builder()
-                .tls(Optional.of(new ManagementConfig.ManagementTls(true)))
+                .tls(new ManagementConfig.ManagementTls(true))
                 .build();
     }
 
     private static TlsConfig tlsConfig() {
         return TlsConfig.builder()
-                .minVersion(Optional.of("TLSv1.3"))
+                .minVersion("TLSv1.3")
                 .cipherSuites(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"))
                 .alpn(List.of("h2", "http/1.1"))
                 .passthroughSni(Map.of("internal.example.com", "internal-alias"))
-                .mtls(Optional.of(new TlsConfig.Mtls(true, Optional.of("/etc/ca.pem"))))
+                .mtls(new TlsConfig.Mtls(true, "/etc/ca.pem"))
                 .build();
     }
 
     private static SecurityHeadersConfig securityHeadersConfig() {
         return SecurityHeadersConfig.builder()
-                .hsts(Optional.of(new SecurityHeadersConfig.Hsts(Optional.of(31536000), Optional.of(true))))
-                .contentTypeNosniff(Optional.of(true))
-                .frameDeny(Optional.of(true))
-                .cors(Optional.of(new SecurityHeadersConfig.Cors(Optional.of(true), List.of("https://app.example.com"),
-                        List.of("GET"), List.of("Authorization"), Optional.of(false))))
+                .hsts(new SecurityHeadersConfig.Hsts(31536000, true))
+                .contentTypeNosniff(true)
+                .frameDeny(true)
+                .cors(new SecurityHeadersConfig.Cors(true, List.of("https://app.example.com"),
+                        List.of("GET"), List.of("Authorization"), false))
                 .build();
     }
 
@@ -132,40 +133,37 @@ class ConfigModelContractTest {
         return IssuerConfig.builder()
                 .name("primary")
                 .issuer("https://issuer.example.com")
-                .audience(Optional.of("api-sheriff"))
-                .jwks(Optional.of(new IssuerConfig.Jwks("http", Optional.of("https://issuer.example.com/jwks"),
-                        Optional.empty(), List.of(), Optional.empty())))
+                .audience("api-sheriff")
+                .jwks(new IssuerConfig.Jwks("http", "https://issuer.example.com/jwks", null, List.of(), null))
                 .build();
     }
 
     private static OidcConfig oidcConfig() {
         return OidcConfig.builder()
-                .issuer(Optional.of("https://issuer.example.com"))
-                .clientId(Optional.of("sheriff"))
-                .clientSecret(Optional.of("${OIDC_SECRET}"))
+                .issuer("https://issuer.example.com")
+                .clientId("sheriff")
+                .clientSecret("${OIDC_SECRET}")
                 .scopes(List.of("openid", "profile"))
-                .redirectUri(Optional.of("https://gw.example.com/callback"))
-                .logout(Optional.of(new OidcConfig.Logout(Optional.of("/logout"), Optional.of("/post-logout"),
-                        Optional.of("/home"), Optional.of("/backchannel"))))
-                .session(Optional.of(OidcConfig.Session.builder()
-                        .mode(Optional.of("cookie"))
-                        .cookieName(Optional.of("sid"))
-                        .encryptionKey(Optional.of("${SESSION_KEY}"))
-                        .ttlSeconds(Optional.of(3600))
-                        .csrf(Optional.of(new OidcConfig.Csrf(List.of("https://app.example.com"))))
-                        .refresh(Optional.of(new OidcConfig.Refresh(Optional.of(true), Optional.of(60),
-                                Optional.of("reauthenticate"))))
-                        .maxSessions(Optional.of(10000))
-                        .build()))
-                .stepUp(Optional.of(new OidcConfig.StepUp(Optional.of(true), Optional.of(false))))
-                .userInfo(Optional.of(userInfo()))
-                .login(Optional.of(new OidcConfig.Login(Optional.of("/session/login"))))
+                .redirectUri("https://gw.example.com/callback")
+                .logout(new OidcConfig.Logout("/logout", "/post-logout", "/home", "/backchannel"))
+                .session(OidcConfig.Session.builder()
+                        .mode("cookie")
+                        .cookieName("sid")
+                        .encryptionKey("${SESSION_KEY}")
+                        .ttlSeconds(3600)
+                        .csrf(new OidcConfig.Csrf(List.of("https://app.example.com")))
+                        .refresh(new OidcConfig.Refresh(true, 60, "reauthenticate"))
+                        .maxSessions(10000)
+                        .build())
+                .stepUp(new OidcConfig.StepUp(true, false))
+                .userInfo(userInfo())
+                .login(new OidcConfig.Login("/session/login"))
                 .build();
     }
 
     private static OidcConfig.UserInfo userInfo() {
         return OidcConfig.UserInfo.builder()
-                .path(Optional.of("/session/userinfo"))
+                .path("/session/userinfo")
                 .allowedClaims(List.of("sub", "name", "roles"))
                 .defaultView(List.of("sub", "name"))
                 .build();
@@ -176,10 +174,10 @@ class ConfigModelContractTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("orders-service")
-                .anchor(Optional.of("api"))
-                .auth(Optional.of(auth()))
+                .anchor("api")
+                .auth(auth())
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                .upstreamDefaults(Optional.of(UpstreamDefaultsConfig.defaults()))
+                .upstreamDefaults(UpstreamDefaultsConfig.defaults())
                 .routes(List.of(routeConfig()))
                 .build();
     }
@@ -187,36 +185,36 @@ class ConfigModelContractTest {
     private static RouteConfig routeConfig() {
         return RouteConfig.builder()
                 .id("orders-read")
-                .protocol(Optional.of(Protocol.HTTP))
-                .anchor(Optional.of("api"))
+                .protocol(Protocol.HTTP)
+                .anchor("api")
                 .match(matchConfig())
-                .auth(Optional.of(auth()))
-                .securityFilter(Optional.of(securityFilterConfig()))
-                .forward(Optional.of(new ForwardConfig(List.of("Accept"), List.of("page"),
-                        Map.of("X-Gateway", "api-sheriff"))))
-                .upstream(Optional.of(upstreamConfig()))
-                .rateLimit(Optional.of(new RateLimitConfig(Optional.of(100), Optional.of(200))))
-                .websocket(Optional.of(webSocketConfig()))
+                .auth(auth())
+                .securityFilter(securityFilterConfig())
+                .forward(new ForwardConfig(List.of("Accept"), List.of("page"),
+                        Map.of("X-Gateway", "api-sheriff")))
+                .upstream(upstreamConfig())
+                .rateLimit(new RateLimitConfig(100, 200))
+                .websocket(webSocketConfig())
                 .build();
     }
 
     private static WebSocketConfig webSocketConfig() {
-        return new WebSocketConfig(List.of("https://app.example.com"), Optional.of(300));
+        return new WebSocketConfig(List.of("https://app.example.com"), 300);
     }
 
     private static ResolvedRoute resolvedRoute() {
         return ResolvedRoute.builder()
                 .id("orders-read")
                 .protocol(Protocol.HTTP)
-                .anchor(Optional.of("api"))
+                .anchor("api")
                 .match(matchConfig())
                 .effectiveAuth(auth())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                .effectiveSecurityFilter(Optional.of(securityFilterConfig()))
-                .effectiveSecurityHeaders(Optional.of(securityHeadersConfig()))
+                .effectiveSecurityFilter(securityFilterConfig())
+                .effectiveSecurityHeaders(securityHeadersConfig())
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
-                .upstream(Optional.of(resolvedUpstream()))
+                .upstream(resolvedUpstream())
                 .effectiveForward(new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "api-sheriff")))
                 .build();
     }
@@ -229,20 +227,20 @@ class ConfigModelContractTest {
         return MatchConfig.builder()
                 .pathPrefix("/orders")
                 .methods(List.of(HttpMethod.GET))
-                .host(Optional.of("api.example.com"))
-                .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", Optional.of(true), Optional.of("acme"))))
+                .host("api.example.com")
+                .headers(List.of(new MatchConfig.HeaderMatcher("X-Tenant", true, "acme")))
                 .build();
     }
 
     private static SecurityFilterConfig securityFilterConfig() {
         return SecurityFilterConfig.builder()
-                .profile(Optional.of("strict"))
+                .profile("strict")
                 .allowedPaths(List.of("/orders"))
-                .maxHeaderCount(Optional.of(50))
-                .maxHeaderValueLength(Optional.of(4096))
-                .maxQueryParams(Optional.of(32))
-                .maxParamValueLength(Optional.of(1024))
-                .maxBodyBytes(Optional.of(1048576))
+                .maxHeaderCount(50)
+                .maxHeaderValueLength(4096)
+                .maxQueryParams(32)
+                .maxParamValueLength(1024)
+                .maxBodyBytes(1048576)
                 .allowedHeaderNames(List.of("Accept"))
                 .blockedHeaderNames(List.of("X-Debug"))
                 .allowedContentTypes(List.of("application/json"))
@@ -251,12 +249,12 @@ class ConfigModelContractTest {
 
     private static UpstreamConfig upstreamConfig() {
         return UpstreamConfig.builder()
-                .path(Optional.of("/v1/orders"))
-                .connectTimeoutMs(Optional.of(2000))
-                .readTimeoutMs(Optional.of(5000))
-                .retry(Optional.of(new UpstreamConfig.Retry(Optional.of(true), Optional.of(3), Optional.of(true))))
-                .notModified(Optional.of(new UpstreamConfig.NotModified(Optional.of(true))))
-                .circuitBreaker(Optional.of(new UpstreamConfig.CircuitBreaker(Optional.of(5), Optional.of(30000))))
+                .path("/v1/orders")
+                .connectTimeoutMs(2000)
+                .readTimeoutMs(5000)
+                .retry(new UpstreamConfig.Retry(true, 3, true))
+                .notModified(new UpstreamConfig.NotModified(true))
+                .circuitBreaker(new UpstreamConfig.CircuitBreaker(5, 30000))
                 .build();
     }
 
@@ -274,106 +272,96 @@ class ConfigModelContractTest {
             return Stream.of(
                     voCase("GatewayConfig", gatewayConfig(), gatewayConfig(),
                             GatewayConfig.builder().version(99).build()),
-                    voCase("Metadata", new Metadata(Optional.of("v1")), new Metadata(Optional.of("v1")),
-                            new Metadata(Optional.of("v2"))),
+                    voCase("Metadata", new Metadata("v1"), new Metadata("v1"),
+                            new Metadata("v2")),
                     voCase("TlsConfig", tlsConfig(), tlsConfig(), TlsConfig.builder().build()),
                     voCase("ManagementConfig", managementConfig(), managementConfig(),
                             ManagementConfig.builder().build()),
                     voCase("ManagementConfig.ManagementTls", new ManagementConfig.ManagementTls(true),
                             new ManagementConfig.ManagementTls(true), new ManagementConfig.ManagementTls(false)),
-                    voCase("TlsConfig.Mtls", new TlsConfig.Mtls(true, Optional.of("/ca")),
-                            new TlsConfig.Mtls(true, Optional.of("/ca")), new TlsConfig.Mtls(false, Optional.empty())),
+                    voCase("TlsConfig.Mtls", new TlsConfig.Mtls(true, "/ca"),
+                            new TlsConfig.Mtls(true, "/ca"), new TlsConfig.Mtls(false, null)),
                     voCase("SecurityHeadersConfig", securityHeadersConfig(), securityHeadersConfig(),
                             SecurityHeadersConfig.builder().build()),
                     voCase("SecurityHeadersConfig.Hsts",
-                            new SecurityHeadersConfig.Hsts(Optional.of(1), Optional.of(true)),
-                            new SecurityHeadersConfig.Hsts(Optional.of(1), Optional.of(true)),
-                            new SecurityHeadersConfig.Hsts(Optional.of(2), Optional.of(false))),
+                            new SecurityHeadersConfig.Hsts(1, true),
+                            new SecurityHeadersConfig.Hsts(1, true),
+                            new SecurityHeadersConfig.Hsts(2, false)),
                     voCase("SecurityHeadersConfig.Cors",
-                            new SecurityHeadersConfig.Cors(Optional.of(true), List.of("a"), List.of("GET"),
-                                    List.of("Accept"), Optional.of(false)),
-                            new SecurityHeadersConfig.Cors(Optional.of(true), List.of("a"), List.of("GET"),
-                                    List.of("Accept"), Optional.of(false)),
-                            new SecurityHeadersConfig.Cors(Optional.of(false), List.of("b"), List.of("POST"),
-                                    List.of("Authorization"), Optional.of(true))),
+                            new SecurityHeadersConfig.Cors(true, List.of("a"), List.of("GET"),
+                                    List.of("Accept"), false),
+                            new SecurityHeadersConfig.Cors(true, List.of("a"), List.of("GET"),
+                                    List.of("Accept"), false),
+                            new SecurityHeadersConfig.Cors(false, List.of("b"), List.of("POST"),
+                                    List.of("Authorization"), true)),
                     // Two cases so the record contract is proven to discriminate on BOTH components:
                     // an unequal instance differing only in 'profile' would leave the newer
                     // max_authorization_header_value_length component silently out of equals().
                     voCase("SecurityDefaultsConfig (profile)",
-                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
-                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
-                            new SecurityDefaultsConfig(Optional.of("lenient"), Optional.of(8192))),
+                            new SecurityDefaultsConfig("strict", 8192),
+                            new SecurityDefaultsConfig("strict", 8192),
+                            new SecurityDefaultsConfig("lenient", 8192)),
                     voCase("SecurityDefaultsConfig (max_authorization_header_value_length)",
-                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
-                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(8192)),
-                            new SecurityDefaultsConfig(Optional.of("strict"), Optional.of(4096))),
+                            new SecurityDefaultsConfig("strict", 8192),
+                            new SecurityDefaultsConfig("strict", 8192),
+                            new SecurityDefaultsConfig("strict", 4096)),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),
                     voCase("ForwardedConfig",
-                            new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both")),
-                            new ForwardedConfig(List.of("10.0.0.0/8"), Optional.of(true), Optional.of("both")),
-                            new ForwardedConfig(List.of("192.168.0.0/16"), Optional.of(false),
-                                    Optional.of("x-forwarded"))),
+                            new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"),
+                            new ForwardedConfig(List.of("10.0.0.0/8"), true, "both"),
+                            new ForwardedConfig(List.of("192.168.0.0/16"), false, "x-forwarded")),
                     voCase("TokenValidationConfig", tokenValidationConfig(), tokenValidationConfig(),
                             new TokenValidationConfig(List.of())),
                     voCase("IssuerConfig", issuerConfig(), issuerConfig(),
-                            new IssuerConfig("other", "https://other", Optional.empty(), Optional.empty())),
+                            new IssuerConfig("other", "https://other", null, null)),
                     voCase("IssuerConfig.Jwks",
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(), List.of(),
-                                    Optional.empty()),
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(), List.of(),
-                                    Optional.empty()),
-                            new IssuerConfig.Jwks("file", Optional.empty(), Optional.of("/jwks.json"), List.of(),
-                                    Optional.empty())),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null),
+                            new IssuerConfig.Jwks("file", null, "/jwks.json", List.of(), null)),
                     // The egress allowlist participates in identity: two otherwise-identical
                     // jwks blocks that differ only in allowed_egress_hosts are NOT equal, so a
                     // widened block can never be mistaken for a secure-default one.
                     voCase("IssuerConfig.Jwks.allowedEgressHosts",
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(),
-                                    List.of("idp.internal"), Optional.empty()),
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(),
-                                    List.of("idp.internal"), Optional.empty()),
-                            new IssuerConfig.Jwks("http", Optional.of("https://j"), Optional.empty(), List.of(),
-                                    Optional.empty())),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of("idp.internal"), null),
+                            new IssuerConfig.Jwks("http", "https://j", null, List.of(), null)),
                     voCase("OidcConfig", oidcConfig(), oidcConfig(), OidcConfig.builder().build()),
                     voCase("OidcConfig.Logout",
-                            new OidcConfig.Logout(Optional.of("/l"), Optional.empty(), Optional.empty(),
-                                    Optional.empty()),
-                            new OidcConfig.Logout(Optional.of("/l"), Optional.empty(), Optional.empty(),
-                                    Optional.empty()),
-                            new OidcConfig.Logout(Optional.of("/other"), Optional.empty(), Optional.empty(),
-                                    Optional.empty())),
+                            new OidcConfig.Logout("/l", null, null, null),
+                            new OidcConfig.Logout("/l", null, null, null),
+                            new OidcConfig.Logout("/other", null, null, null)),
                     voCase("OidcConfig.Csrf", new OidcConfig.Csrf(List.of("https://a")),
                             new OidcConfig.Csrf(List.of("https://a")), new OidcConfig.Csrf(List.of("https://b"))),
                     voCase("OidcConfig.Refresh",
-                            new OidcConfig.Refresh(Optional.of(true), Optional.of(60), Optional.of("reject")),
-                            new OidcConfig.Refresh(Optional.of(true), Optional.of(60), Optional.of("reject")),
-                            new OidcConfig.Refresh(Optional.of(false), Optional.empty(), Optional.empty())),
-                    voCase("OidcConfig.StepUp", new OidcConfig.StepUp(Optional.of(true), Optional.of(false)),
-                            new OidcConfig.StepUp(Optional.of(true), Optional.of(false)),
-                            new OidcConfig.StepUp(Optional.of(false), Optional.of(true))),
+                            new OidcConfig.Refresh(true, 60, "reject"),
+                            new OidcConfig.Refresh(true, 60, "reject"),
+                            new OidcConfig.Refresh(false, null, null)),
+                    voCase("OidcConfig.StepUp", new OidcConfig.StepUp(true, false),
+                            new OidcConfig.StepUp(true, false),
+                            new OidcConfig.StepUp(false, true)),
                     voCase("OidcConfig.UserInfo", userInfo(), userInfo(),
-                            new OidcConfig.UserInfo(Optional.of("/other"), List.of("sub"), List.of())),
-                    voCase("OidcConfig.Login", new OidcConfig.Login(Optional.of("/session/login")),
-                            new OidcConfig.Login(Optional.of("/session/login")),
-                            new OidcConfig.Login(Optional.of("/other-login"))),
+                            new OidcConfig.UserInfo("/other", List.of("sub"), List.of())),
+                    voCase("OidcConfig.Login", new OidcConfig.Login("/session/login"),
+                            new OidcConfig.Login("/session/login"),
+                            new OidcConfig.Login("/other-login")),
                     voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
-                            .id("other").baseUrl("svc").auth(Optional.of(auth())).build()),
+                            .id("other").baseUrl("svc").auth(auth()).build()),
                     voCase("AuthConfig", auth(), auth(), new AuthConfig("none", List.of())),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
                             ResolvedRoute.builder().id("other").match(matchConfig()).effectiveAuth(auth())
-                                    .upstream(Optional.of(resolvedUpstream())).build()),
+                                    .upstream(resolvedUpstream()).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
                             MatchConfig.builder().pathPrefix("/other").build()),
                     voCase("MatchConfig.HeaderMatcher",
-                            new MatchConfig.HeaderMatcher("X-Key", Optional.of(true), Optional.of("v")),
-                            new MatchConfig.HeaderMatcher("X-Key", Optional.of(true), Optional.of("v")),
-                            new MatchConfig.HeaderMatcher("X-Other", Optional.empty(), Optional.empty())),
+                            new MatchConfig.HeaderMatcher("X-Key", true, "v"),
+                            new MatchConfig.HeaderMatcher("X-Key", true, "v"),
+                            new MatchConfig.HeaderMatcher("X-Other", null, null)),
                     voCase("SecurityFilterConfig", securityFilterConfig(), securityFilterConfig(),
                             SecurityFilterConfig.builder().build()),
                     voCase("ForwardConfig",
@@ -381,24 +369,24 @@ class ConfigModelContractTest {
                             new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "sheriff")),
                             new ForwardConfig(List.of(), List.of(), Map.of())),
                     voCase("WebSocketConfig",
-                            new WebSocketConfig(List.of("https://app.example.com"), Optional.of(300)),
-                            new WebSocketConfig(List.of("https://app.example.com"), Optional.of(300)),
-                            new WebSocketConfig(List.of("https://other.example.com"), Optional.of(60))),
+                            new WebSocketConfig(List.of("https://app.example.com"), 300),
+                            new WebSocketConfig(List.of("https://app.example.com"), 300),
+                            new WebSocketConfig(List.of("https://other.example.com"), 60)),
                     voCase("UpstreamConfig", upstreamConfig(), upstreamConfig(), UpstreamConfig.builder().build()),
                     voCase("UpstreamConfig.Retry",
-                            new UpstreamConfig.Retry(Optional.of(true), Optional.of(3), Optional.of(true)),
-                            new UpstreamConfig.Retry(Optional.of(true), Optional.of(3), Optional.of(true)),
-                            new UpstreamConfig.Retry(Optional.of(false), Optional.empty(), Optional.empty())),
-                    voCase("UpstreamConfig.NotModified", new UpstreamConfig.NotModified(Optional.of(true)),
-                            new UpstreamConfig.NotModified(Optional.of(true)),
-                            new UpstreamConfig.NotModified(Optional.of(false))),
+                            new UpstreamConfig.Retry(true, 3, true),
+                            new UpstreamConfig.Retry(true, 3, true),
+                            new UpstreamConfig.Retry(false, null, null)),
+                    voCase("UpstreamConfig.NotModified", new UpstreamConfig.NotModified(true),
+                            new UpstreamConfig.NotModified(true),
+                            new UpstreamConfig.NotModified(false)),
                     voCase("UpstreamConfig.CircuitBreaker",
-                            new UpstreamConfig.CircuitBreaker(Optional.of(5), Optional.of(30000)),
-                            new UpstreamConfig.CircuitBreaker(Optional.of(5), Optional.of(30000)),
-                            new UpstreamConfig.CircuitBreaker(Optional.of(1), Optional.of(1))),
-                    voCase("RateLimitConfig", new RateLimitConfig(Optional.of(100), Optional.of(200)),
-                            new RateLimitConfig(Optional.of(100), Optional.of(200)),
-                            new RateLimitConfig(Optional.of(1), Optional.of(1))));
+                            new UpstreamConfig.CircuitBreaker(5, 30000),
+                            new UpstreamConfig.CircuitBreaker(5, 30000),
+                            new UpstreamConfig.CircuitBreaker(1, 1)),
+                    voCase("RateLimitConfig", new RateLimitConfig(100, 200),
+                            new RateLimitConfig(100, 200),
+                            new RateLimitConfig(1, 1)));
         }
 
         @ParameterizedTest(name = "{0}")
@@ -429,18 +417,17 @@ class ConfigModelContractTest {
         @Test
         void anchorConfigBuilderMatchesConstructor() {
             AnchorConfig viaCtor = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
-                    Optional.of(auth()), Optional.empty(), Optional.empty(), List.of(HttpMethod.GET));
+                    auth(), null, null, List.of(HttpMethod.GET));
             AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").type(AnchorType.PROXY)
-                    .access(AccessLevel.AUTHENTICATED).auth(Optional.of(auth()))
+                    .access(AccessLevel.AUTHENTICATED).auth(auth())
                     .allowedMethods(List.of(HttpMethod.GET)).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
         @Test
         void gatewayConfigBuilderMatchesConstructor() {
-            GatewayConfig viaCtor = new GatewayConfig(2, Optional.empty(), Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty(), List.of(HttpMethod.GET), Map.of("api", anchorConfig()),
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+            GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
+                    List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null);
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .anchors(Map.of("api", anchorConfig())).build();
             assertEquals(viaCtor, viaBuilder);
@@ -448,10 +435,10 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigBuilderMatchesConstructor() {
-            EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", Optional.of("api"),
-                    Optional.of(auth()), List.of(HttpMethod.GET), Optional.empty(), List.of());
+            EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
+                    auth(), List.of(HttpMethod.GET), null, List.of());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
-                    .anchor(Optional.of("api")).auth(Optional.of(auth())).allowedMethods(List.of(HttpMethod.GET))
+                    .anchor("api").auth(auth()).allowedMethods(List.of(HttpMethod.GET))
                     .build();
             assertEquals(viaCtor, viaBuilder);
         }
@@ -467,91 +454,90 @@ class ConfigModelContractTest {
         void gatewayConfigNormalizesAllAbsentComponents() {
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
                     null);
-            assertTrue(cfg.metadata().isEmpty());
-            assertTrue(cfg.tls().isEmpty());
-            assertTrue(cfg.management().isEmpty());
-            assertTrue(cfg.securityHeaders().isEmpty());
-            assertTrue(cfg.securityDefaults().isEmpty());
+            assertNull(cfg.metadata());
+            assertNull(cfg.tls());
+            assertNull(cfg.management());
+            assertNull(cfg.securityHeaders());
+            assertNull(cfg.securityDefaults());
             assertTrue(cfg.allowedMethods().isEmpty());
             assertTrue(cfg.anchors().isEmpty());
-            assertTrue(cfg.upstreamDefaults().isEmpty());
-            assertTrue(cfg.forwarded().isEmpty());
-            assertTrue(cfg.tokenValidation().isEmpty());
-            assertTrue(cfg.oidc().isEmpty());
-            assertTrue(cfg.edgeHardening().isEmpty());
+            assertNull(cfg.upstreamDefaults());
+            assertNull(cfg.forwarded());
+            assertNull(cfg.tokenValidation());
+            assertNull(cfg.oidc());
+            assertNull(cfg.edgeHardening());
         }
 
         @Test
         void edgeHardeningConfigNormalizesAbsentCaps() {
             EdgeHardeningConfig cfg = new EdgeHardeningConfig(null, null);
-            assertTrue(cfg.admissionCap().isEmpty());
-            assertTrue(cfg.websocketRelayCap().isEmpty());
+            assertNull(cfg.admissionCap());
+            assertNull(cfg.websocketRelayCap());
             assertEquals(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP, cfg.effectiveAdmissionCap());
             assertEquals(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP, cfg.effectiveWebsocketRelayCap());
         }
 
         @Test
         void edgeHardeningConfigDerivesAbsentRelayCapFromDeclaredAdmissionCap() {
-            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(64), Optional.empty());
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(64, null);
             assertEquals(64, cfg.effectiveAdmissionCap());
             assertEquals(16, cfg.effectiveWebsocketRelayCap());
         }
 
         @Test
         void edgeHardeningConfigFloorsDerivedRelayCapAtOne() {
-            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(1), Optional.empty());
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(1, null);
             assertEquals(1, cfg.effectiveWebsocketRelayCap());
         }
 
         @Test
         void edgeHardeningConfigKeepsExplicitRelayCapAboveAdmissionCap() {
-            EdgeHardeningConfig cfg = new EdgeHardeningConfig(Optional.of(4), Optional.of(16));
+            EdgeHardeningConfig cfg = new EdgeHardeningConfig(4, 16);
             assertEquals(16, cfg.effectiveWebsocketRelayCap());
         }
 
         @Test
         void edgeHardeningConfigDefaultsCarryBothCaps() {
             EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
-            assertEquals(Optional.of(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP), defaults.admissionCap());
-            assertEquals(Optional.of(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP),
-                    defaults.websocketRelayCap());
+            assertEquals(EdgeHardeningConfig.DEFAULT_ADMISSION_CAP, defaults.admissionCap());
+            assertEquals(EdgeHardeningConfig.DEFAULT_WEBSOCKET_RELAY_CAP, defaults.websocketRelayCap());
         }
 
         @Test
-        void endpointConfigNormalizesAbsentCollectionsAndOptionals() {
+        void endpointConfigNormalizesAbsentCollectionsAndNullables() {
             EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null);
-            assertTrue(cfg.anchor().isEmpty());
-            assertTrue(cfg.auth().isEmpty());
+            assertNull(cfg.anchor());
+            assertNull(cfg.auth());
             assertTrue(cfg.allowedMethods().isEmpty());
-            assertTrue(cfg.upstreamDefaults().isEmpty());
+            assertNull(cfg.upstreamDefaults());
             assertTrue(cfg.routes().isEmpty());
         }
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
             RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null, null);
-            assertTrue(cfg.anchor().isEmpty());
-            assertTrue(cfg.auth().isEmpty());
-            assertTrue(cfg.securityFilter().isEmpty());
-            assertTrue(cfg.websocket().isEmpty());
+            assertNull(cfg.anchor());
+            assertNull(cfg.auth());
+            assertNull(cfg.securityFilter());
+            assertNull(cfg.websocket());
         }
 
         @Test
         void anchorConfigNormalizesAbsentComponents() {
             AnchorConfig cfg = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null);
-            assertTrue(cfg.auth().isEmpty());
-            assertTrue(cfg.securityFilter().isEmpty());
-            assertTrue(cfg.securityHeaders().isEmpty());
+            assertNull(cfg.auth());
+            assertNull(cfg.securityFilter());
+            assertNull(cfg.securityHeaders());
             assertTrue(cfg.allowedMethods().isEmpty());
         }
 
         @Test
-        void resolvedRouteNormalizesAbsentOptionals() {
+        void resolvedRouteNormalizesAbsentComponents() {
             ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, Optional.of(resolvedUpstream()), Optional.empty(), null, null, null);
-            assertTrue(cfg.anchor().isEmpty());
-            assertTrue(cfg.effectiveSecurityFilter().isEmpty());
-            assertTrue(cfg.effectiveSecurityHeaders().isEmpty());
+                    true, resolvedUpstream(), null, null, null, null);
+            assertNull(cfg.anchor());
+            assertNull(cfg.effectiveSecurityFilter());
+            assertNull(cfg.effectiveSecurityHeaders());
             assertTrue(cfg.effectiveAllowedMethods().isEmpty());
             assertEquals(Protocol.HTTP, cfg.protocol());
             assertTrue(cfg.effectiveForward().headersAllow().isEmpty(),
@@ -560,8 +546,8 @@ class ConfigModelContractTest {
             assertTrue(cfg.effectiveForward().setHeaders().isEmpty());
             assertTrue(cfg.effectiveAllowedOrigins().isEmpty(),
                     "an absent WebSocket origin allowlist normalizes to an empty set");
-            assertTrue(cfg.effectiveWebSocketIdleTimeoutSeconds().isEmpty(),
-                    "an absent WebSocket idle timeout normalizes to Optional.empty()");
+            assertNull(cfg.effectiveWebSocketIdleTimeoutSeconds(),
+                    "an absent WebSocket idle timeout stays null");
         }
 
         @Test
@@ -585,7 +571,7 @@ class ConfigModelContractTest {
         void webSocketConfigNormalizesAbsentComponents() {
             WebSocketConfig cfg = new WebSocketConfig(null, null);
             assertTrue(cfg.allowedOrigins().isEmpty());
-            assertTrue(cfg.idleTimeoutSeconds().isEmpty());
+            assertNull(cfg.idleTimeoutSeconds());
         }
     }
 
@@ -664,34 +650,32 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
-            return new EndpointConfig(id, true, baseUrl, Optional.empty(), Optional.of(auth()), List.of(),
-                    Optional.empty(), List.of());
+            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), null, List.of());
         }
 
         @Test
         void endpointConfigAcceptsAnAbsentAuthBlock() {
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", Optional.of("api"), Optional.empty(), List.of(),
-                    Optional.empty(), List.of());
-            assertTrue(cfg.auth().isEmpty(), "an anchored endpoint may omit its auth block");
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), null, List.of());
+            assertNull(cfg.auth(), "an anchored endpoint may omit its auth block");
         }
 
         @Test
         void anchorConfigRequiresNamePathPrefixTypeAndAccess() {
             NullPointerException noName = assertThrows(NullPointerException.class,
-                    () -> new AnchorConfig(null, "/api", AnchorType.PROXY, AccessLevel.PUBLIC, Optional.empty(),
-                            Optional.empty(), Optional.empty(), List.of()));
+                    () -> new AnchorConfig(null, "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null,
+                            null, null, List.of()));
             assertEquals("name", noName.getMessage());
             NullPointerException noPrefix = assertThrows(NullPointerException.class,
-                    () -> new AnchorConfig("api", null, AnchorType.PROXY, AccessLevel.PUBLIC, Optional.empty(),
-                            Optional.empty(), Optional.empty(), List.of()));
+                    () -> new AnchorConfig("api", null, AnchorType.PROXY, AccessLevel.PUBLIC, null,
+                            null, null, List.of()));
             assertEquals("pathPrefix", noPrefix.getMessage());
             NullPointerException noType = assertThrows(NullPointerException.class,
-                    () -> new AnchorConfig("api", "/api", null, AccessLevel.PUBLIC, Optional.empty(),
-                            Optional.empty(), Optional.empty(), List.of()));
+                    () -> new AnchorConfig("api", "/api", null, AccessLevel.PUBLIC, null,
+                            null, null, List.of()));
             assertEquals("type", noType.getMessage());
             NullPointerException noAccess = assertThrows(NullPointerException.class,
-                    () -> new AnchorConfig("api", "/api", AnchorType.PROXY, null, Optional.empty(),
-                            Optional.empty(), Optional.empty(), List.of()));
+                    () -> new AnchorConfig("api", "/api", AnchorType.PROXY, null, null,
+                            null, null, List.of()));
             assertEquals("access", noAccess.getMessage());
         }
 
@@ -705,26 +689,26 @@ class ConfigModelContractTest {
         @Test
         void issuerConfigRequiresNameAndIssuer() {
             assertThrows(NullPointerException.class,
-                    () -> new IssuerConfig(null, "iss", Optional.empty(), Optional.empty()));
+                    () -> new IssuerConfig(null, "iss", null, null));
             assertThrows(NullPointerException.class,
-                    () -> new IssuerConfig("name", null, Optional.empty(), Optional.empty()));
+                    () -> new IssuerConfig("name", null, null, null));
         }
 
         @Test
         void jwksRequiresSource() {
             assertThrows(NullPointerException.class,
-                    () -> new IssuerConfig.Jwks(null, Optional.empty(), Optional.empty(), List.of(), Optional.empty()));
+                    () -> new IssuerConfig.Jwks(null, null, null, List.of(), null));
         }
 
         @Test
         void matchConfigRequiresPathPrefix() {
-            assertThrows(NullPointerException.class, () -> new MatchConfig(null, List.of(), Optional.empty(), List.of()));
+            assertThrows(NullPointerException.class, () -> new MatchConfig(null, List.of(), null, List.of()));
         }
 
         @Test
         void headerMatcherRequiresName() {
             assertThrows(NullPointerException.class,
-                    () -> new MatchConfig.HeaderMatcher(null, Optional.empty(), Optional.empty()));
+                    () -> new MatchConfig.HeaderMatcher(null, null, null));
         }
 
         @Test
@@ -739,18 +723,17 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private RouteConfig routeConfigWith(String id, MatchConfig match) {
-            return new RouteConfig(id, Optional.empty(), Optional.empty(), match, Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null);
         }
 
         @Test
         void resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction() {
             MatchConfig match = matchConfig();
             AuthConfig auth = auth();
-            Optional<ResolvedUpstream> upstream = Optional.of(resolvedUpstream());
-            Optional<ResolvedUpstream> noUpstream = Optional.empty();
-            Optional<ResolvedAsset> noAsset = Optional.empty();
-            Optional<ResolvedAsset> asset = Optional.of(ResolvedAsset.directory("/srv", AccessLevel.PUBLIC));
+            ResolvedUpstream upstream = resolvedUpstream();
+            ResolvedUpstream noUpstream = null;
+            ResolvedAsset noAsset = null;
+            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC);
 
             assertThrows(NullPointerException.class, () -> resolvedRouteWith(null, match, auth, upstream, noAsset));
             assertThrows(NullPointerException.class, () -> resolvedRouteWith("id", null, auth, upstream, noAsset));
@@ -768,9 +751,9 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
-                Optional<ResolvedUpstream> upstream, Optional<ResolvedAsset> asset) {
-            return new ResolvedRoute(id, Protocol.HTTP, Optional.empty(), match, auth, List.of(), Optional.empty(),
-                    Optional.empty(), true, true, upstream, asset, null, null, null);
+                ResolvedUpstream upstream, ResolvedAsset asset) {
+            return new ResolvedRoute(id, Protocol.HTTP, null, match, auth, List.of(), null,
+                    null, true, true, upstream, asset, null, null, null);
         }
     }
 
@@ -786,44 +769,44 @@ class ConfigModelContractTest {
                     .id("orders")
                     .enabled(true)
                     .baseUrl("orders-service")
-                    .anchor(Optional.of("api"))
-                    .auth(Optional.of(auth()))
+                    .anchor("api")
+                    .auth(auth())
                     .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                     .build();
             assertEquals("orders", cfg.id());
             assertTrue(cfg.enabled());
-            assertEquals(Optional.of("api"), cfg.anchor());
-            assertEquals(Optional.of(auth()), cfg.auth());
+            assertEquals("api", cfg.anchor());
+            assertEquals(auth(), cfg.auth());
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
         }
 
         @Test
         void endpointConfigEnabledDefaultsToFalseWhenUnsetOnTheRecord() {
             EndpointConfig cfg = EndpointConfig.builder().id("orders").baseUrl("orders-service")
-                    .auth(Optional.of(auth())).build();
+                    .auth(auth()).build();
             assertFalse(cfg.enabled(), "the record itself applies no default; the YAML loader owns the true default");
         }
 
         @Test
         void routeConfigExposesAnchorOverride() {
-            RouteConfig cfg = RouteConfig.builder().id("r").anchor(Optional.of("bff")).match(matchConfig()).build();
-            assertEquals(Optional.of("bff"), cfg.anchor());
+            RouteConfig cfg = RouteConfig.builder().id("r").anchor("bff").match(matchConfig()).build();
+            assertEquals("bff", cfg.anchor());
         }
 
         @Test
         void routeConfigExposesWebSocketBlock() {
-            RouteConfig cfg = RouteConfig.builder().id("ws").protocol(Optional.of(Protocol.WEBSOCKET))
-                    .match(matchConfig()).websocket(Optional.of(webSocketConfig())).build();
-            assertEquals(Optional.of(webSocketConfig()), cfg.websocket());
+            RouteConfig cfg = RouteConfig.builder().id("ws").protocol(Protocol.WEBSOCKET)
+                    .match(matchConfig()).websocket(webSocketConfig()).build();
+            assertEquals(webSocketConfig(), cfg.websocket());
             assertEquals(List.of("https://app.example.com"),
-                    cfg.websocket().orElseThrow().allowedOrigins());
-            assertEquals(Optional.of(300), cfg.websocket().orElseThrow().idleTimeoutSeconds());
+                    cfg.websocket().allowedOrigins());
+            assertEquals(300, cfg.websocket().idleTimeoutSeconds());
         }
 
         @Test
-        void routeConfigWebSocketDefaultsToEmpty() {
+        void routeConfigWebSocketDefaultsToAbsent() {
             RouteConfig cfg = RouteConfig.builder().id("http").match(matchConfig()).build();
-            assertTrue(cfg.websocket().isEmpty(), "a non-WebSocket route carries no websocket block");
+            assertNull(cfg.websocket(), "a non-WebSocket route carries no websocket block");
         }
 
         @Test
@@ -833,12 +816,12 @@ class ConfigModelContractTest {
                     .protocol(Protocol.WEBSOCKET)
                     .match(matchConfig())
                     .effectiveAuth(auth())
-                    .upstream(Optional.of(resolvedUpstream()))
+                    .upstream(resolvedUpstream())
                     .effectiveAllowedOrigins(Set.of("https://app.example.com"))
-                    .effectiveWebSocketIdleTimeoutSeconds(Optional.of(300))
+                    .effectiveWebSocketIdleTimeoutSeconds(300)
                     .build();
             assertEquals(Set.of("https://app.example.com"), cfg.effectiveAllowedOrigins());
-            assertEquals(Optional.of(300), cfg.effectiveWebSocketIdleTimeoutSeconds());
+            assertEquals(300, cfg.effectiveWebSocketIdleTimeoutSeconds());
         }
 
         @Test
@@ -848,20 +831,20 @@ class ConfigModelContractTest {
             assertEquals("/api", cfg.pathPrefix());
             assertEquals(AnchorType.PROXY, cfg.type());
             assertEquals(AccessLevel.AUTHENTICATED, cfg.access());
-            assertEquals(Optional.of(auth()), cfg.auth());
-            assertTrue(cfg.securityFilter().isPresent());
-            assertTrue(cfg.securityHeaders().isPresent());
+            assertEquals(auth(), cfg.auth());
+            assertNotNull(cfg.securityFilter());
+            assertNotNull(cfg.securityHeaders());
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
         }
 
         @Test
         void resolvedRouteCarriesTheMaterializedEffectivePosture() {
             ResolvedRoute cfg = resolvedRoute();
-            assertEquals(Optional.of("api"), cfg.anchor());
+            assertEquals("api", cfg.anchor());
             assertEquals("bearer", cfg.effectiveAuth().require());
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.effectiveAllowedMethods());
-            assertTrue(cfg.effectiveSecurityFilter().isPresent());
-            assertTrue(cfg.effectiveSecurityHeaders().isPresent());
+            assertNotNull(cfg.effectiveSecurityFilter());
+            assertNotNull(cfg.effectiveSecurityHeaders());
             assertEquals(List.of("Accept"), cfg.effectiveForward().headersAllow(),
                     "the materialized forward allowlist is carried on the resolved route");
         }
@@ -925,7 +908,7 @@ class ConfigModelContractTest {
     class SessionModeCanonicalization {
 
         private static OidcConfig.Session sessionWithMode(String mode) {
-            return OidcConfig.Session.builder().mode(Optional.of(mode)).build();
+            return OidcConfig.Session.builder().mode(mode).build();
         }
 
         @ParameterizedTest(name = "mode ''{0}'' canonicalizes to cookie mode")
@@ -934,7 +917,7 @@ class ConfigModelContractTest {
         void shouldCanonicalizeCookieMode(String declared) {
             OidcConfig.Session session = sessionWithMode(declared);
 
-            assertEquals(Optional.of(OidcConfig.Session.MODE_COOKIE), session.mode(),
+            assertEquals(OidcConfig.Session.MODE_COOKIE, session.mode(),
                     "the mode is canonicalized once, at construction");
             assertTrue(session.isCookieMode());
             assertFalse(session.isServerMode());
@@ -947,7 +930,7 @@ class ConfigModelContractTest {
         void shouldCanonicalizeServerMode(String declared) {
             OidcConfig.Session session = sessionWithMode(declared);
 
-            assertEquals(Optional.of(OidcConfig.Session.MODE_SERVER), session.mode());
+            assertEquals(OidcConfig.Session.MODE_SERVER, session.mode());
             assertTrue(session.isServerMode());
             assertFalse(session.isCookieMode());
             assertTrue(session.isRecognisedMode());
@@ -956,7 +939,7 @@ class ConfigModelContractTest {
         @Test
         @DisplayName("Should treat an absent, blank or unrecognised mode as no recognised mode")
         void shouldRejectUnrecognisedModes() {
-            assertTrue(sessionWithMode("   ").mode().isEmpty(), "a blank mode is an absent mode");
+            assertNull(sessionWithMode("   ").mode(), "a blank mode is an absent mode");
             assertFalse(sessionWithMode("   ").isRecognisedMode());
             assertFalse(sessionWithMode("stateless").isRecognisedMode());
             assertFalse(OidcConfig.Session.builder().build().isRecognisedMode());
@@ -970,23 +953,23 @@ class ConfigModelContractTest {
         @Test
         void userInfoExposesPathAllowlistAndDefaultView() {
             OidcConfig.UserInfo cfg = userInfo();
-            assertEquals(Optional.of("/session/userinfo"), cfg.path());
+            assertEquals("/session/userinfo", cfg.path());
             assertEquals(List.of("sub", "name", "roles"), cfg.allowedClaims());
             assertEquals(List.of("sub", "name"), cfg.defaultView());
         }
 
         @Test
         void userInfoBuilderMatchesConstructor() {
-            OidcConfig.UserInfo viaCtor = new OidcConfig.UserInfo(Optional.of("/u"), List.of("sub"), List.of("sub"));
+            OidcConfig.UserInfo viaCtor = new OidcConfig.UserInfo("/u", List.of("sub"), List.of("sub"));
             OidcConfig.UserInfo viaBuilder = OidcConfig.UserInfo.builder()
-                    .path(Optional.of("/u")).allowedClaims(List.of("sub")).defaultView(List.of("sub")).build();
+                    .path("/u").allowedClaims(List.of("sub")).defaultView(List.of("sub")).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
         @Test
         void userInfoNormalizesAbsentComponents() {
             OidcConfig.UserInfo cfg = new OidcConfig.UserInfo(null, null, null);
-            assertTrue(cfg.path().isEmpty());
+            assertNull(cfg.path());
             assertTrue(cfg.allowedClaims().isEmpty(), "an absent allowlist is the secure closed default (empty)");
             assertTrue(cfg.defaultView().isEmpty());
         }
@@ -996,7 +979,7 @@ class ConfigModelContractTest {
             List<String> allowedSource = new ArrayList<>(List.of("sub"));
             List<String> viewSource = new ArrayList<>(List.of("sub"));
             OidcConfig.UserInfo cfg = OidcConfig.UserInfo.builder()
-                    .path(Optional.of("/u")).allowedClaims(allowedSource).defaultView(viewSource).build();
+                    .path("/u").allowedClaims(allowedSource).defaultView(viewSource).build();
             allowedSource.add("email");
             viewSource.add("email");
             assertEquals(List.of("sub"), cfg.allowedClaims(),
@@ -1010,23 +993,23 @@ class ConfigModelContractTest {
 
         @Test
         void loginExposesPathAndNormalizesAbsent() {
-            assertEquals(Optional.of("/session/login"), new OidcConfig.Login(Optional.of("/session/login")).path());
-            assertTrue(new OidcConfig.Login(null).path().isEmpty());
+            assertEquals("/session/login", new OidcConfig.Login("/session/login").path());
+            assertNull(new OidcConfig.Login(null).path());
         }
 
         @Test
         void loginBuilderMatchesConstructor() {
-            OidcConfig.Login viaCtor = new OidcConfig.Login(Optional.of("/login"));
-            OidcConfig.Login viaBuilder = OidcConfig.Login.builder().path(Optional.of("/login")).build();
+            OidcConfig.Login viaCtor = new OidcConfig.Login("/login");
+            OidcConfig.Login viaBuilder = OidcConfig.Login.builder().path("/login").build();
             assertEquals(viaCtor, viaBuilder);
         }
 
         @Test
         void sessionExposesAndNormalizesMaxSessions() {
-            OidcConfig.Session withBound = OidcConfig.Session.builder().maxSessions(Optional.of(500)).build();
-            assertEquals(Optional.of(500), withBound.maxSessions());
+            OidcConfig.Session withBound = OidcConfig.Session.builder().maxSessions(500).build();
+            assertEquals(500, withBound.maxSessions());
             OidcConfig.Session withoutBound = OidcConfig.Session.builder().build();
-            assertTrue(withoutBound.maxSessions().isEmpty(), "an absent max_sessions normalizes to Optional.empty()");
+            assertNull(withoutBound.maxSessions(), "an absent max_sessions stays null");
         }
 
         @Test
@@ -1040,7 +1023,7 @@ class ConfigModelContractTest {
 
         @Test
         void sessionToStringCarriesMaxSessionsAndStillRedactsKeys() {
-            String rendered = oidcConfig().session().orElseThrow().toString();
+            String rendered = oidcConfig().session().toString();
             assertTrue(rendered.contains("maxSessions="), "Session toString must surface the max_sessions bound");
             assertTrue(rendered.contains("***REDACTED***"), "the encryption key must stay redacted");
             assertFalse(rendered.contains("${SESSION_KEY}"), "the raw encryption-key reference must never appear");

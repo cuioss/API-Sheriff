@@ -16,7 +16,7 @@
 package de.cuioss.sheriff.gateway.bff.logout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -88,8 +88,8 @@ class LogoutTokenValidatorTest {
             Optional<LogoutSubject> result = validator.validate(token(validClaims()), NOW);
 
             assertTrue(result.isPresent(), "a fully valid logout token is accepted");
-            assertEquals(Optional.of(SUB), result.get().sub());
-            assertEquals(Optional.of(SID), result.get().sid());
+            assertEquals(SUB, result.get().sub());
+            assertEquals(SID, result.get().sid());
         }
 
         @Test
@@ -101,8 +101,8 @@ class LogoutTokenValidatorTest {
             Optional<LogoutSubject> result = validator.validate(token(claims), NOW);
 
             assertTrue(result.isPresent());
-            assertEquals(Optional.of(SUB), result.get().sub());
-            assertTrue(result.get().sid().isEmpty(), "sid is absent");
+            assertEquals(SUB, result.get().sub());
+            assertNull(result.get().sid(), "sid is absent");
         }
 
         @Test
@@ -114,8 +114,8 @@ class LogoutTokenValidatorTest {
             Optional<LogoutSubject> result = validator.validate(token(claims), NOW);
 
             assertTrue(result.isPresent());
-            assertTrue(result.get().sub().isEmpty(), "sub is absent");
-            assertEquals(Optional.of(SID), result.get().sid());
+            assertNull(result.get().sub(), "sub is absent");
+            assertEquals(SID, result.get().sid());
         }
 
         @Test
@@ -312,12 +312,12 @@ class LogoutTokenValidatorTest {
     class LogoutSubjectRecord {
 
         @Test
-        @DisplayName("Should normalize null components to Optional.empty")
-        void shouldNormalizeNullComponents() {
+        @DisplayName("Should accept absent components as null")
+        void shouldAcceptNullComponents() {
             LogoutSubject subject = new LogoutSubject(null, null);
 
-            assertFalse(subject.sub().isPresent());
-            assertFalse(subject.sid().isPresent());
+            assertNull(subject.sub());
+            assertNull(subject.sid());
         }
     }
 }

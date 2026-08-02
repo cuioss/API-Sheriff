@@ -21,7 +21,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -83,11 +82,11 @@ class ConfigValidatorRouteDisjointnessTest {
     }
 
     private static HeaderMatcher headerWithValue(String name, String value) {
-        return HeaderMatcher.builder().name(name).value(Optional.of(value)).build();
+        return HeaderMatcher.builder().name(name).value(value).build();
     }
 
     private static HeaderMatcher headerWithPresence(String name, boolean present) {
-        return HeaderMatcher.builder().name(name).present(Optional.of(present)).build();
+        return HeaderMatcher.builder().name(name).present(present).build();
     }
 
     /**
@@ -98,7 +97,7 @@ class ConfigValidatorRouteDisjointnessTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(Optional.of(new AuthConfig("none", List.of())))
+                .auth(new AuthConfig("none", List.of()))
                 .routes(List.of(route("first", first), route("second", second)))
                 .build();
 
@@ -125,8 +124,8 @@ class ConfigValidatorRouteDisjointnessTest {
         @DisplayName("Should accept same-prefix routes bound to two different hosts")
         void shouldAcceptRoutesOnDifferentHosts(String label) {
             List<ConfigError> errors = validateRoutes(
-                    sharedPrefix(HttpMethod.GET).host(Optional.of(label + "-a.example.com")).build(),
-                    sharedPrefix(HttpMethod.GET).host(Optional.of(label + "-b.example.com")).build());
+                    sharedPrefix(HttpMethod.GET).host(label + "-a.example.com").build(),
+                    sharedPrefix(HttpMethod.GET).host(label + "-b.example.com").build());
 
             assertDisjoint(errors);
         }
@@ -138,8 +137,8 @@ class ConfigValidatorRouteDisjointnessTest {
             String host = label + ".example.com";
 
             List<ConfigError> errors = validateRoutes(
-                    sharedPrefix(HttpMethod.GET).host(Optional.of(host.toUpperCase(Locale.ROOT))).build(),
-                    sharedPrefix(HttpMethod.GET).host(Optional.of(host)).build());
+                    sharedPrefix(HttpMethod.GET).host(host.toUpperCase(Locale.ROOT)).build(),
+                    sharedPrefix(HttpMethod.GET).host(host).build());
 
             assertCollides(errors);
         }
@@ -148,7 +147,7 @@ class ConfigValidatorRouteDisjointnessTest {
         @DisplayName("Should reject a host-bound route colliding with a host-agnostic route")
         void shouldRejectHostBoundRouteAgainstHostAgnosticRoute() {
             List<ConfigError> errors = validateRoutes(
-                    sharedPrefix(HttpMethod.GET).host(Optional.of("api.example.com")).build(),
+                    sharedPrefix(HttpMethod.GET).host("api.example.com").build(),
                     sharedPrefix(HttpMethod.GET).build());
 
             assertCollides(errors);

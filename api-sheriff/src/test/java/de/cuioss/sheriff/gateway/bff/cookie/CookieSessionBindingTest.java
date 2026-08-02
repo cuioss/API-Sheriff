@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.cookie;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -102,10 +103,10 @@ class CookieSessionBindingTest {
         return SessionRecord.builder()
                 .sessionId("ignored-on-bind")
                 .accessToken(accessToken)
-                .refreshToken(Optional.of(REFRESH_TOKEN))
+                .refreshToken(REFRESH_TOKEN)
                 .idToken(ID_TOKEN)
                 .sub(SUB)
-                .sid(Optional.of(SID))
+                .sid(SID)
                 .expiresAt(expiresAt)
                 .build();
     }
@@ -160,10 +161,10 @@ class CookieSessionBindingTest {
             assertTrue(resolved.isPresent());
             SessionRecord resolvedSession = resolved.get();
             assertEquals(ACCESS_TOKEN, resolvedSession.accessToken());
-            assertEquals(Optional.of(REFRESH_TOKEN), resolvedSession.refreshToken());
+            assertEquals(REFRESH_TOKEN, resolvedSession.refreshToken());
             assertEquals(ID_TOKEN, resolvedSession.idToken());
             assertEquals(SUB, resolvedSession.sub());
-            assertEquals(Optional.of(SID), resolvedSession.sid());
+            assertEquals(SID, resolvedSession.sid());
             assertEquals(LOGIN.plus(TTL), resolvedSession.expiresAt(),
                     "the deadline is derived from the sealed login instant");
         }
@@ -224,7 +225,7 @@ class CookieSessionBindingTest {
             SessionRecord rotated = SessionRecord.builder()
                     .sessionId(resolved.sessionId())
                     .accessToken("rotated-access-token")
-                    .refreshToken(Optional.of("rotated-refresh-token"))
+                    .refreshToken("rotated-refresh-token")
                     .idToken(resolved.idToken())
                     .sub(resolved.sub())
                     .sid(resolved.sid())
@@ -236,7 +237,7 @@ class CookieSessionBindingTest {
 
             SessionRecord reResolved = binding.resolve(cookieHeaderOf(reBound), LOGIN.plusSeconds(60)).orElseThrow();
             assertEquals("rotated-access-token", reResolved.accessToken());
-            assertEquals(Optional.of("rotated-refresh-token"), reResolved.refreshToken());
+            assertEquals("rotated-refresh-token", reResolved.refreshToken());
         }
 
         @Test
@@ -431,7 +432,7 @@ class CookieSessionBindingTest {
         @ValueSource(strings = {"", " ", "\t", "\n", "   "})
         @DisplayName("Should reject a present-but-blank session nonce")
         void shouldRejectPresentButBlankNonce(String blank) {
-            SessionRecord.SessionRecordBuilder builder = baseRecord().sessionNonce(Optional.of(blank));
+            SessionRecord.SessionRecordBuilder builder = baseRecord().sessionNonce(blank);
 
             assertThrows(IllegalArgumentException.class, builder::build,
                     "a blank nonce would silently degrade the derived identity to the colliding pre-nonce shape");
@@ -440,7 +441,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should keep the rejected nonce out of the exception message")
         void shouldNotLeakNonceIntoRejectionMessage() {
-            SessionRecord.SessionRecordBuilder builder = baseRecord().sessionNonce(Optional.of("   "));
+            SessionRecord.SessionRecordBuilder builder = baseRecord().sessionNonce("   ");
 
             IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class, builder::build);
 
@@ -452,24 +453,24 @@ class CookieSessionBindingTest {
         void shouldAcceptAbsentNonce() {
             SessionRecord serverMode = baseRecord().build();
 
-            assertTrue(serverMode.sessionNonce().isEmpty(),
+            assertNull(serverMode.sessionNonce(),
                     "server-mode records carry no nonce and must stay constructible");
         }
 
         @Test
-        @DisplayName("Should normalize a null session nonce to empty rather than reject it")
-        void shouldNormalizeNullNonceToEmpty() {
+        @DisplayName("Should accept an explicitly-null session nonce rather than reject it")
+        void shouldAcceptExplicitlyNullNonce() {
             SessionRecord serverMode = baseRecord().sessionNonce(null).build();
 
-            assertTrue(serverMode.sessionNonce().isEmpty());
+            assertNull(serverMode.sessionNonce());
         }
 
         @Test
         @DisplayName("Should accept a non-blank session nonce")
         void shouldAcceptNonBlankNonce() {
-            SessionRecord cookieMode = baseRecord().sessionNonce(Optional.of("session-nonce-material")).build();
+            SessionRecord cookieMode = baseRecord().sessionNonce("session-nonce-material").build();
 
-            assertEquals(Optional.of("session-nonce-material"), cookieMode.sessionNonce());
+            assertEquals("session-nonce-material", cookieMode.sessionNonce());
         }
     }
 

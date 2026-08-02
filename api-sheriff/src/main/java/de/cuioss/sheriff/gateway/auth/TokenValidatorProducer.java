@@ -107,9 +107,11 @@ public class TokenValidatorProducer {
     @ApplicationScoped
     @GatewayValidator
     public TokenValidator gatewayTokenValidator() {
-        TokenValidationConfig config = gatewayConfig.tokenValidation()
-                .orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                        "token_validation is required to build the bearer-token validator"));
+        TokenValidationConfig config = gatewayConfig.tokenValidation();
+        if (config == null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    "token_validation is required to build the bearer-token validator");
+        }
         List<de.cuioss.sheriff.token.validation.IssuerConfig> issuers = new ArrayList<>();
         for (IssuerConfig issuer : config.issuers()) {
             issuers.add(toValidationIssuer(issuer));
@@ -125,11 +127,17 @@ public class TokenValidatorProducer {
         // explicit opt-out — so an issuer that configures no audience must disable audience
         // validation; otherwise IssuerConfig.build() throws and the (lazily created) validator bean
         // fails on the first bearer request instead of validating the token.
-        issuer.audience().ifPresentOrElse(
-                builder::expectedAudience,
-                () -> builder.audienceValidationDisabled(true));
-        IssuerConfig.Jwks jwks = issuer.jwks().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                ISSUER_PREFIX + issuer.name() + "' declares no jwks source"));
+        String audience = issuer.audience();
+        if (audience != null) {
+            builder.expectedAudience(audience);
+        } else {
+            builder.audienceValidationDisabled(true);
+        }
+        IssuerConfig.Jwks jwks = issuer.jwks();
+        if (jwks == null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    ISSUER_PREFIX + issuer.name() + "' declares no jwks source");
+        }
         applyJwks(builder, issuer, jwks);
         return builder.build();
     }
@@ -139,8 +147,11 @@ public class TokenValidatorProducer {
         if (SOURCE_HTTP.equals(jwks.source())) {
             builder.httpJwksLoaderConfig(toHttpJwksLoaderConfig(issuer, jwks));
         } else if (SOURCE_FILE.equals(jwks.source())) {
-            String file = jwks.file().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                    ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path"));
+            String file = jwks.file();
+            if (file == null) {
+                throw new GatewayException(EventType.CONFIG_INVALID,
+                        ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path");
+            }
             builder.jwksFilePath(file);
         } else {
             throw new GatewayException(EventType.CONFIG_INVALID,
@@ -176,15 +187,21 @@ public class TokenValidatorProducer {
      *                          declares no url, or names an unresolvable {@code tls_profile}
      */
     HttpJwksLoaderConfig toHttpJwksLoaderConfig(IssuerConfig issuer, IssuerConfig.Jwks jwks) {
-        String url = jwks.url().orElseThrow(() -> new GatewayException(EventType.CONFIG_INVALID,
-                ISSUER_PREFIX + issuer.name() + "' jwks source 'http' declares no url"));
+        String url = jwks.url();
+        if (url == null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    ISSUER_PREFIX + issuer.name() + "' jwks source 'http' declares no url");
+        }
         HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder builder = HttpJwksLoaderConfig.builder()
                 .issuerIdentifier(issuer.issuer())
                 .jwksUrl(url);
         for (String host : jwks.allowedEgressHosts()) {
             builder.allowedEgressHost(host);
         }
-        jwks.tlsProfile().ifPresent(profile -> builder.sslContext(trustProfileResolver.resolve(issuer, profile)));
+        String tlsProfile = jwks.tlsProfile();
+        if (tlsProfile != null) {
+            builder.sslContext(trustProfileResolver.resolve(issuer, tlsProfile));
+        }
         return builder.build();
     }
 }

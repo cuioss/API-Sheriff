@@ -234,18 +234,18 @@ public final class RpInitiatedLogout {
      * on a missing/mismatched state.
      *
      * @param status           the HTTP status the edge returns
-     * @param location         the redirect target, present only on a matching state
+     * @param location         the redirect target, {@code null} on anything but a matching state
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty on error
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record LogoutReturn(int status, Optional<String> location, List<String> setCookieHeaders) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record LogoutReturn(int status, @Nullable String location, List<String> setCookieHeaders) {
 
         /**
-         * Canonical constructor normalizing an absent location and defensively copying the cookies.
+         * Canonical constructor defensively copying the cookies.
          */
         public LogoutReturn {
-            location = Objects.requireNonNullElse(location, Optional.empty());
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
         }
 
@@ -258,7 +258,7 @@ public final class RpInitiatedLogout {
          */
         public static LogoutReturn redirect(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, "location");
-            return new LogoutReturn(FOUND, Optional.of(location), setCookieHeaders);
+            return new LogoutReturn(FOUND, location, setCookieHeaders);
         }
 
         /**
@@ -268,7 +268,7 @@ public final class RpInitiatedLogout {
          * @return the error outcome
          */
         public static LogoutReturn error(int status) {
-            return new LogoutReturn(status, Optional.empty(), List.of());
+            return new LogoutReturn(status, null, List.of());
         }
 
         /**

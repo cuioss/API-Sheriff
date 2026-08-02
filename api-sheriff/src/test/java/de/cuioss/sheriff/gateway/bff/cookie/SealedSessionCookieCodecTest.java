@@ -83,9 +83,9 @@ class SealedSessionCookieCodecTest {
     }
 
     private static SealedSessionPayload payload() {
-        return new SealedSessionPayload(ACCESS_TOKEN, Optional.of(REFRESH_TOKEN), ID_TOKEN, SUB,
-                Optional.of("idp-sid-9"), Optional.of("urn:acr:silver"),
-                Optional.of(Instant.parse("2026-07-27T09:59:00Z")), LOGIN, SESSION_NONCE);
+        return new SealedSessionPayload(ACCESS_TOKEN, REFRESH_TOKEN, ID_TOKEN, SUB,
+                "idp-sid-9", "urn:acr:silver",
+                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE);
     }
 
     private static String flipByteAt(String sealedValue, int index) {
@@ -309,8 +309,8 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should refuse to seal a payload whose value exceeds the budget, never truncate")
         void shouldRefuseOversizedPayload() {
             String huge = "x".repeat(BUDGET * 2);
-            SealedSessionPayload oversized = new SealedSessionPayload(huge, Optional.empty(), ID_TOKEN, SUB,
-                    Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE);
+            SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
+                    null, null, null, LOGIN, SESSION_NONCE);
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));
@@ -415,8 +415,8 @@ class SealedSessionCookieCodecTest {
         @DisplayName("Should keep key material out of the exception message on an oversized seal")
         void shouldNotLeakKeyMaterialIntoTheOverBudgetMessage() {
             String huge = "x".repeat(BUDGET * 2);
-            SealedSessionPayload oversized = new SealedSessionPayload(huge, Optional.empty(), ID_TOKEN, SUB,
-                    Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE);
+            SealedSessionPayload oversized = new SealedSessionPayload(huge, null, ID_TOKEN, SUB,
+                    null, null, null, LOGIN, SESSION_NONCE);
 
             CookieSizeBudgetExceededException thrown =
                     assertThrows(CookieSizeBudgetExceededException.class, () -> codec.seal(oversized));

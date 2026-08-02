@@ -19,9 +19,9 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A single authenticated session, as held by whichever {@link SessionBinding} is in force.
@@ -52,7 +52,7 @@ import lombok.Builder;
  * It is redacted from {@link #toString()} either way.
  * <p>
  * <strong>The session nonce is cookie-mode-only.</strong> {@link #sessionNonce()} is
- * {@link Optional#empty()} for every server-mode record — that mode's identity is the minted opaque
+ * {@code null} for every server-mode record — that mode's identity is the minted opaque
  * id, which is already unique, so it needs no additional entropy. Only the cookie-mode binding
  * populates it, minting it once at login and re-sealing it verbatim on every refresh; without it,
  * two logins by the same subject inside one clock second would derive the same identity and
@@ -64,33 +64,41 @@ import lombok.Builder;
  *
  * @param sessionId    the stable per-session identity (see the identity model above)
  * @param accessToken  the mediated access token injected as the upstream bearer
- * @param refreshToken the refresh token, empty when the IdP granted none
+ * @param refreshToken the refresh token, {@code null} when the IdP granted none
  * @param idToken      the raw ID token retained for the logout {@code id_token_hint}
  * @param sub          the subject claim (back-channel destroy-by-sub key)
- * @param sid          the IdP session id claim, empty when absent (back-channel destroy-by-sid key)
+ * @param sid          the IdP session id claim, {@code null} when absent (back-channel destroy-by-sid key)
  * @param expiresAt    the absolute session expiry (from login), independent of activity
- * @param acr          the authentication context class, empty when absent
- * @param authTime     the IdP authentication instant, empty when absent
- * @param sessionNonce the per-session nonce keying the cookie-mode derived identity; always empty in
- *                     server mode (see the mode split above), and never blank when present
+ * @param acr          the authentication context class, {@code null} when absent
+ * @param authTime     the IdP authentication instant, {@code null} when absent
+ * @param sessionNonce the per-session nonce keying the cookie-mode derived identity; always
+ *                     {@code null} in server mode (see the mode split above), and never blank when present
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record SessionRecord(String sessionId, String accessToken, Optional<String> refreshToken, String idToken,
-String sub, Optional<String> sid, Instant expiresAt, Optional<String> acr, Optional<Instant> authTime,
-Optional<String> sessionNonce) {
+public record SessionRecord(
+String sessionId,
+String accessToken,
+@Nullable String refreshToken,
+String idToken,
+String sub,
+@Nullable String sid,
+Instant expiresAt,
+@Nullable String acr,
+@Nullable Instant authTime,
+@Nullable String sessionNonce) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final int SESSION_ID_BYTES = 32;
 
     /**
-     * Canonical constructor rejecting absent mandatory components and normalizing absent
-     * optionals to {@link Optional#empty()}.
+     * Canonical constructor rejecting absent mandatory components.
      * <p>
-     * {@code sessionNonce} stays optional — an <em>absent</em> nonce is valid and is the normal
-     * server-mode shape. Only a <em>present but blank</em> value is rejected: it keys the
+     * {@code sessionNonce} stays optional — an <em>absent</em> ({@code null}) nonce is valid and is
+     * the normal server-mode shape. Only a <em>present but blank</em> value is rejected: it keys the
      * cookie-mode derived identity, so an empty string would silently degrade that identity back to
      * the colliding pre-nonce shape instead of failing. The nonce value itself never reaches the
      * exception message.
@@ -104,12 +112,7 @@ Optional<String> sessionNonce) {
         Objects.requireNonNull(idToken, "idToken");
         Objects.requireNonNull(sub, "sub");
         Objects.requireNonNull(expiresAt, "expiresAt");
-        refreshToken = Objects.requireNonNullElse(refreshToken, Optional.empty());
-        sid = Objects.requireNonNullElse(sid, Optional.empty());
-        acr = Objects.requireNonNullElse(acr, Optional.empty());
-        authTime = Objects.requireNonNullElse(authTime, Optional.empty());
-        sessionNonce = Objects.requireNonNullElse(sessionNonce, Optional.empty());
-        if (sessionNonce.filter(String::isBlank).isPresent()) {
+        if (sessionNonce != null && sessionNonce.isBlank()) {
             throw new IllegalArgumentException("sessionNonce must not be blank when present");
         }
     }
@@ -151,8 +154,8 @@ Optional<String> sessionNonce) {
     @Override
     public String toString() {
         return "SessionRecord[sessionId=%s, accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, expiresAt=%s, acr=%s, authTime=%s, sessionNonce=%s]"
-                .formatted(REDACTED, REDACTED, refreshToken.isPresent() ? "Optional[" + REDACTED + "]" : "Optional.empty",
+                .formatted(REDACTED, REDACTED, refreshToken == null ? "null" : REDACTED,
                         REDACTED, sub, sid, expiresAt, acr, authTime,
-                        sessionNonce.isPresent() ? "Optional[" + REDACTED + "]" : "Optional.empty");
+                        sessionNonce == null ? "null" : REDACTED);
     }
 }

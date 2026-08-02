@@ -30,6 +30,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Audits, at startup, whether the management interface actually resolved to plain HTTP, and emits
@@ -66,7 +67,7 @@ public class ManagementPlainHttpAudit {
     private static final CuiLogger LOGGER = new CuiLogger(ManagementPlainHttpAudit.class);
 
     private final TlsConfigurationRegistry registry;
-    private final Optional<String> tlsConfigurationName;
+    private final @Nullable String tlsConfigurationName;
     private final boolean managementCertificateConfigured;
     private final int managementPort;
 
@@ -86,7 +87,8 @@ public class ManagementPlainHttpAudit {
             @ConfigProperty(name = "quarkus.management.ssl.certificate.files") Optional<List<String>> certificateFiles,
             @ConfigProperty(name = "quarkus.management.port", defaultValue = "9000") int managementPort) {
         this.registry = Objects.requireNonNull(registry, "registry");
-        this.tlsConfigurationName = Objects.requireNonNull(tlsConfigurationName, "tlsConfigurationName");
+        this.tlsConfigurationName = Objects.requireNonNull(tlsConfigurationName, "tlsConfigurationName")
+                .orElse(null);
         this.managementCertificateConfigured = certificateFiles.filter(files -> !files.isEmpty()).isPresent();
         this.managementPort = managementPort;
     }
@@ -110,8 +112,12 @@ public class ManagementPlainHttpAudit {
      * @return {@code true} when the management interface resolved to plain HTTP
      */
     public boolean auditManagementTls() {
-        Optional<TlsConfiguration> resolved = TlsConfiguration.from(registry, tlsConfigurationName);
-        boolean plain = resolvesToPlainHttp(resolved, managementCertificateConfigured);
+        // TlsConfiguration.from is a Quarkus API that both takes and returns an Optional, so the
+        // nullable field is re-wrapped and the result unwrapped at this single call site rather
+        // than either being stored or propagated as an Optional.
+        Optional<TlsConfiguration> resolved = TlsConfiguration.from(registry,
+                Optional.ofNullable(tlsConfigurationName));
+        boolean plain = resolvesToPlainHttp(resolved.orElse(null), managementCertificateConfigured);
         if (plain) {
             LOGGER.warn(ConfigLogMessages.WARN.MANAGEMENT_PLAIN_HTTP, managementPort);
         } else {
@@ -126,15 +132,15 @@ public class ManagementPlainHttpAudit {
      * deployment's certificate rather than adding to it, so the listener ends up with no key/cert and
      * the recorder swaps in the plain options.
      *
-     * @param resolved               the TLS configuration the management interface resolved to, empty
-     *                               when none applies
+     * @param resolved               the TLS configuration the management interface resolved to,
+     *                               {@code null} when none applies
      * @param certificateConfigured  whether {@code quarkus.management.ssl.certificate.files} supplies
      *                               a chain
      * @return {@code true} when no key material reaches the management listener
      */
-    static boolean resolvesToPlainHttp(Optional<TlsConfiguration> resolved, boolean certificateConfigured) {
-        if (resolved.isPresent()) {
-            return resolved.get().getKeyStoreOptions() == null;
+    static boolean resolvesToPlainHttp(@Nullable TlsConfiguration resolved, boolean certificateConfigured) {
+        if (resolved != null) {
+            return resolved.getKeyStoreOptions() == null;
         }
         return !certificateConfigured;
     }

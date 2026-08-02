@@ -17,9 +17,9 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code match} block. Matchers compose with AND semantics: a
@@ -27,23 +27,26 @@ import lombok.Builder;
  *
  * @param pathPrefix the literal path prefix and precedence key (mandatory)
  * @param methods    the matched HTTP methods, empty meaning all methods
- * @param host       the exact host match, empty when omitted
+ * @param host       the exact host match, {@code null} when omitted
  * @param headers    the header matchers, empty when none
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record MatchConfig(String pathPrefix, List<HttpMethod> methods, Optional<String> host,
+public record MatchConfig(
+String pathPrefix,
+List<HttpMethod> methods,
+@Nullable String host,
 List<HeaderMatcher> headers) {
 
     /**
-     * Canonical constructor requiring {@code pathPrefix}, defensively copying the
-     * collections, and normalizing absent components.
+     * Canonical constructor requiring {@code pathPrefix} and defensively copying the
+     * collections.
      */
     public MatchConfig {
         Objects.requireNonNull(pathPrefix, "pathPrefix");
         methods = methods == null ? List.of() : List.copyOf(methods);
-        host = Objects.requireNonNullElse(host, Optional.empty());
         headers = headers == null ? List.of() : List.copyOf(headers);
     }
 
@@ -51,22 +54,20 @@ List<HeaderMatcher> headers) {
      * A single header matcher: presence or exact value.
      *
      * @param name    the header name (mandatory)
-     * @param present whether the header must merely be present, empty when omitted
-     * @param value   the exact required value, empty when omitted
+     * @param present whether the header must merely be present, {@code null} when omitted
+     * @param value   the exact required value, {@code null} when omitted
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record HeaderMatcher(String name, Optional<Boolean> present, Optional<String> value) {
+    public record HeaderMatcher(String name, @Nullable Boolean present, @Nullable String value) {
 
         /**
-         * Canonical constructor requiring {@code name} and normalizing absent
-         * optionals.
+         * Canonical constructor requiring {@code name}.
          */
         public HeaderMatcher {
             Objects.requireNonNull(name, "name");
-            present = Objects.requireNonNullElse(present, Optional.empty());
-            value = Objects.requireNonNullElse(value, Optional.empty());
         }
     }
 }

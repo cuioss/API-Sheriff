@@ -21,8 +21,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Base64;
-import java.util.Objects;
-import java.util.Optional;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -85,19 +83,17 @@ public final class CookieKeyMaterial {
     /**
      * Resolves the configured key references into the active key material.
      *
-     * @param encryptionKey the already-substituted {@code session.encryption_key} value, empty to
-     *                      select {@link Mode#GENERATED}
-     * @param previousKey   the already-substituted {@code session.previous_key} value, empty when no
-     *                      rotation is in progress
+     * @param encryptionKey the already-substituted {@code session.encryption_key} value, {@code null}
+     *                      to select {@link Mode#GENERATED}
+     * @param previousKey   the already-substituted {@code session.previous_key} value, {@code null}
+     *                      when no rotation is in progress
      * @return the resolved material
      * @throws IllegalStateException when a supplied value is not a base64 AES-256 key, or when a
      *                               {@code previous_key} is supplied without an {@code encryption_key}
      */
-    public static CookieKeyMaterial resolve(Optional<String> encryptionKey, Optional<String> previousKey) {
-        Objects.requireNonNull(encryptionKey, "encryptionKey");
-        Objects.requireNonNull(previousKey, "previousKey");
-        if (encryptionKey.isEmpty()) {
-            if (previousKey.isPresent()) {
+    public static CookieKeyMaterial resolve(@Nullable String encryptionKey, @Nullable String previousKey) {
+        if (encryptionKey == null) {
+            if (previousKey != null) {
                 // A decrypt-only rotation key with no current key to roll onto is semantically
                 // nonsensical, and rotation composes with the passed-key mode only.
                 throw new IllegalStateException(
@@ -108,8 +104,8 @@ public final class CookieKeyMaterial {
             LOGGER.info(BffLogMessages.INFO.COOKIE_KEY_GENERATED, Mode.GENERATED.diagnosticName());
             return new CookieKeyMaterial(Mode.GENERATED, generated, null);
         }
-        SecretKey current = decodeKey(encryptionKey.get(), ENCRYPTION_KEY_FIELD);
-        SecretKey previous = previousKey.map(value -> decodeKey(value, PREVIOUS_KEY_FIELD)).orElse(null);
+        SecretKey current = decodeKey(encryptionKey, ENCRYPTION_KEY_FIELD);
+        SecretKey previous = previousKey == null ? null : decodeKey(previousKey, PREVIOUS_KEY_FIELD);
         if (previous != null && keyIdOf(current) == keyIdOf(previous)) {
             // The 1-byte wire key id selects the generation deterministically, so two keys that
             // derive the same id cannot be told apart. Fail the boot rather than roll over into a

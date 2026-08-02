@@ -207,13 +207,17 @@ public final class StepUpCoordinator {
      * browser-binding {@code Set-Cookie}. Token material never appears here.
      *
      * @param kind             which of the two step-up outcomes occurred
-     * @param session          the elevated session, present only for {@link Kind#SATISFIED}
-     * @param location         the step-up redirect target, present only for {@link Kind#RE_DRIVE}
+     * @param session          the elevated session, {@code null} for anything but {@link Kind#SATISFIED}
+     * @param location         the step-up redirect target, {@code null} for anything but {@link Kind#RE_DRIVE}
      * @param setCookieHeaders the browser-binding {@code Set-Cookie} header values, empty when satisfied
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record StepUpOutcome(Kind kind, Optional<SessionRecord> session, Optional<String> location,
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record StepUpOutcome(
+    Kind kind,
+    @Nullable SessionRecord session,
+    @Nullable String location,
     List<String> setCookieHeaders) {
 
         /**
@@ -230,12 +234,10 @@ public final class StepUpCoordinator {
         }
 
         /**
-         * Canonical constructor normalizing absent optionals and defensively copying the cookies.
+         * Canonical constructor rejecting an absent kind and defensively copying the cookies.
          */
         public StepUpOutcome {
             Objects.requireNonNull(kind, "kind");
-            session = Objects.requireNonNullElse(session, Optional.empty());
-            location = Objects.requireNonNullElse(location, Optional.empty());
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
         }
 
@@ -247,7 +249,7 @@ public final class StepUpCoordinator {
          */
         public static StepUpOutcome satisfied(SessionRecord session) {
             Objects.requireNonNull(session, "session");
-            return new StepUpOutcome(Kind.SATISFIED, Optional.of(session), Optional.empty(), List.of());
+            return new StepUpOutcome(Kind.SATISFIED, session, null, List.of());
         }
 
         /**
@@ -259,7 +261,7 @@ public final class StepUpCoordinator {
          */
         public static StepUpOutcome reDrive(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, "location");
-            return new StepUpOutcome(Kind.RE_DRIVE, Optional.empty(), Optional.of(location), setCookieHeaders);
+            return new StepUpOutcome(Kind.RE_DRIVE, null, location, setCookieHeaders);
         }
 
         /**

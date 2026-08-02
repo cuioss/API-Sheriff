@@ -18,8 +18,6 @@ package de.cuioss.sheriff.gateway.tls;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Optional;
-
 
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -71,7 +69,7 @@ class ManagementPlainHttpAuditTest {
     @Test
     @DisplayName("A resolved configuration carrying no key material means plain HTTP")
     void keyLessResolvedConfigurationMeansPlainHttp() {
-        assertTrue(ManagementPlainHttpAudit.resolvesToPlainHttp(Optional.of(keyLessConfiguration()), true),
+        assertTrue(ManagementPlainHttpAudit.resolvesToPlainHttp(keyLessConfiguration(), true),
                 "selecting a key-less bucket replaces the deployment's certificate rather than adding "
                         + "to it, so the listener ends up with no key material even when a certificate "
                         + "is configured");
@@ -80,17 +78,17 @@ class ManagementPlainHttpAuditTest {
     @Test
     @DisplayName("A resolved configuration carrying key material means HTTPS")
     void keyBearingResolvedConfigurationMeansHttps() {
-        assertFalse(ManagementPlainHttpAudit.resolvesToPlainHttp(Optional.of(keyBearingConfiguration()), false),
+        assertFalse(ManagementPlainHttpAudit.resolvesToPlainHttp(keyBearingConfiguration(), false),
                 "a bucket that carries key material keeps the management listener on HTTPS");
     }
 
     @Test
     @DisplayName("With no resolved configuration the management certificate decides")
     void withoutAResolvedConfigurationTheCertificateDecides() {
-        assertFalse(ManagementPlainHttpAudit.resolvesToPlainHttp(Optional.empty(), true),
+        assertFalse(ManagementPlainHttpAudit.resolvesToPlainHttp(null, true),
                 "quarkus.management.ssl.certificate.* alone still produces HTTPS — this is the shipped "
                         + "default posture and it must not warn");
-        assertTrue(ManagementPlainHttpAudit.resolvesToPlainHttp(Optional.empty(), false),
+        assertTrue(ManagementPlainHttpAudit.resolvesToPlainHttp(null, false),
                 "no bucket and no certificate leaves nothing to terminate with");
     }
 

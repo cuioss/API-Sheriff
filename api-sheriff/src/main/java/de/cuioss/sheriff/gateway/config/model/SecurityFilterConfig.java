@@ -16,10 +16,9 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code security_filter} block: allowlists and limits (explicitly
@@ -33,16 +32,16 @@ import lombok.Builder;
  * enforced against the nearest non-{@code none} profile's preset.
  *
  * @param profile              the inbound-filter mode — {@code strict} / {@code lenient} /
- *                             {@code none}, see {@link SecurityProfile} — empty when the
+ *                             {@code none}, see {@link SecurityProfile} — {@code null} when the
  *                             {@code security_defaults} fallback applies
  * @param allowedPaths         the path allowlist entries, empty when none
- * @param maxHeaderCount       the maximum header count, empty when omitted
+ * @param maxHeaderCount       the maximum header count, {@code null} when omitted
  * @param maxHeaderValueLength the maximum single-header-value length in
- *                             characters, empty when omitted
- * @param maxQueryParams       the maximum query-parameter count, empty when omitted
+ *                             characters, {@code null} when omitted
+ * @param maxQueryParams       the maximum query-parameter count, {@code null} when omitted
  * @param maxParamValueLength  the maximum single-parameter-value length in
- *                             characters, empty when omitted
- * @param maxBodyBytes         the maximum request-body size in bytes, empty when
+ *                             characters, {@code null} when omitted
+ * @param maxBodyBytes         the maximum request-body size in bytes, {@code null} when
  *                             omitted
  * @param allowedHeaderNames   the header-name allowlist, empty when none
  * @param blockedHeaderNames   the header-name blocklist, empty when none
@@ -51,24 +50,25 @@ import lombok.Builder;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record SecurityFilterConfig(Optional<String> profile, List<String> allowedPaths, Optional<Integer> maxHeaderCount,
-Optional<Integer> maxHeaderValueLength, Optional<Integer> maxQueryParams, Optional<Integer> maxParamValueLength,
-Optional<Integer> maxBodyBytes, List<String> allowedHeaderNames, List<String> blockedHeaderNames,
+public record SecurityFilterConfig(
+@Nullable String profile,
+List<String> allowedPaths,
+@Nullable Integer maxHeaderCount,
+@Nullable Integer maxHeaderValueLength,
+@Nullable Integer maxQueryParams,
+@Nullable Integer maxParamValueLength,
+@Nullable Integer maxBodyBytes,
+List<String> allowedHeaderNames,
+List<String> blockedHeaderNames,
 List<String> allowedContentTypes) {
 
     /**
-     * Canonical constructor defensively copying collections and normalizing absent
-     * components.
+     * Canonical constructor defensively copying collections.
      */
     public SecurityFilterConfig {
-        profile = Objects.requireNonNullElse(profile, Optional.empty());
         allowedPaths = allowedPaths == null ? List.of() : List.copyOf(allowedPaths);
-        maxHeaderCount = Objects.requireNonNullElse(maxHeaderCount, Optional.empty());
-        maxHeaderValueLength = Objects.requireNonNullElse(maxHeaderValueLength, Optional.empty());
-        maxQueryParams = Objects.requireNonNullElse(maxQueryParams, Optional.empty());
-        maxParamValueLength = Objects.requireNonNullElse(maxParamValueLength, Optional.empty());
-        maxBodyBytes = Objects.requireNonNullElse(maxBodyBytes, Optional.empty());
         allowedHeaderNames = allowedHeaderNames == null ? List.of() : List.copyOf(allowedHeaderNames);
         blockedHeaderNames = blockedHeaderNames == null ? List.of() : List.copyOf(blockedHeaderNames);
         allowedContentTypes = allowedContentTypes == null ? List.of() : List.copyOf(allowedContentTypes);

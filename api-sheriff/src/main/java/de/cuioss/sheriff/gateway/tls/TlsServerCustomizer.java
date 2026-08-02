@@ -106,11 +106,10 @@ public class TlsServerCustomizer implements HttpServerOptionsCustomizer {
      */
     @Override
     public void customizeHttpsServer(HttpServerOptions options) {
-        Optional<TlsConfig> tls = gatewayConfig.tls();
-        if (tls.isEmpty()) {
+        TlsConfig config = gatewayConfig.tls();
+        if (config == null) {
             return;
         }
-        TlsConfig config = tls.get();
         applyMinVersion(config, options);
         applyCipherSuites(config, options);
         applyAlpn(config, options);
@@ -121,19 +120,19 @@ public class TlsServerCustomizer implements HttpServerOptionsCustomizer {
      * TLSv1.3, a {@code 1.3} floor enables TLSv1.3 only.
      */
     private static void applyMinVersion(TlsConfig config, HttpServerOptions options) {
-        Optional<String> minVersion = config.minVersion();
-        if (minVersion.isEmpty()) {
+        String minVersion = config.minVersion();
+        if (minVersion == null) {
             return;
         }
-        Set<String> enabledProtocols = switch (minVersion.get()) {
+        Set<String> enabledProtocols = switch (minVersion) {
             case "1.2" -> Set.of(TLS_V1_2, TLS_V1_3);
             case "1.3" -> Set.of(TLS_V1_3);
             default -> throw new IllegalStateException(
                     "Refusing to start — unsupported tls.min_version '%s'; expected '1.2' or '1.3'"
-                            .formatted(minVersion.get()));
+                            .formatted(minVersion));
         };
         options.setEnabledSecureTransportProtocols(enabledProtocols);
-        LOGGER.debug("Terminated HTTPS listener TLS floor '%s' enables protocols %s", minVersion.get(),
+        LOGGER.debug("Terminated HTTPS listener TLS floor '%s' enables protocols %s", minVersion,
                 enabledProtocols);
     }
 

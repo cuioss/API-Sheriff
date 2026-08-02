@@ -17,10 +17,10 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * One route with every inherited setting materialized once, at boot, into its
@@ -40,25 +40,25 @@ import lombok.Builder;
  * @param id                     the route id (mandatory)
  * @param protocol               the effective protocol (defaults to
  *                               {@link Protocol#HTTP})
- * @param anchor                 the resolving anchor name, empty when the route is
+ * @param anchor                 the resolving anchor name, {@code null} when the route is
  *                               unanchored
  * @param match                  the matcher set (mandatory)
  * @param effectiveAuth          the materialized auth posture (mandatory)
  * @param effectiveAllowedMethods the materialized verb allowlist, never empty for
  *                               a resolved route
  * @param effectiveSecurityFilter the materialized security filter carried (not yet
- *                               consumed), empty when none resolves
+ *                               consumed), {@code null} when none resolves
  * @param effectiveSecurityHeaders the materialized response-header posture carried
- *                               (not yet consumed), empty when none resolves
+ *                               (not yet consumed), {@code null} when none resolves
  * @param retryEnabled           the materialized upstream-retry toggle (meaningful
  *                               only for a proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle
  *                               (meaningful only for a proxy route)
  * @param upstream               the resolved upstream target for a proxy route,
  *                               present when the route's terminal action is proxy and
- *                               empty for an asset route
+ *                               {@code null} for an asset route
  * @param asset                  the resolved asset terminal action, present when the
- *                               route serves assets and empty for a proxy route; a
+ *                               route serves assets and {@code null} for a proxy route; a
  *                               route resolves to exactly one terminal action, so
  *                               {@code upstream} and {@code asset} are mutually
  *                               exclusive (ADR-0014)
@@ -71,45 +71,49 @@ import lombok.Builder;
  *                               {@code protocol} is {@link Protocol#WEBSOCKET})
  * @param effectiveWebSocketIdleTimeoutSeconds the materialized idle timeout for a
  *                               WebSocket route with the {@code 300}-second default
- *                               applied, empty for a non-WebSocket route
+ *                               applied, {@code null} for a non-WebSocket route
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record ResolvedRoute(String id, Protocol protocol, Optional<String> anchor, MatchConfig match,
-AuthConfig effectiveAuth, List<HttpMethod> effectiveAllowedMethods,
-Optional<SecurityFilterConfig> effectiveSecurityFilter, Optional<SecurityHeadersConfig> effectiveSecurityHeaders,
-boolean retryEnabled, boolean notModifiedEnabled, Optional<ResolvedUpstream> upstream, Optional<ResolvedAsset> asset,
-ForwardConfig effectiveForward, Set<String> effectiveAllowedOrigins,
-Optional<Integer> effectiveWebSocketIdleTimeoutSeconds) {
+public record ResolvedRoute(
+String id,
+Protocol protocol,
+@Nullable String anchor,
+MatchConfig match,
+AuthConfig effectiveAuth,
+List<HttpMethod> effectiveAllowedMethods,
+@Nullable SecurityFilterConfig effectiveSecurityFilter,
+@Nullable SecurityHeadersConfig effectiveSecurityHeaders,
+boolean retryEnabled,
+boolean notModifiedEnabled,
+@Nullable ResolvedUpstream upstream,
+@Nullable ResolvedAsset asset,
+ForwardConfig effectiveForward,
+Set<String> effectiveAllowedOrigins,
+@Nullable Integer effectiveWebSocketIdleTimeoutSeconds) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying
-     * {@code effectiveAllowedMethods} and {@code effectiveAllowedOrigins}, normalizing
-     * absent optionals, defaulting an absent {@code protocol} to {@link Protocol#HTTP},
-     * defaulting an absent {@code effectiveForward} to a deny-by-default empty
-     * {@link ForwardConfig}, and enforcing the terminal-action invariant: exactly one
-     * of {@code upstream} (proxy) or {@code asset} resolves.
+     * {@code effectiveAllowedMethods} and {@code effectiveAllowedOrigins}, defaulting
+     * an absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
+     * {@code effectiveForward} to a deny-by-default empty {@link ForwardConfig}, and
+     * enforcing the terminal-action invariant: exactly one of {@code upstream}
+     * (proxy) or {@code asset} resolves.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");
         protocol = protocol == null ? Protocol.HTTP : protocol;
-        anchor = Objects.requireNonNullElse(anchor, Optional.empty());
         Objects.requireNonNull(match, "match");
         Objects.requireNonNull(effectiveAuth, "effectiveAuth");
         effectiveAllowedMethods = effectiveAllowedMethods == null ? List.of() : List.copyOf(effectiveAllowedMethods);
-        effectiveSecurityFilter = Objects.requireNonNullElse(effectiveSecurityFilter, Optional.empty());
-        effectiveSecurityHeaders = Objects.requireNonNullElse(effectiveSecurityHeaders, Optional.empty());
-        upstream = Objects.requireNonNullElse(upstream, Optional.empty());
-        asset = Objects.requireNonNullElse(asset, Optional.empty());
-        if (upstream.isPresent() == asset.isPresent()) {
+        if ((upstream != null) == (asset != null)) {
             throw new IllegalArgumentException(
                     "route '" + id + "' must resolve exactly one terminal action (upstream XOR asset)");
         }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
         effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
-        effectiveWebSocketIdleTimeoutSeconds = Objects.requireNonNullElse(effectiveWebSocketIdleTimeoutSeconds,
-                Optional.empty());
     }
 
     /**

@@ -19,7 +19,6 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
 
@@ -45,10 +44,10 @@ public final class RouteMatcher {
 
     private final String pathPrefix;
     private final Set<HttpMethod> matchMethods;
-    private final Optional<String> host;
+    private final @Nullable String host;
     private final List<HeaderMatcher> headers;
 
-    private RouteMatcher(String pathPrefix, Set<HttpMethod> matchMethods, Optional<String> host,
+    private RouteMatcher(String pathPrefix, Set<HttpMethod> matchMethods, @Nullable String host,
             List<HeaderMatcher> headers) {
         this.pathPrefix = pathPrefix;
         this.matchMethods = matchMethods;
@@ -111,7 +110,7 @@ public final class RouteMatcher {
         if (!matchMethods.isEmpty() && !matchMethods.contains(method)) {
             return false;
         }
-        if (host.isPresent() && !host.get().equals(requestHost)) {
+        if (host != null && !host.equals(requestHost)) {
             return false;
         }
         return headersMatch(requestHeaders);
@@ -120,12 +119,12 @@ public final class RouteMatcher {
     private boolean headersMatch(Map<String, String> requestHeaders) {
         for (HeaderMatcher header : headers) {
             String actual = requestHeaders.get(header.name());
-            Optional<String> expectedValue = header.value();
-            if (expectedValue.isPresent()) {
-                if (!expectedValue.get().equals(actual)) {
+            String expectedValue = header.value();
+            if (expectedValue != null) {
+                if (!expectedValue.equals(actual)) {
                     return false;
                 }
-            } else if (header.present().orElse(Boolean.FALSE) && actual == null) {
+            } else if (Boolean.TRUE.equals(header.present()) && actual == null) {
                 return false;
             }
         }

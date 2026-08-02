@@ -19,8 +19,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -183,7 +182,8 @@ public class ConfigProducer {
     @ApplicationScoped
     public EdgeHardeningOptions edgeHardeningOptions() {
         buildOnce();
-        return new EdgeHardeningOptions(gateway.edgeHardening().orElseGet(EdgeHardeningConfig::defaults));
+        EdgeHardeningConfig declared = gateway.edgeHardening();
+        return new EdgeHardeningOptions(declared == null ? EdgeHardeningConfig.defaults() : declared);
     }
 
     private synchronized void buildOnce() {
@@ -252,9 +252,9 @@ public class ConfigProducer {
                 gateway.anchors().values().stream().map(AnchorConfig::securityFilter),
                 enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
                         .map(RouteConfig::securityFilter))
-                .flatMap(Optional::stream)
+                .filter(Objects::nonNull)
                 .map(SecurityFilterConfig::maxBodyBytes)
-                .flatMap(Optional::stream)
+                .filter(Objects::nonNull)
                 .mapToLong(Integer::longValue)
                 .max()
                 .orElse(0L);
@@ -276,14 +276,21 @@ public class ConfigProducer {
      */
     private static Set<String> additionalTopologyAliases(ConfigLoader.LoadedConfig loaded,
             List<EndpointConfig> enabled) {
-        Set<String> aliases = new LinkedHashSet<>(
-                loaded.gateway().tls().map(TlsConfig::passthroughSni).map(Map::values).orElse(List.of()));
+        Set<String> aliases = new LinkedHashSet<>();
+        TlsConfig tls = loaded.gateway().tls();
+        if (tls != null) {
+            aliases.addAll(tls.passthroughSni().values());
+        }
         for (EndpointConfig endpoint : enabled) {
             for (RouteConfig route : endpoint.routes()) {
-                route.asset()
-                        .filter(asset -> asset.source() == AssetConfig.Source.UPSTREAM)
-                        .flatMap(AssetConfig::upstream)
-                        .ifPresent(aliases::add);
+                AssetConfig asset = route.asset();
+                if (asset == null || asset.source() != AssetConfig.Source.UPSTREAM) {
+                    continue;
+                }
+                String alias = asset.upstream();
+                if (alias != null) {
+                    aliases.add(alias);
+                }
             }
         }
         return aliases;
@@ -300,6 +307,7 @@ public class ConfigProducer {
     }
 
     private static String configVersion(GatewayConfig gateway) {
-        return gateway.metadata().flatMap(Metadata::configVersion).orElse("unversioned");
+        Metadata metadata = gateway.metadata();
+        return Objects.requireNonNullElse(metadata == null ? null : metadata.configVersion(), "unversioned");
     }
 }

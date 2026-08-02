@@ -17,12 +17,12 @@ package de.cuioss.sheriff.gateway.tls;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -56,7 +56,7 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertTrue(result.complete(), "a full ClientHello is complete");
-            assertEquals(Optional.of("api.example.com"), result.serverName());
+            assertEquals("api.example.com", result.serverName());
         }
 
         @Test
@@ -66,7 +66,7 @@ class ClientHelloSniParserTest {
 
             ClientHelloSniParser.Result result = parser.parse(hello);
 
-            assertEquals(Optional.of("API.Example.COM"), result.serverName());
+            assertEquals("API.Example.COM", result.serverName());
         }
 
         @Test
@@ -77,7 +77,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(hello);
 
             assertTrue(result.complete(), "a full ClientHello without SNI is still complete");
-            assertTrue(result.serverName().isEmpty(), "no SNI extension → empty → fail closed");
+            assertNull(result.serverName(), "no SNI extension → null → fail closed");
         }
 
         @Test
@@ -88,7 +88,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(hello);
 
             assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty());
+            assertNull(result.serverName());
         }
     }
 
@@ -109,9 +109,9 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertFalse(partial.complete(), "a truncated ClientHello is incomplete");
-            assertTrue(partial.serverName().isEmpty());
+            assertNull(partial.serverName());
             assertTrue(full.complete());
-            assertEquals(Optional.of("relay.internal"), full.serverName());
+            assertEquals("relay.internal", full.serverName());
         }
 
         @Test
@@ -136,7 +136,7 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertTrue(result.complete(), "two handshake records reassemble into one ClientHello");
-            assertEquals(Optional.of("split.example.org"), result.serverName());
+            assertEquals("split.example.org", result.serverName());
         }
     }
 
@@ -152,7 +152,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(httpRequest);
 
             assertTrue(result.complete(), "a non-TLS stream is decided immediately, never buffered");
-            assertTrue(result.serverName().isEmpty(), "not a TLS handshake → fail closed");
+            assertNull(result.serverName(), "not a TLS handshake → fail closed");
         }
 
         @Test
@@ -163,7 +163,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(serverHello);
 
             assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty());
+            assertNull(result.serverName());
         }
 
         @Test
@@ -174,7 +174,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(hello);
 
             assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty(), "a structural inconsistency fails closed");
+            assertNull(result.serverName(), "a structural inconsistency fails closed");
         }
 
         @Test
@@ -185,7 +185,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(oversize);
 
             assertTrue(result.complete(), "an oversize declared record is decided, never buffered");
-            assertTrue(result.serverName().isEmpty());
+            assertNull(result.serverName());
         }
     }
 
@@ -207,7 +207,7 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertTrue(result.complete());
-            assertEquals(Optional.of("host.after.example"), result.serverName(),
+            assertEquals("host.after.example", result.serverName(),
                     "the walk seeks past a leading non-SNI extension");
         }
 
@@ -226,7 +226,7 @@ class ClientHelloSniParserTest {
             ClientHelloSniParser.Result result = parser.parse(hello);
 
             // Assert
-            assertEquals(Optional.of("host.example"), result.serverName(),
+            assertEquals("host.example", result.serverName(),
                     "a non-host_name entry is skipped, the host_name entry wins");
         }
 
@@ -243,7 +243,7 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty(), "a body too short for the list prefix fails closed");
+            assertNull(result.serverName(), "a body too short for the list prefix fails closed");
         }
 
         @Test
@@ -259,7 +259,7 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty(), "a list length past the extension body fails closed");
+            assertNull(result.serverName(), "a list length past the extension body fails closed");
         }
 
         @Test
@@ -275,7 +275,7 @@ class ClientHelloSniParserTest {
 
             // Assert
             assertTrue(result.complete());
-            assertTrue(result.serverName().isEmpty(), "a name length past the list end fails closed");
+            assertNull(result.serverName(), "a name length past the list end fails closed");
         }
     }
 

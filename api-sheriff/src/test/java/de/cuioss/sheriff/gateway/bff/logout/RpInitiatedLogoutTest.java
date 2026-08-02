@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -185,7 +184,7 @@ class RpInitiatedLogoutTest {
 
             assertTrue(result.isRedirect(), "a matching state completes the logout");
             assertEquals(302, result.status());
-            assertEquals(Optional.of(FINAL_REDIRECT), result.location());
+            assertEquals(FINAL_REDIRECT, result.location());
             String clearing = result.setCookieHeaders().getFirst();
             assertTrue(clearing.startsWith(RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME + "="), clearing);
             assertTrue(clearing.contains("Max-Age=0"), "the single-use state cookie is cleared");

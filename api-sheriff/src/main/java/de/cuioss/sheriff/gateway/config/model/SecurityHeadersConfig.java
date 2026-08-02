@@ -16,84 +16,72 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code security_headers} block of {@code gateway.yaml}: response
  * header middleware applied to every response.
  *
- * @param hsts               the HSTS settings, empty when omitted
+ * @param hsts               the HSTS settings, {@code null} when omitted
  * @param contentTypeNosniff whether {@code X-Content-Type-Options: nosniff} is
- *                           emitted, empty when omitted
+ *                           emitted, {@code null} when omitted
  * @param frameDeny          whether {@code X-Frame-Options: DENY} is emitted,
- *                           empty when omitted
- * @param cors               the CORS settings, empty when omitted
+ *                           {@code null} when omitted
+ * @param cors               the CORS settings, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record SecurityHeadersConfig(Optional<Hsts> hsts, Optional<Boolean> contentTypeNosniff,
-Optional<Boolean> frameDeny, Optional<Cors> cors) {
-
-    /**
-     * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-     */
-    public SecurityHeadersConfig {
-        hsts = Objects.requireNonNullElse(hsts, Optional.empty());
-        contentTypeNosniff = Objects.requireNonNullElse(contentTypeNosniff, Optional.empty());
-        frameDeny = Objects.requireNonNullElse(frameDeny, Optional.empty());
-        cors = Objects.requireNonNullElse(cors, Optional.empty());
-    }
+public record SecurityHeadersConfig(
+@Nullable Hsts hsts,
+@Nullable Boolean contentTypeNosniff,
+@Nullable Boolean frameDeny,
+@Nullable Cors cors) {
 
     /**
      * {@code Strict-Transport-Security} settings.
      *
-     * @param maxAge            the {@code max-age} in seconds, empty when omitted
-     * @param includeSubdomains whether {@code includeSubDomains} is set, empty when
+     * @param maxAge            the {@code max-age} in seconds, {@code null} when omitted
+     * @param includeSubdomains whether {@code includeSubDomains} is set, {@code null} when
      *                          omitted
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Hsts(Optional<Integer> maxAge, Optional<Boolean> includeSubdomains) {
-
-        /**
-         * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-         */
-        public Hsts {
-            maxAge = Objects.requireNonNullElse(maxAge, Optional.empty());
-            includeSubdomains = Objects.requireNonNullElse(includeSubdomains, Optional.empty());
-        }
+    public record Hsts(@Nullable Integer maxAge, @Nullable Boolean includeSubdomains) {
     }
 
     /**
      * CORS preflight / response handling. Disabled by default.
      *
-     * @param enabled          whether CORS handling is enabled, empty when omitted
+     * @param enabled          whether CORS handling is enabled, {@code null} when omitted
      * @param allowedOrigins   the exact allowed origins, empty when none
      * @param allowedMethods   the allowed methods, empty when none
      * @param allowedHeaders   the allowed request headers, empty when none
-     * @param allowCredentials whether credentials are allowed, empty when omitted
+     * @param allowCredentials whether credentials are allowed, {@code null} when omitted
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Cors(Optional<Boolean> enabled, List<String> allowedOrigins, List<String> allowedMethods,
-    List<String> allowedHeaders, Optional<Boolean> allowCredentials) {
+    public record Cors(
+    @Nullable Boolean enabled,
+    List<String> allowedOrigins,
+    List<String> allowedMethods,
+    List<String> allowedHeaders,
+    @Nullable Boolean allowCredentials) {
 
         /**
-         * Canonical constructor defensively copying collections and normalizing
-         * absent components.
+         * Canonical constructor defensively copying collections.
          */
         public Cors {
-            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
             allowedOrigins = allowedOrigins == null ? List.of() : List.copyOf(allowedOrigins);
             allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
             allowedHeaders = allowedHeaders == null ? List.of() : List.copyOf(allowedHeaders);
-            allowCredentials = Objects.requireNonNullElse(allowCredentials, Optional.empty());
         }
     }
 }

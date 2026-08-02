@@ -1,0 +1,257 @@
+= ADR-0027: Absence in the production type model is a @Nullable type, not a stored Optional
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: Absence in api-sheriff production code is expressed as a JSpecify @Nullable type wherever it is stored — fields, declared parameters, record components — while java.util.Optional stays legitimate only where it is computed, as a method return type or a local variable; a standing ArchUnit fitness function holds the line.
+// tags: type-model, null-safety, jspecify, optional, records, configuration-model, fitness-function, archunit
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A codebase that models "this value may be absent" has two vocabularies available
+in modern Java, and using both without a rule produces a type model that is
+internally inconsistent.
+
+`java.util.Optional` was designed as a return-type vocabulary: it lets a method
+say "I may have nothing for you" at the one point where the caller is forced to
+confront that. JSpecify's `@NullMarked` package plus `@Nullable` is a
+declaration-site vocabulary: it lets a type say "this reference may be null" in
+a form the compiler's null analysis and static tooling can check everywhere the
+reference appears.
+
+Applying `Optional` in storage positions — a field, a declared parameter, a
+record component — borrows the return-type vocabulary for a job it was not
+designed for, and the costs are structural rather than stylistic:
+
+* **It doubles the object graph.** Every absent value allocates a wrapper that
+  exists only to say "nothing is here", on a request path where the gateway
+  handles the value on every route evaluation.
+* **It forces normalization ceremony into constructors.** A record whose
+  components are `Optional` needs a compact constructor that rewrites every
+  incoming `null` into `Optional.empty()`, purely to keep the wrapper invariant
+  intact. That ceremony is not domain logic; it is bookkeeping the type choice
+  created.
+* **It is unenforceable without a rule.** Nothing distinguishes a deliberate
+  `Optional` field from one added by habit, so the two vocabularies drift into
+  the same package and a reader cannot tell which contract a given type is
+  asserting.
+* **It becomes expensive to change once published.** Turning a record component
+  from `Optional<T>` into `@Nullable T` changes both the canonical constructor
+  and the accessor return type, so every call site changes with it. Pre-1.0 that
+  is free; after a published-API cut it is a break.
+
+There is a second, opposite failure available: banning `Optional` outright.
+`Optional` earns its keep at a computed boundary — a lookup that may find
+nothing, an accessor that returns a derived value — where the wrapper is created
+and consumed at the point of use rather than held. A rule that removes it
+everywhere loses that expressiveness for no gain.
+
+The architecture therefore needs a discriminator sharp enough to be applied
+mechanically at every site and to be enforced automatically thereafter.
+
+== Decision
+
+**Absence is a `@Nullable` type wherever it is stored, and an `Optional` only
+where it is computed.**
+
+The discriminator is *storage versus computation*, not *nullability versus
+optionality*:
+
+* **Stored — converts.** A field, a declared constructor or method parameter,
+  and a record component all hold a value. These are declared `@Nullable T`
+  under the package's existing `@NullMarked` default.
+* **Computed — stays.** A method return type and a local variable produce a
+  value at the point of use. These may remain `Optional<T>`.
+
+The rule closes its own obvious loophole: a stored `Optional` that exists *in
+order to* generate an `Optional`-returning accessor is still storage. The
+accessor's return shape does not reclassify the field behind it.
+
+Three mechanisms realise the decision.
+
+**A `@NullMarked` package default.** The production packages declare
+`@NullMarked` in `package-info.java`, so a bare reference type is non-null by
+default and `@Nullable` is the explicit, checkable exception. The
+`config/model` package documentation states the contract in the same place the
+compiler reads the default from.
+
+**Removal of the normalization ceremony.** With the wrapper gone, a compact
+constructor that existed solely to rewrite `null` into `Optional.empty()` has
+nothing left to do and is deleted. A compact constructor survives only where it
+performs genuine work — a `requireNonNull` on a mandatory component, or a
+defensive copy of a collection. At the consuming end, an `orElse` fallback
+becomes an equivalent null-checked expression so a fail-closed default is
+preserved exactly.
+
+**A standing fitness function.** An ArchUnit rule
+(`NoStoredOptionalArchTest`) forbids `Optional` in the stored positions and
+runs with every build, so the decision holds against future code rather than
+only against the sweep that established it. The rule carries the three-part
+shape the surrounding harness already models: the positive rule, a non-vacuity
+guard asserting every protected package resolves to at least one class, and a
+matched positive/negative control so an emptied specimen fails loudly instead of
+passing silently.
+
+The rule is phrased positively — `codeUnits().should(notDeclare…)` — rather than
+with the negating `noCodeUnits()` form. Under the negating form ArchUnit inverts
+event polarity, so a condition that emits violation events reports nothing and
+the rule passes while checking nothing. A fitness function that cannot fail is
+worse than no fitness function, because it also removes the reviewer's suspicion.
+
+**Two carve-outs, both recorded in the rule's own rationale.**
+
+1. **Framework-imposed `Optional` is exempt.** Where a third-party API's
+   signature dictates the type, the gateway does not fight it. MicroProfile
+   Config uses `Optional<T>` natively to express an absent property, and a
+   Quarkus TLS-registry lookup takes an `Optional` argument directly. Converting
+   either would change deployment behaviour — an absent property would become a
+   boot failure rather than an absent value — which is a behavioural change the
+   type-model rule has no mandate to make. The guard exempts parameters whose
+   type is dictated by an external API, minimally those carrying the
+   configuration-property annotation.
+2. **Lombok `@Getter`-backed fields are exempt, and this is a known gap.**
+   Lombok annotations are source-retention and absent from bytecode, so a
+   bytecode-level rule cannot see `@Getter` at all; the available proxy is the
+   presence of a matching public accessor on a non-record class. That proxy is
+   imprecise, so the guard does not police that class of field. Records are
+   checked **unconditionally** — never exempt — precisely so the accessor proxy
+   cannot swallow them, and the negative control is placed on a surface the
+   guard actually covers so the exemption cannot render the control vacuous.
+
+== Consequences
+
+=== Positive
+
+* One vocabulary per position. A reader can tell from the declaration site
+  which contract a type asserts, without consulting a convention document.
+* Absence is visible to the compiler's null analysis and to static tooling
+  everywhere the reference appears, not only where a wrapper is unwrapped.
+* No wrapper allocation for absent stored values on the request path.
+* Constructors carry only genuine work; normalization bookkeeping is gone,
+  and several compact constructors disappear entirely.
+* The rule is machine-checked, so it holds without reviewer vigilance.
+
+=== Negative
+
+* Every accessor whose component changed also changed shape, so every call
+  site changed with it. The conversion is a breaking change by construction and
+  is only affordable before a published-API cut.
+* The `Optional`-returning accessor is no longer free. Where a caller genuinely
+  wants wrapper semantics it now constructs the wrapper itself.
+* The exemption set is a permanent part of the rule's surface. Each carve-out
+  must be justified in the rule's own rationale, or the rule accumulates
+  unexplained holes.
+
+=== Risks
+
+* **The `@Getter` gap is real and deliberately accepted.** A builder-and-getter
+  class can reintroduce a stored `Optional` field and the guard stays silent.
+  The gap is documented in the rule's rationale so it is auditable rather than
+  implicit; closing it requires a source-level tool (an OpenRewrite recipe sees
+  `@Getter` directly) rather than a bytecode rule.
+* **A vacuous guard is worse than none.** A rule whose protected packages
+  resolve to zero classes, or whose negative control sits on an exempted
+  surface, passes green while checking nothing. The non-vacuity guard and the
+  matched controls exist for exactly this failure mode.
+* **A type-model refactor can silently move behaviour.** Where an `orElse`
+  fallback is rewritten as a null check, the fallback must be preserved exactly;
+  a test whose asserted *value* changes is evidence that behaviour moved, not
+  evidence that the test needed updating.
+* **A static analyser's model of a helper is not the helper's semantics.**
+  Replacing `orElse` with a null-coalescing helper can light up a null-safety
+  rule across every call site, because the analyser may propagate the first
+  argument's nullness to the result. Binding the nullable read to an explicit
+  local before the guard keeps the analyser's view aligned with the code's
+  actual contract, and is preferred over suppressing the rule — a suppression
+  blinds the enclosing method to precisely the rule this decision relies on.
+
+== Alternatives Considered
+
+=== Keep `Optional` in stored positions and standardise on it everywhere
+
+Use one vocabulary — `Optional` — for both storage and computation, and drop
+`@Nullable` from the model.
+
+*Rejected because* it makes the wrapper a permanent part of the persisted shape:
+every absent value allocates, every record needs its normalization ceremony, and
+the null-analysis tooling that reads `@NullMarked`/`@Nullable` has nothing to
+work with. It also cannot be honoured at the framework boundary in reverse — the
+codebase would still be handed plain nullable references by third-party APIs, so
+the "one vocabulary" claim is false in practice.
+
+=== Ban `Optional` outright
+
+Remove `Optional` from the codebase entirely, including method returns.
+
+*Rejected because* it discards the one position where the wrapper is the right
+tool. A lookup that may find nothing communicates that better by returning an
+empty `Optional` than by returning a `@Nullable` reference the caller may
+dereference without thinking. Banning it trades a real expressiveness gain for
+uniformity that no failure mode demanded.
+
+=== Convert opportunistically, without a census
+
+Fix stored `Optional` occurrences as they are encountered during other work.
+
+*Rejected because* the parameter surface's size is not knowable without
+enumerating it, and a partial conversion is strictly worse than none: it leaves
+the two vocabularies mixed inside the same package while consuming the breaking-
+change budget. It also makes the standing guard unsatisfiable — a rule cannot be
+switched on over a surface that is only partly converted, and switching it on
+with suppressions added to make it pass is a guard that enforces nothing.
+
+=== Enforce by convention and code review rather than a fitness function
+
+Document the storage-versus-computation rule and rely on reviewers.
+
+*Rejected because* the rule's whole value is that it holds against code written
+later. A convention decays at exactly the rate reviewers' attention does, and its
+violations are invisible in a diff — a new `Optional` field looks locally
+reasonable. An automated rule converts a matter of vigilance into a build
+outcome.
+
+=== Implement the guard as a source-level recipe rather than a bytecode rule
+
+Use an OpenRewrite recipe, which reads source and therefore sees Lombok
+annotations directly, instead of an ArchUnit rule.
+
+*Considered and held in reserve.* It is the one option that closes the `@Getter`
+gap, because source-retention annotations are visible to it. It was not chosen
+first because an ArchUnit harness with a non-vacuity guard and matched controls
+already exists in the project and runs on every build, so the bytecode rule
+reaches parity for the record and plain-field cases at a fraction of the cost.
+The source-level recipe remains the sanctioned path if the accessor proxy proves
+unworkable.
+
+The rejected options fall into one class: each removes either the discriminator
+or its enforcement. Without the discriminator the two vocabularies mix; without
+enforcement the discriminator decays. The decision keeps both.
+
+== Generalisation
+
+When a language offers two vocabularies for the same concept — one designed for
+a value in flight, one designed for a value at rest — the durable rule is not
+"prefer A" or "prefer B" but a discriminator over *position*. Ask where the
+value lives: a value that is held wants the declaration-site vocabulary, because
+its contract must be legible everywhere the reference appears; a value that is
+produced and immediately consumed wants the expression-level vocabulary, because
+its contract only has to hold at one point.
+
+A discriminator stated but not enforced is a preference, not a rule. Pair it
+with an automated check, and treat every exemption the check needs as something
+that must be written into the check's own rationale — an unexplained carve-out
+is indistinguishable from a bug in the check.
+
+== References
+
+* `doc/architecture.adoc` — the api-sheriff production type model
+* `doc/configuration.adoc` — the configuration record surface this decision reshapes
+* link:0005-module-structure.adoc[ADR-0005] — module boundaries the type model spans

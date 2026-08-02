@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,13 +72,13 @@ class StepUpCoordinatorTest {
         return SessionRecord.builder()
                 .sessionId("session-1")
                 .accessToken("access-current")
-                .refreshToken(Optional.of("refresh-current"))
+                .refreshToken("refresh-current")
                 .idToken("id-current")
                 .sub("sub-1")
-                .sid(Optional.empty())
+                .sid(null)
                 .expiresAt(NOW.plusSeconds(28800))
-                .acr(Optional.ofNullable(acr))
-                .authTime(Optional.empty())
+                .acr(acr)
+                .authTime(null)
                 .build();
     }
 
@@ -145,7 +146,7 @@ class StepUpCoordinatorTest {
 
             assertTrue(outcome.isSatisfied());
             assertEquals(StepUpOutcome.Kind.SATISFIED, outcome.kind());
-            assertSame(elevated, outcome.session().orElseThrow(), "the elevated session is used for the replay");
+            assertSame(elevated, outcome.session(), "the elevated session is used for the replay");
             assertTrue(outcome.setCookieHeaders().isEmpty(), "a silent satisfaction sets no browser-binding cookie");
         }
     }
@@ -163,7 +164,7 @@ class StepUpCoordinatorTest {
 
             assertFalse(outcome.isSatisfied());
             assertEquals(StepUpOutcome.Kind.RE_DRIVE, outcome.kind());
-            assertEquals(Optional.of(STEP_UP_URL), outcome.location());
+            assertEquals(STEP_UP_URL, outcome.location());
             assertEquals(1, outcome.setCookieHeaders().size(), "the browser-binding cookie is minted for the re-drive");
         }
 
@@ -217,7 +218,7 @@ class StepUpCoordinatorTest {
             StepUpOutcome satisfied = StepUpOutcome.satisfied(session(ACR));
 
             assertTrue(satisfied.isSatisfied());
-            assertTrue(satisfied.location().isEmpty());
+            assertNull(satisfied.location());
             assertTrue(satisfied.setCookieHeaders().isEmpty());
         }
     }

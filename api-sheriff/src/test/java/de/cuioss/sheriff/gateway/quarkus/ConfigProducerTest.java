@@ -443,7 +443,7 @@ class ConfigProducerTest {
                 "a valid asset route must assemble without failing startup");
         RouteTable table = producer.routeTable();
         assertEquals(1, table.routes().size(), "the asset route is merged into the table");
-        assertTrue(table.routes().getFirst().asset().isPresent(),
+        assertNotNull(table.routes().getFirst().asset(),
                 "the asset terminal action is materialized onto the resolved route");
     }
 
@@ -484,11 +484,11 @@ class ConfigProducerTest {
                 "an upstream asset route whose alias is declared in the topology must assemble without failing startup");
         RouteTable table = producer.routeTable();
         assertEquals(1, table.routes().size(), "the upstream asset route is merged into the table");
-        ResolvedAsset asset = table.routes().getFirst().asset()
-                .orElseThrow(() -> new AssertionError("the asset terminal action is materialized onto the resolved route"));
+        ResolvedAsset asset = table.routes().getFirst().asset();
+        assertNotNull(asset, "the asset terminal action is materialized onto the resolved route");
         assertEquals(AssetConfig.Source.UPSTREAM, asset.source(), "the resolved asset carries the upstream source");
-        ResolvedUpstream upstream = asset.upstream()
-                .orElseThrow(() -> new AssertionError("the ASSET_ORIGIN alias resolved onto the asset action"));
+        ResolvedUpstream upstream = asset.upstream();
+        assertNotNull(upstream, "the ASSET_ORIGIN alias resolved onto the asset action");
         assertEquals("asset-origin", upstream.host(), "the ASSET_ORIGIN alias decomposed to the declared host");
         assertEquals(80, upstream.port(), "the ASSET_ORIGIN alias decomposed to the declared port");
     }

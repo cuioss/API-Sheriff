@@ -16,9 +16,9 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code asset} terminal-action block (decision: ADR-0014).
@@ -46,8 +46,9 @@ import lombok.Builder;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record AssetConfig(Source source, Optional<String> directory, Optional<String> upstream) {
+public record AssetConfig(Source source, @Nullable String directory, @Nullable String upstream) {
 
     /**
      * The asset content source (decision: ADR-0014).
@@ -61,12 +62,9 @@ public record AssetConfig(Source source, Optional<String> directory, Optional<St
     }
 
     /**
-     * Canonical constructor requiring {@code source} and normalizing absent
-     * source-specific fields to {@link Optional#empty()}.
+     * Canonical constructor requiring {@code source}.
      */
     public AssetConfig {
         Objects.requireNonNull(source, "source");
-        directory = Objects.requireNonNullElse(directory, Optional.empty());
-        upstream = Objects.requireNonNullElse(upstream, Optional.empty());
     }
 }

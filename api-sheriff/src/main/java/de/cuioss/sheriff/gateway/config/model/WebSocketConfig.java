@@ -16,10 +16,9 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code websocket} block carried by a {@code protocol: websocket}
@@ -35,21 +34,20 @@ import lombok.Builder;
  *
  * @param allowedOrigins     the exact-match, case-insensitive-host origin allowlist,
  *                           empty when none is declared
- * @param idleTimeoutSeconds the per-route idle timeout in seconds, empty when the
+ * @param idleTimeoutSeconds the per-route idle timeout in seconds, {@code null} when the
  *                           default applies
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record WebSocketConfig(List<String> allowedOrigins, Optional<Integer> idleTimeoutSeconds) {
+public record WebSocketConfig(List<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds) {
 
     /**
      * Canonical constructor defensively copying {@code allowedOrigins} into an
-     * unmodifiable copy, normalizing an absent list to empty and an absent
-     * {@code idleTimeoutSeconds} to {@link Optional#empty()}.
+     * unmodifiable copy, normalizing an absent list to empty.
      */
     public WebSocketConfig {
         allowedOrigins = allowedOrigins == null ? List.of() : List.copyOf(allowedOrigins);
-        idleTimeoutSeconds = Objects.requireNonNullElse(idleTimeoutSeconds, Optional.empty());
     }
 }

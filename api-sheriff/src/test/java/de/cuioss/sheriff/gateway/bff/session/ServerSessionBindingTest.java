@@ -62,7 +62,7 @@ class ServerSessionBindingTest {
                 .accessToken(accessToken)
                 .idToken("raw-id-token")
                 .sub(SUB)
-                .sid(Optional.of(SID))
+                .sid(SID)
                 .expiresAt(NOW.plus(SESSION_TTL))
                 .build();
     }

@@ -23,6 +23,8 @@ import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The plaintext that {@link SealedSessionCookieCodec} seals into the cookie-mode session cookie
  * (D1, {@code session.mode: cookie}).
@@ -44,12 +46,12 @@ import java.util.Optional;
  * credential-bearing component, mirroring {@code SessionRecord}.
  *
  * @param accessToken  the mediated access token injected as the upstream bearer
- * @param refreshToken the refresh token, empty when the IdP granted none
+ * @param refreshToken the refresh token, {@code null} when the IdP granted none
  * @param idToken      the raw ID token retained for the logout {@code id_token_hint}
  * @param sub          the subject claim
- * @param sid          the IdP session id claim, empty when absent
- * @param acr          the authentication context class, empty when absent
- * @param authTime     the IdP authentication instant, empty when absent
+ * @param sid          the IdP session id claim, {@code null} when absent
+ * @param acr          the authentication context class, {@code null} when absent
+ * @param authTime     the IdP authentication instant, {@code null} when absent
  * @param loginInstant the absolute login instant anchoring the server-enforced session TTL
  * @param sessionNonce the per-session random nonce minted once at login, folded into the derived
  *                     session identity so two logins by the same subject within one clock second
@@ -58,8 +60,16 @@ import java.util.Optional;
  * @author API Sheriff Team
  * @since 1.0
  */
-public record SealedSessionPayload(String accessToken, Optional<String> refreshToken, String idToken,
-String sub, Optional<String> sid, Optional<String> acr, Optional<Instant> authTime, Instant loginInstant,
+// cui-rewrite:disable AnnotationNewlineFormat
+public record SealedSessionPayload(
+String accessToken,
+@Nullable String refreshToken,
+String idToken,
+String sub,
+@Nullable String sid,
+@Nullable String acr,
+@Nullable Instant authTime,
+Instant loginInstant,
 String sessionNonce) {
 
     private static final String REDACTED = "***REDACTED***";
@@ -67,8 +77,7 @@ String sessionNonce) {
     private static final int FIELD_COUNT = 9;
 
     /**
-     * Canonical constructor rejecting absent mandatory components and normalizing absent optionals
-     * to {@link Optional#empty()}.
+     * Canonical constructor rejecting absent mandatory components.
      * <p>
      * {@code sessionNonce} is additionally rejected when blank: it keys the derived session
      * identity, so an empty value would silently degrade that identity back to the colliding
@@ -87,10 +96,6 @@ String sessionNonce) {
         if (sessionNonce.isBlank()) {
             throw new IllegalArgumentException("sessionNonce must not be blank");
         }
-        refreshToken = Objects.requireNonNullElse(refreshToken, Optional.empty());
-        sid = Objects.requireNonNullElse(sid, Optional.empty());
-        acr = Objects.requireNonNullElse(acr, Optional.empty());
-        authTime = Objects.requireNonNullElse(authTime, Optional.empty());
     }
 
     /**
@@ -101,12 +106,12 @@ String sessionNonce) {
     public byte[] encode() {
         StringBuilder encoded = new StringBuilder();
         appendField(encoded, accessToken);
-        appendField(encoded, refreshToken.orElse(""));
+        appendField(encoded, refreshToken == null ? "" : refreshToken);
         appendField(encoded, idToken);
         appendField(encoded, sub);
-        appendField(encoded, sid.orElse(""));
-        appendField(encoded, acr.orElse(""));
-        appendField(encoded, authTime.map(instant -> Long.toString(instant.getEpochSecond())).orElse(""));
+        appendField(encoded, sid == null ? "" : sid);
+        appendField(encoded, acr == null ? "" : acr);
+        appendField(encoded, authTime == null ? "" : Long.toString(authTime.getEpochSecond()));
         appendField(encoded, Long.toString(loginInstant.getEpochSecond()));
         appendField(encoded, sessionNonce);
         return encoded.toString().getBytes(StandardCharsets.UTF_8);
@@ -135,12 +140,12 @@ String sessionNonce) {
         try {
             return Optional.of(new SealedSessionPayload(
                     decodeField(fields[0]),
-                    optionalField(fields[1]),
+                    nullableField(fields[1]),
                     decodeField(fields[2]),
                     decodeField(fields[3]),
-                    optionalField(fields[4]),
-                    optionalField(fields[5]),
-                    optionalField(fields[6]).map(seconds -> Instant.ofEpochSecond(Long.parseLong(seconds))),
+                    nullableField(fields[4]),
+                    nullableField(fields[5]),
+                    epochSecondField(fields[6]),
                     Instant.ofEpochSecond(Long.parseLong(decodeField(fields[7]))),
                     decodeField(fields[8])));
         } catch (IllegalArgumentException | DateTimeException _) {
@@ -179,7 +184,7 @@ String sessionNonce) {
     @Override
     public String toString() {
         return "SealedSessionPayload[accessToken=%s, refreshToken=%s, idToken=%s, sub=%s, sid=%s, acr=%s, authTime=%s, loginInstant=%s, sessionNonce=%s]"
-                .formatted(REDACTED, refreshToken.isPresent() ? "Optional[" + REDACTED + "]" : "Optional.empty",
+                .formatted(REDACTED, refreshToken == null ? "null" : REDACTED,
                         REDACTED, sub, sid, acr, authTime, loginInstant, REDACTED);
     }
 
@@ -195,11 +200,16 @@ String sessionNonce) {
         return new String(Base64.getUrlDecoder().decode(field), StandardCharsets.UTF_8);
     }
 
-    private static Optional<String> optionalField(String field) {
+    private static @Nullable String nullableField(String field) {
         if (field.isEmpty()) {
-            return Optional.empty();
+            return null;
         }
         String decoded = decodeField(field);
-        return decoded.isEmpty() ? Optional.empty() : Optional.of(decoded);
+        return decoded.isEmpty() ? null : decoded;
+    }
+
+    private static @Nullable Instant epochSecondField(String field) {
+        String seconds = nullableField(field);
+        return seconds == null ? null : Instant.ofEpochSecond(Long.parseLong(seconds));
     }
 }

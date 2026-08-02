@@ -130,7 +130,8 @@ public class TlsEdgeProducer {
     }
 
     private Map<String, RelayTarget> buildRelayMap() {
-        Map<String, String> passthrough = gatewayConfig.tls().map(TlsConfig::passthroughSni).orElse(Map.of());
+        TlsConfig tls = gatewayConfig.tls();
+        Map<String, String> passthrough = tls == null ? Map.of() : tls.passthroughSni();
         Map<String, RelayTarget> targets = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : passthrough.entrySet()) {
             String sni = entry.getKey();

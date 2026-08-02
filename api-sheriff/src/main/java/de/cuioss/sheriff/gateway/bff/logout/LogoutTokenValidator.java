@@ -27,6 +27,8 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimValueType;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.tools.logging.CuiLogger;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The pure OIDC back-channel-logout-token check pipeline (D2c residual, BFF-09).
  * <p>
@@ -116,9 +118,9 @@ public final class LogoutTokenValidator {
             LOGGER.debug("Back-channel logout token rejected — a nonce is prohibited in a logout token");
             return Optional.empty();
         }
-        Optional<String> sub = claim(logoutToken, CLAIM_SUB);
-        Optional<String> sid = claim(logoutToken, CLAIM_SID);
-        if (sub.isEmpty() && sid.isEmpty()) {
+        String sub = claim(logoutToken, CLAIM_SUB).orElse(null);
+        String sid = claim(logoutToken, CLAIM_SID).orElse(null);
+        if (sub == null && sid == null) {
             LOGGER.debug("Back-channel logout token rejected — neither sub nor sid present");
             return Optional.empty();
         }
@@ -193,19 +195,12 @@ public final class LogoutTokenValidator {
      * present (the pipeline rejects a token carrying neither). {@code sid} drives the precise
      * single-session destruction; {@code sub} the all-sessions-for-subject destruction.
      *
-     * @param sub the subject claim, empty when the token carried only a {@code sid}
-     * @param sid the IdP session id claim, empty when the token carried only a {@code sub}
+     * @param sub the subject claim, {@code null} when the token carried only a {@code sid}
+     * @param sid the IdP session id claim, {@code null} when the token carried only a {@code sub}
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record LogoutSubject(Optional<String> sub, Optional<String> sid) {
-
-        /**
-         * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-         */
-        public LogoutSubject {
-            sub = Objects.requireNonNullElse(sub, Optional.empty());
-            sid = Objects.requireNonNullElse(sid, Optional.empty());
-        }
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record LogoutSubject(@Nullable String sub, @Nullable String sid) {
     }
 }

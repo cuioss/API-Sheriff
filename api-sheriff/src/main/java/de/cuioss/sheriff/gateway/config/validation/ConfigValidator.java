@@ -38,7 +38,9 @@ import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -53,9 +55,12 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Runs the cross-cutting configuration rules (pipeline step 7) that cannot be
@@ -208,24 +213,28 @@ public final class ConfigValidator {
      * bind, so it would silently disable the sub-cap the operator meant to impose.
      */
     private static void validateEdgeHardening(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.edgeHardening().ifPresent(hardening -> {
-            hardening.admissionCap()
-                    .filter(cap -> cap < 1)
-                    .ifPresent(cap -> errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_ADMISSION_POINTER,
-                            "admission_cap must be at least 1 (was %d)".formatted(cap))));
-            hardening.websocketRelayCap()
-                    .filter(cap -> cap < 1)
-                    .ifPresent(cap -> errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_WEBSOCKET_POINTER,
-                            "websocket_relay_cap must be at least 1 (was %d)".formatted(cap))));
-            int admission = hardening.effectiveAdmissionCap();
-            int relay = hardening.effectiveWebsocketRelayCap();
-            if (admission >= 1 && relay >= 1 && relay > admission) {
-                errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_WEBSOCKET_POINTER,
-                        "websocket_relay_cap %d must not exceed admission_cap %d — the relay budget is a "
-                                .formatted(relay, admission)
-                                + "sub-budget of the admission pool and could never bind"));
-            }
-        });
+        EdgeHardeningConfig hardening = gateway.edgeHardening();
+        if (hardening == null) {
+            return;
+        }
+        Integer admissionCap = hardening.admissionCap();
+        if (admissionCap != null && admissionCap < 1) {
+            errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_ADMISSION_POINTER,
+                    "admission_cap must be at least 1 (was %d)".formatted(admissionCap)));
+        }
+        Integer relayCap = hardening.websocketRelayCap();
+        if (relayCap != null && relayCap < 1) {
+            errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_WEBSOCKET_POINTER,
+                    "websocket_relay_cap must be at least 1 (was %d)".formatted(relayCap)));
+        }
+        int admission = hardening.effectiveAdmissionCap();
+        int relay = hardening.effectiveWebsocketRelayCap();
+        if (admission >= 1 && relay >= 1 && relay > admission) {
+            errors.add(new ConfigError(GATEWAY_FILE, EDGE_HARDENING_WEBSOCKET_POINTER,
+                    "websocket_relay_cap %d must not exceed admission_cap %d — the relay budget is a "
+                            .formatted(relay, admission)
+                            + "sub-budget of the admission pool and could never bind"));
+        }
     }
 
     /**
@@ -266,22 +275,23 @@ public final class ConfigValidator {
      * framework-agnostic class (ADR-0005) would fork the value.
      */
     private static void validateAuthorizationHeaderValueLength(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.securityDefaults()
-                .flatMap(SecurityDefaultsConfig::maxAuthorizationHeaderValueLength)
-                .ifPresent(declared -> {
-                    SecurityProfile global = RouteTableBuilder.globalProfile(gateway);
-                    int baseline = SecurityProfile.limitsProfile(global, global).preset().maxHeaderValueLength();
-                    if (declared < baseline) {
-                        errors.add(new ConfigError(GATEWAY_FILE, SECURITY_DEFAULTS_AUTHORIZATION_POINTER,
-                                ("max_authorization_header_value_length %d is below the resolved baseline "
-                                        + "max_header_value_length %d; the key raises the pre-route cap for "
-                                        + "Authorization values only and can never lower it — declare at least "
-                                        + "the baseline here, as security_defaults.profile and a route "
-                                        + "security_filter bound general header values rather than the "
-                                        + "Authorization carve-out")
-                                        .formatted(declared, baseline)));
-                    }
-                });
+        SecurityDefaultsConfig securityDefaults = gateway.securityDefaults();
+        Integer declared = securityDefaults == null ? null : securityDefaults.maxAuthorizationHeaderValueLength();
+        if (declared == null) {
+            return;
+        }
+        SecurityProfile global = RouteTableBuilder.globalProfile(gateway);
+        int baseline = SecurityProfile.limitsProfile(global, global).preset().maxHeaderValueLength();
+        if (declared < baseline) {
+            errors.add(new ConfigError(GATEWAY_FILE, SECURITY_DEFAULTS_AUTHORIZATION_POINTER,
+                    ("max_authorization_header_value_length %d is below the resolved baseline "
+                            + "max_header_value_length %d; the key raises the pre-route cap for "
+                            + "Authorization values only and can never lower it — declare at least "
+                            + "the baseline here, as security_defaults.profile and a route "
+                            + "security_filter bound general header values rather than the "
+                            + "Authorization carve-out")
+                            .formatted(declared, baseline)));
+        }
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
@@ -344,12 +354,12 @@ public final class ConfigValidator {
     }
 
     private static boolean hostsOverlap(MatchConfig first, MatchConfig second) {
-        Optional<String> firstHost = first.host();
-        Optional<String> secondHost = second.host();
-        if (firstHost.isEmpty() || secondHost.isEmpty()) {
+        String firstHost = first.host();
+        String secondHost = second.host();
+        if (firstHost == null || secondHost == null) {
             return true;
         }
-        return firstHost.get().equalsIgnoreCase(secondHost.get());
+        return firstHost.equalsIgnoreCase(secondHost);
     }
 
     private static boolean methodsOverlap(MatchConfig first, MatchConfig second) {
@@ -370,15 +380,15 @@ public final class ConfigValidator {
     }
 
     private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
-        Optional<String> valueA = headerA.value();
-        Optional<String> valueB = headerB.value();
-        return valueA.isPresent() && valueB.isPresent() && !valueA.get().equals(valueB.get());
+        String valueA = headerA.value();
+        String valueB = headerB.value();
+        return valueA != null && valueB != null && !valueA.equals(valueB);
     }
 
     private static boolean presenceDistinguishes(HeaderMatcher headerA, HeaderMatcher headerB) {
-        Optional<Boolean> presentA = headerA.present();
-        Optional<Boolean> presentB = headerB.present();
-        return presentA.isPresent() && presentB.isPresent() && !presentA.get().equals(presentB.get());
+        Boolean presentA = headerA.present();
+        Boolean presentB = headerB.present();
+        return presentA != null && presentB != null && !presentA.equals(presentB);
     }
 
     private static void validateBaseUrlResolvable(List<EndpointConfig> endpoints, ResolvedTopology topology,
@@ -418,13 +428,17 @@ public final class ConfigValidator {
     private static void validateAnchorReferencesExist(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
-            endpoint.anchor().filter(name -> !gateway.anchors().containsKey(name))
-                    .ifPresent(name -> errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ANCHOR_POINTER,
-                            "endpoint '%s' references undefined anchor '%s'".formatted(endpoint.id(), name))));
+            String endpointAnchor = endpoint.anchor();
+            if (endpointAnchor != null && !gateway.anchors().containsKey(endpointAnchor)) {
+                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ANCHOR_POINTER,
+                        "endpoint '%s' references undefined anchor '%s'".formatted(endpoint.id(), endpointAnchor)));
+            }
             for (RouteConfig route : endpoint.routes()) {
-                route.anchor().filter(name -> !gateway.anchors().containsKey(name))
-                        .ifPresent(name -> errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                                "route '%s' references undefined anchor '%s'".formatted(route.id(), name))));
+                String routeAnchor = route.anchor();
+                if (routeAnchor != null && !gateway.anchors().containsKey(routeAnchor)) {
+                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                            "route '%s' references undefined anchor '%s'".formatted(route.id(), routeAnchor)));
+                }
             }
         }
     }
@@ -454,12 +468,12 @@ public final class ConfigValidator {
         }
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (route.protocol().orElse(Protocol.HTTP) == Protocol.GRPC) {
+                if (effectiveProtocol(route) == Protocol.GRPC) {
                     // gRPC routes ride a service-rooted single-segment path that no gateway path
                     // namespace can contain on a segment boundary — exempt from containment (rules 3 & 4).
                     continue;
                 }
-                Optional<String> declaredName = declaredAnchorName(endpoint, route);
+                String declaredName = declaredAnchorName(endpoint, route);
                 String routePrefix = route.match().pathPrefix();
                 checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routePrefix, errors);
                 checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routePrefix, errors);
@@ -473,14 +487,13 @@ public final class ConfigValidator {
      * is not a defined anchor.
      */
     private static void checkRouteInsideDeclaredAnchorNamespace(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, Optional<String> declaredName, String routePrefix, List<ConfigError> errors) {
-        declaredName.map(gateway.anchors()::get).filter(Objects::nonNull).ifPresent(anchor -> {
-            if (!prefixContains(anchor.pathPrefix(), routePrefix)) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                        "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
-                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
-            }
-        });
+            RouteConfig route, @Nullable String declaredName, String routePrefix, List<ConfigError> errors) {
+        AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
+        if (anchor != null && !prefixContains(anchor.pathPrefix(), routePrefix)) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
+                            .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
+        }
     }
 
     /**
@@ -488,10 +501,10 @@ public final class ConfigValidator {
      * that anchor — an undeclared squatter fails the boot (ADR-0007).
      */
     private static void checkRouteDeclaresContainingAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, Optional<String> declaredName, String routePrefix, List<ConfigError> errors) {
+            RouteConfig route, @Nullable String declaredName, String routePrefix, List<ConfigError> errors) {
         for (AnchorConfig anchor : gateway.anchors().values()) {
             if (prefixContains(anchor.pathPrefix(), routePrefix)
-                    && !declaredName.map(anchor.name()::equals).orElse(false)) {
+                    && !anchor.name().equals(declaredName)) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                         "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
                                 .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix())));
@@ -516,7 +529,7 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (effectiveAuth(gateway, endpoint, route).isEmpty()) {
+                if (effectiveAuth(gateway, endpoint, route) == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' has no resolvable auth: neither the route, its endpoint '%s', nor a declared anchor provides an auth posture"
                                     .formatted(route.id(), endpoint.id())));
@@ -534,17 +547,17 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
-                if (anchor.isEmpty()) {
+                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
+                AuthConfig anchorAuth = anchor == null ? null : anchor.auth();
+                if (anchorAuth == null) {
                     continue;
                 }
-                AnchorConfig anchorConfig = anchor.get();
-                Optional<String> anchorRequire = anchorConfig.auth().map(AuthConfig::require)
-                        .filter(require -> !REQUIRE_NONE.equals(require));
-                if (anchorRequire.isPresent() && REQUIRE_NONE.equals(effectiveRequire(gateway, endpoint, route))) {
+                String anchorRequire = anchorAuth.require();
+                if (!REQUIRE_NONE.equals(anchorRequire)
+                        && REQUIRE_NONE.equals(effectiveRequire(gateway, endpoint, route))) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
-                                    .formatted(route.id(), anchorConfig.name(), anchorRequire.get())));
+                                    .formatted(route.id(), anchor.name(), anchorRequire)));
                 }
             }
         }
@@ -558,14 +571,24 @@ public final class ConfigValidator {
                 requires.add(effectiveRequire(gateway, endpoint, route));
             }
         }
-        if (requires.contains(REQUIRE_BEARER)
-                && gateway.tokenValidation().map(tv -> tv.issuers().isEmpty()).orElse(true)) {
+        if (requires.contains(REQUIRE_BEARER) && lacksConfiguredIssuer(gateway)) {
             errors.add(new ConfigError(GATEWAY_FILE, "/token_validation",
                     "effective auth 'bearer' requires token_validation with at least one issuer"));
         }
-        if (requires.contains(REQUIRE_SESSION) && gateway.oidc().isEmpty()) {
+        if (requires.contains(REQUIRE_SESSION) && gateway.oidc() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc", "effective auth 'session' requires an oidc block"));
         }
+    }
+
+    /**
+     * Whether the gateway declares no usable bearer-validation backing — either no
+     * {@code token_validation} block at all, or one that declares no issuer. The single shared
+     * predicate behind both the effective-auth rule and the {@code access: authenticated} anchor
+     * matrix, so the two can never disagree about what backs a {@code bearer} posture.
+     */
+    private static boolean lacksConfiguredIssuer(GatewayConfig gateway) {
+        TokenValidationConfig tokenValidation = gateway.tokenValidation();
+        return tokenValidation == null || tokenValidation.issuers().isEmpty();
     }
 
     /**
@@ -585,7 +608,7 @@ public final class ConfigValidator {
                         "anchor '%s' is type 'bff' and must declare access: authenticated".formatted(anchor.name())));
             }
             if (anchor.access() == AccessLevel.PUBLIC) {
-                if (anchor.auth().isPresent()) {
+                if (anchor.auth() != null) {
                     errors.add(new ConfigError(GATEWAY_FILE, pointer,
                             "anchor '%s' is access: public and must not declare an auth block"
                                     .formatted(anchor.name())));
@@ -604,20 +627,20 @@ public final class ConfigValidator {
      */
     private static void validateAuthenticatedAnchorBacking(GatewayConfig gateway, AnchorConfig anchor, String pointer,
             List<ConfigError> errors) {
-        String require = anchor.auth().map(AuthConfig::require).orElse(REQUIRE_NONE);
+        AuthConfig anchorAuth = anchor.auth();
+        String require = anchorAuth == null ? REQUIRE_NONE : anchorAuth.require();
         if (REQUIRE_NONE.equals(require)) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' is access: authenticated but declares no non-'none' auth floor"
                             .formatted(anchor.name())));
             return;
         }
-        if (REQUIRE_BEARER.equals(require)
-                && gateway.tokenValidation().map(tv -> tv.issuers().isEmpty()).orElse(true)) {
+        if (REQUIRE_BEARER.equals(require) && lacksConfiguredIssuer(gateway)) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated bearer floor requires token_validation with at least one issuer"
                             .formatted(anchor.name())));
         }
-        if (REQUIRE_SESSION.equals(require) && gateway.oidc().isEmpty()) {
+        if (REQUIRE_SESSION.equals(require) && gateway.oidc() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
         }
@@ -647,7 +670,7 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
+                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
                 if (effectiveProfile(gateway, route, anchor) != SecurityProfile.NONE) {
                     continue;
                 }
@@ -669,17 +692,15 @@ public final class ConfigValidator {
      * run under {@code none}.
      */
     private static List<String> noneRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, Optional<AnchorConfig> anchor) {
+            RouteConfig route, @Nullable AnchorConfig anchor) {
         List<String> refusals = new ArrayList<>();
-        boolean authenticated = effectiveAuth(gateway, endpoint, route)
-                .map(auth -> RouteTableBuilder.effectiveAccessLevel(anchor, auth))
-                .filter(access -> access == AccessLevel.AUTHENTICATED)
-                .isPresent();
-        if (authenticated) {
+        AuthConfig auth = effectiveAuth(gateway, endpoint, route);
+        if (auth != null && RouteTableBuilder.effectiveAccessLevel(anchor, auth) == AccessLevel.AUTHENTICATED) {
             refusals.add("its effective access level is 'authenticated'");
         }
-        anchor.filter(resolved -> resolved.type() == AnchorType.BFF)
-                .ifPresent(resolved -> refusals.add("its anchor '%s' is type 'bff'".formatted(resolved.name())));
+        if (anchor != null && anchor.type() == AnchorType.BFF) {
+            refusals.add("its anchor '%s' is type 'bff'".formatted(anchor.name()));
+        }
         return refusals;
     }
 
@@ -693,10 +714,13 @@ public final class ConfigValidator {
      * to the gateway-wide value, never to its anchor's profile.
      */
     private static SecurityProfile effectiveProfile(GatewayConfig gateway, RouteConfig route,
-            Optional<AnchorConfig> anchor) {
-        return route.securityFilter().or(() -> anchor.flatMap(AnchorConfig::securityFilter))
-                .flatMap(SecurityFilterConfig::profile)
-                .flatMap(SecurityProfile::parse)
+            @Nullable AnchorConfig anchor) {
+        SecurityFilterConfig securityFilter = route.securityFilter();
+        if (securityFilter == null && anchor != null) {
+            securityFilter = anchor.securityFilter();
+        }
+        String declaredProfile = securityFilter == null ? null : securityFilter.profile();
+        return SecurityProfile.parse(declaredProfile)
                 .orElseGet(() -> RouteTableBuilder.globalProfile(gateway));
     }
 
@@ -713,28 +737,36 @@ public final class ConfigValidator {
             ResolvedTopology topology, List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
-                boolean assetAnchor = anchor.map(a -> a.type() == AnchorType.ASSET).orElse(false);
-                boolean hasAsset = route.asset().isPresent();
-                if (assetAnchor && !hasAsset) {
-                    // assetAnchor is derived from anchor.map(...).orElse(false), so it can only be
-                    // true when the anchor is present; ifPresent makes that guarantee provable
-                    // rather than dereferencing the Optional with a bare get().
-                    anchor.ifPresent(resolvedAnchor -> errors.add(new ConfigError(endpointFile(endpoint),
-                            ENDPOINT_ROUTES_POINTER,
-                            "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
-                                    .formatted(route.id(), resolvedAnchor.name()))));
-                } else if (!assetAnchor && hasAsset) {
-                    String context = anchor
-                            .map(a -> "its anchor '%s' is type '%s'".formatted(a.name(),
-                                    a.type().name().toLowerCase(Locale.ROOT)))
-                            .orElse("the route is unanchored");
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
-                                    .formatted(route.id(), context)));
-                }
-                route.asset().ifPresent(asset -> validateAssetSource(endpoint, route, asset, topology, errors));
+                validateRouteTerminalAction(gateway, endpoint, route, topology, errors);
             }
+        }
+    }
+
+    /**
+     * The per-route half of the terminal-action rule (ADR-0014): the anchor-type / asset-action
+     * consistency check, plus the source-field check for a declared asset action. Every violation
+     * collects into the shared list; the check never fails fast.
+     */
+    private static void validateRouteTerminalAction(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, ResolvedTopology topology, List<ConfigError> errors) {
+        AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
+        boolean assetAnchor = anchor != null && anchor.type() == AnchorType.ASSET;
+        AssetConfig asset = route.asset();
+        if (assetAnchor && asset == null) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
+                            .formatted(route.id(), anchor.name())));
+        } else if (!assetAnchor && asset != null) {
+            String context = anchor == null
+                    ? "the route is unanchored"
+                    : "its anchor '%s' is type '%s'".formatted(anchor.name(),
+                    anchor.type().name().toLowerCase(Locale.ROOT));
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
+                            .formatted(route.id(), context)));
+        }
+        if (asset != null) {
+            validateAssetSource(endpoint, route, asset, topology, errors);
         }
     }
 
@@ -752,20 +784,20 @@ public final class ConfigValidator {
             ResolvedTopology topology, List<ConfigError> errors) {
         switch (asset.source()) {
             case DIRECTORY -> {
-                if (asset.directory().isEmpty()) {
+                if (asset.directory() == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "asset route '%s' declares source: directory but no directory root".formatted(route.id())));
                 }
             }
             case UPSTREAM -> {
-                Optional<String> alias = asset.upstream();
-                if (alias.isEmpty()) {
+                String alias = asset.upstream();
+                if (alias == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "asset route '%s' declares source: upstream but no upstream alias".formatted(route.id())));
-                } else if (topology.lookup(alias.get()).isEmpty()) {
+                } else if (topology.lookup(alias).isEmpty()) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "asset route '%s' upstream alias '%s' does not resolve in the topology"
-                                    .formatted(route.id(), alias.get())));
+                                    .formatted(route.id(), alias)));
                 }
             }
         }
@@ -798,22 +830,24 @@ public final class ConfigValidator {
      * retained for a later per-request trust decision (Plan 04) (D5).
      */
     private static void validateForwardedTrust(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.forwarded().ifPresent(forwarded -> {
-            List<CidrRange> ipv4 = new ArrayList<>();
-            List<CidrRange> ipv6 = new ArrayList<>();
-            for (String cidr : forwarded.trustedProxies()) {
-                Optional<CidrRange> parsed = parseCidr(cidr);
-                if (parsed.isEmpty()) {
-                    errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
-                            "malformed trusted_proxies CIDR: " + cidr));
-                    continue;
-                }
-                CidrRange range = parsed.get();
-                (range.bits() == IPV4_BITS ? ipv4 : ipv6).add(range);
+        ForwardedConfig forwarded = gateway.forwarded();
+        if (forwarded == null) {
+            return;
+        }
+        List<CidrRange> ipv4 = new ArrayList<>();
+        List<CidrRange> ipv6 = new ArrayList<>();
+        for (String cidr : forwarded.trustedProxies()) {
+            Optional<CidrRange> parsed = parseCidr(cidr);
+            if (parsed.isEmpty()) {
+                errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
+                        "malformed trusted_proxies CIDR: " + cidr));
+                continue;
             }
-            checkFamilyTrust(ipv4, IPV4_BITS, BROAD_PREFIX_IPV4, "IPv4", errors);
-            checkFamilyTrust(ipv6, IPV6_BITS, BROAD_PREFIX_IPV6, "IPv6", errors);
-        });
+            CidrRange range = parsed.get();
+            (range.bits() == IPV4_BITS ? ipv4 : ipv6).add(range);
+        }
+        checkFamilyTrust(ipv4, IPV4_BITS, BROAD_PREFIX_IPV4, "IPv4", errors);
+        checkFamilyTrust(ipv6, IPV6_BITS, BROAD_PREFIX_IPV6, "IPv6", errors);
     }
 
     private static void checkFamilyTrust(List<CidrRange> ranges, int bits, int broadPrefix, String family,
@@ -900,14 +934,16 @@ public final class ConfigValidator {
         }
     }
 
-    private static void checkCors(Optional<SecurityHeadersConfig> securityHeaders, String pointer,
+    private static void checkCors(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
             List<ConfigError> errors) {
-        securityHeaders.flatMap(SecurityHeadersConfig::cors).ifPresent(cors -> {
-            if (cors.allowCredentials().orElse(false) && cors.allowedOrigins().contains(WILDCARD_ORIGIN)) {
-                errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                        "wildcard origin '*' is not permitted together with allow_credentials"));
-            }
-        });
+        SecurityHeadersConfig.Cors cors = securityHeaders == null ? null : securityHeaders.cors();
+        if (cors == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(cors.allowCredentials()) && cors.allowedOrigins().contains(WILDCARD_ORIGIN)) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "wildcard origin '*' is not permitted together with allow_credentials"));
+        }
     }
 
     /**
@@ -926,18 +962,28 @@ public final class ConfigValidator {
         // OidcConfig.Session canonical constructor already canonicalized. Comparing against a
         // literal here is what previously let 'Cookie' skip both rules while the edge still read it
         // as active cookie mode and relaxed the pre-route Cookie header-value cap.
-        gateway.oidc().flatMap(OidcConfig::session).ifPresent(session -> {
-            if (session.isCookieMode() && session.encryptionKey().isEmpty()
-                    && session.previousKey().isPresent()) {
-                errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/previous_key",
-                        "cookie session mode with a previous_key requires an encryption_key — "
-                                + "the decrypt-only rotation key composes with the passed-key mode only"));
-            }
-            if (session.isServerMode() && session.store().isEmpty()) {
-                errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",
-                        "server session mode requires a store"));
-            }
-        });
+        OidcConfig.Session session = oidcSession(gateway);
+        if (session == null) {
+            return;
+        }
+        if (session.isCookieMode() && session.encryptionKey() == null && session.previousKey() != null) {
+            errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/previous_key",
+                    "cookie session mode with a previous_key requires an encryption_key — "
+                            + "the decrypt-only rotation key composes with the passed-key mode only"));
+        }
+        if (session.isServerMode() && session.store() == null) {
+            errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",
+                    "server session mode requires a store"));
+        }
+    }
+
+    /**
+     * The gateway's {@code oidc.session} block, {@code null} when either the {@code oidc} block or
+     * its {@code session} sub-block is absent.
+     */
+    private static OidcConfig.@Nullable Session oidcSession(GatewayConfig gateway) {
+        OidcConfig oidc = gateway.oidc();
+        return oidc == null ? null : oidc.session();
     }
 
     /**
@@ -948,12 +994,12 @@ public final class ConfigValidator {
      * documented default bound).
      */
     private static void validateSessionMaxSessions(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.oidc().flatMap(OidcConfig::session).flatMap(OidcConfig.Session::maxSessions).ifPresent(max -> {
-            if (max <= 0) {
-                errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_POINTER,
-                        "oidc session max_sessions must be a positive integer, but was %d".formatted(max)));
-            }
-        });
+        OidcConfig.Session session = oidcSession(gateway);
+        Integer max = session == null ? null : session.maxSessions();
+        if (max != null && max <= 0) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_POINTER,
+                    "oidc session max_sessions must be a positive integer, but was %d".formatted(max)));
+        }
     }
 
     /**
@@ -970,15 +1016,15 @@ public final class ConfigValidator {
      * rejects with {@code 431}. A no-op when the key is omitted (the codec default applies).
      */
     private static void validateSessionMaxCookieSize(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.oidc().flatMap(OidcConfig::session).flatMap(OidcConfig.Session::maxCookieSize).ifPresent(size -> {
-            if (size < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
-                    || size > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING) {
-                errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_SIZE_POINTER,
-                        "oidc session max_cookie_size must be between %d and %d bytes, but was %d"
-                                .formatted(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR,
-                                        SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
-            }
-        });
+        OidcConfig.Session session = oidcSession(gateway);
+        Integer size = session == null ? null : session.maxCookieSize();
+        if (size != null && (size < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
+                || size > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING)) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_SIZE_POINTER,
+                    "oidc session max_cookie_size must be between %d and %d bytes, but was %d"
+                            .formatted(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR,
+                                    SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, size)));
+        }
     }
 
     /**
@@ -991,23 +1037,25 @@ public final class ConfigValidator {
      * violation collects into the shared list; the rule never fails fast.
      */
     private static void validateUserInfo(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.oidc().flatMap(OidcConfig::userInfo).ifPresent(userInfo -> {
-            userInfo.path().ifPresent(path -> {
-                if (!isAbsoluteGatewayPath(path)) {
-                    errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_PATH_POINTER,
-                            "oidc user_info path '%s' must be an absolute gateway path starting with a single '/'"
-                                    .formatted(path)));
-                }
-            });
-            Set<String> allowed = new HashSet<>(userInfo.allowedClaims());
-            for (String claim : userInfo.defaultView()) {
-                if (!allowed.contains(claim)) {
-                    errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_DEFAULT_VIEW_POINTER,
-                            "oidc user_info default_view claim '%s' is not in allowed_claims; the default view cannot disclose a claim outside the operator allowlist"
-                                    .formatted(claim)));
-                }
+        OidcConfig oidc = gateway.oidc();
+        OidcConfig.UserInfo userInfo = oidc == null ? null : oidc.userInfo();
+        if (userInfo == null) {
+            return;
+        }
+        String path = userInfo.path();
+        if (path != null && !isAbsoluteGatewayPath(path)) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_PATH_POINTER,
+                    "oidc user_info path '%s' must be an absolute gateway path starting with a single '/'"
+                            .formatted(path)));
+        }
+        Set<String> allowed = new HashSet<>(userInfo.allowedClaims());
+        for (String claim : userInfo.defaultView()) {
+            if (!allowed.contains(claim)) {
+                errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_DEFAULT_VIEW_POINTER,
+                        "oidc user_info default_view claim '%s' is not in allowed_claims; the default view cannot disclose a claim outside the operator allowlist"
+                                .formatted(claim)));
             }
-        });
+        }
     }
 
     /**
@@ -1017,13 +1065,14 @@ public final class ConfigValidator {
      * open-redirect hazard.
      */
     private static void validateLoginPath(GatewayConfig gateway, List<ConfigError> errors) {
-        gateway.oidc().flatMap(OidcConfig::login).flatMap(OidcConfig.Login::path).ifPresent(path -> {
-            if (!isAbsoluteGatewayPath(path)) {
-                errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_PATH_POINTER,
-                        "oidc login path '%s' must be an absolute gateway path starting with a single '/'"
-                                .formatted(path)));
-            }
-        });
+        OidcConfig oidc = gateway.oidc();
+        OidcConfig.Login login = oidc == null ? null : oidc.login();
+        String path = login == null ? null : login.path();
+        if (path != null && !isAbsoluteGatewayPath(path)) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_PATH_POINTER,
+                    "oidc login path '%s' must be an absolute gateway path starting with a single '/'"
+                            .formatted(path)));
+        }
     }
 
     /**
@@ -1043,15 +1092,17 @@ public final class ConfigValidator {
         }
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                routeHost(route).ifPresent(host -> {
-                    for (String sniHost : passthrough.keySet()) {
-                        if (sniHost.equalsIgnoreCase(host)) {
-                            errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
-                                    "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
-                                            .formatted(route.id(), sniHost)));
-                        }
+                String host = routeHost(route);
+                if (host == null) {
+                    continue;
+                }
+                for (String sniHost : passthrough.keySet()) {
+                    if (sniHost.equalsIgnoreCase(host)) {
+                        errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
+                                "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
+                                        .formatted(route.id(), sniHost)));
                     }
-                });
+                }
             }
         }
     }
@@ -1089,9 +1140,9 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (route.protocol().orElse(Protocol.HTTP) == Protocol.WEBSOCKET) {
+                if (effectiveProtocol(route) == Protocol.WEBSOCKET) {
                     validateWebSocketRoute(gateway, endpoint, route, errors);
-                } else if (route.websocket().isPresent()) {
+                } else if (route.websocket() != null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' declares a websocket block but its protocol is not 'websocket'; the websocket settings would be silently ignored"
                                     .formatted(route.id())));
@@ -1109,8 +1160,8 @@ public final class ConfigValidator {
      */
     private static void validateWebSocketRoute(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route,
             List<ConfigError> errors) {
-        Optional<WebSocketConfig> websocket = route.websocket();
-        List<String> origins = websocket.map(WebSocketConfig::allowedOrigins).orElseGet(List::of);
+        WebSocketConfig websocket = route.websocket();
+        List<String> origins = websocket == null ? List.of() : websocket.allowedOrigins();
         if (REQUIRE_BEARER.equals(effectiveRequire(gateway, endpoint, route)) && origins.isEmpty()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' with effective auth 'bearer' must declare a non-empty allowed_origins allowlist (fail-closed)"
@@ -1123,57 +1174,74 @@ public final class ConfigValidator {
                                 .formatted(route.id(), origin)));
             }
         }
-        websocket.flatMap(WebSocketConfig::idleTimeoutSeconds).ifPresent(timeout -> {
-            if (timeout <= 0) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                        "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
-                                .formatted(route.id(), timeout)));
-            }
-        });
+        Integer timeout = websocket == null ? null : websocket.idleTimeoutSeconds();
+        if (timeout != null && timeout <= 0) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
+                            .formatted(route.id(), timeout)));
+        }
     }
 
     private static Map<String, String> passthroughSni(GatewayConfig gateway) {
-        return gateway.tls().map(TlsConfig::passthroughSni).orElseGet(Map::of);
+        TlsConfig tls = gateway.tls();
+        return tls == null ? Map.of() : tls.passthroughSni();
     }
 
-    private static Optional<String> routeHost(RouteConfig route) {
-        return route.match().host().map(host -> host.toLowerCase(Locale.ROOT)).filter(host -> !host.isEmpty());
+    /** The route's effective protocol — the declared value, or {@link Protocol#HTTP} when omitted. */
+    private static Protocol effectiveProtocol(RouteConfig route) {
+        Protocol declared = route.protocol();
+        return declared != null ? declared : Protocol.HTTP;
     }
 
-    private static Optional<String> declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
-        return route.anchor().or(endpoint::anchor);
+    private static @Nullable String routeHost(RouteConfig route) {
+        String host = route.match().host();
+        if (host == null) {
+            return null;
+        }
+        String normalized = host.toLowerCase(Locale.ROOT);
+        return normalized.isEmpty() ? null : normalized;
     }
 
-    private static Optional<AnchorConfig> resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+    private static @Nullable String declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
+        return route.anchor() != null ? route.anchor() : endpoint.anchor();
+    }
+
+    private static @Nullable AnchorConfig resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route) {
-        return declaredAnchorName(endpoint, route).map(gateway.anchors()::get).filter(Objects::nonNull);
+        String name = declaredAnchorName(endpoint, route);
+        return name == null ? null : gateway.anchors().get(name);
     }
 
     /**
      * The route's effective auth, resolved through the wholesale
      * {@code route → endpoint → declared-anchor} replacement chain (ADR-0007) — the
-     * same order {@code RouteTableBuilder} materializes. Empty when none of the three
-     * declares an {@code auth} block.
+     * same order {@code RouteTableBuilder} materializes. {@code null} when none of the
+     * three declares an {@code auth} block.
      */
-    private static Optional<AuthConfig> effectiveAuth(GatewayConfig gateway, EndpointConfig endpoint,
+    private static @Nullable AuthConfig effectiveAuth(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route) {
-        return route.auth().or(endpoint::auth)
-                .or(() -> resolveAnchor(gateway, endpoint, route).flatMap(AnchorConfig::auth));
+        if (route.auth() != null) {
+            return route.auth();
+        }
+        if (endpoint.auth() != null) {
+            return endpoint.auth();
+        }
+        AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
+        return anchor == null ? null : anchor.auth();
     }
 
     private static String effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
-        return effectiveAuth(gateway, endpoint, route).map(AuthConfig::require).orElse(REQUIRE_NONE);
+        AuthConfig auth = effectiveAuth(gateway, endpoint, route);
+        return auth == null ? REQUIRE_NONE : auth.require();
     }
 
     private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
-            Optional<AnchorConfig> anchor) {
+            @Nullable AnchorConfig anchor) {
         if (!endpoint.allowedMethods().isEmpty()) {
             return EnumSet.copyOf(endpoint.allowedMethods());
         }
-        Optional<List<HttpMethod>> anchorMethods = anchor.map(AnchorConfig::allowedMethods)
-                .filter(methods -> !methods.isEmpty());
-        if (anchorMethods.isPresent()) {
-            return EnumSet.copyOf(anchorMethods.get());
+        if (anchor != null && !anchor.allowedMethods().isEmpty()) {
+            return EnumSet.copyOf(anchor.allowedMethods());
         }
         if (!gateway.allowedMethods().isEmpty()) {
             return EnumSet.copyOf(gateway.allowedMethods());

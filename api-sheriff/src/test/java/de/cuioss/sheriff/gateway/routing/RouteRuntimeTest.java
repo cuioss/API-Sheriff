@@ -17,13 +17,12 @@ package de.cuioss.sheriff.gateway.routing;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 
@@ -61,8 +60,8 @@ class RouteRuntimeTest {
             var matcher = RouteMatcher.from(MatchConfig.builder()
                     .pathPrefix("/api")
                     .methods(List.of(HttpMethod.GET))
-                    .host(Optional.of("gw.example"))
-                    .headers(List.of(HeaderMatcher.builder().name("X-Tenant").present(Optional.of(true)).build()))
+                    .host("gw.example")
+                    .headers(List.of(HeaderMatcher.builder().name("X-Tenant").present(true).build()))
                     .build());
             Map<String, String> headers = Map.of("X-Tenant", "acme");
 
@@ -77,7 +76,7 @@ class RouteRuntimeTest {
         void shouldRequireExactHeaderValue() {
             var matcher = RouteMatcher.from(MatchConfig.builder()
                     .pathPrefix("/api")
-                    .headers(List.of(HeaderMatcher.builder().name("X-Env").value(Optional.of("prod")).build()))
+                    .headers(List.of(HeaderMatcher.builder().name("X-Env").value("prod").build()))
                     .build());
 
             assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of("X-Env", "prod")), "Exact value matches");
@@ -153,16 +152,14 @@ class RouteRuntimeTest {
         }
 
         @Test
-        @DisplayName("Should default an omitted securityConfiguration to an empty Optional, never null")
-        void shouldDefaultSecurityConfigurationToEmpty() {
+        @DisplayName("Should default an omitted securityConfiguration to null, the absent value the stage guards")
+        void shouldDefaultSecurityConfigurationToNull() {
             // Arrange + Act — a builder call site that declares no resolved configuration
             RouteRuntime runtime = runtimeBuilder().build();
 
-            // Assert — a raw null here would NPE ThoroughChecksStage's
-            // getSecurityConfiguration().orElse(defaultConfiguration) on the hot path.
-            assertNotNull(runtime.getSecurityConfiguration(),
-                    "an omitted securityConfiguration is an empty Optional, not null");
-            assertTrue(runtime.getSecurityConfiguration().isEmpty(),
+            // Assert — null is the absent value ThoroughChecksStage resolves on the hot path via
+            // requireNonNullElse(route.getSecurityConfiguration(), defaultConfiguration).
+            assertNull(runtime.getSecurityConfiguration(),
                     "the default carries no configuration, so the stage falls back to the gateway baseline");
         }
 

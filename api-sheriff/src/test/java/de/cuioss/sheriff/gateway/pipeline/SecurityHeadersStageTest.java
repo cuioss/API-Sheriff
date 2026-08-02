@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -97,13 +96,13 @@ class SecurityHeadersStageTest {
 
     private static SecurityHeadersStage corsStage(List<String> allowedOrigins, boolean allowCredentials) {
         Cors cors = Cors.builder()
-                .enabled(Optional.of(Boolean.TRUE))
+                .enabled(Boolean.TRUE)
                 .allowedOrigins(allowedOrigins)
                 .allowedMethods(List.of("GET", "POST"))
-                .allowCredentials(Optional.of(allowCredentials))
+                .allowCredentials(allowCredentials)
                 .build();
-        return new SecurityHeadersStage(Optional.of(
-                SecurityHeadersConfig.builder().cors(Optional.of(cors)).build()));
+        return new SecurityHeadersStage(
+                SecurityHeadersConfig.builder().cors(cors).build());
     }
 
     private static PipelineRequest corsRequest(HttpMethod method, String origin, boolean preflight) {

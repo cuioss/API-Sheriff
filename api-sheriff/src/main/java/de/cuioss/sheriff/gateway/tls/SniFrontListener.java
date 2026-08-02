@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.tls;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -182,16 +181,15 @@ public final class SniFrontListener {
             socket.close();
         }
 
-        private void route(Optional<String> serverName) {
-            if (serverName.isEmpty()) {
+        private void route(@Nullable String serverName) {
+            if (serverName == null) {
                 LOGGER.warn(ApiSheriffLogMessages.WARN.CLIENT_HELLO_FAIL_CLOSED, "no-usable-sni");
                 relay.relay(socket, buffer, terminatedTarget, RelayKind.TERMINATED, "");
                 return;
             }
-            String sni = serverName.get();
-            RelayTarget target = passthroughTargets.get(normalizeSni(sni));
+            RelayTarget target = passthroughTargets.get(normalizeSni(serverName));
             if (target != null) {
-                relay.relay(socket, buffer, target, RelayKind.PASSTHROUGH, sni);
+                relay.relay(socket, buffer, target, RelayKind.PASSTHROUGH, serverName);
             } else {
                 relay.relay(socket, buffer, terminatedTarget, RelayKind.TERMINATED, "");
             }

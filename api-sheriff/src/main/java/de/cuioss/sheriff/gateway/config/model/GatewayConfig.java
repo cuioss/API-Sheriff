@@ -17,10 +17,9 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The root {@code gateway.yaml} configuration document: the global settings the
@@ -36,51 +35,49 @@ import lombok.Builder;
  *
  * @param version          the config schema version (unknown values are refused
  *                         by the validator)
- * @param metadata         the audit-stamp metadata, empty when omitted
- * @param tls              the TLS settings, empty when omitted
- * @param management       the management-interface policy settings, empty when omitted. Carries TLS
+ * @param metadata         the audit-stamp metadata, {@code null} when omitted
+ * @param tls              the TLS settings, {@code null} when omitted
+ * @param management       the management-interface policy settings, {@code null} when omitted. Carries TLS
  *                         policy only and declares no port — the management port stays
  *                         deployment-bound at {@code quarkus.management.port} (ADR-0025)
- * @param securityHeaders  the response-header middleware settings, empty when
+ * @param securityHeaders  the response-header middleware settings, {@code null} when
  *                         omitted
- * @param securityDefaults the global security-filter baseline, empty when omitted
+ * @param securityDefaults the global security-filter baseline, {@code null} when omitted
  * @param allowedMethods   the global verb allowlist, empty meaning the standard set
  * @param anchors          the named policy anchors keyed by name, empty when none
  *                         are configured
- * @param upstreamDefaults the global retry/not-modified defaults, empty when omitted
- * @param forwarded        the forwarded-header trust policy, empty when omitted
- * @param tokenValidation  the offline bearer-validation settings, empty when omitted
- * @param oidc             the confidential-client settings, empty when omitted
+ * @param upstreamDefaults the global retry/not-modified defaults, {@code null} when omitted
+ * @param forwarded        the forwarded-header trust policy, {@code null} when omitted
+ * @param tokenValidation  the offline bearer-validation settings, {@code null} when omitted
+ * @param oidc             the confidential-client settings, {@code null} when omitted
  * @param edgeHardening    the admission-budget settings ({@code admission_cap} and the WebSocket
- *                         relay sub-budget), empty when omitted — the documented defaults then apply
+ *                         relay sub-budget), {@code null} when omitted — the documented defaults then apply
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record GatewayConfig(int version, Optional<Metadata> metadata, Optional<TlsConfig> tls,
-Optional<ManagementConfig> management,
-Optional<SecurityHeadersConfig> securityHeaders, Optional<SecurityDefaultsConfig> securityDefaults,
-List<HttpMethod> allowedMethods, Map<String, AnchorConfig> anchors, Optional<UpstreamDefaultsConfig> upstreamDefaults,
-Optional<ForwardedConfig> forwarded, Optional<TokenValidationConfig> tokenValidation, Optional<OidcConfig> oidc,
-Optional<EdgeHardeningConfig> edgeHardening) {
+public record GatewayConfig(
+int version,
+@Nullable Metadata metadata,
+@Nullable TlsConfig tls,
+@Nullable ManagementConfig management,
+@Nullable SecurityHeadersConfig securityHeaders,
+@Nullable SecurityDefaultsConfig securityDefaults,
+List<HttpMethod> allowedMethods,
+Map<String, AnchorConfig> anchors,
+@Nullable UpstreamDefaultsConfig upstreamDefaults,
+@Nullable ForwardedConfig forwarded,
+@Nullable TokenValidationConfig tokenValidation,
+@Nullable OidcConfig oidc,
+@Nullable EdgeHardeningConfig edgeHardening) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and
-     * {@code anchors} and normalizing absent optional blocks to
-     * {@link Optional#empty()}.
+     * {@code anchors}.
      */
     public GatewayConfig {
-        metadata = Objects.requireNonNullElse(metadata, Optional.empty());
-        tls = Objects.requireNonNullElse(tls, Optional.empty());
-        management = Objects.requireNonNullElse(management, Optional.empty());
-        securityHeaders = Objects.requireNonNullElse(securityHeaders, Optional.empty());
-        securityDefaults = Objects.requireNonNullElse(securityDefaults, Optional.empty());
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
         anchors = anchors == null ? Map.of() : Map.copyOf(anchors);
-        upstreamDefaults = Objects.requireNonNullElse(upstreamDefaults, Optional.empty());
-        forwarded = Objects.requireNonNullElse(forwarded, Optional.empty());
-        tokenValidation = Objects.requireNonNullElse(tokenValidation, Optional.empty());
-        oidc = Objects.requireNonNullElse(oidc, Optional.empty());
-        edgeHardening = Objects.requireNonNullElse(edgeHardening, Optional.empty());
     }
 }

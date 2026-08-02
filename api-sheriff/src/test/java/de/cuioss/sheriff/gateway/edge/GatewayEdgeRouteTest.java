@@ -31,7 +31,6 @@ import java.lang.reflect.RecordComponent;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -76,6 +75,7 @@ import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -286,7 +286,7 @@ class GatewayEdgeRouteTest {
             Router router = Router.router(vertx);
             new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(new EdgeHardeningConfig(Optional.of(2), Optional.of(1))),
+                    new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
             HttpServer front = vertx.createHttpServer().requestHandler(router)
                     .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
@@ -353,9 +353,9 @@ class GatewayEdgeRouteTest {
 
             // Act
             RouteRuntimeAssembler.SecurityPosture strict =
-                    GatewayEdgeRoute.securityPostureFor(Optional.empty(), SecurityProfile.STRICT);
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT);
             RouteRuntimeAssembler.SecurityPosture lenient =
-                    GatewayEdgeRoute.securityPostureFor(Optional.empty(), SecurityProfile.LENIENT);
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT);
 
             // Assert
             assertEquals(SecurityProfile.STRICT, strict.profile(),
@@ -370,8 +370,8 @@ class GatewayEdgeRouteTest {
         @DisplayName("falls back to the gateway-wide profile for a block that omits profile")
         void fallsBackForBlockWithoutProfile() {
             // Arrange
-            Optional<SecurityFilterConfig> noProfile =
-                    Optional.of(SecurityFilterConfig.builder().allowedPaths(List.of("/x")).build());
+            SecurityFilterConfig noProfile =
+                    SecurityFilterConfig.builder().allowedPaths(List.of("/x")).build();
 
             // Act
             RouteRuntimeAssembler.SecurityPosture posture =
@@ -388,8 +388,8 @@ class GatewayEdgeRouteTest {
         @DisplayName("lets a declared route profile win over the gateway-wide one")
         void letsDeclaredRouteProfileWin() {
             // Arrange
-            Optional<SecurityFilterConfig> declared =
-                    Optional.of(SecurityFilterConfig.builder().profile(Optional.of("lenient")).build());
+            SecurityFilterConfig declared =
+                    SecurityFilterConfig.builder().profile("lenient").build();
 
             // Act
             RouteRuntimeAssembler.SecurityPosture posture =
@@ -404,8 +404,8 @@ class GatewayEdgeRouteTest {
         @DisplayName("gives a none route the nearest non-none profile's limits so the body cap stays enforceable")
         void givesNoneRouteConcreteLimits() {
             // Arrange
-            Optional<SecurityFilterConfig> none =
-                    Optional.of(SecurityFilterConfig.builder().profile(Optional.of("none")).build());
+            SecurityFilterConfig none =
+                    SecurityFilterConfig.builder().profile("none").build();
 
             // Act — chain none → lenient, then the all-none chain
             RouteRuntimeAssembler.SecurityPosture inheritsLenient =
@@ -413,7 +413,7 @@ class GatewayEdgeRouteTest {
             RouteRuntimeAssembler.SecurityPosture allNone =
                     GatewayEdgeRoute.securityPostureFor(none, SecurityProfile.NONE);
             RouteRuntimeAssembler.SecurityPosture globalNoneBlockLess =
-                    GatewayEdgeRoute.securityPostureFor(Optional.empty(), SecurityProfile.NONE);
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.NONE);
 
             // Assert
             assertEquals(SecurityProfile.NONE, inheritsLenient.profile(), "the mode itself stays 'none'");
@@ -431,10 +431,10 @@ class GatewayEdgeRouteTest {
         void overridesOnlyDeclaredLimits() {
             // Arrange — one declared dimension against the strict preset
             SecurityConfiguration preset = SecurityConfiguration.strict();
-            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
-                    .maxBodyBytes(Optional.of(4096))
+            SecurityFilterConfig declared = SecurityFilterConfig.builder()
+                    .maxBodyBytes(4096)
                     .allowedContentTypes(List.of("application/json"))
-                    .build());
+                    .build();
 
             // Act
             SecurityConfiguration resolved =
@@ -459,14 +459,14 @@ class GatewayEdgeRouteTest {
         @DisplayName("keeps a route's declared header allow/block lists on top of the preset")
         void keepsDeclaredHeaderLists() {
             // Arrange
-            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
-                    .maxHeaderCount(Optional.of(11))
-                    .maxHeaderValueLength(Optional.of(2222))
-                    .maxQueryParams(Optional.of(7))
-                    .maxParamValueLength(Optional.of(333))
+            SecurityFilterConfig declared = SecurityFilterConfig.builder()
+                    .maxHeaderCount(11)
+                    .maxHeaderValueLength(2222)
+                    .maxQueryParams(7)
+                    .maxParamValueLength(333)
                     .allowedHeaderNames(List.of("Accept"))
                     .blockedHeaderNames(List.of("X-Debug"))
-                    .build());
+                    .build();
 
             // Act
             SecurityConfiguration resolved =
@@ -519,9 +519,9 @@ class GatewayEdgeRouteTest {
             // Arrange — restate exactly one dimension at the preset's own value, so the rebuilt
             // configuration must come back equal to the preset unless a component was dropped.
             SecurityConfiguration preset = SecurityProfile.limitsProfile(profile, profile).preset();
-            Optional<SecurityFilterConfig> declared = Optional.of(SecurityFilterConfig.builder()
-                    .maxQueryParams(Optional.of(preset.maxParameterCount()))
-                    .build());
+            SecurityFilterConfig declared = SecurityFilterConfig.builder()
+                    .maxQueryParams(preset.maxParameterCount())
+                    .build();
 
             // Act
             SecurityConfiguration resolved =
@@ -592,7 +592,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
-                    gatewayWithAuthorizationCap(Optional.of(DECLARED_AUTHORIZATION_CAP)), baseline);
+                    gatewayWithAuthorizationCap(DECLARED_AUTHORIZATION_CAP), baseline);
 
             // Assert
             assertEquals(DECLARED_AUTHORIZATION_CAP, carveOut.maxHeaderValueLength(),
@@ -609,7 +609,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration blockPresent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
-                    gatewayWithAuthorizationCap(Optional.empty()), SecurityConfiguration.strict());
+                    gatewayWithAuthorizationCap(null), SecurityConfiguration.strict());
             SecurityConfiguration blockAbsent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
                     GatewayConfig.builder().version(1).build(), SecurityConfiguration.strict());
 
@@ -714,9 +714,9 @@ class GatewayEdgeRouteTest {
             }
         }
 
-        private GatewayConfig gatewayWithAuthorizationCap(Optional<Integer> cap) {
+        private GatewayConfig gatewayWithAuthorizationCap(@Nullable Integer cap) {
             return GatewayConfig.builder().version(1)
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"), cap)))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", cap))
                     .build();
         }
 
@@ -732,11 +732,11 @@ class GatewayEdgeRouteTest {
          */
         private GatewayConfig sessionModeGateway(String mode) {
             return GatewayConfig.builder().version(1)
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of(mode))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode(mode)
+                                    .build())
+                            .build())
                     .build();
         }
 
@@ -794,7 +794,7 @@ class GatewayEdgeRouteTest {
                 .match(MatchConfig.builder().pathPrefix("/w").build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
+                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .build();
     }
 
@@ -874,7 +874,7 @@ class GatewayEdgeRouteTest {
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(Optional.of(new ResolvedUpstream("https", id + ".example", 443, "")))
+                .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
                 .build();
     }
 }

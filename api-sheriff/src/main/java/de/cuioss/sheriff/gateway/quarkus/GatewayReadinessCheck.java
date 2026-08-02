@@ -15,9 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
-import java.util.Optional;
-
-
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
@@ -112,16 +109,19 @@ public class GatewayReadinessCheck implements HealthCheck {
     public HealthCheckResponse call() {
         HealthCheckResponseBuilder builder = HealthCheckResponse.named(CHECK_NAME)
                 .withData(DATA_CONFIG, "loaded");
-        gatewayConfig.metadata().flatMap(Metadata::configVersion)
-                .ifPresent(version -> builder.withData(DATA_CONFIG_VERSION, version));
+        Metadata metadata = gatewayConfig.metadata();
+        String configVersion = metadata == null ? null : metadata.configVersion();
+        if (configVersion != null) {
+            builder.withData(DATA_CONFIG_VERSION, configVersion);
+        }
 
         boolean serverMode = isServerSessionMode();
         if (serverMode) {
             builder.withData(DATA_OIDC, MODE_SERVER);
         }
 
-        Optional<TokenValidationConfig> tokenValidation = gatewayConfig.tokenValidation();
-        if (tokenValidation.isEmpty()) {
+        TokenValidationConfig tokenValidation = gatewayConfig.tokenValidation();
+        if (tokenValidation == null) {
             // No bearer validation configured, so there is no JWKS-backed validation health check to
             // reuse. A server-mode deployment reaches its issuer lazily through the confidential-client
             // engine on the first login, which does not gate boot readiness — so issuer reachability is
@@ -132,7 +132,7 @@ public class GatewayReadinessCheck implements HealthCheck {
             return builder.withData(DATA_JWKS, "not-applicable").up().build();
         }
 
-        int issuerCount = tokenValidation.get().issuers().size();
+        int issuerCount = tokenValidation.issuers().size();
         builder.withData(DATA_ISSUERS, issuerCount);
         try {
             gatewayValidator.get();
@@ -158,9 +158,8 @@ public class GatewayReadinessCheck implements HealthCheck {
     private boolean isServerSessionMode() {
         // The SHARED predicate on the config model, identical to the one boot validation, the edge
         // cap and the runtime binding selection read — never a locally-declared constant.
-        return gatewayConfig.oidc()
-                .flatMap(OidcConfig::session)
-                .map(OidcConfig.Session::isServerMode)
-                .orElse(false);
+        OidcConfig oidc = gatewayConfig.oidc();
+        OidcConfig.Session session = oidc == null ? null : oidc.session();
+        return session != null && session.isServerMode();
     }
 }

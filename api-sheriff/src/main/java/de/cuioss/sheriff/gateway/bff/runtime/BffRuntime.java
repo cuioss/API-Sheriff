@@ -240,12 +240,12 @@ public final class BffRuntime {
     }
 
     private static ReservedHttpResponse render(CallbackEndpoint.CallbackOutcome outcome) {
-        return new ReservedHttpResponse(outcome.status(), outcome.location().orElse(null), null, Map.of(),
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, Map.of(),
                 outcome.setCookieHeaders());
     }
 
     private static ReservedHttpResponse render(LogoutEndpoint.LogoutOutcome outcome) {
-        return new ReservedHttpResponse(outcome.status(), outcome.location().orElse(null), null, Map.of(),
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, Map.of(),
                 outcome.setCookieHeaders());
     }
 
@@ -292,19 +292,23 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
-    // The component layout below — the line breaks between each @Nullable annotation and its
-    // component — is what the formatter inherited from de.cuioss:cui-java-parent produces. It is
-    // deliberately accepted rather than fought: this project declares no formatter plugin of its own,
-    // and adding one to change this is out of scope. Do NOT hand-reflow the header; the next
-    // format-check would simply undo it. ReservedHttpResponse below carries the identical note.
-    public record ReservedHttpRequest(String rawQuery, @Nullable
-            String cookieHeader,
-    @Nullable
-    String claimsParam, @Nullable
-            String returnUrlParam, @Nullable
-            String stateParam,
-    @Nullable
-    String rawFormBody, String httpMethod) {
+    // The marker below suppresses AnnotationNewlineFormat for this declaration. Without it that
+    // recipe puts every @Nullable on its own line, splitting each annotation from the component it
+    // qualifies and leaving the header unreadable. The header shape follows the project rule: render
+    // it on one line when that fits 120 characters, otherwise one component per line at the
+    // declaration indent. The flat indent is not a choice — org.openrewrite.java.format.AutoFormat
+    // runs ahead of AnnotationNewlineFormat and reindents record components to the declaration's own
+    // column, so a deeper continuation indent cannot survive. ReservedHttpResponse below carries the
+    // identical note.
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record ReservedHttpRequest(
+    String rawQuery,
+    @Nullable String cookieHeader,
+    @Nullable String claimsParam,
+    @Nullable String returnUrlParam,
+    @Nullable String stateParam,
+    @Nullable String rawFormBody,
+    String httpMethod) {
 
         /**
          * Canonical constructor normalizing an absent raw query to the empty string and an absent HTTP
@@ -340,15 +344,21 @@ public final class BffRuntime {
      * @author API Sheriff Team
      * @since 1.0
      */
-    // The component layout below — the line breaks between each @Nullable annotation and its
-    // component — is what the formatter inherited from de.cuioss:cui-java-parent produces. It is
-    // deliberately accepted rather than fought: this project declares no formatter plugin of its own,
-    // and adding one to change this is out of scope. Do NOT hand-reflow the header; the next
-    // format-check would simply undo it. ReservedHttpRequest above carries the identical note.
-    public record ReservedHttpResponse(int status, @Nullable
-            String location, @Nullable
-            String jsonBody,
-    Map<String, String> headers, List<String> setCookieHeaders) {
+    // The marker below suppresses AnnotationNewlineFormat for this declaration. Without it that
+    // recipe puts every @Nullable on its own line, splitting each annotation from the component it
+    // qualifies and leaving the header unreadable. The header shape follows the project rule: render
+    // it on one line when that fits 120 characters, otherwise one component per line at the
+    // declaration indent. The flat indent is not a choice — org.openrewrite.java.format.AutoFormat
+    // runs ahead of AnnotationNewlineFormat and reindents record components to the declaration's own
+    // column, so a deeper continuation indent cannot survive. ReservedHttpRequest above carries the
+    // identical note.
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record ReservedHttpResponse(
+    int status,
+    @Nullable String location,
+    @Nullable String jsonBody,
+    Map<String, String> headers,
+    List<String> setCookieHeaders) {
 
         /**
          * Canonical constructor defensively copying the header and cookie collections.

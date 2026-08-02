@@ -25,7 +25,6 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -113,7 +112,7 @@ class GatewayEdgePipelineTest {
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
-                .securityHeaders(Optional.of(corsHeaders()))
+                .securityHeaders(corsHeaders())
                 .build();
 
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
@@ -342,12 +341,12 @@ class GatewayEdgePipelineTest {
 
     private static SecurityHeadersConfig corsHeaders() {
         SecurityHeadersConfig.Cors cors = SecurityHeadersConfig.Cors.builder()
-                .enabled(Optional.of(Boolean.TRUE))
+                .enabled(Boolean.TRUE)
                 .allowedOrigins(List.of(ORIGIN))
                 .allowedMethods(List.of("GET", "POST"))
                 .allowedHeaders(List.of("authorization"))
                 .build();
-        return SecurityHeadersConfig.builder().cors(Optional.of(cors)).build();
+        return SecurityHeadersConfig.builder().cors(cors).build();
     }
 
     /**
@@ -357,9 +356,9 @@ class GatewayEdgePipelineTest {
      */
     private static ResolvedRoute noneModeRoute(int upstreamPort) {
         SecurityFilterConfig filter = SecurityFilterConfig.builder()
-                .profile(Optional.of("none"))
+                .profile("none")
                 .allowedPaths(List.of("/open/allowed"))
-                .maxBodyBytes(Optional.of(NONE_ROUTE_BODY_CAP))
+                .maxBodyBytes(NONE_ROUTE_BODY_CAP)
                 .build();
         return ResolvedRoute.builder()
                 .id("open")
@@ -367,8 +366,8 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix("/open").build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                .effectiveSecurityFilter(Optional.of(filter))
-                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
+                .effectiveSecurityFilter(filter)
+                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .build();
     }
 
@@ -380,7 +379,7 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(methods))
-                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
+                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .build();
     }
 

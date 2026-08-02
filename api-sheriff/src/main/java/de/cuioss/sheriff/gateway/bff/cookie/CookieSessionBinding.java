@@ -161,9 +161,12 @@ public final class CookieSessionBinding implements SessionBinding {
         // Fail loud rather than mint a replacement: a cookie-mode record always carries the nonce
         // sealed at login, so an absent one means a caller reconstructed the record and dropped it —
         // silently re-minting would change the session's identity mid-flight.
-        String sessionNonce = rotated.sessionNonce().orElseThrow(() -> new IllegalStateException(
-                "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
-                        + "the derived session identity"));
+        String sessionNonce = rotated.sessionNonce();
+        if (sessionNonce == null) {
+            throw new IllegalStateException(
+                    "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
+                            + "the derived session identity");
+        }
         return seal(payloadOf(rotated, loginInstant, sessionNonce), now);
     }
 
@@ -259,7 +262,7 @@ public final class CookieSessionBinding implements SessionBinding {
     private SessionRecord toSessionRecord(SealedSessionPayload payload) {
         return SessionRecord.builder()
                 .sessionId(derivedIdentity(payload))
-                .sessionNonce(Optional.of(payload.sessionNonce()))
+                .sessionNonce(payload.sessionNonce())
                 .accessToken(payload.accessToken())
                 .refreshToken(payload.refreshToken())
                 .idToken(payload.idToken())
