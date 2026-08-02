@@ -24,3 +24,238 @@ jobs:
       OSS_SONATYPE_PASSWORD: ${{ secrets.OSS_SONATYPE_PASSWORD }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
+  # Publishes the container image at the SAME version the Maven release just cut.
+  #
+  # COMPOSABILITY CAVEAT — read before "simplifying" the version lookup below.
+  # A caller workflow may hang a dependent sibling job off a `uses:` job; that part is ordinary
+  # GitHub Actions. But reusable-maven-release.yml@15376a19 declares NO `on.workflow_call.outputs`
+  # block — its `released-version` is a job-level output on the called workflow's own internal job
+  # and is therefore NOT readable by us. `needs.release.outputs.released-version` evaluates to the
+  # EMPTY STRING, which would tag and push `ghcr.io/cuioss/api-sheriff:` — a malformed reference, or
+  # worse, a silently mislabelled image. That is why the version is re-read from .github/project.yml
+  # with the same pinned action the release job used. Do not replace it with a `needs.` expression.
+  #
+  # The org workflow is NOT forked and the dispatch-only guarantee is NOT weakened by this job.
+  #
+  # LATENCY NOTE — `needs: [release]` waits for the whole called workflow, including its
+  # wait-for-maven-central (30-minute timeout) and propagate-to-consumers jobs. Both are `if:`-gated
+  # on a non-empty `consumers` output and .github/project.yml declares none, so both skip and add no
+  # wall time. A long wait here is Maven Central, not a hang.
+  publish-image:
+    name: Publish the tested image to GHCR
+    needs: [release]
+    runs-on: ubuntu-latest
+    # The native compile inside the integration-test lifecycle is the dominant term; the scan, push
+    # and smoke together are minutes.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      # Required for Cosign keyless OIDC signing. Not a novel posture for this repository —
+      # scorecards.yml, pr-agent.yml and claude.yml already declare it.
+      id-token: write
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
+
+      # Checked out into a side directory so the release-tag checkout below owns the workspace root
+      # untouched. Only .github/project.yml is needed here.
+      - name: Check out the release configuration
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          path: .release-config
+          sparse-checkout: .github/project.yml
+
+      - name: Read the released version
+        id: config
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@513eb16ca26c7e2e32d709f79e770808792bb540 # v0.17.0
+        with:
+          config-path: .release-config/.github/project.yml
+
+      # The RELEASE TAG, never the dispatching ref. cui-parent-pom configures maven-release-plugin
+      # with <tagNameFormat>@{project.version}</tagNameFormat>, so the SCM tag is literally the
+      # version string with no prefix, and the reusable workflow pushes it with `tags: true` before
+      # the job ends. Checking out the dispatching ref would build a -SNAPSHOT tree and label it with
+      # the release version — every step would still succeed, which is what makes it dangerous.
+      # If a future parent bump changes tagNameFormat this checkout fails loudly on an unresolvable
+      # ref: a red release rather than a wrong image.
+      - name: Check out the release tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ steps.config.outputs.current-version }}
+
+      # The commit the `sha-` tag names: the release:prepare commit whose poms carry the released
+      # version, NOT the main HEAD the release was dispatched from.
+      - name: Resolve the release-tag commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Before the version assertion, because the assertion evaluates project.version through Maven.
+      - name: Set up JDK 25
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      # THE STRUCTURAL GUARD that makes "image version identical to Maven version" a checked fact
+      # rather than an assumption. Fails loudly, before anything is built or pushed.
+      - name: Assert the checked-out project version matches the released version
+        env:
+          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+        run: |
+          POM_VERSION="$(./mvnw --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [ "$POM_VERSION" != "$RELEASED_VERSION" ]; then
+            echo "::error::Version identity violated: checked-out project.version='${POM_VERSION}' but .github/project.yml current-version='${RELEASED_VERSION}'. Refusing to build or publish."
+            exit 1
+          fi
+          echo "Version identity confirmed: ${POM_VERSION}"
+
+      # THE ONE AND ONLY IMAGE BUILD IN THIS LANE.
+      # integration-tests/pom.xml binds `docker compose build api-sheriff` to pre-integration-test,
+      # so the harness always builds the image. Letting that build be authoritative is what makes
+      # "push exactly what was tested" true BY CONSTRUCTION — there is only one build, so nothing can
+      # drift. Do NOT add a second `docker build` here, and do NOT add a skip-guard to
+      # integration-tests/pom.xml. APP_VERSION reaches the image label through the Compose service's
+      # build.args (see integration-tests/docker-compose.yml).
+      - name: Run the integration-test suite (builds the image)
+        env:
+          APP_VERSION: ${{ steps.config.outputs.current-version }}
+        run: |
+          ./mvnw --no-transfer-progress verify -Pintegration-tests -pl integration-tests -am
+
+      # The local image store is TAG-keyed and can serve a stale image, so every later step addresses
+      # the image by this content-derived ID rather than by the api-sheriff:distroless tag.
+      # An unpushed local image has an empty .RepoDigests — the registry manifest digest does not
+      # exist yet and must not be reached for here.
+      - name: Resolve the tested image ID
+        id: image
+        run: |
+          IMAGE_ID="$(docker image inspect --format '{{.Id}}' api-sheriff:distroless)"
+          if [ -z "$IMAGE_ID" ]; then
+            echo "::error::api-sheriff:distroless is absent from the local image store after the integration-test run."
+            exit 1
+          fi
+          echo "id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Tested image ID: ${IMAGE_ID}"
+
+      # The registry path is HARDCODED LOWERCASE on purpose: ${{ github.repository }} yields
+      # cuioss/API-Sheriff and GHCR rejects the uppercase, so deriving it from the context would fail
+      # at push time.
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Tag and push both release tags
+        env:
+          IMAGE_ID: ${{ steps.image.outputs.id }}
+          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+          TAG_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          docker tag "$IMAGE_ID" "ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION}"
+          docker tag "$IMAGE_ID" "ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}"
+          docker push "ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION}"
+          docker push "ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}"
+
+      # Resolve the pushed registry manifest digest ONCE and assert both tags report the same one.
+      # From here on the image is addressed by digest, never by tag.
+      - name: Resolve the pushed manifest digest
+        id: digest
+        env:
+          IMAGE_ID: ${{ steps.image.outputs.id }}
+        run: |
+          mapfile -t DIGESTS < <(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE_ID" \
+            | grep '^ghcr\.io/cuioss/api-sheriff@' | sed 's|.*@||' | sort -u)
+          if [ "${#DIGESTS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one ghcr.io/cuioss/api-sheriff manifest digest, found ${#DIGESTS[@]}: ${DIGESTS[*]}"
+            exit 1
+          fi
+          echo "value=${DIGESTS[0]}" >> "$GITHUB_OUTPUT"
+          echo "Published digest: ${DIGESTS[0]}"
+
+      # SMOKE THE PUBLISHED ARTIFACT, not the local one. The identity assertion (pulled ID equals the
+      # tested ID) is the LOAD-BEARING check and is independent of runtime configuration; the label
+      # and liveness legs are additive. If a leg ever proves fragile, weaken THAT leg — never the
+      # identity assertion.
+      #
+      # The run configuration is what the shipped artifact genuinely requires, not an idealised
+      # one-liner: sheriff.config.dir is relative and resolves inside the image, so the container
+      # FAILS FAST without a mounted configuration directory; the IT gateway.yaml declares
+      # tls.passthrough_sni, so the SNI front listener owns 8443 and the terminated listener must be
+      # moved to 8444 or the two collide; and management is HTTPS once the certificate pair is
+      # supplied, so the probe speaks TLS. The mounted material is the workspace fixture the
+      # integration-test run above already used — no new fixture is introduced.
+      #
+      # The probe is /q/health/live, not /q/health: the aggregate readiness endpoint includes JWKS
+      # readiness against the IT Keycloak, which is not running in this single-container smoke.
+      # Liveness is what this step can honestly assert — the published artifact boots and serves its
+      # management interface over TLS.
+      - name: Smoke the published image by digest
+        env:
+          IMAGE_ID: ${{ steps.image.outputs.id }}
+          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+          DIGEST: ${{ steps.digest.outputs.value }}
+          TAG_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
+
+          # Drop every local reference so the pull genuinely reaches the registry.
+          docker rmi "ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION}" "ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}"
+          docker pull "$REF"
+
+          PULLED_ID="$(docker image inspect --format '{{.Id}}' "$REF")"
+          if [ "$PULLED_ID" != "$IMAGE_ID" ]; then
+            echo "::error::Published image is not the tested image: pulled ${PULLED_ID}, tested ${IMAGE_ID}."
+            exit 1
+          fi
+
+          PULLED_VERSION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$REF")"
+          if [ "$PULLED_VERSION" != "$RELEASED_VERSION" ]; then
+            echo "::error::Published image label org.opencontainers.image.version='${PULLED_VERSION}' but the released version is '${RELEASED_VERSION}'."
+            exit 1
+          fi
+
+          CERTS="${GITHUB_WORKSPACE}/integration-tests/src/main/docker/certificates"
+          CONFIG="${GITHUB_WORKSPACE}/integration-tests/src/main/docker/sheriff-config"
+          docker run -d --name api-sheriff-smoke -p 19000:9000 \
+            -v "${CERTS}:/app/certificates:ro" \
+            -v "${CONFIG}:/app/sheriff-config:ro" \
+            -e QUARKUS_PROFILE=it \
+            -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+            -e QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties \
+            -e QUARKUS_HTTP_SSL_PORT=8444 \
+            -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt \
+            -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key \
+            -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt \
+            -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key \
+            -e QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12 \
+            -e QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust \
+            -e OIDC_CLIENT_SECRET=smoke \
+            "$REF"
+
+          for _ in $(seq 1 60); do
+            if curl -fsSk https://127.0.0.1:19000/q/health/live > /dev/null; then
+              echo "Published image is live."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Published image did not become live within 120s."
+          docker logs api-sheriff-smoke
+          exit 1
+
+      # `|| true` is a deliberate guard, not sloppiness: this step runs on EVERY outcome, including
+      # the paths where the smoke step failed before `docker run` and there is nothing to remove.
+      # A teardown must never turn an otherwise-diagnosed failure into a second, misleading one.
+      - name: Tear down the smoke container
+        if: always()
+        run: |
+          docker rm -f api-sheriff-smoke || true
