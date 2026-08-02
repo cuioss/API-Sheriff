@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -207,7 +206,6 @@ class AssetContentTypeActivationWiringTest {
 
     @SuppressWarnings("unchecked")
     private static Map<String, Object> loadYaml(Path path) throws IOException {
-        assertNotNull(path, "descriptor path");
         try (InputStream in = Files.newInputStream(path)) {
             return new Yaml().loadAs(in, Map.class);
         }
