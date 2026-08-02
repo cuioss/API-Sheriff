@@ -73,6 +73,84 @@ fi
 cd "${IT_DIR}"
 COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
 
+# Every port this script touches is DERIVED from the resolved Compose model, and none is restated
+# here. docker-compose.yml owns all of them — the `de.cuioss.sheriff.management-scheme` label, the
+# host port published against the management container port 9000, and the host port published
+# against the public TLS container port 8443 — and a list in this file that had to mirror them would
+# be a defect the moment any of them changed. This is the same derivation
+# integration-tests/scripts/start-integration-container.sh performs, narrowed to the demo's three
+# named services and widened to carry the public port the closing banner prints.
+#
+# It runs BEFORE the image rebuild on purpose: a model this script cannot read is a failure worth
+# having in two seconds rather than after a native image build.
+#
+# The one scheme NOT derived is the public one. Every service in this stack terminates TLS on its
+# public listener — the gateways mount the localhost bundle and Keycloak runs with
+# KC_HTTP_ENABLED=false — so `https` is a property of the stack rather than a per-service knob, and
+# the management-scheme label deliberately describes only the management interface.
+echo "⏳ Discovering the demo stack's published ports from the Compose model..."
+if ! DEMO_TARGETS="$($COMPOSE_CMD config --format json | python3 -c '
+import json
+import sys
+
+SCHEME_LABEL = "de.cuioss.sheriff.management-scheme"
+MANAGEMENT_CONTAINER_PORT = "9000"
+PUBLIC_CONTAINER_PORT = "8443"
+
+wanted = sys.argv[1:]
+
+try:
+    model = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
+             "version supporting `config --format json`." % exc)
+
+services = model.get("services") or {}
+
+
+def published_for(spec, container_port):
+    return [port.get("published") for port in (spec.get("ports") or [])
+            if str(port.get("target")) == container_port and port.get("published")]
+
+
+rows = []
+problems = []
+for name in wanted:
+    spec = services.get(name)
+    if spec is None:
+        problems.append("%s: not present in the resolved Compose model" % name)
+        continue
+    scheme = (spec.get("labels") or {}).get(SCHEME_LABEL)
+    ports = {"management": published_for(spec, MANAGEMENT_CONTAINER_PORT),
+             "public": published_for(spec, PUBLIC_CONTAINER_PORT)}
+    usable = True
+    if scheme not in ("http", "https"):
+        problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
+        usable = False
+    for role, container_port in (("management", MANAGEMENT_CONTAINER_PORT),
+                                 ("public", PUBLIC_CONTAINER_PORT)):
+        if len(ports[role]) != 1:
+            problems.append("%s: expected exactly one host port published against the %s container "
+                            "port %s, found %r" % (name, role, container_port, ports[role]))
+            usable = False
+    if usable:
+        rows.append("%s %s %s %s" % (name, scheme, ports["management"][0], ports["public"][0]))
+
+if problems:
+    sys.exit("demo stack port discovery failed:\n  " + "\n  ".join(problems))
+
+sys.stdout.write("\n".join(rows) + "\n")
+' "${DEMO_IDP_SERVICE}" "${DEMO_GATEWAY_SERVICES[@]}")"; then
+    echo "❌ Could not derive the demo stack ports from docker-compose.yml (see above)"
+    exit 1
+fi
+
+# Split the derived rows by role. The IdP row drives the readiness wait and the Keycloak banner
+# entry; the gateway rows drive the gateway readiness loop and the SPA entry-point banner.
+IDP_TARGET="$(printf '%s\n' "$DEMO_TARGETS" | grep "^${DEMO_IDP_SERVICE} ")"
+GATEWAY_TARGETS="$(printf '%s\n' "$DEMO_TARGETS" | grep -v "^${DEMO_IDP_SERVICE} ")"
+read -r _ IDP_MGMT_SCHEME IDP_MGMT_PORT IDP_PUBLIC_PORT <<< "$IDP_TARGET"
+
 # Rebuild the image from the (possibly just-rebuilt) native executable. This is LOAD-BEARING:
 # `compose up` alone silently reuses a stale image, so a native fix appears not to take effect and
 # the suite fails against code that is no longer on disk. Same shape as integration-tests/pom.xml's
@@ -102,14 +180,27 @@ echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 echo "🐳 Starting ${DEMO_IDP_SERVICE} first (the gateways start only after it is ready)..."
 $COMPOSE_CMD up -d "${DEMO_IDP_SERVICE}"
 
-echo "⏳ Waiting for ${DEMO_IDP_SERVICE} to be ready..."
+# -f, matching the gateway probe below: /health/ready answers 503 while Keycloak is still starting,
+# and without -f curl exits 0 on that 503 — so the wait would clear as soon as the port ACCEPTED
+# rather than when Keycloak was actually ready, which is the very race the comment above says this
+# gate exists to remove.
+IDP_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
+if [[ "$IDP_MGMT_SCHEME" == "https" ]]; then
+    # -k is load-bearing on an HTTPS management interface: it serves a self-signed localhost bundle,
+    # and without it curl fails certificate validation and this wait degrades into a silent
+    # 120-attempt timeout against a perfectly healthy container.
+    IDP_PROBE_OPTS+=(-k)
+fi
+IDP_HEALTH_URL="${IDP_MGMT_SCHEME}://localhost:${IDP_MGMT_PORT}/health/ready"
+
+echo "⏳ Waiting for ${DEMO_IDP_SERVICE} to be ready (management ${IDP_MGMT_SCHEME} on ${IDP_MGMT_PORT})..."
 for i in {1..120}; do
-    if curl -k -s --connect-timeout 2 --max-time 5 https://localhost:1090/health/ready > /dev/null 2>&1; then
+    if curl "${IDP_PROBE_OPTS[@]}" "${IDP_HEALTH_URL}" > /dev/null 2>&1; then
         echo "✅ ${DEMO_IDP_SERVICE} is ready!"
         break
     fi
     if [ "$i" -eq 120 ]; then
-        echo "❌ ${DEMO_IDP_SERVICE} failed to become ready within 120 attempts"
+        echo "❌ ${DEMO_IDP_SERVICE} did not answer ${IDP_HEALTH_URL} within 120 attempts"
         echo "Check logs with: ${COMPOSE_CMD} logs ${DEMO_IDP_SERVICE}"
         exit 1
     fi
@@ -122,62 +213,8 @@ done
 echo "🐳 Starting ONLY ${DEMO_GATEWAY_SERVICES[*]} (no other stack service is touched)..."
 $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 
-# Each gateway's management scheme and published port are DERIVED from the resolved Compose model,
-# never restated here. docker-compose.yml owns both — the `de.cuioss.sheriff.management-scheme`
-# label and the host port published against container port 9000 — and a list in this file that had
-# to mirror them would be a defect the moment either changed. This is the same derivation
-# integration-tests/scripts/start-integration-container.sh performs, narrowed to the demo's two
-# named services instead of the api-sheriff* prefix.
-echo "⏳ Discovering the demo gateways' readiness targets from the Compose model..."
-if ! READINESS_TARGETS="$($COMPOSE_CMD config --format json | python3 -c '
-import json
-import sys
-
-SCHEME_LABEL = "de.cuioss.sheriff.management-scheme"
-MANAGEMENT_CONTAINER_PORT = "9000"
-
-wanted = sys.argv[1:]
-
-try:
-    model = json.load(sys.stdin)
-except ValueError as exc:
-    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
-             "version supporting `config --format json`." % exc)
-
-services = model.get("services") or {}
-
-rows = []
-problems = []
-for name in wanted:
-    spec = services.get(name)
-    if spec is None:
-        problems.append("%s: not present in the resolved Compose model" % name)
-        continue
-    scheme = (spec.get("labels") or {}).get(SCHEME_LABEL)
-    published = [port.get("published") for port in (spec.get("ports") or [])
-                 if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
-    usable = True
-    if scheme not in ("http", "https"):
-        problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
-        usable = False
-    if len(published) != 1:
-        problems.append("%s: expected exactly one host port published against container port %s, "
-                        "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
-        usable = False
-    if usable:
-        rows.append("%s %s %s" % (name, scheme, published[0]))
-
-if problems:
-    sys.exit("demo gateway readiness discovery failed:\n  " + "\n  ".join(problems))
-
-sys.stdout.write("\n".join(rows) + "\n")
-' "${DEMO_GATEWAY_SERVICES[@]}")"; then
-    echo "❌ Could not derive the demo gateways' readiness targets from docker-compose.yml (see above)"
-    exit 1
-fi
-
 echo "⏳ Waiting for the demo gateway instances to be ready..."
-while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
 
     GATEWAY_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
@@ -213,16 +250,25 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
         echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/30)"
         sleep 1
     done
-done <<< "$READINESS_TARGETS"
+done <<< "$GATEWAY_TARGETS"
 
 echo ""
 echo "🎉 The trimmed demo stack is running — three containers:"
 $COMPOSE_CMD ps --format "table {{.Service}}\t{{.State}}" "${DEMO_IDP_SERVICE}" "${DEMO_GATEWAY_SERVICES[@]}"
 echo ""
+# Printed from the SAME derived rows the readiness loop used, so the banner cannot drift from what
+# docker-compose.yml actually publishes. demo-client/pom.xml's demo.baseUrl.* properties carry the
+# same addresses for the Playwright suite; a literal copy here would be a third place to keep in
+# lockstep with the model.
 echo "📱 Demo entry points (the SPA is served BY the gateway, so it is same-origin with /auth/*):"
-echo "  🖥️  server-session gateway: https://localhost:10443/assets/demo/index.html"
-echo "  🍪 cookie-session gateway: https://localhost:10445/assets/demo/index.html"
-echo "  🔑 Keycloak:               https://localhost:1443/auth"
+while read -r GATEWAY_SERVICE _ _ GATEWAY_PUBLIC_PORT; do
+    [[ -z "$GATEWAY_SERVICE" ]] && continue
+    echo "  🖥️  ${GATEWAY_SERVICE}: https://localhost:${GATEWAY_PUBLIC_PORT}/assets/demo/index.html"
+done <<< "$GATEWAY_TARGETS"
+echo "  🔑 ${DEMO_IDP_SERVICE}: https://localhost:${IDP_PUBLIC_PORT}/auth"
 echo ""
-echo "🧪 Run the suite:  cd demo-client && npx playwright test"
+# 'npm run test', NOT npx: npm run resolves node_modules/.bin only, while npx's auto-confirm
+# suppresses the prompt guarding its registry fallback. The build was deliberately moved off npx
+# (demo-client/pom.xml, playwright-test execution); this banner must not send a developer back to it.
+echo "🧪 Run the suite:  cd demo-client && npm run test"
 echo "🛑 To stop:        demo-client/scripts/stop-dev-environment.sh"

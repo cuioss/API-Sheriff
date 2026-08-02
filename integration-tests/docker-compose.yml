@@ -12,6 +12,16 @@ services:
       - --https-certificate-file=/opt/keycloak/certificates/localhost.crt
       - --https-certificate-key-file=/opt/keycloak/certificates/localhost.key
       - --https-port=8443
+    # Declares the scheme this service's MANAGEMENT interface speaks, exactly as every api-sheriff*
+    # instance does. Keycloak's management port is HTTPS because KC_HTTP_ENABLED=false below leaves
+    # TLS as its only listener. The label exists so a host-side readiness probe can derive the whole
+    # probe URL — scheme AND published port — from this model instead of restating either;
+    # demo-client/scripts/start-dev-environment.sh consumes it for all three demo services in ONE
+    # loop rather than carrying a keycloak-shaped special case. It is inert for the landed
+    # integration-tests bring-up, whose discovery filters on the api-sheriff* name prefix.
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
     ports:
       - "1443:8443"  # External HTTPS port for Keycloak admin
       - "1090:9000"  # External port for Keycloak management (health checks)

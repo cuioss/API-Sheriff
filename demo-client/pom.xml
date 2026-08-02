@@ -128,6 +128,21 @@
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
                             </execution>
+                            <!-- The SUCCESS-path teardown, and deliberately only that. Maven offers
+                                 no always-runs hook, and frontend-maven-plugin's npm goal aborts the
+                                 build on a non-zero exit, so a FAILING suite never reaches this
+                                 phase. Two paths, two remedies, decided explicitly:
+                                   - CI: .github/workflows/demo-client-e2e.yml carries an
+                                     `if: always()` teardown step, because an abandoned stack on a
+                                     shared runner holds the fixed host ports.
+                                   - LOCAL: no equivalent is added. The developer already has two
+                                     direct remedies — `./scripts/stop-dev-environment.sh`, and the
+                                     pre-clean teardown above that fires on any `clean` build — and
+                                     the failing run they are about to debug is usually one they WANT
+                                     the containers left up for. Making the local path tear down
+                                     unconditionally would destroy the logs of the failure being
+                                     diagnosed. This is a decision, not an omission; it is documented
+                                     for developers in doc/development/demo-client.adoc. -->
                             <execution>
                                 <id>stop-dev-environment-post-integration-test</id>
                                 <phase>post-integration-test</phase>
@@ -191,12 +206,55 @@
                             </execution>
                             <execution>
                                 <id>npm-lint-strict</id>
-                                <phase>verify</phase>
+                                <!-- process-resources, NOT verify. verify runs AFTER
+                                     integration-test, so binding the lint there made a lint failure
+                                     surface only once a native image had been rebuilt, three
+                                     containers were up and a browser had driven both projects.
+                                     process-resources is the earliest phase that still follows the
+                                     'initialize' npm install, so the lint now fails before
+                                     start-dev-environment.sh runs — which also means a lint failure
+                                     can no longer leak containers. -->
+                                <phase>process-resources</phase>
                                 <goals>
                                     <goal>npm</goal>
                                 </goals>
                                 <configuration>
                                     <arguments>run lint:strict</arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>npm-install-browser</id>
+                                <!-- Same phase as the lint and declared after it, so executions run
+                                     in this order: a lint failure costs no browser download.
+
+                                     WHY THIS EXISTS AT ALL: nothing previously installed a browser.
+                                     The local run only worked because the 'playwright' package's npm
+                                     postinstall happens to download one, and 'npm ci' runs
+                                     postinstall scripts. Relying on that is a silent dependency on
+                                     another package's install hook. .github/workflows/demo-client-e2e.yml
+                                     has never executed — it carries no pull_request trigger — so its
+                                     first ever run is on a fresh runner, and this makes the browser a
+                                     declared, verified step there instead of a hoped-for side effect.
+                                     'playwright install' is idempotent: with a warm cache it is a
+                                     no-op costing under a second.
+
+                                     WHY THE PLAIN INSTALL AND NOT THE 'with deps' VARIANT: that
+                                     variant installs OS packages and needs root. This execution is on
+                                     the LOCAL developer's 'verify -Pe2e-demo' path too, where sudo is
+                                     not available and must not be required. The GitHub-hosted
+                                     ubuntu-latest image already carries the shared libraries Chromium
+                                     needs, so one root-free placement serves both paths rather than
+                                     splitting into a CI-only variant.
+
+                                     WHY 'npm run', not npx: identical to the playwright-test execution
+                                     below — 'npm run' resolves node_modules/.bin only and has no
+                                     registry fallback. -->
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>npm</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>run install-browser</arguments>
                                 </configuration>
                             </execution>
                             <execution>

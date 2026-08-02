@@ -56,13 +56,33 @@ jobs:
         run: |
           ./mvnw --no-transfer-progress clean package -Pnative -pl api-sheriff -am -DskipTests
 
-      # The e2e-demo profile owns the whole lifecycle: it installs the pinned Node toolchain, lints,
-      # runs start-dev-environment.sh (which rebuilds the api-sheriff image from the executable
-      # above and brings up the trimmed three-container stack), runs both Playwright projects, and
-      # tears the stack down again in post-integration-test.
+      # The e2e-demo profile owns the whole lifecycle: it installs the pinned Node toolchain and the
+      # pinned browser, lints, runs start-dev-environment.sh (which rebuilds the api-sheriff image
+      # from the executable above and brings up the trimmed three-container stack), runs both
+      # Playwright projects, and tears the stack down again in post-integration-test.
       - name: Run the demo E2E suite
         run: |
           ./mvnw --no-transfer-progress verify -Pe2e-demo -pl demo-client
+
+      # THE TEARDOWN SAFETY NET, and it is not redundant with the profile's own post-integration-test
+      # teardown. frontend-maven-plugin's npm goal fails the build IMMEDIATELY on a non-zero npm exit
+      # — unlike maven-failsafe-plugin it records nothing for a later phase and honours no
+      # testFailureIgnore — so a FAILING suite means Maven never reaches post-integration-test and
+      # keycloak, api-sheriff and api-sheriff-cookie are all left running. Nothing else here reclaims
+      # them: the job runs `verify`, not `clean verify`, so the profile's pre-clean teardown never
+      # fires either. `always()` covers the failing-suite path and a cancelled run alike.
+      #
+      # `|| true` is a deliberate guard, not sloppiness. This step runs on EVERY outcome, including
+      # after a green suite whose post-integration-test teardown already emptied the stack — so the
+      # nothing-left-to-stop path is the common one, and it must never turn a green job red.
+      # stop-dev-environment.sh is not contracted to exit 0 on that path: demo-client/pom.xml already
+      # declares successCodes 0 AND 1 on both of its teardown executions for exactly this reason.
+      # (Observed locally on docker compose v2, the nothing-to-stop path does exit 0 — the guard
+      # covers the tolerated 1, it does not assume it.)
+      - name: Tear down the demo stack
+        if: always()
+        run: |
+          ./demo-client/scripts/stop-dev-environment.sh || true
 
       # Diagnostics, best-effort: the JUnit XML plus Playwright's failure-path traces, screenshots
       # and videos all land under target/test-results. `always()` because a failing suite is exactly
