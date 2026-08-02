@@ -21,24 +21,37 @@ The human-facing release reference -- use it when you want the reference to read
 notes.
 
 `ghcr.io/cuioss/api-sheriff:sha-<commit>`::
-Immutable provenance. `<commit>` is the full 40-character SHA of the commit the release tag points
-at. Use it when you need an unambiguous, provably-immutable reference.
+*Provenance, not immutability.* `<commit>` is the full 40-character SHA of the commit the release
+tag points at, so this tag answers "which source produced this image?" unambiguously. It is still an
+ordinary registry tag: nothing at the registry prevents it from being repointed, and it is not the
+image digest. Use it to trace an image back to its source -- not as a deployment pin.
 
 *There is no `:latest` tag, and that is deliberate -- the registry is not broken.* Pin by version,
 or by digest for production. The decision and the reasoning behind it are recorded once, in
 link:../development/release-process.adoc#_container_image_tags[the release-artifact policy].
 
-[TIP]
+[IMPORTANT]
 ====
-*For production, pin by digest.* Resolve it once and record it:
+*Only `ghcr.io/cuioss/api-sheriff@sha256:...` is immutable.* Both tags above are mutable by
+construction; a digest is the content address and cannot be repointed. For production, resolve the
+digest once and deploy that:
 
 [source,bash]
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
-docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/cuioss/api-sheriff:<version>
+
+# Filter for THIS repository and require exactly one match. `docker image inspect` reports
+# RepoDigests as a list whose order is not defined, and an image pulled from, or pushed to, more
+# than one repository has more than one entry -- so `{{index .RepoDigests 0}}` can silently hand you
+# a digest belonging to a different repository. The release workflow applies the same filter-and-
+# assert-one rule when it resolves the digest it signs.
+DIGEST="$(docker image inspect \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
+  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
+[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
 ----
 
-Then deploy `ghcr.io/cuioss/api-sheriff@sha256:...`. A digest cannot be repointed; a tag can.
+Then deploy `"${DIGEST}"` verbatim.
 ====
 
 [NOTE]
@@ -91,7 +104,32 @@ docker run -d --name api-sheriff \
   ghcr.io/cuioss/api-sheriff:<version>
 ----
 
-`--cap-drop=ALL` and `--security-opt=no-new-privileges` are in the recipe rather than in a footnote
+The recipe above is the *terminating* deployment -- Quarkus itself terminates TLS on 8443. If your
+`gateway.yaml` declares `tls.passthrough_sni`, the SNI front listener takes 8443 and the terminated
+listener must move, or the two collide on the same port at start-up. Add one variable:
+
+[source,bash]
+----
+docker run -d --name api-sheriff \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  -p 8443:8443 -p 9000:9000 \
+  -v /etc/api-sheriff/config:/app/sheriff-config:ro \
+  -v /etc/api-sheriff/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_SSL_PORT=8444 \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  ghcr.io/cuioss/api-sheriff:<version>
+----
+
+`QUARKUS_HTTP_SSL_PORT=8444` is deliberately *absent* from the terminating recipe rather than set in
+both: on a terminating deployment it would move the listener off the port `-p 8443:8443` publishes,
+and the container would come up serving nothing on 8443.
+
+`--cap-drop=ALL` and `--security-opt=no-new-privileges` are in both recipes rather than in a footnote
 because the artifact needs neither: it runs as `nonroot`, binds only the unprivileged ports 8443 and
 9000, and, being distroless, contains no setuid binary that a privilege escalation could reach.
 Dropping both is free here, so there is no reason to run without them.
@@ -137,8 +175,13 @@ Resolve the digest once, verify it, and deploy it:
 [source,bash]
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
-DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/cuioss/api-sheriff:<version>)"
+
+# Same filter-and-assert-one rule as the digest-pinning recipe above -- RepoDigests is unordered and
+# may carry entries for other repositories, so never take element 0 on faith.
+DIGEST="$(docker image inspect \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
+  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
+[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
 
 cosign verify \
   --certificate-identity https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main \
@@ -146,9 +189,9 @@ cosign verify \
   "${DIGEST}"
 ----
 
-`docker image inspect` reports `RepoDigests` as a fully-qualified
-`ghcr.io/cuioss/api-sheriff@sha256:...` reference, so the resolved value is passed to `cosign` and to
-your deployment manifest unchanged.
+`RepoDigests` entries are fully-qualified `ghcr.io/cuioss/api-sheriff@sha256:...` references, so the
+resolved value is passed to `cosign` and to your deployment manifest unchanged -- verify and deploy
+the same string.
 
 Both flags are mandatory, and each pins a different half of the claim:
 

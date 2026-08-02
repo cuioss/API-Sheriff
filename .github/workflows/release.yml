@@ -64,12 +64,19 @@ jobs:
 
       # Checked out into a side directory so the release-tag checkout below owns the workspace root
       # untouched. Only .github/project.yml is needed here.
+      #
+      # sparse-checkout-cone-mode MUST be false. Cone mode — the action's default — matches
+      # DIRECTORY entries only, so the single-file pattern below would match nothing and
+      # .release-config/.github/project.yml would simply not exist; the next step would then fail on
+      # a missing config for a reason that reads nothing like "sparse checkout mode". Non-cone mode
+      # applies gitignore-style patterns, which is what a single-file checkout needs.
       - name: Check out the release configuration
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           path: .release-config
           sparse-checkout: .github/project.yml
+          sparse-checkout-cone-mode: false
 
       - name: Read the released version
         id: config
@@ -106,7 +113,15 @@ jobs:
           cache: maven
 
       # THE STRUCTURAL GUARD that makes "image version identical to Maven version" a checked fact
-      # rather than an assumption. Fails loudly, before anything is built or pushed.
+      # rather than an assumption. Fails loudly, before anything is built or pushed TO GHCR.
+      #
+      # Scope of "before anything is pushed", stated precisely: this job runs AFTER `needs: [release]`,
+      # so the Maven Central publication has already happened by the time this assertion runs. It can
+      # therefore prevent a wrong IMAGE from being published; it cannot un-publish a jar. A failure
+      # anywhere in this job leaves a jars-only release — see release-process.adoc
+      # § "If the image lane fails after the Maven release" for the recovery procedure. Ordering this
+      # job before the release is not possible: the released version does not exist until the release
+      # job has cut it.
       - name: Assert the checked-out project version matches the released version
         env:
           RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
@@ -158,7 +173,17 @@ jobs:
           upload-release-assets: false
 
       # THE GATE. A finding at HIGH **or** CRITICAL fails the job, and because this step sits ABOVE
-      # the `docker login` below, nothing has been pushed when it fires.
+      # the `docker login` below, nothing has been pushed TO GHCR when it fires. (The Maven artifacts
+      # were already published by the `release` job this one depends on — see the version-assertion
+      # step above for the partial-release scope and the recovery pointer.)
+      #
+      # `ignore-unfixed: 'false'` is deliberate, and it has a cost worth naming: an unfixed HIGH or
+      # CRITICAL CVE in the pinned base image blocks EVERY release until the base is re-pinned to a
+      # patched digest — including CVEs with no upstream fix available at all. There is deliberately
+      # no `.trivyignore` in the tree today, because an empty suppression file invites silent
+      # additions. The sanctioned escape hatch is documented in release-process.adoc
+      # § "If the scan blocks on an unfixable base-image CVE"; take it there, with a recorded
+      # justification, rather than relaxing this threshold.
       #
       # The HIGH+CRITICAL threshold is deliberate, not a default: API Sheriff is a security-focused
       # gateway, so the stricter posture is the point. Do not relax it to CRITICAL-only without an
