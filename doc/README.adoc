@@ -77,6 +77,16 @@ built* and *how the parts fit together*.
   guide] (configuring passthrough SNI / mTLS and the trust-root-replacement blast radius), and the
   link:development/tls-edge.adoc[developer topic] (front-listener architecture, the L4/L7 split, and
   the fail-closed GW-06 rationale).
+
+| Container Image (three-layer topic)
+| The published image at `ghcr.io/cuioss/api-sheriff`, documented across all three layers. The
+  reference layer is this statement: the image is a *packaging* of the same binary the
+  link:architecture.adoc[Architecture] already describes, so it adds no runtime component, no
+  request-lifecycle stage and no `gateway.yaml` key -- neither that document nor
+  link:configuration.adoc[Configuration] has a surface for it. The
+  link:user/container-image.adoc[operator guide] covers pulling, running and cryptographically
+  verifying the image, and the link:development/release-process.adoc[release-artifact policy]
+  covers the artifact set, the two-tag scheme, and why the image version equals the Maven version.
 |===
 
 == Deployment Variants
