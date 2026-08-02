@@ -47,7 +47,7 @@ activating TLS converted 9000 itself — there is no plain-HTTP fallback. **`-k`
 stack serves the self-signed localhost bundle); omitting it makes every probe below fail
 certificate validation and look like a dead container:
 - `curl -skf https://localhost:19000/q/health/live` — liveness (the startup wait uses this)
-- `curl -sk  https://localhost:19000/q/health/ready` — readiness; **this is the diagnostic goldmine** — the gateway's own `GatewayReadinessCheck` attaches the config and per-issuer `jwks` state naming the exact failure
+- `curl -sk  https://localhost:19000/q/health/ready` — readiness; **this is the diagnostic goldmine** — the gateway's own `GatewayReadinessCheck` attaches `config`, one whole-validator `jwks` state, an `issuers` count, and on failure a single `error` string naming the exact cause (there is no per-issuer breakdown — the validator resolves as a unit)
 - `curl -sk  https://localhost:19000/q/health` — aggregate (503 if any check is DOWN). This is also the `gatewayHealth` benchmark's target
 - Keycloak: `curl -k https://localhost:1090/health/ready`
 
