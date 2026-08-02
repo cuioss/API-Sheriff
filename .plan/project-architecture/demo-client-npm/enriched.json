@@ -1,0 +1,100 @@
+{
+  "best_practices": [],
+  "insights": [],
+  "internal_dependencies": [],
+  "key_dependencies": [],
+  "key_dependencies_reasoning": "",
+  "key_packages": {},
+  "purpose": "e2e-tests",
+  "purpose_reasoning": "the module contributes no shipped artifact; its only outputs are Playwright browser test results and lint findings",
+  "responsibility": "npm-side view of the same demo-client directory: owns package.json, the pinned Playwright and ESLint toolchain, the lint:strict script and the browser end-to-end specs that drive the demo SPA against the integration-tests stack in both session modes (server-side and cookie). Installed and executed only from the demo-client-maven e2e-demo profile, never from a default reactor build.",
+  "responsibility_reasoning": "demo-client/package.json scripts and devDependencies, playwright.config.js project matrix, tests/01-04 spec files, eslint.config.js",
+  "skills_by_profile": {
+    "implementation": {
+      "defaults": [
+        {
+          "description": "Core JavaScript development standards covering ES modules, modern patterns, web component patterns, DOM trust boundaries / XSS prevention, and code quality",
+          "skill": "pm-dev-frontend:javascript"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "ESLint, Prettier, and Stylelint configuration and enforcement with systematic fixing",
+          "skill": "pm-dev-frontend:lint-config"
+        },
+        {
+          "description": "Modern CSS standards covering essentials, responsive design, quality practices, and tooling",
+          "skill": "pm-dev-frontend:css"
+        },
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 build-dispatch routes builds through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
+      ]
+    },
+    "module_testing": {
+      "defaults": [
+        {
+          "description": "Core JavaScript development standards covering ES modules, modern patterns, web component patterns, DOM trust boundaries / XSS prevention, and code quality",
+          "skill": "pm-dev-frontend:javascript"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Language-agnostic testing methodology (AAA, coverage, reliability, determinism)",
+          "skill": "plan-marshall:persona-module-tester"
+        },
+        {
+          "description": "JavaScript unit testing with Jest, DOM testing, mocking, async patterns",
+          "skill": "pm-dev-frontend:jest-testing"
+        },
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 test-run dispatch routes through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
+      ]
+    },
+    "quality": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        }
+      ]
+    },
+    "security": {
+      "defaults": [
+        {
+          "description": "Core JavaScript development standards covering ES modules, modern patterns, web component patterns, DOM trust boundaries / XSS prevention, and code quality",
+          "skill": "pm-dev-frontend:javascript"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "JavaScript security \u2014 DOM trust boundaries, XSS sinks, sanitization, and Trusted Types",
+          "skill": "pm-dev-frontend:javascript-security"
+        }
+      ]
+    }
+  },
+  "skills_by_profile_reasoning": "Every file this module owns is JavaScript: the Playwright specs, fixtures, utils, playwright.config.js and eslint.config.js. Optionals are included because lint-config (ESLint flat config behind npm run lint:strict) and css (the SPA stylesheet served from this directory) are both live surfaces.; Cross-cutting agent behaviour, code-quality and build-dispatch skills apply to every module.; The SPA renders identity and claim data into the DOM, so the JavaScript security surface (DOM trust boundaries, XSS sinks, sanitization) applies to this module under the security profile.",
+  "tips": []
+}
