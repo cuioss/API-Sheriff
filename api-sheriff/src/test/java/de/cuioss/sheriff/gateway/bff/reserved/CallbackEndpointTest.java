@@ -60,6 +60,14 @@ import org.junit.jupiter.api.Test;
  * duplicate-parameter rejection (via {@code parse(rawQuery)}), the browser-binding checks (D2b),
  * and the success path that drives the exchange seam, creates the session, and redirects.
  * <p>
+ * <strong>Every case below is a {@code response_mode=query} callback.</strong> The gateway drives
+ * the authorization request with {@code response_mode=query}, so the live callback is a top-level
+ * GET whose {@code code}/{@code state} arrive in the query string, and the string each test hands
+ * {@code handle(..)} IS that raw query. The endpoint itself stays source-neutral by design — it
+ * parses whatever raw parameter string it is given — which is exactly why the assertion that the
+ * <em>runtime</em> hands it the uncollapsed query lives one layer out, in
+ * {@code GatewayEdgeRouteBffWiringTest}'s query-mode dispatch coverage rather than here.
+ * <p>
  * The engine exchange is driven through the {@link CodeExchange} seam, so the success and
  * exchange-failure paths are exercised with a hand-built {@link AuthorizationCodeFlow.AuthenticationResult}
  * — no live token endpoint, no signed tokens, no test double framework.
@@ -147,8 +155,17 @@ class CallbackEndpointTest {
                 salt);
     }
 
+    /**
+     * The BFF-13 duplicate-parameter defence — the Keycloak CVE-2026-9689 class — asserted on the
+     * raw query, which under {@code response_mode=query} is the live callback shape.
+     * <p>
+     * The defence is structural: the endpoint parses the raw string with
+     * {@code CallbackParameters.parse(String)} and never {@code CallbackParameters.of(Map)}, because
+     * only the raw parse can still SEE a duplicated {@code code} or {@code state}. A collapsed map
+     * has already silently chosen one occurrence by the time the endpoint runs.
+     */
     @Nested
-    @DisplayName("BFF-13 duplicate-parameter rejection (raw parse)")
+    @DisplayName("BFF-13 duplicate-parameter rejection on the raw query")
     class DuplicateParameterRejection {
 
         @Test
@@ -163,12 +180,16 @@ class CallbackEndpointTest {
         }
 
         @Test
-        @DisplayName("Should reject a duplicate-state callback 400")
+        @DisplayName("Should reject a duplicate-state callback 400 without consuming the pending record")
         void shouldRejectDuplicateState() {
             CallbackOutcome outcome = endpoint.handle("code=abc&state=" + state + "&state=other", bindingCookieHeader,
                     T0);
 
-            assertEquals(400, outcome.status());
+            assertEquals(400, outcome.status(),
+                    "state is the parameter the binding check compares, so a duplicate must be refused "
+                            + "outright rather than resolved to whichever occurrence a parser happened to pick");
+            assertTrue(pendingStore.consume(recordId, T0).isPresent(),
+                    "the record is untouched — parse fails before binding resolution");
         }
     }
 

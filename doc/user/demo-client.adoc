@@ -44,7 +44,9 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 
 | `/auth/callback?code&state`
 | `302`
-| Back to the validated `returnUrl`, with the session cookie set.
+| The IdP `302`s the browser here as a *top-level GET*, with `code` and `state` in the query
+  string. The gateway exchanges the code, then redirects back to the validated `returnUrl` with the
+  session cookie set. Your application never sees this leg -- the browser performs it.
 
 | `fetch /auth/userinfo` -- live session
 | `200`
@@ -86,6 +88,55 @@ common way to mis-integrate:
 * *Login is a navigation, logout is a navigation.* `/auth/login` and `/auth/logout` answer `302`
   into the identity provider. A `fetch` cannot follow that meaningfully -- the browser must own the
   navigation. Use `window.location.assign(...)`, never `fetch`.
+
+=== The login round-trip, end to end
+
+The whole leg is navigations the browser performs; your application starts it and reads the result.
+
+. The application navigates to `/auth/login?returnUrl=/some/page`. The gateway sets a short-lived,
+  `HttpOnly` browser-binding cookie and `302`s to the identity provider.
+. The user authenticates at the identity provider.
+. The identity provider `302`s the browser back to `/auth/callback` *as a top-level GET*, with
+  `code` and `state` in the query string.
+. The gateway validates the binding cookie and the `state`, exchanges the code for tokens over its
+  own back channel, sets the session cookie, and `302`s to the validated same-origin `returnUrl`.
+
+Tokens never reach the browser at any point: the gateway holds them, and the application's only
+credential is the `HttpOnly` session cookie it cannot read.
+
+[NOTE]
+.What you must configure at the identity provider
+====
+Register the gateway's `redirect_uri` as an ordinary redirect target reached by a `GET`. The
+gateway drives the authorization request with `response_mode=query`, so the identity provider must
+be free to answer with a `302` carrying `code` and `state` in the query string. *An IdP client
+pinned to force `form_post` will break the login.* The mode is fixed in the gateway and is not an
+operator setting -- there is no knob to look for.
+====
+
+[WARNING]
+.A tradeoff you should know about: the authorization code appears in a URL
+====
+Because the callback is a `GET`, the one-time authorization `code` travels in the callback URL
+rather than in a request body. It is consequently visible to the `Referer` header, to any proxy /
+CDN and server access log on the path, and in browser history. This is a *deliberate, accepted*
+tradeoff: it is what makes the browser-facing login work at all, because the gateway's browser-
+binding cookie is `SameSite=Lax` and is only sent on a top-level `GET` navigation.
+
+The exposure is *bounded, not eliminated*:
+
+* *PKCE is always in force*, so a code observed in a log is not redeemable without the verifier,
+  which never leaves the gateway.
+* *The code is single-use and short-lived* -- redeemed once at the token endpoint; a replay fails.
+* *The binding cookie and `state` are double-checked* at the callback, so a code replayed from a
+  different browser is rejected `403` even while it is still live.
+
+What this means for you as an integrator: *treat access logs and `Referer`-bearing telemetry on the
+callback path as sensitive*, and do not add third-party analytics or error reporting that captures
+full URLs on `/auth/callback`. Nothing else in your application is affected -- the code never
+reaches your code. The full statement is in
+link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
+====
 
 == The Four Identity-Disclosure States
 

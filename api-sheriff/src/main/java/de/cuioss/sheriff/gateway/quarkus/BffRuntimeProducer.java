@@ -34,6 +34,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
+import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
@@ -63,6 +64,9 @@ import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
+import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
+import de.cuioss.sheriff.token.client.flow.CallbackHandler;
+import de.cuioss.sheriff.token.client.flow.IssValidator;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
@@ -99,6 +103,12 @@ import jakarta.inject.Singleton;
  * {@code token-sheriff-client} engine seams — {@code AuthorizationCodeFlow#authorize} /
  * {@code #exchange} for login and callback, {@code RefreshFlow#refresh} for transparent refresh, and
  * {@code StepUpHandler#initiate} for RFC 9470 re-drive — so the engine is reached at runtime.
+ * <p>
+ * <strong>Response mode.</strong> Both authorization-URL seams are wired with the gateway-owned
+ * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
+ * {@code response_mode=query} and the callback is a top-level GET the browser sends the
+ * {@code SameSite=Lax} binding cookie on. See that class for the reasoning and for the accepted
+ * code-in-the-URL tradeoff.
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
@@ -205,8 +215,18 @@ public class BffRuntimeProducer {
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
         IdTokenValidationBridge idBridge = new IdTokenValidationBridge(validator);
         TokenEndpointClient tokenEndpointClient = new TokenEndpointClient(clientConfiguration);
+        // The gateway drives response_mode=query, NOT the engine's built-in form_post: the callback has
+        // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
+        // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
+        // dead-ended every real-browser login on the "no binding cookie" 403 branch). One instance is
+        // shared with the step-up leg below, so BOTH engine seams that build an authorization URL carry
+        // the corrected mode. Every other collaborator here is exactly what the 4-arg
+        // AuthorizationCodeFlow constructor supplies on its own — a default IssValidator and
+        // CallbackHandler, and no sender constraint (DPoP is not in use) — so nothing else changes.
+        AuthorizationRequestBuilder authorizationRequestBuilder = new QueryResponseModeAuthorizationRequestBuilder();
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
-                tokenEndpointClient, tokenBridge, idBridge);
+                tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
+                new CallbackHandler(), null);
         RefreshFlow refreshFlow = new RefreshFlow(clientConfiguration, tokenEndpointClient, tokenBridge,
                 clientAuthentication);
 
@@ -262,7 +282,11 @@ public class BffRuntimeProducer {
 
         // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam; the upstream-challenge
         // edge integration is exercised by the Keycloak integration tests.
-        StepUpHandler stepUpHandler = new StepUpHandler();
+        // Built with the SAME response-mode-corrected builder as the login leg: StepUpHandler#initiate
+        // constructs its own authorization URL through an AuthorizationRequestBuilder, so leaving it on
+        // the default builder would keep the step-up re-drive emitting response_mode=form_post and
+        // reintroduce the dropped-binding-cookie failure on that leg alone.
+        StepUpHandler stepUpHandler = new StepUpHandler(authorizationRequestBuilder);
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
                 challenge -> stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge),

@@ -273,6 +273,8 @@ oidc:                              # only used by the BFF variants (2 and 3)
   client_secret: ${SHERIFF_CLIENT_SECRET}
   scopes: [openid, profile]
   redirect_uri: https://gw.example.com/auth/callback
+                                   # register at the IdP as a plain GET redirect target: the
+                                   #   gateway drives response_mode=query (fixed in code, no knob)
   login:
     path: /auth/login              # gateway-owned login-initiation entry point (reserved path)
   user_info:
@@ -567,7 +569,8 @@ A request that matches no route is rejected with `404`.
 route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). Up to *six* paths
 are carved out:
 
-. the `oidc.redirect_uri` path -- the auth-code *callback*;
+. the `oidc.redirect_uri` path -- the auth-code *callback*, reached by a top-level `GET` with
+  `code` and `state` in the query string (`response_mode=query`) and carrying no request body;
 . `oidc.logout.path` -- RP-initiated *logout*;
 . its return path (`oidc.logout.post_logout_redirect_uri`) -- the *logout-return* leg;
 . `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
@@ -1487,6 +1490,12 @@ ignored when no route's effective auth is `require: session`.
 | `issuer`, `client_id`, `client_secret`, `scopes`, `redirect_uri`
 | The OIDC confidential-client identity. `client_secret` must be an `${ENV_VAR}` reference.
   `redirect_uri` is the gateway's own callback route, registered exactly at the IdP.
+  *Register it as a plain redirect target reached by a `GET`*: the gateway drives the
+  authorization request with `response_mode=query`, so the IdP must be free to answer a `302`
+  carrying `code` and `state` in the query string. An IdP client pinned to force `form_post`
+  breaks the flow. *There is no configuration knob for the response mode* -- it is fixed in code
+  (see link:architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response
+  mode]), deliberately, because it is coupled to the `SameSite=Lax` browser-binding cookie.
 
 | `login.path`
 | Gateway-owned *login-initiation* entry point -- the reserved path a browser navigates to in

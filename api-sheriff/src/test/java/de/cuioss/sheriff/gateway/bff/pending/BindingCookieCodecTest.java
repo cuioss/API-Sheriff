@@ -15,7 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.bff.pending;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
@@ -52,6 +54,38 @@ class BindingCookieCodecTest {
             assertTrue(header.contains("; HttpOnly"), header);
             assertTrue(header.contains("; SameSite=Lax"), header);
             assertTrue(header.contains("; Max-Age=300"), header);
+        }
+
+        /**
+         * A regression fence around the alternative remedy that was CONSIDERED AND REJECTED.
+         * <p>
+         * The gateway drives {@code response_mode=query} precisely so the OIDC callback is a
+         * top-level GET navigation — the request shape a {@code SameSite=Lax} cookie IS sent on.
+         * The alternative was to leave the flow on {@code response_mode=form_post} (a cross-site
+         * POST, on which a Lax cookie is dropped) and relax this cookie to {@code SameSite=None}
+         * instead. That would have had to permit exactly the cross-site sends this cookie exists to
+         * prevent, weakening the browser-binding control itself, so it was rejected.
+         * <p>
+         * This test asserts the rejection is still in force. It is deliberately expressed as an
+         * explicit absence check rather than left implicit in the positive assertion above: a
+         * future edit that appended {@code SameSite=None} without removing {@code SameSite=Lax}
+         * would still satisfy a `contains("SameSite=Lax")` assertion while shipping the weaker
+         * attribute to the browser.
+         */
+        @Test
+        @DisplayName("Should never emit SameSite=None — the rejected alternative to response_mode=query")
+        void shouldNeverEmitSameSiteNone() {
+            String setCookie = codec.toSetCookieHeader("record-123");
+            String clearing = codec.toClearingSetCookieHeader();
+
+            assertAll("no cookie attribute is weakened to make the browser flow work",
+                    () -> assertFalse(setCookie.contains("SameSite=None"),
+                            "SameSite=None would permit the cross-site sends this cookie exists to block: "
+                                    + setCookie),
+                    () -> assertFalse(clearing.contains("SameSite=None"),
+                            "the clearing form must not weaken the attribute either: " + clearing),
+                    () -> assertTrue(setCookie.contains("; SameSite=Lax"),
+                            "Lax is correct AND sufficient because the callback is a top-level GET: " + setCookie));
         }
 
         @Test

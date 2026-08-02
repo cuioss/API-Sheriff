@@ -82,6 +82,15 @@
             <id>e2e-demo</id>
             <properties>
                 <skipPlaywrightTests>false</skipPlaywrightTests>
+                <!-- LOAD-BEARING. The module-level <skipTests>true</skipTests> above exists to keep
+                     inherited Java surefire off a module with no Java — but frontend-maven-plugin's
+                     'playwright-test' execution is bound to integration-test, a TESTING phase, so it
+                     honours skipTests too and logs "Skipping execution.". The profile would then
+                     report BUILD SUCCESS having run ZERO specs — a vacuous green that also made the
+                     demo-client-e2e CI job meaningless. Flipping it back inside this opt-in profile
+                     costs nothing (surefire is a no-op with no test sources) and is deliberately
+                     scoped here so a DEFAULT reactor build of this module stays a genuine no-op. -->
+                <skipTests>false</skipTests>
             </properties>
             <build>
                 <plugins>

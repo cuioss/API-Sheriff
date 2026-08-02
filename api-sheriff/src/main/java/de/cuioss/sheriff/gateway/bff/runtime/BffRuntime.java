@@ -218,14 +218,18 @@ public final class BffRuntime {
     }
 
     /**
-     * Selects the raw parameter string the callback parses. Keycloak drives the OIDC auth-code
-     * callback with {@code response_mode=form_post}: after a successful login it returns a 200
-     * auto-submit form whose {@code code}/{@code state} are POSTed to the {@code redirect_uri} as an
-     * {@code application/x-www-form-urlencoded} body — never a 302 with the code in the query. A POST
-     * callback therefore parses the raw form body; a GET callback parses the raw query. Both are the
-     * same urlencoded parameter shape, so the single {@code CallbackParameters.parse} the callback
-     * uses handles either source and preserves the BFF-13 duplicate-parameter rejection (the collapsed
-     * {@code of(Map)} form is never taken).
+     * Selects the raw parameter string the callback parses. The gateway drives the OIDC auth-code
+     * flow with {@code response_mode=query}, so the live callback is a {@code 302}-driven top-level
+     * GET whose {@code code}/{@code state} arrive in the query string — the only shape on which the
+     * browser sends the {@code SameSite=Lax} binding cookie the callback requires. The GET branch
+     * hands the callback the raw query verbatim, never a map-collapsed projection, so the BFF-13
+     * duplicate-parameter rejection holds (the collapsed {@code of(Map)} form is never taken).
+     * <p>
+     * The POST branch is retained as a <em>fail-closed</em> path only. The edge no longer reads a
+     * body for the callback (only back-channel logout keeps that eager reserved-body read), so a
+     * stray {@code POST} to the callback path finds {@code rawFormBody} absent, normalizes to the
+     * empty string here, and is rejected {@code 400} for a missing {@code state} — an honest
+     * rejection, never a {@code 500}.
      */
     private static String callbackParameters(ReservedHttpRequest req) {
         final String raw = req.isFormPost() ? req.rawFormBody() : req.rawQuery();
@@ -273,19 +277,18 @@ public final class BffRuntime {
      * reads {@link #rawFormBody}, the user-info fold reads {@link #claimsParam}, and so on).
      *
      * @param rawQuery       the raw query string (without the leading {@code ?}), never map-collapsed
-     *                       — a GET callback re-parses it to re-detect a duplicated {@code code}/{@code
-     *                       state} (BFF-13)
+     *                       — the {@code response_mode=query} GET callback re-parses it to re-detect a
+     *                       duplicated {@code code}/{@code state} (BFF-13)
      * @param cookieHeader   the raw request {@code Cookie} header value, may be absent
      * @param claimsParam    the raw {@code claims} selector for the user-info fold, may be absent
-     * @param returnUrlParam the raw post-login {@code return_to} target for the login fold, may be absent
+     * @param returnUrlParam the raw post-login {@code returnUrl} target for the login fold, may be absent
      * @param stateParam     the {@code state} the IdP returned on a logout-return leg, may be absent
      * @param rawFormBody    the raw {@code application/x-www-form-urlencoded} body — carried for
-     *                       back-channel logout and for a {@code response_mode=form_post} callback POST
-     *                       (the {@code code}/{@code state} arrive here, not in {@link #rawQuery}), may
-     *                       be absent
-     * @param httpMethod     the request HTTP method; a {@code POST} to the callback is a
-     *                       {@code response_mode=form_post} submission. Absent normalizes to
-     *                       {@code GET} (the CSRF-safe default)
+     *                       back-channel logout, the one reserved path that still consumes a body. The
+     *                       {@code response_mode=query} callback carries its {@code code}/{@code state}
+     *                       in {@link #rawQuery} and no body is read for it, so this is absent there
+     * @param httpMethod     the request HTTP method. Absent normalizes to {@code GET} (the CSRF-safe
+     *                       default), which is also the method of the live query-mode callback
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -313,9 +316,9 @@ public final class BffRuntime {
         }
 
         /**
-         * @return {@code true} when this is a {@code POST} — an OIDC {@code response_mode=form_post}
-         *         callback, whose {@code code}/{@code state} arrive in {@link #rawFormBody} rather than
-         *         {@link #rawQuery}
+         * @return {@code true} when this is a {@code POST}. The gateway drives
+         *         {@code response_mode=query}, so the live callback is never a POST; this selects the
+         *         fail-closed body branch for a stray POST to a reserved path instead
          */
         public boolean isFormPost() {
             return "POST".equalsIgnoreCase(httpMethod);

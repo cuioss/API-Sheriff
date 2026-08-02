@@ -31,12 +31,21 @@ import io.restassured.specification.RequestSpecification;
  * {@code integration} realm and the server-mode BFF gateway, following the {@code 302} chain with a
  * cookie jar exactly as a browser would.
  * <p>
- * <strong>response_mode=form_post.</strong> The engine drives the authorization request with
- * {@code response_mode=form_post}, so the final IdP leg is not a {@code 302} carrying the code in the
- * query: after a successful credential POST Keycloak returns a {@code 200} auto-submit HTML form that
- * POSTs the {@code code}/{@code state} to the gateway {@code redirect_uri}. This helper scrapes that
- * form's action and hidden inputs and replays them as an {@code application/x-www-form-urlencoded}
- * POST to the gateway callback — exactly the browser auto-submit — to complete the login.
+ * <strong>response_mode=query.</strong> The gateway drives the authorization request with
+ * {@code response_mode=query}, so after a successful credential POST Keycloak answers a {@code 302}
+ * whose {@code Location} is the gateway {@code redirect_uri} with the {@code code}/{@code state} in
+ * the query string. This helper follows that redirect as a plain GET to the gateway callback —
+ * exactly the top-level navigation a browser performs — to complete the login.
+ * <p>
+ * <strong>LIMITATION — this helper cannot prove the browser-facing flow works.</strong> It replays
+ * cookies from a {@link Map} it manages itself, so it applies no cookie policy: {@code SameSite},
+ * {@code Secure} and {@code __Host-} are attributes it records but never enforces. It would
+ * therefore pass just as green against {@code response_mode=form_post} — under which a real browser
+ * drops the {@code SameSite=Lax} binding cookie on the cross-site POST callback and every login
+ * dead-ends on the {@code 403} "no browser-binding cookie" branch. That is precisely the defect a
+ * green run of this suite failed to reveal. <em>Do not read a green IT suite as proof that the
+ * browser flow works.</em> The browser-level proof lives in the demo-client Playwright suite, which
+ * drives a real Chromium with a real cookie jar; see {@code doc/development/demo-client.adoc}.
  * <p>
  * <strong>Container-network rewrite.</strong> The {@code integration} realm pins
  * {@code frontendUrl https://keycloak:8443}, so every authorization / login-form URL the gateway or
@@ -103,23 +112,6 @@ final class BffKeycloakLoginFlow {
     private static final Pattern FORM_ACTION =
             Pattern.compile("action=\"([^\"]*login-actions/authenticate[^\"]*)\"");
 
-    /**
-     * Matches the {@code action} of the form_post auto-submit {@code <form>} (the gateway
-     * redirect_uri). Tolerant of attribute ordering — {@code [^>]*} skips any attributes (e.g.
-     * {@code method="post"}) that precede {@code action} inside the opening tag.
-     */
-    private static final Pattern FORM_POST_ACTION =
-            Pattern.compile("<form[^>]*\\baction=\"([^\"]*)\"", Pattern.CASE_INSENSITIVE);
-
-    /** Matches each {@code <input ...>} tag of the form_post auto-submit form. */
-    private static final Pattern INPUT_TAG = Pattern.compile("<input\\b[^>]*>", Pattern.CASE_INSENSITIVE);
-
-    /** Extracts the {@code name} attribute from an {@code <input>} tag, regardless of attribute order. */
-    private static final Pattern INPUT_NAME = Pattern.compile("\\bname=\"([^\"]*)\"", Pattern.CASE_INSENSITIVE);
-
-    /** Extracts the {@code value} attribute from an {@code <input>} tag, regardless of attribute order. */
-    private static final Pattern INPUT_VALUE = Pattern.compile("\\bvalue=\"([^\"]*)\"", Pattern.CASE_INSENSITIVE);
-
     private BffKeycloakLoginFlow() {
         // static helper
     }
@@ -157,9 +149,10 @@ final class BffKeycloakLoginFlow {
      * <p>
      * The origin is a parameter because the session mode is a property of the whole gateway: the
      * cookie-mode variant runs on its own instance ({@link #COOKIE_GATEWAY_ORIGIN}), and the flow
-     * itself — the {@code 302} chain, the {@code response_mode=form_post} scrape, and the callback
-     * replay — is identical for both. Only the browser-facing origin differs; the callback action
-     * is an absolute URL taken from the auto-submit form, so it already targets the right instance.
+     * itself — the {@code 302} chain and the query-mode callback navigation — is identical for both.
+     * Only the browser-facing origin differs; the callback {@code Location} is an absolute URL
+     * emitted by Keycloak from the instance's own {@code redirect_uri}, so it already targets the
+     * right instance.
      *
      * @param startPath     the gateway path to navigate to (a require:session route)
      * @param gatewayOrigin the browser-facing gateway origin to drive
@@ -187,31 +180,32 @@ final class BffKeycloakLoginFlow {
         keycloakCookies.putAll(loginPage.getCookies());
         String formAction = rewriteToHost(extractFormAction(loginPage.asString()));
 
-        // Step 3 — POST the credentials. The engine drives the authorization request with
-        // response_mode=form_post, so Keycloak does NOT 302 with the code in the query: on a successful
-        // login it returns a 200 auto-submit HTML form whose action is the gateway redirect_uri
-        // (/auth/callback) and whose hidden inputs carry the authorization code + state (+ any others).
-        Response formPost = keycloak(keycloakCookies)
+        // Step 3 — POST the credentials. The gateway drives the authorization request with
+        // response_mode=query, so on a successful login Keycloak answers a 302 whose Location is the
+        // gateway redirect_uri (/auth/callback) with the authorization code + state in the QUERY STRING.
+        Response credentials = keycloak(keycloakCookies)
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("username", USERNAME)
                 .formParam("password", PASSWORD)
                 .redirects().follow(false)
                 .when().post(formAction)
-                .then().statusCode(200).extract().response();
-        String formPostHtml = formPost.asString();
-        String callbackAction = rewriteToHost(extractFormPostAction(formPostHtml));
-        Map<String, String> callbackFields = extractHiddenInputs(formPostHtml);
+                .then().statusCode(302).extract().response();
+        String callbackUrl = rewriteToHost(location(credentials));
 
-        // Step 4 — replay the form_post to the gateway callback exactly as the browser auto-submit would:
-        // an application/x-www-form-urlencoded POST carrying code + state (+ any other hidden fields). The
-        // gateway parses the code from the BODY, exchanges it for tokens, creates the server-side session,
-        // and sets the session cookie on a 302 back to the original path. The binding cookie from Step 1
-        // rides the gateway jar.
+        // Step 4 — follow that redirect to the gateway callback exactly as a browser would: a plain
+        // top-level GET navigation carrying code + state in the query. The gateway parses the code from
+        // the RAW QUERY (never a collapsed parameter map — the BFF-13 duplicate-parameter defence),
+        // exchanges it for tokens, creates the session, and sets the session cookie on a 302 back to the
+        // original path. The binding cookie from Step 1 rides the gateway jar.
+        //
+        // urlEncodingEnabled(false) is load-bearing here, as it is on the keycloak() spec: the Location
+        // Keycloak emitted is already percent-encoded, and REST Assured's default re-encoding would
+        // double-encode the code/state/iss values and the gateway would reject the callback.
         Response callback = gateway(gatewayCookies, gatewayOrigin)
-                .contentType("application/x-www-form-urlencoded")
-                .formParams(callbackFields)
+                .urlEncodingEnabled(false)
+                .header("Accept", "text/html")
                 .redirects().follow(false)
-                .when().post(callbackAction)
+                .when().get(callbackUrl)
                 .then().statusCode(302).extract().response();
         gatewayCookies.putAll(callback.getCookies());
 
@@ -236,11 +230,10 @@ final class BffKeycloakLoginFlow {
      * @return the configured request specification
      */
     static RequestSpecification gateway(Map<String, String> cookies, String gatewayOrigin) {
-        // Default URL encoding stays ON here: the gateway spec only issues a plain require:session GET
-        // (Step 1, no query) and the callback POST (Step 4). The callback carries the authorization
-        // code/state/iss as x-www-form-urlencoded body params whose raw values (e.g. the issuer URL's
-        // ':' and '/') MUST be percent-encoded by REST Assured — disabling encoding here corrupts the
-        // body and the gateway rejects it with 400. Only keycloak() replays a pre-encoded URL.
+        // Default URL encoding stays ON in this spec: its other callers issue plain paths and rely on
+        // REST Assured to encode them. The ONE call that must NOT re-encode is the Step 4 callback
+        // navigation, which replays a Location Keycloak already percent-encoded; that call opts out
+        // locally with urlEncodingEnabled(false) rather than flipping the default for every caller.
         return given().relaxedHTTPSValidation().baseUri(gatewayOrigin).cookies(cookies);
     }
 
@@ -296,50 +289,8 @@ final class BffKeycloakLoginFlow {
     }
 
     /**
-     * Extracts the {@code action} of the form_post auto-submit form — the gateway redirect_uri the
-     * browser would POST the code/state to.
-     *
-     * @param html the 200 form_post document Keycloak returned after a successful credential POST
-     * @return the (HTML-unescaped) form action URL
-     */
-    private static String extractFormPostAction(String html) {
-        Matcher matcher = FORM_POST_ACTION.matcher(html);
-        if (!matcher.find()) {
-            throw new IllegalStateException("form_post auto-submit form action not found in Keycloak response");
-        }
-        return unescapeHtml(matcher.group(1));
-    }
-
-    /**
-     * Extracts every hidden input {@code name -> value} of the form_post auto-submit form. Parses each
-     * {@code <input>} tag independently and reads {@code name}/{@code value} in either order, so the
-     * result is insensitive to Keycloak's attribute ordering; every value is HTML-unescaped.
-     *
-     * @param html the 200 form_post document
-     * @return the form fields to replay to the gateway callback (must include {@code code} and {@code state})
-     * @throws IllegalStateException when {@code code} or {@code state} is absent (the login did not complete)
-     */
-    private static Map<String, String> extractHiddenInputs(String html) {
-        Map<String, String> fields = new HashMap<>();
-        Matcher tags = INPUT_TAG.matcher(html);
-        while (tags.find()) {
-            String tag = tags.group();
-            Matcher name = INPUT_NAME.matcher(tag);
-            Matcher value = INPUT_VALUE.matcher(tag);
-            if (name.find() && value.find()) {
-                fields.put(unescapeHtml(name.group(1)), unescapeHtml(value.group(1)));
-            }
-        }
-        if (!fields.containsKey("code") || !fields.containsKey("state")) {
-            throw new IllegalStateException(
-                    "form_post auto-submit form missing code/state hidden inputs; found " + fields.keySet());
-        }
-        return fields;
-    }
-
-    /**
-     * Decodes the small set of HTML entities Keycloak emits in form action URLs and hidden-input
-     * values (predominantly {@code &amp;} in URL-encoded {@code code}/{@code state} values).
+     * Decodes the small set of HTML entities Keycloak emits in the login-form action URL
+     * (predominantly {@code &amp;} between its query parameters).
      *
      * @param value the raw attribute value
      * @return the decoded value

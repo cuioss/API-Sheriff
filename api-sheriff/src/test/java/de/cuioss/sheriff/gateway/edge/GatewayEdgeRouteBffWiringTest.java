@@ -86,6 +86,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.SocketAddress;
@@ -241,7 +242,8 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("a reserved path is served by its handler and never reaches the route's allowed_paths gate")
         void reservedPathNeverReachesThoroughChecks() throws Exception {
             // Act — a reserved user-info request under the same /auth prefix the proxy route claims,
-            // carrying a return_to value the url-parameter pipeline would reject
+            // carrying an arbitrary query parameter the url-parameter pipeline would reject. The
+            // parameter NAME is incidental here — it is not a login parameter and carries no contract.
             int status = statusOf(USER_INFO_PATH + "?return_to=%2Fhome");
 
             // Assert — 401 is the user-info handler's own no-session answer. A 400 would mean the
@@ -283,6 +285,113 @@ class GatewayEdgeRouteBffWiringTest {
                             .allowedPaths(List.of("/auth/never-matches")).build()))
                     .upstream(Optional.of(new ResolvedUpstream("http", "localhost", 1, "")))
                     .build();
+        }
+    }
+
+    /**
+     * Pins the <strong>wire name</strong> of the login return-URL query parameter to {@code returnUrl}.
+     * <p>
+     * The name is a browser-facing contract shared by the demo SPA, the Playwright helper and
+     * {@link LoginInitiationEndpoint}'s own documented surface, but the only place it is actually read
+     * is the edge's reserved dispatch — so a rename there silently breaks the whole login flow with no
+     * compile error anywhere: every internal identifier on the path is already {@code returnUrl}, and a
+     * value the edge fails to extract simply degrades to {@link LoginFlow#DEFAULT_RETURN_URL}. That
+     * degradation is invisible to a type checker and to every test that does not drive a real request
+     * through the edge, which is why these two run over a live Vert.x server rather than calling
+     * {@link BffRuntime#dispatch} directly.
+     * <p>
+     * The pair is deliberately a matched positive/negative control: the accepted spelling must reach
+     * the login fold, and the retired {@code return_to} spelling must NOT. Asserting only the positive
+     * case would still pass if the edge accepted both.
+     */
+    @Nested
+    @DisplayName("login initiation reads the returnUrl wire parameter — and only that spelling")
+    class LoginReturnUrlWireName {
+
+        private static final String RETURN_TARGET = "/dashboard";
+        private static final String ENCODED_RETURN_TARGET = "%2Fdashboard";
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer front;
+        private HttpClient client;
+        private String sessionCookie;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+
+            // A live session makes login initiation take the already-authenticated short-circuit, whose
+            // redirect Location IS the return URL the edge extracted — the cleanest observable for the
+            // wire name, and one that never reaches the IdP engine.
+            SessionStore store = new InMemorySessionStore(16);
+            String sessionId = SessionRecord.newSessionId();
+            store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(Optional.of(fullOidc())).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(serverBinding(store)));
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = vertx.createHttpServer().requestHandler(router)
+                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            virtualThreadExecutor.close();
+            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        }
+
+        @Test
+        @DisplayName("returnUrl reaches the login fold and becomes the short-circuit redirect target")
+        void shouldReadReturnUrlParameter() throws Exception {
+            // Arrange — see setUp: a live session and a same-origin relative return target
+
+            // Act
+            HttpClientResponse response = login("?returnUrl=" + ENCODED_RETURN_TARGET);
+
+            // Assert
+            assertEquals(302, response.statusCode(), "the live-session login short-circuit is a 302");
+            assertEquals(RETURN_TARGET, response.getHeader("Location"),
+                    "returnUrl is the login wire parameter, so its value must reach the login fold");
+        }
+
+        @Test
+        @DisplayName("the retired return_to spelling is ignored and degrades to the default return URL")
+        void shouldIgnoreRetiredReturnToSpelling() throws Exception {
+            // Arrange — see setUp: identical request except for the parameter spelling
+
+            // Act
+            HttpClientResponse response = login("?return_to=" + ENCODED_RETURN_TARGET);
+
+            // Assert — the regression pin. If the wire name ever reverts to return_to, this request
+            // would be honoured and the Location would be RETURN_TARGET instead of the default.
+            assertEquals(302, response.statusCode(), "the live-session login short-circuit is a 302");
+            assertEquals(LoginFlow.DEFAULT_RETURN_URL, response.getHeader("Location"),
+                    "return_to is not the login wire parameter, so it must not reach the login fold");
+        }
+
+        private HttpClientResponse login(String query) throws Exception {
+            // Connect to the local front server but present the OIDC host in the authority: the
+            // reserved-path registry is keyed on (host, canonicalPath).
+            RequestOptions options = new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "localhost"))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGIN_PATH + query);
+            return client.request(options)
+                    .compose(request -> request.putHeader("Cookie", sessionCookie).send())
+                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
         }
     }
 
@@ -353,9 +462,22 @@ class GatewayEdgeRouteBffWiringTest {
         }
     }
 
+    /**
+     * The callback leg one layer out from {@link CallbackEndpoint}: through
+     * {@link BffRuntime#dispatch}, whose {@code callbackParameters} selects WHICH raw string the
+     * endpoint parses.
+     * <p>
+     * That selection is the reason this coverage exists separately from
+     * {@code CallbackEndpointTest}. The endpoint is source-neutral — it parses whatever string it is
+     * handed — so an endpoint-level duplicate-parameter test proves the parse rejects duplicates, but
+     * NOT that the runtime hands it the genuinely raw, uncollapsed query. Under
+     * {@code response_mode=query} the {@code code}/{@code state} arrive in the query string, so the
+     * rawQuery selection path is now the live one and its BFF-13 duplicate-parameter defence (the
+     * Keycloak CVE-2026-9689 class) is asserted HERE, at the seam that could silently collapse it.
+     */
     @Nested
-    @DisplayName("form_post callback dispatch (POST /auth/callback, body-parsed code/state)")
-    class FormPostCallbackDispatch {
+    @DisplayName("Query-mode callback dispatch (GET /auth/callback, raw-query code/state)")
+    class QueryCallbackDispatch {
 
         private static final String RETURN_URL = "/dashboard";
         private static final String RAW_ACCESS_TOKEN = "raw-access-token";
@@ -382,36 +504,69 @@ class GatewayEdgeRouteBffWiringTest {
             pendingStore.store(pending);
             bindingCookieHeader = bindingCodec.toSetCookieHeader(pending.id()).split(";", 2)[0];
 
-            runtime = formPostRuntime();
+            runtime = callbackRuntime();
+        }
+
+        /** A {@code response_mode=query} callback: GET, {@code code}/{@code state} in the raw query, no body. */
+        private BffRuntime.ReservedHttpRequest queryCallback(String rawQuery) {
+            return new BffRuntime.ReservedHttpRequest(rawQuery, bindingCookieHeader, null, null, null, null, "GET");
         }
 
         @Test
-        @DisplayName("POST body with code+state resolves the pending record and creates the session (302 + session cookie)")
-        void shouldCompleteFormPostLogin() {
+        @DisplayName("GET query with code+state resolves the pending record and creates the session (302 + session cookie)")
+        void shouldCompleteQueryModeLogin() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null,
-                            "code=auth-code&state=" + state, "POST"), now);
+                    queryCallback("code=auth-code&state=" + state), now);
 
-            assertEquals(302, response.status(), "form_post code exchange completes the login");
+            assertEquals(302, response.status(), "the query-mode code exchange completes the login");
             assertEquals(Optional.of(RETURN_URL), response.locationOptional());
             assertTrue(response.setCookieHeaders().stream()
                             .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
-                    "the session cookie is set from the form_post callback");
+                    "the session cookie is set from the query-mode callback");
         }
 
         @Test
-        @DisplayName("A duplicate code in the POST body is still rejected 400 (BFF-13 raw-parse defence)")
-        void shouldRejectDuplicateCodeInFormBody() {
+        @DisplayName("A duplicate code in the RAW QUERY is rejected 400 (BFF-13 defence survives the mode switch)")
+        void shouldRejectDuplicateCodeInRawQuery() {
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
-                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null,
-                            "code=first&code=second&state=" + state, "POST"), now);
+                    queryCallback("code=first&code=second&state=" + state), now);
 
-            assertEquals(400, response.status(), "a duplicated code in the form body is rejected by parse()");
+            assertEquals(400, response.status(),
+                    "a duplicated code reaches parse() uncollapsed and is rejected — a first-value-wins "
+                            + "projection anywhere between the edge and the endpoint would have let it through");
             assertTrue(pendingStore.consume(bindingCodec.readRecordId(bindingCookieHeader).orElseThrow(), now)
                     .isPresent(), "the record is untouched — parse fails before binding resolution");
         }
 
-        private BffRuntime formPostRuntime() {
+        @Test
+        @DisplayName("A duplicate state in the RAW QUERY is rejected 400 (BFF-13 defence survives the mode switch)")
+        void shouldRejectDuplicateStateInRawQuery() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    queryCallback("code=auth-code&state=" + state + "&state=attacker-supplied"), now);
+
+            assertEquals(400, response.status(),
+                    "a duplicated state is rejected too — state is the parameter the binding check compares, "
+                            + "so a collapsed map choosing either occurrence would be exploitable");
+            assertTrue(pendingStore.consume(bindingCodec.readRecordId(bindingCookieHeader).orElseThrow(), now)
+                    .isPresent(), "the record is untouched — parse fails before binding resolution");
+        }
+
+        /**
+         * The fail-closed counterpart: the edge no longer buffers a body for the callback, so a stray
+         * POST to that path arrives with no body at all. It must be an honest {@code 400}, never a
+         * {@code 500} from a null body reaching the parse.
+         */
+        @Test
+        @DisplayName("A stray POST to the callback arrives bodyless and is rejected 400, never 500")
+        void shouldRejectStrayPostBodyless() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    new BffRuntime.ReservedHttpRequest("", bindingCookieHeader, null, null, null, null, "POST"), now);
+
+            assertEquals(400, response.status(),
+                    "an absent form body normalizes to the empty string and fails for a missing state");
+        }
+
+        private BffRuntime callbackRuntime() {
             CallbackEndpoint callback = new CallbackEndpoint((context, params) -> {
                 Map<String, ClaimValue> accessClaims = new HashMap<>();
                 accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));

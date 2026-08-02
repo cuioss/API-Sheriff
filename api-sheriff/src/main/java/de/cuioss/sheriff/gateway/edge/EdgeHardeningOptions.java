@@ -40,8 +40,8 @@ import io.vertx.core.http.HttpServerOptions;
  * the graceful-shutdown wait for in-flight requests to complete on {@code SIGTERM}, and the
  * {@linkplain #reservedBodyMaxBytes() reserved-body ceiling} bounds the cumulative bytes the edge
  * will buffer for a gateway-terminated reserved POST path (rejected with {@code 413}), so an
- * unauthenticated caller cannot exhaust heap through the pre-authentication callback / back-channel
- * logout paths that never reach the per-route body cap.
+ * unauthenticated caller cannot exhaust heap through the pre-authentication back-channel logout
+ * path that never reaches the per-route body cap.
  * <p>
  * <strong>Transport bounds are fixed; the admission budget is operator-configurable.</strong> The
  * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
@@ -71,13 +71,13 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static final int IDLE_TIMEOUT_SECONDS = 60;
 
     /**
-     * Ceiling in bytes for a gateway-terminated reserved-path request body (the OIDC
-     * {@code response_mode=form_post} callback and the back-channel logout receiver).
+     * Ceiling in bytes for a gateway-terminated reserved-path request body — since the gateway drives
+     * {@code response_mode=query} and its OIDC callback is a bodyless top-level GET, the back-channel
+     * logout receiver is the one path this bounds.
      * <p>
-     * <strong>Derivation — deliberately not a second independent number.</strong> Both payloads are
-     * small, gateway-terminated inbound units of exactly the same class as the request header block
-     * this file already bounds: a form_post callback carries a urlencoded {@code code}/{@code state}
-     * pair (hundreds of bytes in practice) and a back-channel logout carries a single compact
+     * <strong>Derivation — deliberately not a second independent number.</strong> That payload is a
+     * small, gateway-terminated inbound unit of exactly the same class as the request header block
+     * this file already bounds: a back-channel logout carries a single compact
      * {@code logout_token} JWT (low single-digit KiB even with a large signing certificate chain).
      * The ceiling is therefore <em>defined as</em> {@link #MAX_HEADER_SIZE_BYTES} rather than
      * restated as its own literal, so the gateway's single 16 KiB inbound-unit bound cannot drift
@@ -159,9 +159,8 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
 
     /**
      * @return the byte ceiling the edge enforces on a gateway-terminated reserved-path request body
-     *         (form_post callback / back-channel logout). A request declaring more, or actually
-     *         streaming more, is rejected {@code 413} — see {@link #RESERVED_BODY_MAX_BYTES} for the
-     *         derivation
+     *         (the back-channel logout receiver). A request declaring more, or actually streaming
+     *         more, is rejected {@code 413} — see {@link #RESERVED_BODY_MAX_BYTES} for the derivation
      */
     public long reservedBodyMaxBytes() {
         return RESERVED_BODY_MAX_BYTES;

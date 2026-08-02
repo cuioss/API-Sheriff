@@ -44,6 +44,39 @@ session modes -- `session.mode: server` on port 10443 and `session.mode: cookie`
 as two Playwright projects that differ only in `baseURL`. "The two variants are browser-observably
 identical" stops being a claim in a design document and becomes an executable assertion.
 
+[[_why_the_java_it_suite_could_not_catch_it]]
+=== The first gap was not hypothetical -- it hid a real, total login failure
+
+The "no executable browser proof" gap above is written in the past tense for a reason: the very
+first run of this suite found a defect that made *every* browser login fail, against a Java IT
+suite that was fully green.
+
+The gateway drove the authorization request with the engine's default `response_mode=form_post`, so
+the IdP completed a login by returning an auto-submit form that *POSTs* `code`/`state` to the
+callback -- a *cross-site* POST. The short-lived browser-binding cookie is `SameSite=Lax`, and *a
+Lax cookie is not sent on a cross-site POST*. A real browser therefore arrived at the callback
+without the binding cookie and was rejected `403` on the callback's "no browser-binding cookie"
+branch. Every login. The fix was to drive `response_mode=query` so the callback is a top-level GET
+navigation, on which a Lax cookie *is* sent -- see
+link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode]
+for the mode, the rejected `SameSite=None` alternative, and the accepted code-in-URL tradeoff.
+
+[IMPORTANT]
+.The durable lesson: a green Java IT suite is not evidence about cookie policy
+====
+`BffKeycloakLoginFlow` replays cookies from a `Map` it manages itself. *`SameSite` is a browser
+policy, and RestAssured never enforces it* -- the helper records the attribute and sends the cookie
+regardless. The suite was therefore structurally incapable of observing this defect, and it was
+green throughout. It was not a weak test; it was a test of something else.
+
+Generalise it before adding the next control: *any control whose enforcement lives in the browser --
+`SameSite`, `Secure`, the `__Host-` prefix, CORS, `Referrer-Policy`, CSP -- cannot be proven by a
+programmatic HTTP client, however faithful.* Only a real browser applies the policy. When you add or
+change one, add the assertion to this Playwright suite; a green `Bff*IT` run tells you nothing about
+it. That limitation is now recorded on `BffKeycloakLoginFlow` itself, so the next reader meets it at
+the helper rather than in this document.
+====
+
 == Module Layout
 
 `demo-client/` is a Maven module with `<packaging>pom</packaging>` and no Java. Every Java plugin is

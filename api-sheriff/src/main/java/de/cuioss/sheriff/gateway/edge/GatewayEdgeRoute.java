@@ -127,8 +127,8 @@ import org.jspecify.annotations.Nullable;
  * last} so management / health routes keep working. Each request is admitted under a bounded
  * {@linkplain EdgeHardeningOptions#admissionCap() admission cap} <em>before</em> a virtual thread is
  * dispatched (a flood is rejected {@code 503} rather than spawning unbounded virtual threads), then
- * the request stream is paused and the whole pipeline runs on a virtual thread (a reserved POST path —
- * the form_post callback and back-channel logout — instead has its small body read on the event loop
+ * the request stream is paused and the whole pipeline runs on a virtual thread (the one body-carrying
+ * reserved POST path — back-channel logout — instead has its small body read on the event loop
  * first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body byte
  * ceiling}, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
  * <ol>
@@ -173,14 +173,14 @@ public class GatewayEdgeRoute {
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
     private static final String CLAIMS_PARAM = "claims";
-    private static final String RETURN_TO_PARAM = "return_to";
+    private static final String RETURN_URL_PARAM = "returnUrl";
     private static final String STATE_PARAM = "state";
     private static final int SERVICE_UNAVAILABLE = 503;
     private static final int INTERNAL_ERROR = 500;
     private static final int BAD_GATEWAY = 502;
     private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
-    // Fail-closed deadline for reading a tiny reserved-POST form body (the form_post callback's
-    // code/state, or a back-channel logout_token). It bounds a genuinely slow/stalled body so it cannot
+    // Fail-closed deadline for reading a tiny reserved-POST form body (a back-channel logout_token —
+    // the only such body left). It bounds a genuinely slow/stalled body so it cannot
     // pin admission indefinitely; it is deliberately generous because the body is read on a shared event
     // loop that can be scheduling-starved under CPU contention, and the deadline handler still honours a
     // body that has already fully arrived (see readReservedBodyThenDispatch), so a legitimate body is
@@ -189,8 +189,8 @@ public class GatewayEdgeRoute {
 
     /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
     private static final String ROUTE_KEY = "sheriff.route";
-    /** Holds the fully-read {@code application/x-www-form-urlencoded} body of a reserved POST path
-     * (form_post callback / back-channel logout), buffered on the event loop in {@link #handle} before
+    /** Holds the fully-read {@code application/x-www-form-urlencoded} body of the one body-carrying
+     * reserved POST path (back-channel logout), buffered on the event loop in {@link #handle} before
      * the virtual-thread dispatch so the handler never has to re-arm a paused stream. Left unset on a
      * read failure or timeout, so {@link #readFormBody} reads {@code null} and the receiver fails closed
      * to {@code 400}. */
@@ -408,7 +408,7 @@ public class GatewayEdgeRoute {
             recordRequestMetrics(ctx, startNanos);
         });
         if (needsReservedBodyRead(ctx)) {
-            // A reserved POST (form_post callback / back-channel logout) is dispatched on a virtual
+            // The one body-carrying reserved POST (back-channel logout) is dispatched on a virtual
             // thread that cannot reliably re-arm a paused request stream. Read the small, gateway-
             // terminated body here on its own event loop — the natural Vert.x path — under a bounded
             // deadline, stash it, then dispatch. This avoids any paused-stream / cross-thread resume.
@@ -421,9 +421,26 @@ public class GatewayEdgeRoute {
 
     /**
      * @return {@code true} when the request is a reserved POST path whose {@code x-www-form-urlencoded}
-     *         body a handler consumes (the form_post callback and back-channel logout). Matched on the
-     *         raw path against the reserved registry's exact-match set, so only an exact clean reserved
-     *         path (raw == canonical) triggers the eager body read; every other request pauses as before.
+     *         body a handler consumes. Matched on the raw path against the reserved registry's
+     *         exact-match set, so only an exact clean reserved path (raw == canonical) triggers the
+     *         eager body read; every other request pauses as before.
+     *         <p>
+     *         <strong>Allowlist decision — {@code CALLBACK} was removed, deliberately.</strong> The
+     *         gateway now drives the authorization request with {@code response_mode=query}, so the
+     *         OIDC callback is a top-level GET carrying its {@code code}/{@code state} in the query
+     *         string and consuming no body at all. Leaving {@code ReservedEndpoint.CALLBACK} in this
+     *         allowlist would not have been inert: it would keep granting <em>any unauthenticated</em>
+     *         {@code POST} to the callback path a pre-authentication, pre-pipeline body read of up to
+     *         {@link EdgeHardeningOptions#reservedBodyMaxBytes()} before the handler could reject it —
+     *         a retained surface with no remaining purpose. The tighter posture was chosen. A stray
+     *         {@code POST} to the callback path now takes the ordinary paused-stream path, reaches the
+     *         callback with no body, and is rejected {@code 400} for a missing {@code state} (see
+     *         {@code BffRuntime.callbackParameters}) — an honest rejection, never a {@code 500}. An
+     *         IdP still configured to {@code form_post} to this gateway is therefore no longer
+     *         supported, which is intended: the gateway itself selects the mode.
+     *         <p>
+     *         <strong>Back-channel logout is unaffected.</strong> It remains a genuinely
+     *         body-carrying reserved POST — it stays in this allowlist and its ceiling is unchanged.
      */
     private boolean needsReservedBodyRead(RoutingContext ctx) {
         if (!"POST".equalsIgnoreCase(ctx.request().method().name())) {
@@ -431,7 +448,7 @@ public class GatewayEdgeRoute {
         }
         String host = ctx.request().authority() != null ? ctx.request().authority().host() : ctx.request().host();
         return reservedPathRegistry.match(host, ctx.request().path())
-                .filter(kind -> kind == ReservedEndpoint.CALLBACK || kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
+                .filter(kind -> kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
                 .isPresent();
     }
 
@@ -441,7 +458,7 @@ public class GatewayEdgeRoute {
      * the stream drains on its own event loop, fully asynchronously — no virtual-thread {@code .get()}
      * blocks on a contended event loop.
      * <p>
-     * <strong>Two bounds, both mandatory.</strong> These two reserved paths are read
+     * <strong>Two bounds, both mandatory.</strong> The back-channel logout path is read
      * <em>pre-authentication</em> and <em>before</em> {@code basicChecksStage} /
      * {@code thoroughChecksStage} run, so the per-route {@link SecurityConfiguration#maxBodySize()} cap
      * that bounds every ordinary proxied route can never apply here, and the transport's
@@ -782,15 +799,15 @@ public class GatewayEdgeRoute {
     private void dispatchReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind) {
         String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
         String method = ctx.request().method().name();
-        // The reserved form body is read for two POST reserved paths: back-channel logout, and an OIDC
-        // response_mode=form_post callback (Keycloak POSTs the code/state to redirect_uri as an
-        // urlencoded body rather than returning a 302 with the code in the query). Both reuse the same
-        // bounded read; every other reserved path (and a GET callback) carries no body.
-        boolean callbackFormPost = kind == ReservedEndpoint.CALLBACK && "POST".equalsIgnoreCase(method);
-        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT || callbackFormPost ? readFormBody(ctx) : null;
+        // Back-channel logout is the ONE reserved path that still consumes a request body, so it is the
+        // only kind that reads the eagerly buffered body here (and the only kind needsReservedBodyRead
+        // buffers one for). The OIDC callback carries its code/state in the query under
+        // response_mode=query and is handed ctx.request().query() below — the genuinely raw, never
+        // map-collapsed query string the BFF-13 duplicate-parameter defence re-parses.
+        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? readFormBody(ctx) : null;
         BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
                 ctx.request().query(), cookieHeader, firstQueryParam(request, CLAIMS_PARAM),
-                firstQueryParam(request, RETURN_TO_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody, method);
+                firstQueryParam(request, RETURN_URL_PARAM), firstQueryParam(request, STATE_PARAM), rawFormBody, method);
         BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
         renderReserved(ctx, request, response);
     }
@@ -831,8 +848,8 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Returns the raw {@code application/x-www-form-urlencoded} body of a reserved POST path (the OIDC
-     * {@code response_mode=form_post} callback and back-channel logout), buffered on the event loop in
+     * Returns the raw {@code application/x-www-form-urlencoded} body of the one reserved POST path that
+     * still carries one — the back-channel logout receiver — buffered on the event loop in
      * {@link #handle} before this virtual-thread dispatch. A read failure or timeout leaves
      * {@link #RESERVED_BODY_KEY} unset, so this returns {@code null} — the fail-closed default a
      * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token). An
