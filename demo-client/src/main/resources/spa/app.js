@@ -177,13 +177,53 @@ function render(result) {
 }
 
 /**
+ * Renders a probe that never produced a response at all.
+ *
+ * Two causes reach here, and the second is the one worth seeing: a transport or TLS failure, and a
+ * REDIRECT -- `redirect: 'error'` (rule 1) turns the redirect this endpoint must never send into a
+ * rejected promise. Without this the page would sit on its initial `Loading...` forever and the
+ * contract violation would exist only as an unhandled rejection in the console.
+ *
+ * Every panel `render` owns is reset here, so a failure after a success leaves no stale identity on
+ * screen. Both navigation buttons are hidden because a failed probe discloses nothing about whether
+ * a session exists -- which is exactly what the `unknown` auth state says.
+ *
+ * @param {unknown} reason the rejection value from the probe
+ */
+function renderTransportFailure(reason) {
+  setText(el('response-status'), EM_DASH);
+  setText(el('response-content-type'), EM_DASH);
+  setText(el('response-cache-control'), EM_DASH);
+
+  setText(el('auth-state'), 'unknown');
+  setText(el('status'), 'The probe did not complete. No response was observed.');
+
+  el('login').hidden = true;
+  el('logout').hidden = true;
+
+  // The message only: it describes the transport, never a response body, and there is no token
+  // material anywhere in this client to leak into it.
+  const detail = reason instanceof Error ? reason.message : String(reason);
+  const problem = el('problem');
+  problem.hidden = false;
+  setText(problem, `Request failed ${EM_DASH} ${detail}`);
+
+  renderPairs(el('claims'), null, 'No claims disclosed.');
+  renderPairs(el('session'), null, 'No live session.');
+}
+
+/**
  * Runs the selected claim view and renders the outcome.
  *
  * @returns {Promise<void>} resolves once the panels are updated
  */
 async function requestSelectedView() {
   const selected = CLAIM_VIEWS.find((view) => view.id === el('claim-view').value);
-  render(await probeUserInfo(selected ? selected.claims : null));
+  try {
+    render(await probeUserInfo(selected ? selected.claims : null));
+  } catch (reason) {
+    renderTransportFailure(reason);
+  }
 }
 
 /**

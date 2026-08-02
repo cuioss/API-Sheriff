@@ -48,4 +48,31 @@ test.describe('anonymous contract', () => {
 
     await captureState(demoPage, testInfo, 'anonymous');
   });
+
+  test('a probe that never answers renders the failure instead of leaving the page loading', async ({
+    page,
+  }) => {
+    // The raw `page`, not `demoPage`: the interception has to be installed BEFORE the navigation
+    // that fires the SPA's first probe, and `demoPage` has already navigated.
+    await page.route(
+      (url) => url.pathname === RESERVED.userInfo,
+      (route) => route.abort('failed')
+    );
+
+    await page.goto(SPA.index);
+
+    // The page must leave its initial 'Loading...' state. A transport failure is a state the SPA
+    // knows how to detect (it is also how `redirect: 'error'` surfaces a forbidden redirect), so it
+    // has to be a state the SPA renders.
+    await expect(page.getByTestId('problem')).toBeVisible();
+    await expect(page.getByTestId('problem')).toContainText('Request failed');
+    await expect(page.getByTestId('status')).toHaveText(
+      'The probe did not complete. No response was observed.'
+    );
+    await expect(page.getByTestId('auth-state')).toHaveText('unknown');
+    // Nothing is disclosed and no navigation is offered: a failed probe says nothing about whether
+    // a session exists.
+    await expect(page.getByTestId('login')).toBeHidden();
+    await expect(page.getByTestId('logout')).toBeHidden();
+  });
 });
