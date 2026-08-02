@@ -97,7 +97,7 @@ class AssetResponseEnvelopeTest {
             Set<String> builtIn = AssetResponseEnvelope.builtInExtensions();
 
             assertEquals(Set.of("html", "htm", "css", "js", "mjs", "json", "map", "xml", "txt", "svg",
-                    "png", "jpg", "jpeg", "gif", "webp", "ico", "woff", "woff2", "ttf", "pdf", "wasm"),
+                            "png", "jpg", "jpeg", "gif", "webp", "ico", "woff", "woff2", "ttf", "pdf", "wasm"),
                     builtIn,
                     "the built-in extension set is the boot validator's source of truth for the "
                             + "add-only refusal and must not drift from the map itself");

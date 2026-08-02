@@ -26,6 +26,7 @@ import javax.net.ssl.SSLContext;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

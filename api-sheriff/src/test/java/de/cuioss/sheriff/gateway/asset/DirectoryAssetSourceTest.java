@@ -189,7 +189,7 @@ class DirectoryAssetSourceTest {
 
     @Test
     @DisplayName("Should serve an operator-declared extension with the operator's content type")
-    void shouldServeOperatorDeclaredExtension() throws IOException {
+    void shouldServeOperatorDeclaredExtension() throws Exception {
         Files.writeString(root.resolve("site.webmanifest"), "{}");
         DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC,
                 Map.of("webmanifest", "application/manifest+json"));
