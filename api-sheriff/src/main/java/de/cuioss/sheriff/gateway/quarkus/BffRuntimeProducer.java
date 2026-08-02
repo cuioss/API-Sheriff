@@ -159,12 +159,12 @@ public class BffRuntimeProducer {
     @Produces
     @Singleton
     public BffRuntime bffRuntime() {
-        Optional<OidcConfig> oidc = gatewayConfig.oidc();
-        if (!isBffMode(oidc)) {
+        OidcConfig oidc = gatewayConfig.oidc();
+        if (oidc == null || !isBffMode(oidc)) {
             LOGGER.debug("No BFF-mode oidc block — BFF runtime inert (bearer-only proxy path unchanged)");
             return BffRuntime.inert();
         }
-        return build(oidc.orElseThrow());
+        return build(oidc);
     }
 
     /**
@@ -172,37 +172,36 @@ public class BffRuntimeProducer {
      * {@code session.mode} — {@code server} or {@code cookie} — provided a {@code redirect_uri} is
      * configured. An unrecognised or absent mode leaves the gateway bearer-only.
      */
-    private static boolean isBffMode(Optional<OidcConfig> oidc) {
-        boolean recognisedMode = oidc.flatMap(OidcConfig::session)
-                .map(OidcConfig.Session::isRecognisedMode).orElse(false);
-        boolean hasRedirect = oidc.flatMap(OidcConfig::redirectUri).isPresent();
-        return recognisedMode && hasRedirect;
-    }
-
-    private static boolean isCookieMode(Optional<OidcConfig.Session> session) {
+    private static boolean isBffMode(OidcConfig oidc) {
+        OidcConfig.Session session = oidc.session();
         // The SHARED predicate on the config model, identical to the one boot validation and the
         // edge's pre-route Cookie header-value cap read — never a locally-declared constant.
-        return session.map(OidcConfig.Session::isCookieMode).orElse(false);
+        return session != null && session.isRecognisedMode() && oidc.redirectUri() != null;
     }
 
     private BffRuntime build(OidcConfig oidc) {
-        String redirectUri = oidc.redirectUri().orElseThrow();
+        // Both are guaranteed non-null by isBffMode, which every caller of build(...) clears first;
+        // the guards make that boot-time contract explicit rather than implied.
+        String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
+        OidcConfig.Session session = Objects.requireNonNull(oidc.session(), "oidc.session");
         String gatewayOrigin = originOf(redirectUri);
-        String issuer = oidc.issuer().orElse(gatewayOrigin);
-        String clientId = oidc.clientId().orElse("");
-        String clientSecret = oidc.clientSecret().orElse("");
+        String issuer = Objects.requireNonNullElse(oidc.issuer(), gatewayOrigin);
+        String clientId = Objects.requireNonNullElse(oidc.clientId(), "");
+        String clientSecret = Objects.requireNonNullElse(oidc.clientSecret(), "");
 
-        Optional<OidcConfig.Session> session = oidc.session();
         Duration sessionTtl = Duration.ofSeconds(
-                session.flatMap(OidcConfig.Session::ttlSeconds).orElse(DEFAULT_SESSION_TTL_SECONDS));
-        String cookieName = session.flatMap(OidcConfig.Session::cookieName)
-                .orElse(SessionCookieCodec.DEFAULT_COOKIE_NAME);
-        int maxSessions = session.flatMap(OidcConfig.Session::maxSessions).orElse(DEFAULT_MAX_SESSIONS);
-        Duration refreshLeeway = Duration.ofSeconds(session.flatMap(OidcConfig.Session::refresh)
-                .flatMap(OidcConfig.Refresh::leewaySeconds).orElse(DEFAULT_REFRESH_LEEWAY_SECONDS));
-        Set<String> trustedOrigins = Set.copyOf(session.flatMap(OidcConfig.Session::csrf)
-                .map(OidcConfig.Csrf::trustedOrigins).filter(list -> !list.isEmpty())
-                .orElse(List.of(gatewayOrigin)));
+                Objects.requireNonNullElse(session.ttlSeconds(), DEFAULT_SESSION_TTL_SECONDS));
+        String cookieName = Objects.requireNonNullElse(session.cookieName(),
+                SessionCookieCodec.DEFAULT_COOKIE_NAME);
+        int maxSessions = Objects.requireNonNullElse(session.maxSessions(), DEFAULT_MAX_SESSIONS);
+        OidcConfig.Refresh refresh = session.refresh();
+        Duration refreshLeeway = Duration.ofSeconds(Objects.requireNonNullElse(
+                refresh == null ? null : refresh.leewaySeconds(), DEFAULT_REFRESH_LEEWAY_SECONDS));
+        OidcConfig.Csrf csrf = session.csrf();
+        List<String> declaredTrustedOrigins = csrf == null ? List.of() : csrf.trustedOrigins();
+        Set<String> trustedOrigins = declaredTrustedOrigins.isEmpty()
+                ? Set.of(gatewayOrigin)
+                : Set.copyOf(declaredTrustedOrigins);
 
         ClientConfiguration clientConfiguration = ClientConfiguration.builder()
                 .issuer(issuer).clientId(clientId).clientSecret(clientSecret)
@@ -233,7 +232,7 @@ public class BffRuntimeProducer {
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
         // selects only which implementation is assembled — everything below is mode-independent.
-        SessionBinding sessionBinding = isCookieMode(session)
+        SessionBinding sessionBinding = session.isCookieMode()
                 ? cookieSessionBinding(session, cookieName, sessionTtl)
                 : new ServerSessionBinding(new InMemorySessionStore(maxSessions),
                 new SessionCookieCodec(cookieName, sessionTtl));
@@ -293,9 +292,10 @@ public class BffRuntimeProducer {
                 pendingStore, bindingCookieCodec, gatewayOrigin);
 
         // D11 user-info fold — validated ID-token claims through the engine, capped by the allowlist.
+        OidcConfig.UserInfo userInfo = oidc.userInfo();
         ClaimAllowlistFilter claimFilter = new ClaimAllowlistFilter(
-                oidc.userInfo().map(OidcConfig.UserInfo::allowedClaims).orElse(List.of()),
-                oidc.userInfo().map(OidcConfig.UserInfo::defaultView).orElse(List.of()));
+                userInfo == null ? List.of() : userInfo.allowedClaims(),
+                userInfo == null ? List.of() : userInfo.defaultView());
         UserInfoEndpoint userInfoEndpoint = new UserInfoEndpoint(sessionBinding, claimFilter,
                 sessionRecord -> toClaimMap(idBridge.validateRefreshedIdToken(sessionRecord.idToken()).getClaims()));
 
@@ -325,7 +325,7 @@ public class BffRuntimeProducer {
         // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
         // resolved — this is the line an operator greps to confirm which binding came up.
         LOGGER.debug("%s-mode BFF runtime assembled for origin %s (issuer %s)",
-                isCookieMode(session) ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
+                session.isCookieMode() ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER,
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
@@ -349,13 +349,15 @@ public class BffRuntimeProducer {
      * declared number that also drives the edge's pre-route {@code Cookie} header-value cap, so the
      * two ends of the round trip cannot drift apart.
      */
-    private static SessionBinding cookieSessionBinding(Optional<OidcConfig.Session> session, String cookieName,
+    private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
             Duration sessionTtl) {
+        // CookieKeyMaterial lives outside this conversion's footprint and still takes Optional key
+        // references, so the two @Nullable reads are lifted at the call boundary rather than inside it.
         CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(
-                session.flatMap(OidcConfig.Session::encryptionKey),
-                session.flatMap(OidcConfig.Session::previousKey));
-        int maxCookieSize = session.flatMap(OidcConfig.Session::maxCookieSize)
-                .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+                Optional.ofNullable(session.encryptionKey()),
+                Optional.ofNullable(session.previousKey()));
+        int maxCookieSize = Objects.requireNonNullElse(session.maxCookieSize(),
+                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
         LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s, maxCookieSize=%s",
                 keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey(), maxCookieSize);
         return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
@@ -364,10 +366,11 @@ public class BffRuntimeProducer {
 
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,
             SessionBinding sessionBinding) {
-        Optional<OidcConfig.Logout> logout = oidc.logout();
-        String postLogoutRedirectUri = logout.flatMap(OidcConfig.Logout::postLogoutRedirectUri)
-                .orElse(gatewayOrigin + "/");
-        String finalRedirect = logout.flatMap(OidcConfig.Logout::finalRedirect).orElse(DEFAULT_FINAL_REDIRECT);
+        OidcConfig.Logout logout = oidc.logout();
+        String postLogoutRedirectUri = Objects.requireNonNullElse(
+                logout == null ? null : logout.postLogoutRedirectUri(), gatewayOrigin + "/");
+        String finalRedirect = Objects.requireNonNullElse(
+                logout == null ? null : logout.finalRedirect(), DEFAULT_FINAL_REDIRECT);
         String endSessionEndpoint = metadata.getEndSessionEndpoint()
                 .orElseThrow(() -> new IllegalStateException(
                         "OIDC provider metadata declares no end_session_endpoint — RP-initiated logout unavailable"));

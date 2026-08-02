@@ -17,11 +17,9 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Optional;
-
 
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -47,15 +45,15 @@ class ReservedPathRegistryTest {
 
     private static ReservedPathRegistry fullyConfigured() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
-                .path(Optional.of(LOGOUT_PATH))
-                .postLogoutRedirectUri(Optional.of("https://" + OIDC_HOST + LOGOUT_RETURN_PATH))
-                .backchannelPath(Optional.of(BACKCHANNEL_PATH))
+                .path(LOGOUT_PATH)
+                .postLogoutRedirectUri("https://" + OIDC_HOST + LOGOUT_RETURN_PATH)
+                .backchannelPath(BACKCHANNEL_PATH)
                 .build();
         OidcConfig oidc = OidcConfig.builder()
-                .redirectUri(Optional.of("https://" + OIDC_HOST + CALLBACK_PATH))
-                .logout(Optional.of(logout))
+                .redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
+                .logout(logout)
                 .build();
-        return ReservedPathRegistry.from(Optional.of(oidc));
+        return ReservedPathRegistry.from(oidc);
     }
 
     @Nested
@@ -122,7 +120,7 @@ class ReservedPathRegistryTest {
         @Test
         @DisplayName("Should be empty and never match when no oidc block is present")
         void shouldBeEmptyWithoutOidc() {
-            ReservedPathRegistry registry = ReservedPathRegistry.from(Optional.empty());
+            ReservedPathRegistry registry = ReservedPathRegistry.from(null);
             assertTrue(registry.isEmpty());
             assertFalse(registry.isReserved(OIDC_HOST, CALLBACK_PATH));
         }
@@ -131,17 +129,11 @@ class ReservedPathRegistryTest {
         @DisplayName("Should be empty when the oidc block declares no redirect_uri (no OIDC host to bind to)")
         void shouldBeEmptyWithoutRedirectUri() {
             OidcConfig oidc = OidcConfig.builder()
-                    .logout(Optional.of(OidcConfig.Logout.builder().path(Optional.of(LOGOUT_PATH)).build()))
+                    .logout(OidcConfig.Logout.builder().path(LOGOUT_PATH).build())
                     .build();
-            ReservedPathRegistry registry = ReservedPathRegistry.from(Optional.of(oidc));
+            ReservedPathRegistry registry = ReservedPathRegistry.from(oidc);
             assertTrue(registry.isEmpty(), "no redirect_uri -> no OIDC host -> no reserved paths");
             assertFalse(registry.isReserved(OIDC_HOST, LOGOUT_PATH));
-        }
-
-        @Test
-        @DisplayName("Should reject a null oidc argument")
-        void shouldRejectNullArgument() {
-            assertThrows(NullPointerException.class, () -> ReservedPathRegistry.from(null));
         }
     }
 }

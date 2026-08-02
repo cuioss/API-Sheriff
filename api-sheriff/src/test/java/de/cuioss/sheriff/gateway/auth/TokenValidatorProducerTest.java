@@ -24,7 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.net.URI;
 import java.util.List;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -70,8 +69,8 @@ class TokenValidatorProducerTest {
         TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                 .name("primary")
                 .issuer(ISSUER)
-                .audience(Optional.of("api-sheriff"))
-                .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").url(Optional.of(JWKS_URL)).build()))
+                .audience("api-sheriff")
+                .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
                 .build());
 
         // Act
@@ -88,7 +87,7 @@ class TokenValidatorProducerTest {
         TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                 .name("primary")
                 .issuer(ISSUER)
-                .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").url(Optional.of(JWKS_URL)).build()))
+                .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
                 .build());
 
         // Act
@@ -127,7 +126,7 @@ class TokenValidatorProducerTest {
         TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                 .name("primary")
                 .issuer(ISSUER)
-                .jwks(Optional.of(IssuerConfig.Jwks.builder().source(source).build()))
+                .jwks(IssuerConfig.Jwks.builder().source(source).build())
                 .build());
 
         // Act
@@ -156,7 +155,7 @@ class TokenValidatorProducerTest {
             // Arrange — an http issuer that says nothing about egress
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .build();
 
             // Act
@@ -175,7 +174,7 @@ class TokenValidatorProducerTest {
             // Arrange — the field is present but carries no entries
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .allowedEgressHosts(List.of())
                     .build();
 
@@ -195,7 +194,7 @@ class TokenValidatorProducerTest {
             // Arrange — the trusted IdP host is named explicitly
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .allowedEgressHosts(List.of(BLOCKED_HOST))
                     .build();
 
@@ -213,7 +212,7 @@ class TokenValidatorProducerTest {
             // Arrange — a different host is allowlisted than the one being checked
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .allowedEgressHosts(List.of("some-other-idp.internal"))
                     .build();
 
@@ -231,7 +230,7 @@ class TokenValidatorProducerTest {
             // Arrange
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .allowedEgressHosts(List.of("some-other-idp.internal", BLOCKED_HOST))
                     .build();
 
@@ -250,11 +249,11 @@ class TokenValidatorProducerTest {
             TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                     .name("benchmark-keycloak")
                     .issuer(ISSUER)
-                    .jwks(Optional.of(IssuerConfig.Jwks.builder()
+                    .jwks(IssuerConfig.Jwks.builder()
                             .source("http")
-                            .url(Optional.of(JWKS_URL))
+                            .url(JWKS_URL)
                             .allowedEgressHosts(List.of(BLOCKED_HOST))
-                            .build()))
+                            .build())
                     .build());
 
             // Act
@@ -266,7 +265,7 @@ class TokenValidatorProducerTest {
 
         private static EgressPolicy egressPolicyFor(IssuerConfig.Jwks jwks) {
             IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER)
-                    .jwks(Optional.of(jwks)).build();
+                    .jwks(jwks).build();
             return producerFor(issuer).toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
         }
     }
@@ -284,7 +283,7 @@ class TokenValidatorProducerTest {
             TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .build();
             IssuerConfig issuer = issuerWith(jwks);
 
@@ -304,7 +303,7 @@ class TokenValidatorProducerTest {
             // Arrange — a resolver whose registry would fail any lookup
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
+                    .url(JWKS_URL)
                     .build();
             IssuerConfig issuer = issuerWith(jwks);
 
@@ -320,8 +319,8 @@ class TokenValidatorProducerTest {
             // Arrange
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
-                    .tlsProfile(Optional.of(PROFILE))
+                    .url(JWKS_URL)
+                    .tlsProfile(PROFILE)
                     .build();
             IssuerConfig issuer = issuerWith(jwks);
 
@@ -340,8 +339,8 @@ class TokenValidatorProducerTest {
             // Arrange — the profile is named but the deployment bound nothing
             IssuerConfig issuer = issuerWith(IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of(JWKS_URL))
-                    .tlsProfile(Optional.of(PROFILE))
+                    .url(JWKS_URL)
+                    .tlsProfile(PROFILE)
                     .build());
 
             // Act
@@ -360,9 +359,9 @@ class TokenValidatorProducerTest {
             // which needs BOTH the egress widening and the trust profile to work at all
             IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
                     .source("http")
-                    .url(Optional.of("https://localhost:8443/jwks"))
+                    .url("https://localhost:8443/jwks")
                     .allowedEgressHosts(List.of("localhost"))
-                    .tlsProfile(Optional.of(PROFILE))
+                    .tlsProfile(PROFILE)
                     .build();
             IssuerConfig issuer = issuerWith(jwks);
 
@@ -378,7 +377,7 @@ class TokenValidatorProducerTest {
         }
 
         private static IssuerConfig issuerWith(IssuerConfig.Jwks jwks) {
-            return IssuerConfig.builder().name("corporate").issuer(ISSUER).jwks(Optional.of(jwks)).build();
+            return IssuerConfig.builder().name("corporate").issuer(ISSUER).jwks(jwks).build();
         }
     }
 
@@ -401,7 +400,7 @@ class TokenValidatorProducerTest {
             TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                     .name("primary")
                     .issuer(ISSUER)
-                    .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").url(Optional.of(JWKS_URL)).build()))
+                    .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
                     .build());
 
             // Act & Assert — a no-op onStartup would not dereference the validator and would not throw
@@ -416,7 +415,7 @@ class TokenValidatorProducerTest {
             TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
                     .name("primary")
                     .issuer(ISSUER)
-                    .jwks(Optional.of(IssuerConfig.Jwks.builder().source("http").url(Optional.of(JWKS_URL)).build()))
+                    .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
                     .build());
             TokenValidator validator = producer.gatewayTokenValidator();
 
@@ -444,7 +443,7 @@ class TokenValidatorProducerTest {
     private static TokenValidatorProducer producerFor(IssuerConfig issuer, TestTlsConfigurationRegistry registry) {
         GatewayConfig config = GatewayConfig.builder()
                 .version(1)
-                .tokenValidation(Optional.of(new TokenValidationConfig(List.of(issuer))))
+                .tokenValidation(new TokenValidationConfig(List.of(issuer)))
                 .build();
         return new TokenValidatorProducer(config, new JwksTrustProfileResolver(registry));
     }

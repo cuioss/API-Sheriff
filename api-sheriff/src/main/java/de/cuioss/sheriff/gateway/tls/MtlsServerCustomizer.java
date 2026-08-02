@@ -16,8 +16,6 @@
 package de.cuioss.sheriff.gateway.tls;
 
 import java.util.Objects;
-import java.util.Optional;
-
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
@@ -72,12 +70,16 @@ public class MtlsServerCustomizer implements HttpServerOptionsCustomizer {
      */
     @Override
     public void customizeHttpsServer(HttpServerOptions options) {
-        Optional<TlsConfig.Mtls> mtls = gatewayConfig.tls().flatMap(TlsConfig::mtls);
-        if (mtls.isEmpty() || !mtls.get().enabled()) {
+        TlsConfig tls = gatewayConfig.tls();
+        TlsConfig.Mtls mtls = tls == null ? null : tls.mtls();
+        if (mtls == null || !mtls.enabled()) {
             return;
         }
-        String clientCa = mtls.get().clientCa().orElseThrow(() -> new IllegalStateException(
-                "Refusing to start — tls.mtls.enabled requires a client_ca trust anchor"));
+        String clientCa = mtls.clientCa();
+        if (clientCa == null) {
+            throw new IllegalStateException(
+                    "Refusing to start — tls.mtls.enabled requires a client_ca trust anchor");
+        }
         options.setClientAuth(ClientAuth.REQUIRED);
         options.setTrustOptions(new PemTrustOptions().addCertPath(clientCa));
         LOGGER.debug("mTLS enabled: terminated HTTPS listener requires a client certificate signed by '%s'",

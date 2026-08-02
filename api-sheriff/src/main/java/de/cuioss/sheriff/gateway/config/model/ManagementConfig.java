@@ -15,8 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.Objects;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -40,19 +39,12 @@ import lombok.Builder;
  * therefore declares {@code management.port} solely in order to refuse it, with a message naming the
  * property that does own the port.
  *
- * @param tls the management-interface TLS policy, empty when omitted
+ * @param tls the management-interface TLS policy, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record ManagementConfig(Optional<ManagementTls> tls) {
-
-    /**
-     * Canonical constructor normalizing an absent {@code tls} block to {@link Optional#empty()}.
-     */
-    public ManagementConfig {
-        tls = Objects.requireNonNullElse(tls, Optional.empty());
-    }
+public record ManagementConfig(@Nullable ManagementTls tls) {
 
     /**
      * TLS policy for the management interface.

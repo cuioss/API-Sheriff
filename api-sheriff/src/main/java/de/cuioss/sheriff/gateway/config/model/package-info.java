@@ -26,11 +26,13 @@
  * <p>
  * <strong>Immutability and thread-safety.</strong> Every type here is an
  * immutable Java record. Collection components are defensively copied into
- * unmodifiable collections by the canonical constructors, and absent optional
- * scalars are represented as {@link java.util.Optional} (never {@code null}) and
- * absent collections as empty collections (never {@code null}). Instances are
- * therefore safe to publish and share across threads without external
- * synchronization.
+ * unmodifiable collections by the canonical constructors. Under this package's
+ * {@link org.jspecify.annotations.NullMarked} default every component is
+ * non-null unless it is explicitly annotated
+ * {@link org.jspecify.annotations.Nullable}: an absent optional scalar is
+ * represented as {@code null}, and an absent collection as an empty collection
+ * (never {@code null}). Instances are therefore safe to publish and share across
+ * threads without external synchronization.
  * <p>
  * <strong>Framework-agnostic seam (ADR-0005).</strong> This package carries no
  * CDI, Quarkus, Vert.x, MicroProfile, or Micrometer imports. Collaborators are

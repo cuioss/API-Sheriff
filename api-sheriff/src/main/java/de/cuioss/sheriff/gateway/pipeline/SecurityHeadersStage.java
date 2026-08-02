@@ -22,6 +22,9 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Cors;
+import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Hsts;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 0 — response-header preparation and CORS preflight, run before authentication.
@@ -43,13 +46,13 @@ public final class SecurityHeadersStage {
     private static final int NO_CONTENT = 204;
     private static final String WILDCARD_ORIGIN = "*";
 
-    private final Optional<SecurityHeadersConfig> config;
+    private final @Nullable SecurityHeadersConfig config;
 
     /**
-     * @param config the global {@code security_headers} posture, empty when none is configured
+     * @param config the global {@code security_headers} posture, {@code null} when none is configured
      */
-    public SecurityHeadersStage(Optional<SecurityHeadersConfig> config) {
-        this.config = Objects.requireNonNull(config, "config");
+    public SecurityHeadersStage(@Nullable SecurityHeadersConfig config) {
+        this.config = config;
     }
 
     /**
@@ -59,24 +62,30 @@ public final class SecurityHeadersStage {
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
-        config.ifPresent(headers -> applyResponseHeaders(request, headers));
-        config.flatMap(SecurityHeadersConfig::cors)
-                .filter(cors -> cors.enabled().orElse(Boolean.FALSE))
-                .ifPresent(cors -> applyCors(request, cors));
+        if (config == null) {
+            return;
+        }
+        applyResponseHeaders(request, config);
+        Cors cors = config.cors();
+        if (cors != null && Boolean.TRUE.equals(cors.enabled())) {
+            applyCors(request, cors);
+        }
     }
 
     private static void applyResponseHeaders(PipelineRequest request, SecurityHeadersConfig headers) {
-        headers.hsts().ifPresent(hsts -> {
-            StringBuilder value = new StringBuilder("max-age=").append(hsts.maxAge().orElse(0));
-            if (hsts.includeSubdomains().orElse(Boolean.FALSE)) {
+        Hsts hsts = headers.hsts();
+        if (hsts != null) {
+            Integer maxAge = hsts.maxAge();
+            StringBuilder value = new StringBuilder("max-age=").append(maxAge != null ? maxAge : 0);
+            if (Boolean.TRUE.equals(hsts.includeSubdomains())) {
                 value.append("; includeSubDomains");
             }
             request.responseHeaders().put("Strict-Transport-Security", value.toString());
-        });
-        if (headers.contentTypeNosniff().orElse(Boolean.FALSE)) {
+        }
+        if (Boolean.TRUE.equals(headers.contentTypeNosniff())) {
             request.responseHeaders().put("X-Content-Type-Options", "nosniff");
         }
-        if (headers.frameDeny().orElse(Boolean.FALSE)) {
+        if (Boolean.TRUE.equals(headers.frameDeny())) {
             request.responseHeaders().put("X-Frame-Options", "DENY");
         }
     }
@@ -87,7 +96,7 @@ public final class SecurityHeadersStage {
             return;
         }
         request.responseHeaders().put("Access-Control-Allow-Origin", origin.get());
-        if (cors.allowCredentials().orElse(Boolean.FALSE)) {
+        if (Boolean.TRUE.equals(cors.allowCredentials())) {
             request.responseHeaders().put("Access-Control-Allow-Credentials", "true");
         }
         if (isPreflight(request)) {

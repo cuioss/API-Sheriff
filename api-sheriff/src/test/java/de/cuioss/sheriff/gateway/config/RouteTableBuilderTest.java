@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -27,8 +29,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
-
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
@@ -118,7 +118,7 @@ class RouteTableBuilderTest {
         MatchConfig match = MatchConfig.builder()
                 .pathPrefix(pathPrefix)
                 .methods(List.of(methods))
-                .host(Optional.of(host))
+                .host(host)
                 .build();
         return RouteConfig.builder().id(id).match(match).build();
     }
@@ -131,17 +131,17 @@ class RouteTableBuilderTest {
     private static RouteConfig routeWithToggles(String id, Boolean retry, Boolean notModified) {
         UpstreamConfig.UpstreamConfigBuilder upstream = UpstreamConfig.builder();
         if (retry != null) {
-            upstream.retry(Optional.of(UpstreamConfig.Retry.builder().enabled(Optional.of(retry)).build()));
+            upstream.retry(UpstreamConfig.Retry.builder().enabled(retry).build());
         }
         if (notModified != null) {
-            upstream.notModified(Optional.of(new UpstreamConfig.NotModified(Optional.of(notModified))));
+            upstream.notModified(new UpstreamConfig.NotModified(notModified));
         }
-        return RouteConfig.builder().id(id).match(match("/" + id)).upstream(Optional.of(upstream.build())).build();
+        return RouteConfig.builder().id(id).match(match("/" + id)).upstream(upstream.build()).build();
     }
 
     private static RouteConfig routeWithUpstreamPath(String id, String pathPrefix, String upstreamPath) {
-        UpstreamConfig upstream = UpstreamConfig.builder().path(Optional.of(upstreamPath)).build();
-        return RouteConfig.builder().id(id).match(match(pathPrefix)).upstream(Optional.of(upstream)).build();
+        UpstreamConfig upstream = UpstreamConfig.builder().path(upstreamPath).build();
+        return RouteConfig.builder().id(id).match(match(pathPrefix)).upstream(upstream).build();
     }
 
     private static ResolvedTopology topologyWithBasePath(String alias, String basePath) {
@@ -151,12 +151,12 @@ class RouteTableBuilderTest {
 
     private static EndpointConfig.EndpointConfigBuilder endpoint(String id, String alias) {
         return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias)
-                .auth(Optional.of(new AuthConfig("none", List.of())));
+                .auth(new AuthConfig("none", List.of()));
     }
 
     private static EndpointConfig.EndpointConfigBuilder anchoredEndpoint(String id, String alias, String anchorName) {
-        return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias).anchor(Optional.of(anchorName))
-                .auth(Optional.empty());
+        return EndpointConfig.builder().id(id).enabled(true).baseUrl(alias).anchor(anchorName)
+                .auth(null);
     }
 
     private static AnchorConfig anchor(String name, String prefix, AuthConfig auth, SecurityFilterConfig filter,
@@ -166,19 +166,19 @@ class RouteTableBuilderTest {
                 .pathPrefix(prefix)
                 .type(AnchorType.PROXY)
                 .access(AccessLevel.AUTHENTICATED)
-                .auth(Optional.ofNullable(auth))
-                .securityFilter(Optional.ofNullable(filter))
-                .securityHeaders(Optional.ofNullable(headers))
+                .auth(auth)
+                .securityFilter(filter)
+                .securityHeaders(headers)
                 .allowedMethods(methods == null ? List.of() : methods)
                 .build();
     }
 
     private static SecurityFilterConfig filter(String profile) {
-        return SecurityFilterConfig.builder().profile(Optional.of(profile)).build();
+        return SecurityFilterConfig.builder().profile(profile).build();
     }
 
     private static SecurityHeadersConfig headers() {
-        return SecurityHeadersConfig.builder().frameDeny(Optional.of(true)).build();
+        return SecurityHeadersConfig.builder().frameDeny(true).build();
     }
 
     private static ResolvedRoute find(RouteTable table, String id) {
@@ -200,7 +200,7 @@ class RouteTableBuilderTest {
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("GRPC"));
 
-            ResolvedUpstream upstream = find(table, "grpc-echo").upstream().orElseThrow();
+            ResolvedUpstream upstream = find(table, "grpc-echo").upstream();
             assertAll("the route upstream.path becomes the effective base path so the service segment survives",
                     () -> assertEquals("/de.cuioss.sheriff.api.integration.grpc.Echo", upstream.basePath(),
                             "the bare-service route path is materialized as the upstream base path"),
@@ -219,7 +219,7 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint),
                     topologyWithBasePath("UPSTREAM", "/anything"));
 
-            assertEquals("/anything/graphql", find(table, "httpbin-graphql").upstream().orElseThrow().basePath(),
+            assertEquals("/anything/graphql", find(table, "httpbin-graphql").upstream().basePath(),
                     "the route upstream.path replaces the alias base path wholesale — it must not be doubled to "
                             + "/anything/anything/graphql");
         }
@@ -234,7 +234,7 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint),
                     topologyWithBasePath("UPSTREAM", "/anything"));
 
-            assertEquals("/anything", find(table, "httpbin-proxy").upstream().orElseThrow().basePath(),
+            assertEquals("/anything", find(table, "httpbin-proxy").upstream().basePath(),
                     "a route without upstream.path keeps the alias-derived base path — the default proxy behavior");
         }
 
@@ -248,7 +248,7 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint),
                     topologyWithBasePath("UPSTREAM", "/anything"));
 
-            assertEquals("/anything", find(table, "httpbin-blank").upstream().orElseThrow().basePath(),
+            assertEquals("/anything", find(table, "httpbin-blank").upstream().basePath(),
                     "a blank upstream.path is treated as absent, keeping the alias base path");
         }
     }
@@ -343,7 +343,7 @@ class RouteTableBuilderTest {
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
-            assertEquals("orders.internal", find(table, "r").upstream().orElseThrow().host());
+            assertEquals("orders.internal", find(table, "r").upstream().host());
         }
 
         @Test
@@ -396,9 +396,9 @@ class RouteTableBuilderTest {
         @DisplayName("Should accept same-prefix routes made disjoint by mutually exclusive header presence")
         void shouldAcceptSamePrefixRoutesDisjointByHeaderPresence() {
             RouteConfig present = routeWithHeader("present", "/x",
-                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(true)).build());
+                    HeaderMatcher.builder().name("X-Debug").present(true).build());
             RouteConfig absent = routeWithHeader("absent", "/x",
-                    HeaderMatcher.builder().name("X-Debug").present(Optional.of(false)).build());
+                    HeaderMatcher.builder().name("X-Debug").present(false).build());
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(present, absent)).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -417,7 +417,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should apply a route-level auth override wholesale")
         void shouldApplyRouteAuthOverride() {
             RouteConfig secured = RouteConfig.builder().id("secured").match(match("/secured", HttpMethod.GET))
-                    .auth(Optional.of(new AuthConfig("bearer", List.of("read")))).build();
+                    .auth(new AuthConfig("bearer", List.of("read"))).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(secured)).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -429,7 +429,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should inherit the endpoint default auth when the route omits it")
         void shouldInheritEndpointAuth() {
             EndpointConfig endpoint = EndpointConfig.builder().id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(Optional.of(new AuthConfig("session", List.of())))
+                    .auth(new AuthConfig("session", List.of()))
                     .routes(List.of(route("r", HttpMethod.GET))).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -498,7 +498,7 @@ class RouteTableBuilderTest {
 
             ResolvedRoute resolved = find(table, "r");
             assertEquals("bearer", resolved.effectiveAuth().require(), "the anchor auth floor should materialize");
-            assertEquals(Optional.of("api"), resolved.anchor(), "the resolving anchor name should be retained");
+            assertEquals("api", resolved.anchor(), "the resolving anchor name should be retained");
         }
 
         @Test
@@ -508,7 +508,7 @@ class RouteTableBuilderTest {
                     .anchors(Map.of("api", anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, null)))
                     .build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
-                    .auth(Optional.of(new AuthConfig("session", List.of()))).build();
+                    .auth(new AuthConfig("session", List.of())).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
@@ -541,8 +541,7 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
             ResolvedRoute resolved = find(table, "r");
-            assertEquals(Optional.of("strict"),
-                    resolved.effectiveSecurityFilter().flatMap(SecurityFilterConfig::profile));
+            assertEquals("strict", resolved.effectiveSecurityFilter().profile());
         }
 
         @Test
@@ -551,13 +550,13 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway().anchors(Map.of("api",
                     anchor("api", "/api", new AuthConfig("bearer", List.of()), filter("strict"), null, null))).build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
-                    .securityFilter(Optional.of(filter("lenient"))).build();
+                    .securityFilter(filter("lenient")).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertEquals(Optional.of("lenient"),
-                    find(table, "r").effectiveSecurityFilter().flatMap(SecurityFilterConfig::profile),
+            assertEquals("lenient",
+                    find(table, "r").effectiveSecurityFilter().profile(),
                     "the route security_filter should replace the anchor block wholesale");
         }
 
@@ -594,8 +593,8 @@ class RouteTableBuilderTest {
         void shouldMaterializeAnchorSecurityHeadersElseGateway() {
             SecurityHeadersConfig anchorHeaders = headers();
             SecurityHeadersConfig gatewayHeaders = SecurityHeadersConfig.builder()
-                    .contentTypeNosniff(Optional.of(true)).build();
-            GatewayConfig config = gateway().securityHeaders(Optional.of(gatewayHeaders)).anchors(Map.of("api",
+                    .contentTypeNosniff(true).build();
+            GatewayConfig config = gateway().securityHeaders(gatewayHeaders).anchors(Map.of("api",
                     anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, anchorHeaders))).build();
             EndpointConfig anchored = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(routeWithPrefix("anchored", "/api/orders", HttpMethod.GET))).build();
@@ -605,9 +604,9 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(config, List.of(anchored, plain), topologyWith("ORDERS", "PUBLIC"));
 
             assertAll("security_headers resolves at gateway → anchor level only",
-                    () -> assertEquals(Optional.of(anchorHeaders), find(table, "anchored").effectiveSecurityHeaders(),
+                    () -> assertEquals(anchorHeaders, find(table, "anchored").effectiveSecurityHeaders(),
                             "an anchored route should carry the anchor security_headers"),
-                    () -> assertEquals(Optional.of(gatewayHeaders), find(table, "plain").effectiveSecurityHeaders(),
+                    () -> assertEquals(gatewayHeaders, find(table, "plain").effectiveSecurityHeaders(),
                             "an unanchored route should fall back to the gateway security_headers"));
         }
 
@@ -617,19 +616,19 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway().anchors(Map.of(
                     "api", anchor("api", "/api", new AuthConfig("bearer", List.of()), null, null, null),
                     "bff", anchor("bff", "/bff", new AuthConfig("session", List.of()), null, null, null))).build();
-            RouteConfig routeOnBff = RouteConfig.builder().id("r").anchor(Optional.of("bff"))
+            RouteConfig routeOnBff = RouteConfig.builder().id("r").anchor("bff")
                     .match(match("/bff/home", HttpMethod.GET)).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(routeOnBff)).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
             ResolvedRoute resolved = find(table, "r");
-            assertEquals(Optional.of("bff"), resolved.anchor(), "the per-route anchor override should win");
+            assertEquals("bff", resolved.anchor(), "the per-route anchor override should win");
             assertEquals("session", resolved.effectiveAuth().require());
         }
 
         @Test
-        @DisplayName("Should leave an unanchored route's anchor empty and behave exactly as before")
+        @DisplayName("Should leave an unanchored route's anchor absent and behave exactly as before")
         void shouldLeaveUnanchoredRouteEmpty() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(route("r", HttpMethod.GET))).build();
@@ -637,8 +636,8 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
             ResolvedRoute resolved = find(table, "r");
-            assertTrue(resolved.anchor().isEmpty(), "a route without any anchor ref carries no resolving anchor");
-            assertTrue(resolved.effectiveSecurityFilter().isEmpty());
+            assertNull(resolved.anchor(), "a route without any anchor ref carries no resolving anchor");
+            assertNull(resolved.effectiveSecurityFilter());
         }
     }
 
@@ -668,8 +667,7 @@ class RouteTableBuilderTest {
         void shouldLogResolvedProfileForRouteOmittingTheKnob() {
             // Arrange — no security_filter anywhere, so the route inherits the gateway-wide profile
             GatewayConfig config = gateway()
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("lenient"),
-                            Optional.empty())))
+                    .securityDefaults(new SecurityDefaultsConfig("lenient", null))
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
@@ -701,11 +699,10 @@ class RouteTableBuilderTest {
         void shouldLogDeclaredRouteProfile() {
             // Arrange
             GatewayConfig config = gateway()
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("strict"),
-                            Optional.empty())))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", null))
                     .build();
             RouteConfig declared = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
-                    .securityFilter(Optional.of(filter("none"))).build();
+                    .securityFilter(filter("none")).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(declared)).build();
 
             // Act
@@ -723,7 +720,7 @@ class RouteTableBuilderTest {
                             null, null)))
                     .build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET))
-                    .securityFilter(Optional.of(filter("lenient"))).build();
+                    .securityFilter(filter("lenient")).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").routes(List.of(route)).build();
 
             builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
@@ -753,9 +750,9 @@ class RouteTableBuilderTest {
         @DisplayName("Should let the endpoint upstream_defaults replace the global block wholesale")
         void shouldLetEndpointDefaultsReplaceGlobal() {
             GatewayConfig config = gateway()
-                    .upstreamDefaults(Optional.of(new UpstreamDefaultsConfig(true, true))).build();
+                    .upstreamDefaults(new UpstreamDefaultsConfig(true, true)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
-                    .upstreamDefaults(Optional.of(new UpstreamDefaultsConfig(false, false)))
+                    .upstreamDefaults(new UpstreamDefaultsConfig(false, false))
                     .routes(List.of(route("r", HttpMethod.GET))).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
@@ -769,7 +766,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should let a per-route toggle override the resolved endpoint value")
         void shouldLetPerRouteToggleOverride() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
-                    .upstreamDefaults(Optional.of(new UpstreamDefaultsConfig(false, false)))
+                    .upstreamDefaults(new UpstreamDefaultsConfig(false, false))
                     .routes(List.of(routeWithToggles("r", true, null))).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -783,7 +780,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should inherit the resolved value when a per-route toggle is absent")
         void shouldInheritWhenPerRouteToggleAbsent() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
-                    .upstreamDefaults(Optional.of(new UpstreamDefaultsConfig(false, true)))
+                    .upstreamDefaults(new UpstreamDefaultsConfig(false, true))
                     .routes(List.of(routeWithToggles("r", null, null))).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -804,7 +801,7 @@ class RouteTableBuilderTest {
             ForwardConfig forward = new ForwardConfig(List.of("Accept"), List.of("page"),
                     Map.of("X-Gateway", "api-sheriff"));
             RouteConfig route = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
-                    .forward(Optional.of(forward)).build();
+                    .forward(forward).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -839,16 +836,16 @@ class RouteTableBuilderTest {
                     .pathPrefix(prefix)
                     .type(AnchorType.ASSET)
                     .access(access)
-                    .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                    .auth(require == null ? null : new AuthConfig(require, List.of()))
                     .build();
         }
 
         private RouteConfig assetRoute(String id, String prefix, String anchorName, AssetConfig asset) {
             return RouteConfig.builder()
                     .id(id)
-                    .anchor(Optional.of(anchorName))
+                    .anchor(anchorName)
                     .match(match(prefix, HttpMethod.GET))
-                    .asset(Optional.of(asset))
+                    .asset(asset)
                     .build();
         }
 
@@ -858,20 +855,20 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway()
                     .anchors(Map.of("assets", assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
             AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
-                    .directory(Optional.of("/srv/assets")).build();
+                    .directory("/srv/assets").build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor(Optional.of("assets")).auth(Optional.of(new AuthConfig("none", List.of())))
+                    .anchor("assets").auth(new AuthConfig("none", List.of()))
                     .routes(List.of(assetRoute("bundle", "/assets", "assets", asset))).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
 
             ResolvedRoute resolved = find(table, "bundle");
-            assertTrue(resolved.upstream().isEmpty(), "an asset route carries no proxy upstream");
-            ResolvedAsset resolvedAsset = resolved.asset().orElseThrow();
+            assertNull(resolved.upstream(), "an asset route carries no proxy upstream");
+            ResolvedAsset resolvedAsset = resolved.asset();
             assertAll("directory asset materialization",
                     () -> assertEquals(AssetConfig.Source.DIRECTORY, resolvedAsset.source()),
-                    () -> assertEquals(Optional.of("/srv/assets"), resolvedAsset.directory()),
-                    () -> assertTrue(resolvedAsset.upstream().isEmpty(), "a directory action carries no upstream"),
+                    () -> assertEquals("/srv/assets", resolvedAsset.directory()),
+                    () -> assertNull(resolvedAsset.upstream(), "a directory action carries no upstream"),
                     () -> assertEquals(AccessLevel.PUBLIC, resolvedAsset.access(),
                             "the access level is inherited from the resolving anchor"));
         }
@@ -882,22 +879,22 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway().anchors(Map.of("assets",
                     assetAnchor("assets", "/assets", AccessLevel.AUTHENTICATED, "bearer"))).build();
             AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                    .upstream(Optional.of("SECONDARY")).build();
+                    .upstream("SECONDARY").build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor(Optional.of("assets")).auth(Optional.empty())
+                    .anchor("assets").auth(null)
                     .routes(List.of(assetRoute("cdn", "/assets", "assets", asset))).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
 
             ResolvedRoute resolved = find(table, "cdn");
-            ResolvedAsset resolvedAsset = resolved.asset().orElseThrow();
+            ResolvedAsset resolvedAsset = resolved.asset();
             assertAll("upstream asset materialization",
                     () -> assertEquals(AssetConfig.Source.UPSTREAM, resolvedAsset.source()),
-                    () -> assertEquals("secondary.internal", resolvedAsset.upstream().orElseThrow().host(),
+                    () -> assertEquals("secondary.internal", resolvedAsset.upstream().host(),
                             "the upstream alias resolves through the same topology the proxy action uses"),
-                    () -> assertTrue(resolvedAsset.directory().isEmpty(), "an upstream action carries no directory"),
+                    () -> assertNull(resolvedAsset.directory(), "an upstream action carries no directory"),
                     () -> assertEquals(AccessLevel.AUTHENTICATED, resolvedAsset.access()),
-                    () -> assertTrue(resolved.upstream().isEmpty(), "an asset route carries no proxy upstream"));
+                    () -> assertNull(resolved.upstream(), "an asset route carries no proxy upstream"));
         }
 
         @Test
@@ -906,20 +903,20 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway()
                     .anchors(Map.of("assets", assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
             AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
-                    .directory(Optional.of("/srv/assets")).build();
-            RouteConfig route = RouteConfig.builder().id("bundle").anchor(Optional.of("assets"))
+                    .directory("/srv/assets").build();
+            RouteConfig route = RouteConfig.builder().id("bundle").anchor("assets")
                     .match(match("/assets", HttpMethod.GET))
-                    .auth(Optional.of(new AuthConfig("bearer", List.of())))
-                    .asset(Optional.of(asset)).build();
+                    .auth(new AuthConfig("bearer", List.of()))
+                    .asset(asset).build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor(Optional.of("assets")).auth(Optional.empty()).routes(List.of(route)).build();
+                    .anchor("assets").auth(null).routes(List.of(route)).build();
 
             RouteTable table = builder.build(config, List.of(endpoint), topologyWith("WEB"));
 
             ResolvedRoute resolved = find(table, "bundle");
             assertEquals("bearer", resolved.effectiveAuth().require(),
                     "the route-level override should strengthen the public anchor's absent auth floor");
-            assertEquals(AccessLevel.AUTHENTICATED, resolved.asset().orElseThrow().access(),
+            assertEquals(AccessLevel.AUTHENTICATED, resolved.asset().access(),
                     "a route whose effective auth requires bearer must be governed AUTHENTICATED "
                             + "for caching purposes even though its anchor stays access: public");
         }
@@ -930,9 +927,9 @@ class RouteTableBuilderTest {
             GatewayConfig config = gateway().anchors(Map.of("assets",
                     assetAnchor("assets", "/assets", AccessLevel.PUBLIC, null))).build();
             AssetConfig asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                    .upstream(Optional.of("MISSING")).build();
+                    .upstream("MISSING").build();
             EndpointConfig endpoint = EndpointConfig.builder().id("web").enabled(true).baseUrl("WEB")
-                    .anchor(Optional.of("assets")).auth(Optional.of(new AuthConfig("none", List.of())))
+                    .anchor("assets").auth(new AuthConfig("none", List.of()))
                     .routes(List.of(assetRoute("cdn", "/assets", "assets", asset))).build();
             ResolvedTopology topology = topologyWith("WEB");
             List<EndpointConfig> endpoints = List.of(endpoint);
@@ -950,27 +947,27 @@ class RouteTableBuilderTest {
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
             ResolvedRoute resolved = find(table, "r");
-            assertTrue(resolved.upstream().isPresent(), "a proxy route resolves an upstream terminal action");
-            assertTrue(resolved.asset().isEmpty(), "a proxy route carries no asset terminal action");
+            assertNotNull(resolved.upstream(), "a proxy route resolves an upstream terminal action");
+            assertNull(resolved.asset(), "a proxy route carries no asset terminal action");
         }
 
         @Test
-        @DisplayName("Should resolve the empty-Optional (no-asset) path to the upstream action without throwing (S3655 guard)")
+        @DisplayName("Should resolve the null (no-asset) path to the upstream action without throwing (S3655 guard)")
         void shouldResolveNoAssetPathWithoutThrowing() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(route("proxy-only", HttpMethod.GET))).build();
 
             RouteTable table = assertDoesNotThrow(
                     () -> builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")),
-                    "the empty-Optional asset branch must resolve the upstream action without throwing");
+                    "the null asset branch must resolve the upstream action without throwing");
 
             ResolvedRoute resolved = find(table, "proxy-only");
-            assertAll("empty-Optional asset branch drives the upstream terminal action",
-                    () -> assertTrue(resolved.asset().isEmpty(), "the no-asset path leaves the asset action empty"),
-                    () -> assertTrue(resolved.upstream().isPresent(),
-                            "the guarded empty-asset branch resolves the upstream terminal action"),
-                    () -> assertEquals("orders.internal", resolved.upstream().orElseThrow().host(),
-                            "the resolved upstream host is driven from the guarded empty-asset branch"));
+            assertAll("null asset branch drives the upstream terminal action",
+                    () -> assertNull(resolved.asset(), "the no-asset path leaves the asset action absent"),
+                    () -> assertNotNull(resolved.upstream(),
+                            "the guarded absent-asset branch resolves the upstream terminal action"),
+                    () -> assertEquals("orders.internal", resolved.upstream().host(),
+                            "the resolved upstream host is driven from the guarded absent-asset branch"));
         }
     }
 
@@ -1057,9 +1054,9 @@ class RouteTableBuilderTest {
             String prefix = "/" + segment;
             String headerName = "X-" + segment;
             RouteConfig present = routeWithHeader("present", prefix,
-                    HeaderMatcher.builder().name(headerName).present(Optional.of(true)).build());
+                    HeaderMatcher.builder().name(headerName).present(true).build());
             RouteConfig absent = routeWithHeader("absent", prefix,
-                    HeaderMatcher.builder().name(headerName).present(Optional.of(false)).build());
+                    HeaderMatcher.builder().name(headerName).present(false).build());
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(present, absent)).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
@@ -1089,7 +1086,7 @@ class RouteTableBuilderTest {
             // The strengthened-floor case: the anchor stays access: public, but the route's own floor
             // must still govern the surface as authenticated (ADR-0007 permits strengthening).
             AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
-                    Optional.of(accessAnchor(AccessLevel.PUBLIC)), new AuthConfig(require, List.of()));
+                    accessAnchor(AccessLevel.PUBLIC), new AuthConfig(require, List.of()));
 
             assertEquals(AccessLevel.AUTHENTICATED, access);
         }
@@ -1099,7 +1096,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should fall back to the anchor's declared access for an effectively-unauthenticated route")
         void shouldFallBackToAnchorAccessWhenUnauthenticated(AccessLevel declared) {
             AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
-                    Optional.of(accessAnchor(declared)), new AuthConfig("none", List.of()));
+                    accessAnchor(declared), new AuthConfig("none", List.of()));
 
             assertEquals(declared, access);
         }
@@ -1108,7 +1105,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should default to PUBLIC for an unanchored, effectively-unauthenticated route")
         void shouldDefaultToPublicWhenUnanchoredAndUnauthenticated() {
             AccessLevel access = RouteTableBuilder.effectiveAccessLevel(
-                    Optional.empty(), new AuthConfig("none", List.of()));
+                    null, new AuthConfig("none", List.of()));
 
             assertEquals(AccessLevel.PUBLIC, access);
         }
@@ -1122,8 +1119,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should resolve a declared security_defaults profile")
         void shouldResolveDeclaredGlobalProfile() {
             GatewayConfig config = gateway()
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of("lenient"),
-                            Optional.empty())))
+                    .securityDefaults(new SecurityDefaultsConfig("lenient", null))
                     .build();
 
             assertEquals(SecurityProfile.LENIENT, RouteTableBuilder.globalProfile(config));
@@ -1139,7 +1135,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should resolve a security_defaults block without a profile to the fail-closed default")
         void shouldResolveBlockWithoutProfileToDefault() {
             GatewayConfig config = gateway()
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.empty(), Optional.empty())))
+                    .securityDefaults(new SecurityDefaultsConfig(null, null))
                     .build();
 
             assertEquals(SecurityProfile.DEFAULT_PROFILE, RouteTableBuilder.globalProfile(config));

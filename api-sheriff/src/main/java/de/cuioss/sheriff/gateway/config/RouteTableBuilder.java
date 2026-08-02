@@ -23,9 +23,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
+import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
@@ -114,7 +114,7 @@ public final class RouteTableBuilder {
                             endpoint.baseUrl())));
             UpstreamDefaultsConfig defaults = resolveDefaults(gateway, endpoint);
             for (RouteConfig route : endpoint.routes()) {
-                Optional<AnchorConfig> anchor = resolveAnchor(gateway, endpoint, route);
+                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
                 resolved.add(resolveRoute(gateway, route, endpoint, anchor, upstream, defaults, topology));
             }
         }
@@ -144,43 +144,58 @@ public final class RouteTableBuilder {
         return normalized;
     }
 
-    private static Optional<AnchorConfig> resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
+    private static @Nullable AnchorConfig resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route) {
-        return route.anchor().or(endpoint::anchor).map(name -> gateway.anchors().get(name)).filter(Objects::nonNull);
+        String name = route.anchor() != null ? route.anchor() : endpoint.anchor();
+        return name == null ? null : gateway.anchors().get(name);
     }
 
     private static ResolvedRoute resolveRoute(GatewayConfig gateway, RouteConfig route, EndpointConfig endpoint,
-            Optional<AnchorConfig> anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
+            @Nullable AnchorConfig anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
             ResolvedTopology topology) {
-        AuthConfig auth = route.auth().or(endpoint::auth).or(() -> anchor.flatMap(AnchorConfig::auth))
-                .orElseThrow(() -> new RouteTableException(
-                        "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
-                                .formatted(route.id())));
+        AuthConfig auth = route.auth();
+        if (auth == null) {
+            auth = endpoint.auth();
+        }
+        if (auth == null && anchor != null) {
+            auth = anchor.auth();
+        }
+        if (auth == null) {
+            throw new RouteTableException(
+                    "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
+                            .formatted(route.id()));
+        }
         List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint, anchor);
-        Optional<SecurityFilterConfig> securityFilter = route.securityFilter()
-                .or(() -> anchor.flatMap(AnchorConfig::securityFilter));
-        Optional<SecurityHeadersConfig> securityHeaders = anchor.flatMap(AnchorConfig::securityHeaders)
-                .or(gateway::securityHeaders);
+        SecurityFilterConfig securityFilter = route.securityFilter() != null
+                ? route.securityFilter()
+                : (anchor == null ? null : anchor.securityFilter());
+        SecurityHeadersConfig anchorHeaders = anchor == null ? null : anchor.securityHeaders();
+        SecurityHeadersConfig securityHeaders = anchorHeaders != null ? anchorHeaders : gateway.securityHeaders();
         warnOnWeakeningOverride(route, endpoint, anchor);
-        boolean retryEnabled = route.upstream()
-                .flatMap(UpstreamConfig::retry)
-                .flatMap(UpstreamConfig.Retry::enabled)
-                .orElse(defaults.retryEnabled());
-        boolean notModifiedEnabled = route.upstream()
-                .flatMap(UpstreamConfig::notModified)
-                .flatMap(UpstreamConfig.NotModified::enabled)
-                .orElse(defaults.notModifiedEnabled());
-        ForwardConfig effectiveForward = route.forward().orElseGet(() -> ForwardConfig.builder().build());
-        Protocol protocol = route.protocol().orElse(Protocol.HTTP);
+        UpstreamConfig routeUpstream = route.upstream();
+        UpstreamConfig.Retry retry = routeUpstream == null ? null : routeUpstream.retry();
+        boolean retryEnabled = retry != null && retry.enabled() != null
+                ? retry.enabled()
+                : defaults.retryEnabled();
+        UpstreamConfig.NotModified notModified = routeUpstream == null ? null : routeUpstream.notModified();
+        boolean notModifiedEnabled = notModified != null && notModified.enabled() != null
+                ? notModified.enabled()
+                : defaults.notModifiedEnabled();
+        ForwardConfig effectiveForward = route.forward() != null
+                ? route.forward()
+                : ForwardConfig.builder().build();
+        Protocol protocol = route.protocol() != null ? route.protocol() : Protocol.HTTP;
         Set<String> allowedOrigins = effectiveAllowedOrigins(route);
-        Optional<Integer> idleTimeout = protocol == Protocol.WEBSOCKET
-                ? Optional.of(route.websocket().flatMap(WebSocketConfig::idleTimeoutSeconds)
-                .orElse(DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS))
-                : Optional.empty();
+        Integer idleTimeout = null;
+        if (protocol == Protocol.WEBSOCKET) {
+            WebSocketConfig websocket = route.websocket();
+            Integer declaredIdleTimeout = websocket == null ? null : websocket.idleTimeoutSeconds();
+            idleTimeout = declaredIdleTimeout != null ? declaredIdleTimeout : DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS;
+        }
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())
                 .protocol(protocol)
-                .anchor(anchor.map(AnchorConfig::name))
+                .anchor(anchor == null ? null : anchor.name())
                 .match(route.match())
                 .effectiveAuth(auth)
                 .effectiveAllowedMethods(allowedMethods)
@@ -194,11 +209,11 @@ public final class RouteTableBuilder {
         // A route resolves to exactly one terminal action: an asset action (when the route
         // declares an asset block) is materialized here; otherwise the route proxies to its
         // endpoint upstream. ADR-0014: upstream XOR asset.
-        Optional<AssetConfig> asset = route.asset();
-        if (asset.isPresent()) {
-            builder.asset(Optional.of(resolveAsset(route, asset.get(), anchor, auth, topology)));
+        AssetConfig asset = route.asset();
+        if (asset != null) {
+            builder.asset(resolveAsset(route, asset, anchor, auth, topology));
         } else {
-            builder.upstream(Optional.of(applyRouteUpstreamPath(upstream, route)));
+            builder.upstream(applyRouteUpstreamPath(upstream, route));
         }
         ResolvedRoute resolved = builder.build();
         logPosture(resolved, globalProfile(gateway));
@@ -224,12 +239,12 @@ public final class RouteTableBuilder {
      * @return the per-route upstream carrying the effective base path
      */
     private static ResolvedUpstream applyRouteUpstreamPath(ResolvedUpstream aliasUpstream, RouteConfig route) {
-        return route.upstream()
-                .flatMap(UpstreamConfig::path)
-                .filter(path -> !path.isBlank())
-                .map(path -> new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(),
-                        aliasUpstream.port(), path))
-                .orElse(aliasUpstream);
+        UpstreamConfig upstream = route.upstream();
+        String path = upstream == null ? null : upstream.path();
+        if (path == null || path.isBlank()) {
+            return aliasUpstream;
+        }
+        return new ResolvedUpstream(aliasUpstream.scheme(), aliasUpstream.host(), aliasUpstream.port(), path);
     }
 
     /**
@@ -238,23 +253,31 @@ public final class RouteTableBuilder {
      * topology alias through the same {@link ResolvedTopology} the proxy action uses —
      * no parallel resolution. The effective access level the gateway-owned response
      * envelope (asset package) keys its caching on is
-     * {@link #effectiveAccessLevel(Optional, AuthConfig) derived from the route's
+     * {@link #effectiveAccessLevel(AnchorConfig, AuthConfig) derived from the route's
      * effective auth posture}, not the anchor's static {@code access} declaration alone
      * — a route or endpoint may legally strengthen a {@code public}-access anchor's
      * floor with its own {@code auth} block (ADR-0007 forbids weakening the floor, not
      * strengthening it), and such a route must still be governed {@code no-store} even
      * though its anchor stays {@code access: public}.
      */
-    private static ResolvedAsset resolveAsset(RouteConfig route, AssetConfig asset, Optional<AnchorConfig> anchor,
+    private static ResolvedAsset resolveAsset(RouteConfig route, AssetConfig asset, @Nullable AnchorConfig anchor,
             AuthConfig effectiveAuth, ResolvedTopology topology) {
         AccessLevel access = effectiveAccessLevel(anchor, effectiveAuth);
         return switch (asset.source()) {
-            case DIRECTORY -> ResolvedAsset.directory(asset.directory().orElseThrow(() -> new RouteTableException(
-                            "asset route '%s' declares source: directory but no directory root".formatted(route.id()))),
-                    access);
+            case DIRECTORY -> {
+                String directory = asset.directory();
+                if (directory == null) {
+                    throw new RouteTableException(
+                            "asset route '%s' declares source: directory but no directory root".formatted(route.id()));
+                }
+                yield ResolvedAsset.directory(directory, access);
+            }
             case UPSTREAM -> {
-                String alias = asset.upstream().orElseThrow(() -> new RouteTableException(
-                        "asset route '%s' declares source: upstream but no upstream alias".formatted(route.id())));
+                String alias = asset.upstream();
+                if (alias == null) {
+                    throw new RouteTableException(
+                            "asset route '%s' declares source: upstream but no upstream alias".formatted(route.id()));
+                }
                 ResolvedUpstream resolvedUpstream = topology.lookup(alias).orElseThrow(() -> new RouteTableException(
                         "asset route '%s' upstream alias '%s' does not resolve in the topology"
                                 .formatted(route.id(), alias)));
@@ -280,16 +303,16 @@ public final class RouteTableBuilder {
      * directly, so the boot refusal and the runtime governance can never disagree about which routes
      * count as authenticated (ADR-0009 single-reporter, the {@link #normalizePrefix} precedent).
      *
-     * @param anchor        the route's resolved anchor, empty when the route is unanchored
+     * @param anchor        the route's resolved anchor, {@code null} when the route is unanchored
      * @param effectiveAuth the route's effective auth posture
      * @return the effective access level; {@link AccessLevel#AUTHENTICATED} whenever the effective
      *         auth requires authentication
      */
-    public static AccessLevel effectiveAccessLevel(Optional<AnchorConfig> anchor, AuthConfig effectiveAuth) {
+    public static AccessLevel effectiveAccessLevel(@Nullable AnchorConfig anchor, AuthConfig effectiveAuth) {
         if (!NONE.equals(effectiveAuth.require())) {
             return AccessLevel.AUTHENTICATED;
         }
-        return anchor.map(AnchorConfig::access).orElse(AccessLevel.PUBLIC);
+        return anchor == null ? AccessLevel.PUBLIC : anchor.access();
     }
 
     /**
@@ -300,11 +323,11 @@ public final class RouteTableBuilder {
      * placeholder would report a {@code none}-mode posture for every route that merely omits the knob.
      */
     private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
-        String anchorName = route.anchor().orElse(NONE);
-        SecurityProfile effectiveProfile = route.effectiveSecurityFilter()
-                .flatMap(SecurityFilterConfig::profile)
-                .flatMap(SecurityProfile::parse)
-                .orElse(globalProfile);
+        String anchorName = route.anchor() != null ? route.anchor() : NONE;
+        SecurityFilterConfig securityFilter = route.effectiveSecurityFilter();
+        SecurityProfile effectiveProfile = securityFilter == null
+                ? globalProfile
+                : SecurityProfile.parse(securityFilter.profile()).orElse(globalProfile);
         LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, route.effectiveAuth().require(),
                 effectiveProfile.name().toLowerCase(Locale.ROOT));
     }
@@ -320,42 +343,43 @@ public final class RouteTableBuilder {
      * @return the resolved gateway-wide profile
      */
     public static SecurityProfile globalProfile(GatewayConfig gateway) {
-        return gateway.securityDefaults()
-                .flatMap(SecurityDefaultsConfig::profile)
-                .flatMap(SecurityProfile::parse)
-                .orElse(SecurityProfile.DEFAULT_PROFILE);
+        SecurityDefaultsConfig securityDefaults = gateway.securityDefaults();
+        if (securityDefaults == null) {
+            return SecurityProfile.DEFAULT_PROFILE;
+        }
+        return SecurityProfile.parse(securityDefaults.profile()).orElse(SecurityProfile.DEFAULT_PROFILE);
     }
 
     private static void warnOnWeakeningOverride(RouteConfig route, EndpointConfig endpoint,
-            Optional<AnchorConfig> anchor) {
-        if (anchor.isEmpty()) {
+            @Nullable AnchorConfig anchor) {
+        if (anchor == null) {
             return;
         }
-        AnchorConfig anchorConfig = anchor.get();
-        if (anchorConfig.securityFilter().isPresent() && route.securityFilter().isPresent()) {
-            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchorConfig.name(),
+        if (anchor.securityFilter() != null && route.securityFilter() != null) {
+            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchor.name(),
                     "security_filter");
         }
-        if (!anchorConfig.allowedMethods().isEmpty() && !endpoint.allowedMethods().isEmpty()) {
-            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchorConfig.name(),
+        if (!anchor.allowedMethods().isEmpty() && !endpoint.allowedMethods().isEmpty()) {
+            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchor.name(),
                     "allowed_methods");
         }
     }
 
     private static UpstreamDefaultsConfig resolveDefaults(GatewayConfig gateway, EndpointConfig endpoint) {
-        UpstreamDefaultsConfig global = gateway.upstreamDefaults().orElseGet(UpstreamDefaultsConfig::defaults);
-        return endpoint.upstreamDefaults().orElse(global);
+        if (endpoint.upstreamDefaults() != null) {
+            return endpoint.upstreamDefaults();
+        }
+        UpstreamDefaultsConfig global = gateway.upstreamDefaults();
+        return global != null ? global : UpstreamDefaultsConfig.defaults();
     }
 
     private static List<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
-            Optional<AnchorConfig> anchor) {
+            @Nullable AnchorConfig anchor) {
         if (!endpoint.allowedMethods().isEmpty()) {
             return List.copyOf(endpoint.allowedMethods());
         }
-        Optional<List<HttpMethod>> anchorMethods = anchor.map(AnchorConfig::allowedMethods)
-                .filter(methods -> !methods.isEmpty());
-        if (anchorMethods.isPresent()) {
-            return List.copyOf(anchorMethods.get());
+        if (anchor != null && !anchor.allowedMethods().isEmpty()) {
+            return List.copyOf(anchor.allowedMethods());
         }
         if (!gateway.allowedMethods().isEmpty()) {
             return List.copyOf(gateway.allowedMethods());
@@ -371,8 +395,12 @@ public final class RouteTableBuilder {
      * any ordering guarantee. Empty for a route that declares no {@code websocket} block.
      */
     private static Set<String> effectiveAllowedOrigins(RouteConfig route) {
+        WebSocketConfig websocket = route.websocket();
+        if (websocket == null) {
+            return Set.of();
+        }
         Set<String> origins = new LinkedHashSet<>();
-        for (String origin : route.websocket().map(WebSocketConfig::allowedOrigins).orElseGet(List::of)) {
+        for (String origin : websocket.allowedOrigins()) {
             origins.add(origin.toLowerCase(Locale.ROOT));
         }
         return origins;

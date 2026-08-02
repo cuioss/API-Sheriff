@@ -17,57 +17,46 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
 /**
  * The global {@code tls} block of {@code gateway.yaml}.
  *
- * @param minVersion     the minimum negotiated TLS version, empty when omitted
+ * @param minVersion     the minimum negotiated TLS version, {@code null} when omitted
  * @param cipherSuites   the terminated listener's cipher-suite allowlist, empty
  *                       when omitted
  * @param alpn           the advertised ALPN protocols, empty when omitted
  * @param passthroughSni a map of SNI hostname to topology alias relayed at L4
  *                       without decryption, empty when omitted
- * @param mtls           the mutual-TLS settings, empty when omitted
+ * @param mtls           the mutual-TLS settings, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record TlsConfig(Optional<String> minVersion, List<String> cipherSuites, List<String> alpn,
-Map<String, String> passthroughSni, Optional<Mtls> mtls) {
+public record TlsConfig(@Nullable String minVersion, List<String> cipherSuites, List<String> alpn,
+Map<String, String> passthroughSni, @Nullable Mtls mtls) {
 
     /**
-     * Canonical constructor defensively copying collections and normalizing absent
-     * components.
+     * Canonical constructor defensively copying collections.
      */
     public TlsConfig {
-        minVersion = Objects.requireNonNullElse(minVersion, Optional.empty());
         cipherSuites = cipherSuites == null ? List.of() : List.copyOf(cipherSuites);
         alpn = alpn == null ? List.of() : List.copyOf(alpn);
         passthroughSni = passthroughSni == null ? Map.of() : Map.copyOf(passthroughSni);
-        mtls = Objects.requireNonNullElse(mtls, Optional.empty());
     }
 
     /**
      * Mutual-TLS settings for terminated connections.
      *
      * @param enabled  whether client-certificate verification is required
-     * @param clientCa the client-CA path, empty when omitted
+     * @param clientCa the client-CA path, {@code null} when omitted
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
-    public record Mtls(boolean enabled, Optional<String> clientCa) {
-
-        /**
-         * Canonical constructor normalizing an absent {@code clientCa} to
-         * {@link Optional#empty()}.
-         */
-        public Mtls {
-            clientCa = Objects.requireNonNullElse(clientCa, Optional.empty());
-        }
+    public record Mtls(boolean enabled, @Nullable String clientCa) {
     }
 }

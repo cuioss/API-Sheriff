@@ -135,8 +135,10 @@ public final class DispatchStage {
         AtomicBoolean bodyStreamSubscribed = new AtomicBoolean();
         StreamAwareRetryGate retryGate = new StreamAwareRetryGate(route.isRetryEnabled());
         io.vertx.core.http.HttpMethod upstreamMethod = io.vertx.core.http.HttpMethod.valueOf(method.name());
-        Guard guard = route.getResilienceGuard()
-                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resilience guard"));
+        Guard guard = route.getResilienceGuard();
+        if (guard == null) {
+            throw new IllegalStateException("proxy dispatch requires a resilience guard");
+        }
         return guardedDispatch(guard, retryGate, method, bytesSent::get,
                 bodyStreamSubscribed::get,
                 () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, requestBody, bytesSent,
@@ -227,10 +229,14 @@ public final class DispatchStage {
     private HttpClientResponse awaitDispatch(RouteRuntime route, io.vertx.core.http.HttpMethod method,
             String requestUri, Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody,
             AtomicLong bytesSent, AtomicBoolean bodyStreamSubscribed) throws InterruptedException, ExecutionException {
-        ResolvedUpstream upstream = route.getUpstream()
-                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resolved upstream"));
-        HttpClient httpClient = route.getHttpClient()
-                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires an upstream client"));
+        ResolvedUpstream upstream = route.getUpstream();
+        if (upstream == null) {
+            throw new IllegalStateException("proxy dispatch requires a resolved upstream");
+        }
+        HttpClient httpClient = route.getHttpClient();
+        if (httpClient == null) {
+            throw new IllegalStateException("proxy dispatch requires an upstream client");
+        }
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())

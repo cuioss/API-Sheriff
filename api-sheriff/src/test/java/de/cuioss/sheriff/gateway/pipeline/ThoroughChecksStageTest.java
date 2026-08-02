@@ -24,7 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.reflect.RecordComponent;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -81,7 +80,7 @@ class ThoroughChecksStageTest {
     void rejectsDivergentFilterViolation(AttackTestCase attack) {
         // Arrange — a route whose strict config diverges from the stage-1 default forces a re-run
         PipelineRequest request = requestFor(attack.attackString(),
-                routeWithConfig(Optional.of(SecurityConfiguration.strict())));
+                routeWithConfig(SecurityConfiguration.strict()));
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class,
@@ -102,7 +101,7 @@ class ThoroughChecksStageTest {
                 .headers(Map.of("x-trace", List.of("abc123")))
                 .build();
         request.canonicalPath("/api/orders");
-        request.selectedRoute(routeWithConfig(Optional.of(SecurityConfiguration.strict())));
+        request.selectedRoute(routeWithConfig(SecurityConfiguration.strict()));
 
         // Act + Assert — every pipeline (path, params, headers) passes for a benign request
         assertDoesNotThrow(() -> stage.process(request, List.of()));
@@ -113,7 +112,7 @@ class ThoroughChecksStageTest {
     void skipsReRunWhenRouteConfigEqualsDefault() {
         // Arrange — a route whose config equals the default was already covered by stage 1
         PipelineRequest request = requestFor("/api/orders",
-                routeWithConfig(Optional.of(defaultConfiguration)));
+                routeWithConfig(defaultConfiguration));
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request, List.of()));
@@ -124,7 +123,7 @@ class ThoroughChecksStageTest {
     void fallsBackToBaselineWhenRouteDeclaresNoConfig() {
         // Arrange — the posture resolver leaves every assembler-produced route with a configuration,
         // so this covers only a RouteRuntime built without one.
-        PipelineRequest request = requestFor("/api/orders", routeWithConfig(Optional.empty()));
+        PipelineRequest request = requestFor("/api/orders", routeWithConfig(null));
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request, List.of()));
@@ -141,7 +140,7 @@ class ThoroughChecksStageTest {
                 .declaredContentLength(cap + 1)
                 .build();
         request.canonicalPath("/api/orders");
-        request.selectedRoute(routeWithConfig(Optional.of(defaultConfiguration)));
+        request.selectedRoute(routeWithConfig(defaultConfiguration));
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class,
@@ -155,7 +154,7 @@ class ThoroughChecksStageTest {
     @DisplayName("rejects a canonical path outside the route's allowed_paths whitelist")
     void rejectsPathOutsideAllowedPaths() {
         // Arrange
-        PipelineRequest request = requestFor("/api/other", routeWithConfig(Optional.empty()));
+        PipelineRequest request = requestFor("/api/other", routeWithConfig(null));
 
         // Act
         List<String> allowedPaths = List.of("/api/orders");
@@ -170,7 +169,7 @@ class ThoroughChecksStageTest {
     @DisplayName("admits a path matching an allowed_paths pattern with a single-segment wildcard")
     void admitsWildcardWhitelistMatch() {
         // Arrange — {id} matches exactly one non-empty path segment
-        PipelineRequest request = requestFor("/api/42/detail", routeWithConfig(Optional.empty()));
+        PipelineRequest request = requestFor("/api/42/detail", routeWithConfig(null));
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request, List.of("/api/{id}/detail")));
@@ -180,7 +179,7 @@ class ThoroughChecksStageTest {
     @DisplayName("rejects a whitelist pattern whose segment count differs from the path")
     void rejectsWildcardSegmentCountMismatch() {
         // Arrange — the path has one segment too few to match the pattern
-        PipelineRequest request = requestFor("/api/42", routeWithConfig(Optional.empty()));
+        PipelineRequest request = requestFor("/api/42", routeWithConfig(null));
 
         // Act
         List<String> allowedPaths = List.of("/api/{id}/detail");
@@ -212,7 +211,7 @@ class ThoroughChecksStageTest {
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
                 .build();
-        request.selectedRoute(routeWithConfig(Optional.empty()));
+        request.selectedRoute(routeWithConfig(null));
 
         // Act + Assert
         assertThrows(IllegalStateException.class, () -> stage.process(request, List.of()));
@@ -234,7 +233,7 @@ class ThoroughChecksStageTest {
             // Arrange
             PipelineRequest request = requestWithParameters(
                     Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
-                    route(profile, Optional.of(defaultConfiguration)));
+                    route(profile, defaultConfiguration));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -252,7 +251,7 @@ class ThoroughChecksStageTest {
             // be rejected, not only the value (symmetry with header-name validation).
             PipelineRequest request = requestWithParameters(
                     Map.of(REJECTED_PARAMETER_NAME, List.of("ok")),
-                    route(profile, Optional.of(defaultConfiguration)));
+                    route(profile, defaultConfiguration));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -269,7 +268,7 @@ class ThoroughChecksStageTest {
             // but parameter validation must still run: stage 1 no longer does it.
             PipelineRequest request = requestWithParameters(
                     Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
-                    route(SecurityProfile.STRICT, Optional.of(defaultConfiguration)));
+                    route(SecurityProfile.STRICT, defaultConfiguration));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -299,7 +298,7 @@ class ThoroughChecksStageTest {
                     .declaredContentLength(cap + 1)
                     .build();
             request.canonicalPath("/api/orders");
-            request.selectedRoute(route(SecurityProfile.NONE, Optional.of(defaultConfiguration)));
+            request.selectedRoute(route(SecurityProfile.NONE, defaultConfiguration));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -314,7 +313,7 @@ class ThoroughChecksStageTest {
         void stillEnforcesAllowedPaths() {
             // Arrange
             PipelineRequest request = requestFor("/api/other",
-                    route(SecurityProfile.NONE, Optional.of(defaultConfiguration)));
+                    route(SecurityProfile.NONE, defaultConfiguration));
 
             // Act
             List<String> allowedPaths = List.of("/api/orders");
@@ -332,7 +331,7 @@ class ThoroughChecksStageTest {
             PipelineRequest request = requestWithParameters(
                     Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE),
                             REJECTED_PARAMETER_NAME, List.of("ok")),
-                    route(SecurityProfile.NONE, Optional.of(defaultConfiguration)));
+                    route(SecurityProfile.NONE, defaultConfiguration));
 
             // Act + Assert
             assertDoesNotThrow(() -> stage.process(request, List.of()),
@@ -344,7 +343,7 @@ class ThoroughChecksStageTest {
         void skipsPipelineReRun() {
             // Arrange — a divergent strict config over a path the re-run would reject
             PipelineRequest request = requestFor("/api/../etc/passwd",
-                    route(SecurityProfile.NONE, Optional.of(SecurityConfiguration.strict())));
+                    route(SecurityProfile.NONE, SecurityConfiguration.strict()));
 
             // Act + Assert
             assertDoesNotThrow(() -> stage.process(request, List.of()),
@@ -356,10 +355,10 @@ class ThoroughChecksStageTest {
         void strictRouteStillRejectsWhatNoneAccepts() {
             // Arrange — the control case that makes the two assertions above meaningful
             PipelineRequest divergentPath = requestFor("/api/../etc/passwd",
-                    route(SecurityProfile.STRICT, Optional.of(SecurityConfiguration.strict())));
+                    route(SecurityProfile.STRICT, SecurityConfiguration.strict()));
             PipelineRequest badParameters = requestWithParameters(
                     Map.of("return_to", List.of(REJECTED_PARAMETER_VALUE)),
-                    route(SecurityProfile.STRICT, Optional.of(SecurityConfiguration.strict())));
+                    route(SecurityProfile.STRICT, SecurityConfiguration.strict()));
 
             // Act + Assert
             assertThrows(GatewayException.class, () -> stage.process(divergentPath, List.of()),
@@ -391,7 +390,7 @@ class ThoroughChecksStageTest {
                     "the baseline must accept the name, otherwise the case proves nothing about the re-run");
             PipelineRequest request = requestWithHeaders(
                     Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
-                    route(profile, Optional.of(stricterHeaderNamePolicy())));
+                    route(profile, stricterHeaderNamePolicy()));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -407,7 +406,7 @@ class ThoroughChecksStageTest {
             // Arrange — the same stricter route policy, this time on a 'none' route
             PipelineRequest request = requestWithHeaders(
                     Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
-                    route(SecurityProfile.NONE, Optional.of(stricterHeaderNamePolicy())));
+                    route(SecurityProfile.NONE, stricterHeaderNamePolicy()));
 
             // Act + Assert — reRunPipelines IS item two of what 'none' disables, in its entirety
             assertDoesNotThrow(() -> stage.process(request, List.of()),
@@ -424,7 +423,7 @@ class ThoroughChecksStageTest {
                     new SecurityEventCounter(), null, withHeaderValueCap(baseline, AUTHORIZATION_CAP));
             PipelineRequest request = requestWithHeaders(
                     Map.of(OVERLONG_HEADER_NAME, List.of("abc123")),
-                    route(SecurityProfile.STRICT, Optional.of(baseline)));
+                    route(SecurityProfile.STRICT, baseline));
 
             // Act + Assert
             assertDoesNotThrow(() -> baselineEqualStage.process(request, List.of()),
@@ -492,7 +491,7 @@ class ThoroughChecksStageTest {
                     "the route must diverge from the baseline, otherwise the re-run is skipped");
             PipelineRequest request = requestWithHeaders(
                     Map.of("Authorization", List.of(longBearer)),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act + Assert
             assertDoesNotThrow(() -> strictStage.process(request, List.of()),
@@ -509,7 +508,7 @@ class ThoroughChecksStageTest {
                     null, strictBaseline);
             PipelineRequest request = requestWithHeaders(
                     Map.of("Authorization", List.of(longBearer)),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -528,7 +527,7 @@ class ThoroughChecksStageTest {
             String sealedCookie = "__Host-sheriff-session=" + "a".repeat(4096);
             PipelineRequest request = requestWithHeaders(
                     Map.of(headerName, List.of(sealedCookie)),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act + Assert
             assertDoesNotThrow(() -> cookieModeStage.process(request, List.of()),
@@ -542,7 +541,7 @@ class ThoroughChecksStageTest {
             // it post-route must not quietly grant it to gateways that never had it.
             PipelineRequest request = requestWithHeaders(
                     Map.of("Cookie", List.of("__Host-sheriff-session=" + "a".repeat(4096))),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -558,7 +557,7 @@ class ThoroughChecksStageTest {
             // Arrange — the by-header bound: exactly two names, never a third
             PipelineRequest request = requestWithHeaders(
                     Map.of("X-Custom", List.of("a".repeat(1100))),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -574,7 +573,7 @@ class ThoroughChecksStageTest {
             // Arrange
             PipelineRequest request = requestWithHeaders(
                     Map.of("Authorization", List.of("a".repeat(AUTHORIZATION_CAP + 1))),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -611,11 +610,11 @@ class ThoroughChecksStageTest {
                     raisedHeaderCapRoute, AUTHORIZATION_CAP);
             PipelineRequest admitted = requestWithHeaders(
                     Map.of("Authorization", List.of(aboveBudget)),
-                    route(SecurityProfile.STRICT, Optional.of(raisedHeaderCapRoute)));
+                    route(SecurityProfile.STRICT, raisedHeaderCapRoute));
             PipelineRequest refused = requestWithHeaders(
                     Map.of("Authorization", List.of("a".repeat(
                             raisedHeaderCapRoute.maxHeaderValueLength() + 1))),
-                    route(SecurityProfile.STRICT, Optional.of(raisedHeaderCapRoute)));
+                    route(SecurityProfile.STRICT, raisedHeaderCapRoute));
 
             // Assert
             assertEquals(raisedHeaderCapRoute.maxHeaderValueLength(), carveOut.maxHeaderValueLength(),
@@ -636,7 +635,7 @@ class ThoroughChecksStageTest {
             // seeded from the builder defaults instead would admit this value.
             PipelineRequest request = requestWithHeaders(
                     Map.of("Authorization", List.of("Bearer é" + "a".repeat(1100))),
-                    route(SecurityProfile.STRICT, Optional.of(raisedBodyRoute)));
+                    route(SecurityProfile.STRICT, raisedBodyRoute));
 
             // Act
             GatewayException thrown = assertThrows(GatewayException.class,
@@ -656,7 +655,7 @@ class ThoroughChecksStageTest {
                     "the control route must permit what the strict route refuses");
             PipelineRequest request = requestWithHeaders(
                     Map.of("Authorization", List.of("Bearer é" + "a".repeat(1100))),
-                    route(SecurityProfile.STRICT, Optional.of(permissiveRoute)));
+                    route(SecurityProfile.STRICT, permissiveRoute));
 
             // Act + Assert
             assertDoesNotThrow(() -> strictStage.process(request, List.of()),
@@ -740,11 +739,11 @@ class ThoroughChecksStageTest {
         return request;
     }
 
-    private static RouteRuntime routeWithConfig(Optional<SecurityConfiguration> config) {
+    private static RouteRuntime routeWithConfig(@Nullable SecurityConfiguration config) {
         return route(SecurityProfile.STRICT, config);
     }
 
-    private static RouteRuntime route(SecurityProfile profile, Optional<SecurityConfiguration> config) {
+    private static RouteRuntime route(SecurityProfile profile, @Nullable SecurityConfiguration config) {
         return RouteRuntime.builder()
                 .id("r")
                 .matcher(RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").build()))

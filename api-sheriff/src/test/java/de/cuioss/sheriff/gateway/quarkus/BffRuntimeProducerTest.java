@@ -38,7 +38,6 @@ import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 
@@ -54,6 +53,7 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -247,15 +247,15 @@ class BffRuntimeProducerTest {
         @DisplayName("Should boot cookie mode without an encryption key, generating one on startup")
         void shouldBootCookieModeWithoutKey() {
             OidcConfig noKey = OidcConfig.builder()
-                    .issuer(Optional.of(ISSUER))
-                    .clientId(Optional.of("gateway-client"))
-                    .clientSecret(Optional.of("secret"))
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
                     .scopes(List.of("openid"))
-                    .redirectUri(Optional.of(REDIRECT_URI))
-                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("cookie")).build()))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("cookie").build())
                     .build();
 
-            BffRuntime generated = producer(Optional.of(noKey)).bffRuntime();
+            BffRuntime generated = producer(noKey).bffRuntime();
 
             assertTrue(generated.isActive(),
                     "omitting the key selects generate-on-startup, a supported production mode — not a boot failure");
@@ -266,18 +266,18 @@ class BffRuntimeProducerTest {
         @DisplayName("Should refuse to boot a previous_key without an encryption_key")
         void shouldRefusePreviousKeyWithoutEncryptionKey() {
             OidcConfig previousOnly = OidcConfig.builder()
-                    .issuer(Optional.of(ISSUER))
-                    .clientId(Optional.of("gateway-client"))
-                    .clientSecret(Optional.of("secret"))
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
                     .scopes(List.of("openid"))
-                    .redirectUri(Optional.of(REDIRECT_URI))
-                    .session(Optional.of(OidcConfig.Session.builder()
-                            .mode(Optional.of("cookie"))
-                            .previousKey(Optional.of(Base64.getEncoder().encodeToString(new byte[32])))
-                            .build()))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder()
+                            .mode("cookie")
+                            .previousKey(Base64.getEncoder().encodeToString(new byte[32]))
+                            .build())
                     .build();
 
-            BffRuntimeProducer producer = producer(Optional.of(previousOnly));
+            BffRuntimeProducer producer = producer(previousOnly);
 
             assertThrows(IllegalStateException.class, producer::bffRuntime,
                     "a decrypt-only rotation key with no current key to roll onto is refused, never ignored");
@@ -303,7 +303,7 @@ class BffRuntimeProducerTest {
         @Test
         @DisplayName("Should stay inert when no oidc block is configured")
         void shouldBeInertWithoutOidc() {
-            BffRuntime runtime = producer(Optional.empty()).bffRuntime();
+            BffRuntime runtime = producer(null).bffRuntime();
             assertFalse(runtime.isActive());
         }
 
@@ -311,26 +311,26 @@ class BffRuntimeProducerTest {
         @DisplayName("Should stay inert for an unrecognised session mode")
         void shouldBeInertForUnrecognisedMode() {
             OidcConfig oidc = OidcConfig.builder()
-                    .issuer(Optional.of(ISSUER))
-                    .redirectUri(Optional.of(REDIRECT_URI))
-                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("stateless")).build()))
+                    .issuer(ISSUER)
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("stateless").build())
                     .build();
-            assertFalse(producer(Optional.of(oidc)).bffRuntime().isActive());
+            assertFalse(producer(oidc).bffRuntime().isActive());
         }
 
         @Test
         @DisplayName("Should stay inert when a mode is set but no redirect_uri is configured")
         void shouldBeInertWithoutRedirectUri() {
             OidcConfig serverNoRedirect = OidcConfig.builder()
-                    .issuer(Optional.of(ISSUER))
-                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("server")).build()))
+                    .issuer(ISSUER)
+                    .session(OidcConfig.Session.builder().mode("server").build())
                     .build();
             OidcConfig cookieNoRedirect = OidcConfig.builder()
-                    .issuer(Optional.of(ISSUER))
-                    .session(Optional.of(OidcConfig.Session.builder().mode(Optional.of("cookie")).build()))
+                    .issuer(ISSUER)
+                    .session(OidcConfig.Session.builder().mode("cookie").build())
                     .build();
-            assertFalse(producer(Optional.of(serverNoRedirect)).bffRuntime().isActive());
-            assertFalse(producer(Optional.of(cookieNoRedirect)).bffRuntime().isActive());
+            assertFalse(producer(serverNoRedirect).bffRuntime().isActive());
+            assertFalse(producer(cookieNoRedirect).bffRuntime().isActive());
         }
 
         @Test
@@ -382,58 +382,58 @@ class BffRuntimeProducerTest {
         }
     }
 
-    private BffRuntimeProducer producer(Optional<OidcConfig> oidc) {
+    private BffRuntimeProducer producer(@Nullable OidcConfig oidc) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).build();
         return new BffRuntimeProducer(gatewayConfig, new SingletonInstance<>(tokenValidator));
     }
 
-    private static Optional<OidcConfig> serverModeOidc() {
+    private static OidcConfig serverModeOidc() {
         OidcConfig.Session session = OidcConfig.Session.builder()
-                .mode(Optional.of("server"))
-                .ttlSeconds(Optional.of(3600))
+                .mode("server")
+                .ttlSeconds(3600)
                 .build();
-        return Optional.of(OidcConfig.builder()
-                .issuer(Optional.of(ISSUER))
-                .clientId(Optional.of("gateway-client"))
-                .clientSecret(Optional.of("secret"))
+        return OidcConfig.builder()
+                .issuer(ISSUER)
+                .clientId("gateway-client")
+                .clientSecret("secret")
                 .scopes(List.of("openid"))
-                .redirectUri(Optional.of(REDIRECT_URI))
-                .session(Optional.of(session))
-                .userInfo(Optional.of(OidcConfig.UserInfo.builder()
-                        .path(Optional.of("/auth/userinfo"))
+                .redirectUri(REDIRECT_URI)
+                .session(session)
+                .userInfo(OidcConfig.UserInfo.builder()
+                        .path("/auth/userinfo")
                         .allowedClaims(List.of("sub", "name"))
                         .defaultView(List.of("sub"))
-                        .build()))
-                .login(Optional.of(OidcConfig.Login.builder().path(Optional.of("/auth/login")).build()))
-                .build());
+                        .build())
+                .login(OidcConfig.Login.builder().path("/auth/login").build())
+                .build();
     }
 
-    private static Optional<OidcConfig> cookieModeOidc() {
+    private static OidcConfig cookieModeOidc() {
         byte[] key = new byte[32];
         Arrays.fill(key, (byte) 0x11);
         return cookieModeOidcWithKey(Base64.getEncoder().encodeToString(key));
     }
 
-    private static Optional<OidcConfig> cookieModeOidcWithKey(String encryptionKey) {
+    private static OidcConfig cookieModeOidcWithKey(String encryptionKey) {
         OidcConfig.Session session = OidcConfig.Session.builder()
-                .mode(Optional.of("cookie"))
-                .ttlSeconds(Optional.of(3600))
-                .encryptionKey(Optional.of(encryptionKey))
+                .mode("cookie")
+                .ttlSeconds(3600)
+                .encryptionKey(encryptionKey)
                 .build();
-        return Optional.of(OidcConfig.builder()
-                .issuer(Optional.of(ISSUER))
-                .clientId(Optional.of("gateway-client"))
-                .clientSecret(Optional.of("secret"))
+        return OidcConfig.builder()
+                .issuer(ISSUER)
+                .clientId("gateway-client")
+                .clientSecret("secret")
                 .scopes(List.of("openid"))
-                .redirectUri(Optional.of(REDIRECT_URI))
-                .session(Optional.of(session))
-                .userInfo(Optional.of(OidcConfig.UserInfo.builder()
-                        .path(Optional.of("/auth/userinfo"))
+                .redirectUri(REDIRECT_URI)
+                .session(session)
+                .userInfo(OidcConfig.UserInfo.builder()
+                        .path("/auth/userinfo")
                         .allowedClaims(List.of("sub", "name"))
                         .defaultView(List.of("sub"))
-                        .build()))
-                .login(Optional.of(OidcConfig.Login.builder().path(Optional.of("/auth/login")).build()))
-                .build());
+                        .build())
+                .login(OidcConfig.Login.builder().path("/auth/login").build())
+                .build();
     }
 
     /**

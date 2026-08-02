@@ -17,15 +17,18 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -51,6 +54,7 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -76,8 +80,8 @@ class RouteRuntimeAssemblerTest {
                 SecurityConfiguration.builder().build());
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
-        assetSourceFactory = asset -> new DirectoryAssetSource(Path.of(asset.directory().orElse("/tmp")),
-                asset.access());
+        assetSourceFactory = asset -> new DirectoryAssetSource(
+                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access());
     }
 
     @AfterEach
@@ -96,14 +100,14 @@ class RouteRuntimeAssemblerTest {
                     SecurityConfiguration.builder().build());
         };
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", Optional.of(sharedFilter), upstream("a.example")),
-                route("r2", Protocol.HTTP, "none", Optional.of(sharedFilter), upstream("a.example"))));
+                route("r1", Protocol.HTTP, "none", sharedFilter, upstream("a.example")),
+                route("r2", Protocol.HTTP, "none", sharedFilter, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(1, invocations.get(), "The factory runs once for the shared filter shape");
-        assertSame(runtimes.getFirst().getSecurityConfiguration().orElseThrow(),
-                runtimes.get(1).getSecurityConfiguration().orElseThrow(),
+        assertSame(runtimes.getFirst().getSecurityConfiguration(),
+                runtimes.get(1).getSecurityConfiguration(),
                 "Both routes hold the same SecurityConfiguration reference");
     }
 
@@ -112,14 +116,14 @@ class RouteRuntimeAssemblerTest {
     void shouldBuildDistinctSecurityConfigurationsForDifferentShapes() {
         RouteTable table = new RouteTable(List.of(
                 route("r1", Protocol.HTTP, "none",
-                        Optional.of(SecurityFilterConfig.builder().allowedPaths(List.of("/a")).build()), upstream("a.example")),
+                        SecurityFilterConfig.builder().allowedPaths(List.of("/a")).build(), upstream("a.example")),
                 route("r2", Protocol.HTTP, "none",
-                        Optional.of(SecurityFilterConfig.builder().allowedPaths(List.of("/b")).build()), upstream("a.example"))));
+                        SecurityFilterConfig.builder().allowedPaths(List.of("/b")).build(), upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
-        assertNotSame(runtimes.getFirst().getSecurityConfiguration().orElseThrow(),
-                runtimes.get(1).getSecurityConfiguration().orElseThrow(),
+        assertNotSame(runtimes.getFirst().getSecurityConfiguration(),
+                runtimes.get(1).getSecurityConfiguration(),
                 "Distinct filter shapes must not share a SecurityConfiguration");
     }
 
@@ -127,17 +131,17 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should reuse one client for routes sharing an upstream tuple and split by tuple")
     void shouldReuseClientForSharedUpstreamTuple() {
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", Optional.empty(), upstream("a.example")),
-                route("r2", Protocol.HTTP, "none", Optional.empty(), upstream("a.example")),
-                route("r3", Protocol.HTTP, "none", Optional.empty(), upstream("b.example"))));
+                route("r1", Protocol.HTTP, "none", null, upstream("a.example")),
+                route("r2", Protocol.HTTP, "none", null, upstream("a.example")),
+                route("r3", Protocol.HTTP, "none", null, upstream("b.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
-        assertSame(runtimes.getFirst().getHttpClient().orElseThrow(),
-                runtimes.get(1).getHttpClient().orElseThrow(),
+        assertSame(runtimes.getFirst().getHttpClient(),
+                runtimes.get(1).getHttpClient(),
                 "Routes sharing an upstream tuple reuse one client");
-        assertNotSame(runtimes.getFirst().getHttpClient().orElseThrow(),
-                runtimes.get(2).getHttpClient().orElseThrow(),
+        assertNotSame(runtimes.getFirst().getHttpClient(),
+                runtimes.get(2).getHttpClient(),
                 "A different upstream tuple gets a distinct client");
     }
 
@@ -145,8 +149,8 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should preserve the route-table order")
     void shouldPreserveRouteTableOrder() {
         RouteTable table = new RouteTable(List.of(
-                route("first", Protocol.HTTP, "none", Optional.empty(), upstream("a.example")),
-                route("second", Protocol.GRAPHQL, "bearer", Optional.empty(), upstream("b.example"))));
+                route("first", Protocol.HTTP, "none", null, upstream("a.example")),
+                route("second", Protocol.GRAPHQL, "bearer", null, upstream("b.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -160,7 +164,7 @@ class RouteRuntimeAssemblerTest {
         // A require:session route now assembles like any other route — its stage-4 runtime is the
         // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection.
         RouteTable sessionTable = new RouteTable(List.of(
-                route("s", Protocol.HTTP, "session", Optional.empty(), upstream("a.example"))));
+                route("s", Protocol.HTTP, "session", null, upstream("a.example"))));
         List<RouteRuntime> sessionRuntimes = assertDoesNotThrow(
                 () -> assembler.assemble(sessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a require:session route assembles now the boot-time rejection is removed");
@@ -170,7 +174,7 @@ class RouteRuntimeAssemblerTest {
         // A session-auth WebSocket route likewise assembles — session auth no longer gates boot, so
         // it is treated exactly like any other WebSocket route.
         RouteTable webSocketSessionTable = new RouteTable(List.of(
-                route("sw", Protocol.WEBSOCKET, "session", Optional.empty(), upstream("a.example"))));
+                route("sw", Protocol.WEBSOCKET, "session", null, upstream("a.example"))));
         assertDoesNotThrow(
                 () -> assembler.assemble(webSocketSessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a session-auth WebSocket route assembles — session auth no longer fails boot");
@@ -178,14 +182,14 @@ class RouteRuntimeAssemblerTest {
         // A gRPC route with non-session auth assembles cleanly — the forced-h2 upstream client is
         // built by the injected client factory.
         RouteTable grpcTable = new RouteTable(List.of(
-                route("g", Protocol.GRPC, "none", Optional.empty(), upstream("a.example"))));
+                route("g", Protocol.GRPC, "none", null, upstream("a.example"))));
         assertDoesNotThrow(
                 () -> assembler.assemble(grpcTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a gRPC route with non-session auth assembles cleanly");
 
         // A WebSocket route with non-session auth likewise assembles cleanly.
         RouteTable webSocketNoneTable = new RouteTable(List.of(
-                route("w", Protocol.WEBSOCKET, "none", Optional.empty(), upstream("a.example"))));
+                route("w", Protocol.WEBSOCKET, "none", null, upstream("a.example"))));
         assertDoesNotThrow(
                 () -> assembler.assemble(webSocketNoneTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a WebSocket route with non-session auth assembles cleanly");
@@ -198,7 +202,7 @@ class RouteRuntimeAssemblerTest {
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("scoped").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/s").build())
                 .effectiveAuth(auth).effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(Optional.of(upstream("a.example"))).build()));
+                .upstream(upstream("a.example")).build()));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -215,7 +219,7 @@ class RouteRuntimeAssemblerTest {
                 .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(Optional.of(upstream("a.example"))).effectiveForward(forward).build()));
+                .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -227,7 +231,7 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should default an absent forward block to a deny-by-default empty allowlist")
     void shouldDefaultAbsentForwardToEmpty() {
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+                route("r1", Protocol.HTTP, "none", null, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -243,7 +247,7 @@ class RouteRuntimeAssemblerTest {
                 .match(MatchConfig.builder().pathPrefix("/assets").build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .asset(Optional.of(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC)))
+                .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC))
                 .build();
         RouteTable table = new RouteTable(List.of(assetRoute));
 
@@ -251,27 +255,27 @@ class RouteRuntimeAssemblerTest {
                 assetSourceFactory);
 
         RouteRuntime runtime = runtimes.getFirst();
-        assertTrue(runtime.getAssetSource().isPresent(), "an asset route carries a live asset source");
-        assertTrue(runtime.getUpstream().isEmpty(), "an asset route holds no proxy upstream");
-        assertTrue(runtime.getHttpClient().isEmpty(), "an asset route holds no Vert.x client");
-        assertTrue(runtime.getResilienceGuard().isEmpty(), "an asset route holds no resilience guard");
+        assertNotNull(runtime.getAssetSource(), "an asset route carries a live asset source");
+        assertNull(runtime.getUpstream(), "an asset route holds no proxy upstream");
+        assertNull(runtime.getHttpClient(), "an asset route holds no Vert.x client");
+        assertNull(runtime.getResilienceGuard(), "an asset route holds no resilience guard");
     }
 
     @Test
-    @DisplayName("Should assemble the empty-Optional (no-asset) proxy path into an upstream/client/guard runtime without throwing (S3655 guard)")
+    @DisplayName("Should assemble the null (no-asset) proxy path into an upstream/client/guard runtime without throwing (S3655 guard)")
     void shouldAssembleNoAssetProxyPathWithoutThrowing() {
         RouteTable table = new RouteTable(List.of(
-                route("proxy-only", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+                route("proxy-only", Protocol.HTTP, "none", null, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assertDoesNotThrow(
                 () -> assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
-                "the empty-Optional asset branch must assemble the proxy runtime without throwing");
+                "the null asset branch must assemble the proxy runtime without throwing");
 
         RouteRuntime runtime = runtimes.getFirst();
-        assertTrue(runtime.getAssetSource().isEmpty(), "the no-asset path carries no asset source");
-        assertTrue(runtime.getUpstream().isPresent(), "the guarded empty-asset branch resolves the proxy upstream");
-        assertTrue(runtime.getHttpClient().isPresent(), "the proxy path builds a Vert.x client");
-        assertTrue(runtime.getResilienceGuard().isPresent(), "the proxy path builds a resilience guard");
+        assertNull(runtime.getAssetSource(), "the no-asset path carries no asset source");
+        assertNotNull(runtime.getUpstream(), "the guarded null-asset branch resolves the proxy upstream");
+        assertNotNull(runtime.getHttpClient(), "the proxy path builds a Vert.x client");
+        assertNotNull(runtime.getResilienceGuard(), "the proxy path builds a resilience guard");
     }
 
     @Test
@@ -279,26 +283,26 @@ class RouteRuntimeAssemblerTest {
     void shouldResolvePostureForBlockLessRoute() {
         // Arrange — the load-bearing case: a global profile must reach a route with no block at all,
         // which the previous effectiveSecurityFilter().map(...) shape silently skipped.
-        List<Optional<SecurityFilterConfig>> seen = new ArrayList<>();
+        List<@Nullable SecurityFilterConfig> seen = new ArrayList<>();
         securityConfigFactory = filter -> {
             seen.add(filter);
             return new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.NONE,
                     SecurityProfile.STRICT.preset());
         };
         RouteTable table = new RouteTable(List.of(
-                route("block-less", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+                route("block-less", Protocol.HTTP, "none", null, upstream("a.example"))));
 
         // Act
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
                 assetSourceFactory);
 
         // Assert
-        assertEquals(List.of(Optional.empty()), seen,
-                "the resolver runs for a block-less route, receiving an empty Optional");
+        assertEquals(Collections.singletonList(null), seen,
+                "the resolver runs for a block-less route, receiving a null filter block");
         RouteRuntime runtime = runtimes.getFirst();
         assertEquals(SecurityProfile.NONE, runtime.getSecurityProfile(),
                 "the resolved profile reaches a route that declares no security_filter block");
-        assertTrue(runtime.getSecurityConfiguration().isPresent(),
+        assertNotNull(runtime.getSecurityConfiguration(),
                 "every route carries a concrete limits policy, so the body cap is always enforceable");
     }
 
@@ -312,8 +316,8 @@ class RouteRuntimeAssemblerTest {
                 SecurityProfile.limitsProfile(resolved, resolved).preset());
         RouteTable table = new RouteTable(List.of(
                 route("declared", Protocol.HTTP, "none",
-                        Optional.of(SecurityFilterConfig.builder().build()), upstream("a.example")),
-                route("block-less", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+                        SecurityFilterConfig.builder().build(), upstream("a.example")),
+                route("block-less", Protocol.HTTP, "none", null, upstream("a.example"))));
 
         // Act
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
@@ -324,13 +328,13 @@ class RouteRuntimeAssemblerTest {
             assertEquals(resolved, runtime.getSecurityProfile(),
                     "route '%s' carries the resolved %s profile".formatted(runtime.getId(), resolved));
             assertEquals(SecurityProfile.limitsProfile(resolved, resolved).preset(),
-                    runtime.getSecurityConfiguration().orElseThrow(),
+                    runtime.getSecurityConfiguration(),
                     "route '%s' carries the resolved limits policy".formatted(runtime.getId()));
         }
     }
 
     @Test
-    @DisplayName("Should key the posture cache on the whole Optional, splitting a declared block from an absent one")
+    @DisplayName("Should key the posture cache on the whole filter block, splitting a declared block from an absent one")
     void shouldSplitPostureCacheOnDeclaredVersusAbsentBlock() {
         // Arrange
         var invocations = new AtomicInteger();
@@ -341,9 +345,9 @@ class RouteRuntimeAssemblerTest {
         };
         SecurityFilterConfig declared = SecurityFilterConfig.builder().allowedPaths(List.of("/shared")).build();
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", Optional.of(declared), upstream("a.example")),
-                route("r2", Protocol.HTTP, "none", Optional.of(declared), upstream("a.example")),
-                route("r3", Protocol.HTTP, "none", Optional.empty(), upstream("a.example"))));
+                route("r1", Protocol.HTTP, "none", declared, upstream("a.example")),
+                route("r2", Protocol.HTTP, "none", declared, upstream("a.example")),
+                route("r3", Protocol.HTTP, "none", null, upstream("a.example"))));
 
         // Act
         assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
@@ -354,7 +358,7 @@ class RouteRuntimeAssemblerTest {
     }
 
     private static ResolvedRoute route(String id, Protocol protocol, String require,
-            Optional<SecurityFilterConfig> filter, ResolvedUpstream upstream) {
+            @Nullable SecurityFilterConfig filter, ResolvedUpstream upstream) {
         return ResolvedRoute.builder()
                 .id(id)
                 .protocol(protocol)
@@ -362,7 +366,7 @@ class RouteRuntimeAssemblerTest {
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .effectiveSecurityFilter(filter)
-                .upstream(Optional.of(upstream))
+                .upstream(upstream)
                 .build();
     }
 

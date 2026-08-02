@@ -15,8 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.Objects;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The optional {@code metadata} block of {@code gateway.yaml}.
@@ -24,17 +23,9 @@ import java.util.Optional;
  * {@code config_version} is an audit stamp only — logged at boot and exposed for
  * operational traceability, with no runtime behaviour.
  *
- * @param configVersion the audit-stamp config version, empty when omitted
+ * @param configVersion the audit-stamp config version, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
-public record Metadata(Optional<String> configVersion) {
-
-    /**
-     * Canonical constructor normalizing an absent {@code configVersion} to
-     * {@link Optional#empty()}.
-     */
-    public Metadata {
-        configVersion = Objects.requireNonNullElse(configVersion, Optional.empty());
-    }
+public record Metadata(@Nullable String configVersion) {
 }

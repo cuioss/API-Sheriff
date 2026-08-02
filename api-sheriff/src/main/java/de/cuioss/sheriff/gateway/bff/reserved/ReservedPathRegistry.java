@@ -90,12 +90,15 @@ public final class ReservedPathRegistry {
      * are derived from {@code oidc.redirect_uri}; without a {@code redirect_uri} there is no OIDC
      * host to bind reserved paths to, so the registry is empty.
      *
-     * @param oidc the global OIDC configuration, empty when the gateway serves no BFF variant
+     * @param config the global OIDC configuration, {@code null} when the gateway serves no BFF variant
      * @return the reserved-path registry — {@linkplain #isEmpty() empty} when no OIDC callback is configured
      */
-    public static ReservedPathRegistry from(Optional<OidcConfig> oidc) {
-        Objects.requireNonNull(oidc, "oidc");
-        Optional<URI> redirect = oidc.flatMap(OidcConfig::redirectUri).flatMap(ReservedPathRegistry::parseUri);
+    public static ReservedPathRegistry from(@Nullable OidcConfig config) {
+        if (config == null) {
+            return new ReservedPathRegistry(null, Map.of());
+        }
+        String redirectUri = config.redirectUri();
+        Optional<URI> redirect = redirectUri == null ? Optional.empty() : parseUri(redirectUri);
         String host = redirect.map(URI::getHost).orElse(null);
         if (host == null) {
             return new ReservedPathRegistry(null, Map.of());
@@ -103,18 +106,34 @@ public final class ReservedPathRegistry {
         Map<String, ReservedEndpoint> paths = new LinkedHashMap<>();
         redirect.map(URI::getPath).filter(ReservedPathRegistry::isAbsolutePath)
                 .ifPresent(path -> paths.put(path, ReservedEndpoint.CALLBACK));
-        Optional<OidcConfig.Logout> logout = oidc.flatMap(OidcConfig::logout);
-        logout.flatMap(OidcConfig.Logout::path).flatMap(ReservedPathRegistry::toPath)
-                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.LOGOUT));
-        logout.flatMap(OidcConfig.Logout::postLogoutRedirectUri).flatMap(ReservedPathRegistry::toPath)
-                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.LOGOUT_RETURN));
-        logout.flatMap(OidcConfig.Logout::backchannelPath).flatMap(ReservedPathRegistry::toPath)
-                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.BACKCHANNEL_LOGOUT));
-        oidc.flatMap(OidcConfig::userInfo).flatMap(OidcConfig.UserInfo::path).flatMap(ReservedPathRegistry::toPath)
-                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.USER_INFO));
-        oidc.flatMap(OidcConfig::login).flatMap(OidcConfig.Login::path).flatMap(ReservedPathRegistry::toPath)
-                .ifPresent(path -> paths.putIfAbsent(path, ReservedEndpoint.LOGIN));
+        OidcConfig.Logout logout = config.logout();
+        if (logout != null) {
+            reservePath(paths, logout.path(), ReservedEndpoint.LOGOUT);
+            reservePath(paths, logout.postLogoutRedirectUri(), ReservedEndpoint.LOGOUT_RETURN);
+            reservePath(paths, logout.backchannelPath(), ReservedEndpoint.BACKCHANNEL_LOGOUT);
+        }
+        OidcConfig.UserInfo userInfo = config.userInfo();
+        if (userInfo != null) {
+            reservePath(paths, userInfo.path(), ReservedEndpoint.USER_INFO);
+        }
+        OidcConfig.Login login = config.login();
+        if (login != null) {
+            reservePath(paths, login.path(), ReservedEndpoint.LOGIN);
+        }
         return new ReservedPathRegistry(host, paths);
+    }
+
+    /**
+     * Registers {@code value}'s {@linkplain #toPath(String) absolute path component} under
+     * {@code endpoint}, keeping the first registration for a path. A {@code null}, blank, relative,
+     * or unparseable value contributes nothing.
+     */
+    private static void reservePath(Map<String, ReservedEndpoint> paths, @Nullable String value,
+            ReservedEndpoint endpoint) {
+        if (value == null) {
+            return;
+        }
+        toPath(value).ifPresent(path -> paths.putIfAbsent(path, endpoint));
     }
 
     /**

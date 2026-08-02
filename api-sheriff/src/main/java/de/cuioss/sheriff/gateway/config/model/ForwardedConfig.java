@@ -16,8 +16,8 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -33,21 +33,19 @@ import lombok.Builder;
  * @param trustedProxies  the trusted-proxy CIDRs, empty when forwarding headers
  *                        are never trusted
  * @param trustSchemeHost whether the sanitized forwarded scheme/host/port/prefix
- *                        is honored, empty when omitted
- * @param emit            the canonical output mode, empty when omitted
+ *                        is honored, {@code null} when omitted
+ * @param emit            the canonical output mode, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record ForwardedConfig(List<String> trustedProxies, Optional<Boolean> trustSchemeHost, Optional<String> emit) {
+public record ForwardedConfig(List<String> trustedProxies, @Nullable Boolean trustSchemeHost,
+@Nullable String emit) {
 
     /**
-     * Canonical constructor defensively copying {@code trustedProxies} and
-     * normalizing absent components.
+     * Canonical constructor defensively copying {@code trustedProxies}.
      */
     public ForwardedConfig {
         trustedProxies = trustedProxies == null ? List.of() : List.copyOf(trustedProxies);
-        trustSchemeHost = Objects.requireNonNullElse(trustSchemeHost, Optional.empty());
-        emit = Objects.requireNonNullElse(emit, Optional.empty());
     }
 }

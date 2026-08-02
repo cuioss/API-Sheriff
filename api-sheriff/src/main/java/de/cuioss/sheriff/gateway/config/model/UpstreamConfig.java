@@ -15,8 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.Objects;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -29,91 +28,56 @@ import lombok.Builder;
  * materialized once by the route-table builder.
  *
  * @param path             the upstream path that replaces the matched prefix,
- *                         empty when omitted
- * @param connectTimeoutMs the connect timeout in milliseconds, empty when omitted
- * @param readTimeoutMs    the read timeout in milliseconds, empty when omitted
- * @param retry            the retry settings, empty when omitted
- * @param notModified      the HTTP-304 not-modified settings, empty when omitted
- * @param circuitBreaker   the circuit-breaker settings, empty when omitted
+ *                         {@code null} when omitted
+ * @param connectTimeoutMs the connect timeout in milliseconds, {@code null} when omitted
+ * @param readTimeoutMs    the read timeout in milliseconds, {@code null} when omitted
+ * @param retry            the retry settings, {@code null} when omitted
+ * @param notModified      the HTTP-304 not-modified settings, {@code null} when omitted
+ * @param circuitBreaker   the circuit-breaker settings, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record UpstreamConfig(Optional<String> path, Optional<Integer> connectTimeoutMs, Optional<Integer> readTimeoutMs,
-Optional<Retry> retry, Optional<NotModified> notModified, Optional<CircuitBreaker> circuitBreaker) {
-
-    /**
-     * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-     */
-    public UpstreamConfig {
-        path = Objects.requireNonNullElse(path, Optional.empty());
-        connectTimeoutMs = Objects.requireNonNullElse(connectTimeoutMs, Optional.empty());
-        readTimeoutMs = Objects.requireNonNullElse(readTimeoutMs, Optional.empty());
-        retry = Objects.requireNonNullElse(retry, Optional.empty());
-        notModified = Objects.requireNonNullElse(notModified, Optional.empty());
-        circuitBreaker = Objects.requireNonNullElse(circuitBreaker, Optional.empty());
-    }
+public record UpstreamConfig(@Nullable String path, @Nullable Integer connectTimeoutMs,
+@Nullable Integer readTimeoutMs,
+@Nullable Retry retry, @Nullable NotModified notModified, @Nullable CircuitBreaker circuitBreaker) {
 
     /**
      * Per-route retry settings.
      *
-     * @param enabled        whether retry is enabled for this route; empty inherits
+     * @param enabled        whether retry is enabled for this route; {@code null} inherits
      *                       the resolved endpoint/global default
-     * @param maxAttempts    the maximum retry attempts, empty when omitted
-     * @param idempotentOnly whether only idempotent methods are retried, empty when
+     * @param maxAttempts    the maximum retry attempts, {@code null} when omitted
+     * @param idempotentOnly whether only idempotent methods are retried, {@code null} when
      *                       omitted
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
-    public record Retry(Optional<Boolean> enabled, Optional<Integer> maxAttempts, Optional<Boolean> idempotentOnly) {
-
-        /**
-         * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-         */
-        public Retry {
-            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
-            maxAttempts = Objects.requireNonNullElse(maxAttempts, Optional.empty());
-            idempotentOnly = Objects.requireNonNullElse(idempotentOnly, Optional.empty());
-        }
+    public record Retry(@Nullable Boolean enabled, @Nullable Integer maxAttempts,
+    @Nullable Boolean idempotentOnly) {
     }
 
     /**
      * Per-route HTTP-304 not-modified settings.
      *
-     * @param enabled whether not-modified handling is enabled for this route; empty
-     *                inherits the resolved endpoint/global default
+     * @param enabled whether not-modified handling is enabled for this route;
+     *                {@code null} inherits the resolved endpoint/global default
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record NotModified(Optional<Boolean> enabled) {
-
-        /**
-         * Canonical constructor normalizing an absent {@code enabled} to
-         * {@link Optional#empty()}.
-         */
-        public NotModified {
-            enabled = Objects.requireNonNullElse(enabled, Optional.empty());
-        }
+    public record NotModified(@Nullable Boolean enabled) {
     }
 
     /**
      * Per-route circuit-breaker settings.
      *
-     * @param failures the failure threshold before opening, empty when omitted
-     * @param resetMs  the reset window in milliseconds, empty when omitted
+     * @param failures the failure threshold before opening, {@code null} when omitted
+     * @param resetMs  the reset window in milliseconds, {@code null} when omitted
      * @author API Sheriff Team
      * @since 1.0
      */
     @Builder
-    public record CircuitBreaker(Optional<Integer> failures, Optional<Integer> resetMs) {
-
-        /**
-         * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-         */
-        public CircuitBreaker {
-            failures = Objects.requireNonNullElse(failures, Optional.empty());
-            resetMs = Objects.requireNonNullElse(resetMs, Optional.empty());
-        }
+    public record CircuitBreaker(@Nullable Integer failures, @Nullable Integer resetMs) {
     }
 }

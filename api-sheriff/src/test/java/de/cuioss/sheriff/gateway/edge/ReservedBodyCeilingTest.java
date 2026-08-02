@@ -23,7 +23,6 @@ import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -110,12 +109,12 @@ class ReservedBodyCeilingTest {
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
-                .oidc(Optional.of(OidcConfig.builder()
-                        .redirectUri(Optional.of("https://localhost" + CALLBACK_PATH))
-                        .logout(Optional.of(OidcConfig.Logout.builder()
-                                .backchannelPath(Optional.of(BACKCHANNEL_LOGOUT_PATH))
-                                .build()))
-                        .build()))
+                .oidc(OidcConfig.builder()
+                        .redirectUri("https://localhost" + CALLBACK_PATH)
+                        .logout(OidcConfig.Logout.builder()
+                                .backchannelPath(BACKCHANNEL_LOGOUT_PATH)
+                                .build())
+                        .build())
                 .build();
         EdgeHardeningOptions hardening = new EdgeHardeningOptions();
         ceiling = hardening.reservedBodyMaxBytes();

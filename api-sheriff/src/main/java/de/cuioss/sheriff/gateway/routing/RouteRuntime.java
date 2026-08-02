@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.routing;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 
@@ -32,6 +31,8 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
+import org.jspecify.annotations.Nullable;
+
 import lombok.Builder;
 import lombok.Getter;
 
@@ -77,17 +78,18 @@ public final class RouteRuntime {
     /**
      * The deduplicated cui-http security configuration carrying this route's limits. Resolved for
      * every route by the {@code RouteRuntimeAssembler}, so it is present on every
-     * assembler-produced runtime; it stays {@link Optional} only for the builder's test call sites.
+     * assembler-produced runtime; it stays nullable only for the builder's test call sites.
      * <p>
-     * The {@link Builder.Default} is {@link Optional#empty()} — the fail-closed value, so a builder
-     * call site that omits the field yields an empty {@link Optional} rather than a raw {@code null}
-     * that would fault {@code ThoroughChecksStage}'s {@code orElse(defaultConfiguration)} on the hot
-     * path. The default exists for the builder's test call sites; the {@code RouteRuntimeAssembler}
+     * The absent value is {@code null} — the fail-closed value, so a builder call site that omits
+     * the field yields {@code null}, which {@code ThoroughChecksStage} resolves on the hot path via
+     * {@code Objects.requireNonNullElse(route.getSecurityConfiguration(), defaultConfiguration)}.
+     * That explicit null guard is what keeps an omitted field from faulting the hot path, and it
+     * replaces the previous {@code Optional#empty()} default carrying the same guarantee. The
+     * default exists for the builder's test call sites; the {@code RouteRuntimeAssembler}
      * nevertheless sets the field <em>unconditionally</em>, so the default can never mask an
      * assembler regression.
      */
-    @Builder.Default
-    private final Optional<SecurityConfiguration> securityConfiguration = Optional.empty();
+    private final @Nullable SecurityConfiguration securityConfiguration;
 
     /**
      * The resolved effective inbound-filter mode, the signal {@code ThoroughChecksStage} branches
@@ -101,8 +103,8 @@ public final class RouteRuntime {
     @Builder.Default
     private final SecurityProfile securityProfile = SecurityProfile.STRICT;
 
-    /** The effective response-header posture, empty when none resolves. */
-    private final Optional<SecurityHeadersConfig> securityHeaders;
+    /** The effective response-header posture, {@code null} when none resolves. */
+    private final @Nullable SecurityHeadersConfig securityHeaders;
 
     /**
      * The effective, deny-by-default {@code forward} allowlist consumed by stage 5 — the
@@ -129,33 +131,29 @@ public final class RouteRuntime {
     private final boolean notModifiedEnabled;
 
     /**
-     * The resolved upstream target for a proxy route; empty for an asset route. A route
+     * The resolved upstream target for a proxy route; {@code null} for an asset route. A route
      * carries exactly one terminal action — a proxy {@link #upstream} or an
      * {@link #assetSource} — never both (ADR-0014).
      */
-    @Builder.Default
-    private final Optional<ResolvedUpstream> upstream = Optional.empty();
+    private final @Nullable ResolvedUpstream upstream;
 
     /**
      * The shared Vert.x client for a proxy route's upstream tuple (one instance per
-     * tuple); empty for an asset route.
+     * tuple); {@code null} for an asset route.
      */
-    @Builder.Default
-    private final Optional<HttpClient> httpClient = Optional.empty();
+    private final @Nullable HttpClient httpClient;
 
     /**
      * The shared SmallRye Fault-Tolerance guard for a proxy route's resilience shape;
-     * empty for an asset route.
+     * {@code null} for an asset route.
      */
-    @Builder.Default
-    private final Optional<Guard> resilienceGuard = Optional.empty();
+    private final @Nullable Guard resilienceGuard;
 
     /**
      * The live asset source serving an asset route's terminal action (a directory
-     * reader or an SSRF-guarded upstream fetcher); empty for a proxy route.
+     * reader or an SSRF-guarded upstream fetcher); {@code null} for a proxy route.
      */
-    @Builder.Default
-    private final Optional<AssetSource> assetSource = Optional.empty();
+    private final @Nullable AssetSource assetSource;
 
     /**
      * The materialized, lower-cased exact-match {@code Origin} allowlist enforced on a WebSocket
@@ -167,10 +165,9 @@ public final class RouteRuntime {
     private final Set<String> effectiveAllowedOrigins = Set.of();
 
     /**
-     * The materialized WebSocket idle timeout with the {@code 300}-second default applied; empty
-     * for a non-WebSocket route. Bounds an established relay — no frame in either direction, with
-     * ping/pong counting as activity.
+     * The materialized WebSocket idle timeout with the {@code 300}-second default applied;
+     * {@code null} for a non-WebSocket route. Bounds an established relay — no frame in either
+     * direction, with ping/pong counting as activity.
      */
-    @Builder.Default
-    private final Optional<Integer> effectiveWebSocketIdleTimeoutSeconds = Optional.empty();
+    private final @Nullable Integer effectiveWebSocketIdleTimeoutSeconds;
 }

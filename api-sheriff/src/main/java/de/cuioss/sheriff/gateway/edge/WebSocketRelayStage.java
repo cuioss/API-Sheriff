@@ -128,10 +128,14 @@ public final class WebSocketRelayStage {
         Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(releaseAdmission, "releaseAdmission");
         Map<String, String> retainedSecurityHeaders = Map.copyOf(securityHeaders);
-        HttpClient client = route.getHttpClient()
-                .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires an upstream client"));
-        ResolvedUpstream upstream = route.getUpstream()
-                .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
+        HttpClient client = route.getHttpClient();
+        if (client == null) {
+            throw new IllegalStateException("WebSocket dispatch requires an upstream client");
+        }
+        ResolvedUpstream upstream = route.getUpstream();
+        if (upstream == null) {
+            throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
+        }
         WebSocketConnectOptions options = new WebSocketConnectOptions()
                 .setHost(upstream.host())
                 .setPort(upstream.port())
@@ -189,7 +193,8 @@ public final class WebSocketRelayStage {
 
     private void establishRelay(RoutingContext ctx, RouteRuntime route, ServerWebSocket clientWs,
             WebSocket upstreamWs, Runnable releaseAdmission) {
-        int idleSeconds = route.getEffectiveWebSocketIdleTimeoutSeconds().orElse(DEFAULT_IDLE_TIMEOUT_SECONDS);
+        int idleSeconds = Objects.requireNonNullElse(route.getEffectiveWebSocketIdleTimeoutSeconds(),
+                DEFAULT_IDLE_TIMEOUT_SECONDS);
         LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.getId());
         eventCounter.increment(EventType.REQUEST_FORWARDED);
         // The admission permit stays held for the relay's whole lifetime — the session releases it from

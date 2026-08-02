@@ -17,7 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -26,31 +27,28 @@ import lombok.Builder;
  *
  * @param name     the unique issuer label used in logs and metrics (mandatory)
  * @param issuer   the expected {@code iss} claim (mandatory)
- * @param audience the expected {@code aud} claim, empty when omitted
- * @param jwks     the key material for signature verification, empty when omitted
+ * @param audience the expected {@code aud} claim, {@code null} when omitted
+ * @param jwks     the key material for signature verification, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record IssuerConfig(String name, String issuer, Optional<String> audience, Optional<Jwks> jwks) {
+public record IssuerConfig(String name, String issuer, @Nullable String audience, @Nullable Jwks jwks) {
 
     /**
-     * Canonical constructor requiring the mandatory fields and normalizing absent
-     * optionals to {@link Optional#empty()}.
+     * Canonical constructor requiring the mandatory fields.
      */
     public IssuerConfig {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(issuer, "issuer");
-        audience = Objects.requireNonNullElse(audience, Optional.empty());
-        jwks = Objects.requireNonNullElse(jwks, Optional.empty());
     }
 
     /**
      * Key material for signature verification.
      *
      * @param source             the key source ({@code http} / {@code file}), mandatory
-     * @param url                the JWKS URL (for {@code source: http}), empty otherwise
-     * @param file               the JWKS file path (for {@code source: file}), empty
+     * @param url                the JWKS URL (for {@code source: http}), {@code null} otherwise
+     * @param file               the JWKS file path (for {@code source: file}), {@code null}
      *                           otherwise
      * @param allowedEgressHosts the SSRF egress allowlist for {@code source: http}, empty
      *                           when omitted. An empty list keeps token-sheriff's
@@ -60,7 +58,7 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
      *                           exempts exactly one trusted IdP host from that check
      *                           (threat model GW-05 / BFF-07); there is no wildcard form.
      * @param tlsProfile         the name of the logical trust profile the JWKS client uses
-     *                           to verify the IdP's server certificate, empty when omitted.
+     *                           to verify the IdP's server certificate, {@code null} when omitted.
      *                           This is a name in API Sheriff's own vocabulary, deliberately
      *                           carrying no trust material and no runtime detail: the
      *                           deployment binds the name to concrete trust anchors, and one
@@ -72,21 +70,17 @@ public record IssuerConfig(String name, String issuer, Optional<String> audience
      * @since 1.0
      */
     @Builder
-    public record Jwks(String source, Optional<String> url, Optional<String> file,
-    List<String> allowedEgressHosts, Optional<String> tlsProfile) {
+    public record Jwks(String source, @Nullable String url, @Nullable String file,
+    List<String> allowedEgressHosts, @Nullable String tlsProfile) {
 
         /**
-         * Canonical constructor requiring {@code source}, normalizing absent optionals to
-         * {@link Optional#empty()}, and defensively copying the egress allowlist — an
-         * absent list normalizes to {@link List#of()}, which preserves the secure egress
-         * default rather than widening it.
+         * Canonical constructor requiring {@code source} and defensively copying the
+         * egress allowlist — an absent list normalizes to {@link List#of()}, which
+         * preserves the secure egress default rather than widening it.
          */
         public Jwks {
             Objects.requireNonNull(source, "source");
-            url = Objects.requireNonNullElse(url, Optional.empty());
-            file = Objects.requireNonNullElse(file, Optional.empty());
             allowedEgressHosts = allowedEgressHosts == null ? List.of() : List.copyOf(allowedEgressHosts);
-            tlsProfile = Objects.requireNonNullElse(tlsProfile, Optional.empty());
         }
     }
 }

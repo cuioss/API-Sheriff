@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.config.load;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,7 +29,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -99,15 +99,15 @@ class ConfigLoaderTest {
         assertEquals(1, gateway.version());
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST, HttpMethod.PUT, HttpMethod.DELETE),
                 gateway.allowedMethods());
-        assertEquals(Optional.of("1.3"), gateway.tls().orElseThrow().minVersion());
+        assertEquals("1.3", gateway.tls().minVersion());
         assertEquals(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"),
-                gateway.tls().orElseThrow().cipherSuites(),
+                gateway.tls().cipherSuites(),
                 "the neutral tls.cipher_suites allowlist must bind from gateway.yaml");
-        assertEquals(List.of("h2", "http/1.1"), gateway.tls().orElseThrow().alpn());
-        assertEquals(new UpstreamDefaultsConfig(true, false), gateway.upstreamDefaults().orElseThrow());
-        assertEquals(Optional.of("s3cr3t"), gateway.oidc().orElseThrow().clientSecret());
-        assertEquals(1, gateway.tokenValidation().orElseThrow().issuers().size());
-        assertEquals("primary", gateway.tokenValidation().orElseThrow().issuers().getFirst().name());
+        assertEquals(List.of("h2", "http/1.1"), gateway.tls().alpn());
+        assertEquals(new UpstreamDefaultsConfig(true, false), gateway.upstreamDefaults());
+        assertEquals("s3cr3t", gateway.oidc().clientSecret());
+        assertEquals(1, gateway.tokenValidation().issuers().size());
+        assertEquals("primary", gateway.tokenValidation().issuers().getFirst().name());
         assertTrue(loaded.endpoints().isEmpty());
     }
 
@@ -186,12 +186,12 @@ class ConfigLoaderTest {
         assertEquals("orders", endpoint.id());
         assertTrue(endpoint.enabled(), "an endpoint omitting 'enabled' defaults to enabled");
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), endpoint.allowedMethods());
-        assertEquals(new UpstreamDefaultsConfig(false, true), endpoint.upstreamDefaults().orElseThrow());
+        assertEquals(new UpstreamDefaultsConfig(false, true), endpoint.upstreamDefaults());
         assertEquals(1, endpoint.routes().size());
         RouteConfig route = endpoint.routes().getFirst();
         assertEquals("orders-read", route.id());
-        assertEquals(Optional.of(Protocol.HTTP), route.protocol());
-        assertTrue(route.upstream().orElseThrow().retry().isPresent());
+        assertEquals(Protocol.HTTP, route.protocol());
+        assertNotNull(route.upstream().retry());
     }
 
     @Test
@@ -224,8 +224,8 @@ class ConfigLoaderTest {
 
         // Assert — the key is accepted by the schema (additionalProperties: false) and
         // binds through the SNAKE_CASE strategy to the record component
-        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
-        assertEquals(List.of("keycloak"), issuer.jwks().orElseThrow().allowedEgressHosts());
+        IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
+        assertEquals(List.of("keycloak"), issuer.jwks().allowedEgressHosts());
     }
 
     @Test
@@ -246,8 +246,8 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert — no entries means the secure egress default is preserved downstream
-        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
-        assertEquals(List.of(), issuer.jwks().orElseThrow().allowedEgressHosts());
+        IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
+        assertEquals(List.of(), issuer.jwks().allowedEgressHosts());
     }
 
     @Test
@@ -296,12 +296,12 @@ class ConfigLoaderTest {
 
         // Assert — the key is accepted by the schema (additionalProperties: false) and binds
         // through the SNAKE_CASE strategy to the record component
-        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
-        assertEquals(Optional.of("corporate-idp"), issuer.jwks().orElseThrow().tlsProfile());
+        IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
+        assertEquals("corporate-idp", issuer.jwks().tlsProfile());
     }
 
     @Test
-    void omittedTlsProfileBindsToEmptyOptional() throws Exception {
+    void omittedTlsProfileBindsToNull() throws Exception {
         // Arrange — an http issuer that says nothing about trust
         writeConfig("gateway.yaml", """
                 version: 1
@@ -318,8 +318,8 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert — an absent profile means default trust, never null
-        IssuerConfig issuer = loaded.gateway().tokenValidation().orElseThrow().issuers().getFirst();
-        assertEquals(Optional.empty(), issuer.jwks().orElseThrow().tlsProfile());
+        IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
+        assertNull(issuer.jwks().tlsProfile());
     }
 
     @Test
@@ -377,7 +377,7 @@ class ConfigLoaderTest {
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        assertTrue(loaded.gateway().forwarded().orElseThrow().trustedProxies().isEmpty(),
+        assertTrue(loaded.gateway().forwarded().trustedProxies().isEmpty(),
                 "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
     }
 
@@ -392,7 +392,7 @@ class ConfigLoaderTest {
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        assertTrue(loaded.gateway().management().orElseThrow().tls().orElseThrow().enabled(),
+        assertTrue(loaded.gateway().management().tls().enabled(),
                 "a policy-only management block must bind without a port component");
     }
 
@@ -439,8 +439,8 @@ class ConfigLoaderTest {
         assertNotNull(api, "the anchor keyed 'api' should bind");
         assertEquals("api", api.name(), "the map key is injected as the anchor name");
         assertEquals("/api", api.pathPrefix());
-        assertEquals("bearer", api.auth().orElseThrow().require());
-        assertEquals(Optional.of("strict"), api.securityFilter().orElseThrow().profile());
+        assertEquals("bearer", api.auth().require());
+        assertEquals("strict", api.securityFilter().profile());
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), api.allowedMethods());
         assertEquals(AnchorType.PROXY, api.type(), "the required type axis binds (case-insensitive from 'proxy')");
         assertEquals(AccessLevel.AUTHENTICATED, api.access(),
@@ -523,8 +523,8 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert
-        SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults().orElseThrow();
-        assertEquals(Optional.of(12000), securityDefaults.maxAuthorizationHeaderValueLength(),
+        SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults();
+        assertEquals(12000, securityDefaults.maxAuthorizationHeaderValueLength(),
                 "the snake_cased key binds to the record component with no explicit annotation");
         assertEquals(12000, securityDefaults.effectiveMaxAuthorizationHeaderValueLength(),
                 "a declared budget is what the carve-out enforces");
@@ -532,7 +532,7 @@ class ConfigLoaderTest {
 
     @Test
     void resolvesOmittedAuthorizationHeaderValueLengthToTheDefault() throws Exception {
-        // Arrange — the matched negative half: an omitted key must bind empty and resolve to the
+        // Arrange — the matched negative half: an omitted key must bind null and resolve to the
         // documented default rather than to zero or to a bind failure.
         writeConfig("gateway.yaml", """
                 version: 1
@@ -544,8 +544,8 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert
-        SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults().orElseThrow();
-        assertEquals(Optional.empty(), securityDefaults.maxAuthorizationHeaderValueLength());
+        SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults();
+        assertNull(securityDefaults.maxAuthorizationHeaderValueLength());
         assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
                 securityDefaults.effectiveMaxAuthorizationHeaderValueLength());
     }
@@ -641,11 +641,11 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert
-        assertEquals(Optional.of("none"), loaded.gateway().securityDefaults().orElseThrow().profile());
-        assertEquals(Optional.of("none"),
-                loaded.gateway().anchors().get("api").securityFilter().orElseThrow().profile());
-        assertEquals(Optional.of("none"), loaded.endpoints().getFirst().routes().getFirst()
-                .securityFilter().orElseThrow().profile());
+        assertEquals("none", loaded.gateway().securityDefaults().profile());
+        assertEquals("none",
+                loaded.gateway().anchors().get("api").securityFilter().profile());
+        assertEquals("none", loaded.endpoints().getFirst().routes().getFirst()
+                .securityFilter().profile());
     }
 
     @Test
@@ -696,9 +696,9 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         EndpointConfig endpoint = loaded.endpoints().getFirst();
-        assertEquals(Optional.of("api"), endpoint.anchor(), "the endpoint anchor ref should bind");
+        assertEquals("api", endpoint.anchor(), "the endpoint anchor ref should bind");
         RouteConfig route = endpoint.routes().getFirst();
-        assertEquals(Optional.of("api"), route.anchor(), "the route anchor ref should bind");
+        assertEquals("api", route.anchor(), "the route anchor ref should bind");
     }
 
     @Test
@@ -727,9 +727,9 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         EndpointConfig endpoint = loaded.endpoints().getFirst();
-        assertTrue(endpoint.auth().isEmpty(),
+        assertNull(endpoint.auth(),
                 "an anchored endpoint may omit its auth block and still bind at the schema level");
-        assertEquals(Optional.of("api"), endpoint.anchor());
+        assertEquals("api", endpoint.anchor());
     }
 
     @Test
@@ -749,7 +749,7 @@ class ConfigLoaderTest {
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", tooLargeForALong)).load();
 
-        assertEquals(Optional.of(tooLargeForALong), loaded.gateway().oidc().orElseThrow().clientSecret(),
+        assertEquals(tooLargeForALong, loaded.gateway().oidc().clientSecret(),
                 "an all-digit substitution that overflows a long must fall back to a text node rather than "
                         + "propagate the parse failure");
     }

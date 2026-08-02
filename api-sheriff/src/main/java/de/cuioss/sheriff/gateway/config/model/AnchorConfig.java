@@ -17,7 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -50,11 +51,11 @@ import lombok.Builder;
  *                         {@code bff} / {@code asset}
  * @param access           the anchor audience (mandatory) — {@code public} /
  *                         {@code authenticated}
- * @param auth             the anchor-level auth floor, empty when the anchor
+ * @param auth             the anchor-level auth floor, {@code null} when the anchor
  *                         declares none
- * @param securityFilter   the anchor-level security filter, empty when the anchor
+ * @param securityFilter   the anchor-level security filter, {@code null} when the anchor
  *                         declares none
- * @param securityHeaders  the anchor-level response-header posture, empty when the
+ * @param securityHeaders  the anchor-level response-header posture, {@code null} when the
  *                         anchor declares none
  * @param allowedMethods   the anchor-level verb allowlist, empty when the anchor
  *                         declares none
@@ -63,23 +64,20 @@ import lombok.Builder;
  */
 @Builder
 public record AnchorConfig(String name, String pathPrefix, AnchorType type, AccessLevel access,
-Optional<AuthConfig> auth,
-Optional<SecurityFilterConfig> securityFilter, Optional<SecurityHeadersConfig> securityHeaders,
+@Nullable AuthConfig auth,
+@Nullable SecurityFilterConfig securityFilter, @Nullable SecurityHeadersConfig securityHeaders,
 List<HttpMethod> allowedMethods) {
 
     /**
      * Canonical constructor requiring {@code name}, {@code pathPrefix},
-     * {@code type} and {@code access}, defensively copying {@code allowedMethods},
-     * and normalizing absent optional blocks to {@link Optional#empty()}.
+     * {@code type} and {@code access}, and defensively copying
+     * {@code allowedMethods}.
      */
     public AnchorConfig {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(pathPrefix, "pathPrefix");
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(access, "access");
-        auth = Objects.requireNonNullElse(auth, Optional.empty());
-        securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());
-        securityHeaders = Objects.requireNonNullElse(securityHeaders, Optional.empty());
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
     }
 }

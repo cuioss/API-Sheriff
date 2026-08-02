@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.tls;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 import java.util.Map;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -78,7 +77,7 @@ class TlsEdgeProducerTest {
                             "sni.unresolved.example", UNRESOLVED_ALIAS))
                     .build();
             GatewayConfig config = GatewayConfig.builder().version(1)
-                    .tls(Optional.of(tls)).build();
+                    .tls(tls).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of(
                     RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, EPHEMERAL_PORT,
@@ -123,7 +122,7 @@ class TlsEdgeProducerTest {
                     .passthroughSni(Map.of("sni.unresolved.example", UNRESOLVED_ALIAS))
                     .build();
             GatewayConfig config = GatewayConfig.builder().version(1)
-                    .tls(Optional.of(tls)).build();
+                    .tls(tls).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of());
             TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, EPHEMERAL_PORT,
                     INTERNAL_HTTPS_PORT);

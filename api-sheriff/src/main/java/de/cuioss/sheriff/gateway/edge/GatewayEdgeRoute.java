@@ -292,9 +292,10 @@ public class GatewayEdgeRoute {
         this.gatewayEventCounter = new GatewayEventCounter();
         this.upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
 
-        List<String> trustedProxies = gatewayConfig.forwarded()
-                .map(ForwardedConfig::trustedProxies).orElse(List.of());
-        String emitMode = gatewayConfig.forwarded().flatMap(ForwardedConfig::emit).orElse(DEFAULT_EMIT_MODE);
+        ForwardedConfig forwardedConfig = gatewayConfig.forwarded();
+        List<String> trustedProxies = forwardedConfig == null ? List.of() : forwardedConfig.trustedProxies();
+        String declaredEmitMode = forwardedConfig == null ? null : forwardedConfig.emit();
+        String emitMode = declaredEmitMode != null ? declaredEmitMode : DEFAULT_EMIT_MODE;
         ForwardedResolverConfig resolverConfig = ForwardedResolverConfig.builder()
                 .trustedProxies(Set.copyOf(trustedProxies))
                 .securityConfig(defaultConfiguration)
@@ -332,8 +333,9 @@ public class GatewayEdgeRoute {
                 cookieHeaderConfiguration, authorizationHeaderConfiguration);
         this.canonicalPathGuard = new CanonicalPathGuard();
         this.framingGate = new FramingGate();
+        TlsConfig tlsConfig = gatewayConfig.tls();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
-                gatewayConfig.tls().map(TlsConfig::passthroughSni).map(Map::keySet).orElse(Set.of()));
+                tlsConfig == null ? Set.of() : tlsConfig.passthroughSni().keySet());
         this.routeSelectionStage = new RouteSelectionStage(routes);
         this.verbGateStage = new VerbGateStage();
         this.thoroughChecksStage = new ThoroughChecksStage(defaultConfiguration, securityEventCounter,
@@ -868,15 +870,18 @@ public class GatewayEdgeRoute {
         // An asset route serves its terminal action directly — the buffered, gateway-governed
         // asset response — instead of streaming to an upstream. Auth (stage 4) has already run,
         // so an unauthorized request never reaches the source (auth-before-source, ADR-0014).
-        if (route.getAssetSource().isPresent()) {
+        if (route.getAssetSource() != null) {
             serveAsset(ctx, request, route, remainder);
             return;
         }
         String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.getUpstream()
-                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resolved upstream"));
+        ResolvedUpstream upstreamTarget = route.getUpstream();
+        if (upstreamTarget == null) {
+            throw new IllegalStateException("proxy dispatch requires a resolved upstream");
+        }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        long cap = route.getSecurityConfiguration().map(SecurityConfiguration::maxBodySize).orElse(defaultMaxBodySize);
+        SecurityConfiguration routeSecurity = route.getSecurityConfiguration();
+        long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
@@ -927,8 +932,10 @@ public class GatewayEdgeRoute {
         String canonical = requireCanonicalPath(request);
         String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
         String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.getUpstream()
-                .orElseThrow(() -> new IllegalStateException("WebSocket dispatch requires a resolved upstream"));
+        ResolvedUpstream upstreamTarget = route.getUpstream();
+        if (upstreamTarget == null) {
+            throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
+        }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
         AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(ADMISSION_GUARD_KEY),
                 "admission guard missing — handle() must stash it before dispatch");
@@ -963,10 +970,13 @@ public class GatewayEdgeRoute {
         String canonical = requireCanonicalPath(request);
         String remainder = canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
         String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.getUpstream()
-                .orElseThrow(() -> new IllegalStateException("gRPC dispatch requires a resolved upstream"));
+        ResolvedUpstream upstreamTarget = route.getUpstream();
+        if (upstreamTarget == null) {
+            throw new IllegalStateException("gRPC dispatch requires a resolved upstream");
+        }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        long cap = route.getSecurityConfiguration().map(SecurityConfiguration::maxBodySize).orElse(defaultMaxBodySize);
+        SecurityConfiguration routeSecurity = route.getSecurityConfiguration();
+        long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
@@ -993,8 +1003,10 @@ public class GatewayEdgeRoute {
      * this method only routes and writes.
      */
     private void serveAsset(RoutingContext ctx, PipelineRequest request, RouteRuntime route, String remainder) {
-        AssetSource source = route.getAssetSource()
-                .orElseThrow(() -> new IllegalStateException("asset dispatch requires an asset source"));
+        AssetSource source = route.getAssetSource();
+        if (source == null) {
+            throw new IllegalStateException("asset dispatch requires an asset source");
+        }
         AssetSource.Served served = DispatchStage.serveAsset(source, request.method(), remainder);
         writeBufferedAsset(ctx, request, served);
     }
@@ -1208,14 +1220,20 @@ public class GatewayEdgeRoute {
      */
     private static AssetSource assetSourceFor(ResolvedAsset asset) {
         return switch (asset.source()) {
-            case DIRECTORY -> new DirectoryAssetSource(
-                    Path.of(asset.directory().orElseThrow(
-                            () -> new IllegalStateException("directory asset source requires a directory root"))),
-                    asset.access());
-            case UPSTREAM -> new UpstreamAssetSource(
-                    asset.upstream().orElseThrow(
-                            () -> new IllegalStateException("upstream asset source requires a resolved upstream")),
-                    asset.access());
+            case DIRECTORY -> {
+                String directory = asset.directory();
+                if (directory == null) {
+                    throw new IllegalStateException("directory asset source requires a directory root");
+                }
+                yield new DirectoryAssetSource(Path.of(directory), asset.access());
+            }
+            case UPSTREAM -> {
+                ResolvedUpstream upstream = asset.upstream();
+                if (upstream == null) {
+                    throw new IllegalStateException("upstream asset source requires a resolved upstream");
+                }
+                yield new UpstreamAssetSource(upstream, asset.access());
+            }
         };
     }
 
@@ -1303,16 +1321,17 @@ public class GatewayEdgeRoute {
      */
     static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
             BffRuntime bffRuntime, SecurityConfiguration baseline) {
-        Optional<OidcConfig.Session> session = gatewayConfig.oidc().flatMap(OidcConfig::session);
+        OidcConfig oidc = gatewayConfig.oidc();
+        OidcConfig.Session session = oidc == null ? null : oidc.session();
         // The SHARED cookie-mode predicate on the config model — never a locally-declared constant
         // compared here. A private constant plus a local comparison is what let this cap relax for a
         // mode spelling boot validation had already skipped.
-        boolean cookieMode = bffRuntime.isActive() && session.map(OidcConfig.Session::isCookieMode).orElse(false);
+        boolean cookieMode = bffRuntime.isActive() && session != null && session.isCookieMode();
         if (!cookieMode) {
             return null;
         }
-        int budget = session.flatMap(OidcConfig.Session::maxCookieSize)
-                .orElse(SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        Integer declaredBudget = session.maxCookieSize();
+        int budget = declaredBudget != null ? declaredBudget : SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
         // max(), not an outright set: a carve-out may only ever ADMIT MORE length. The default budget
         // plus the overhead is 4608, which sits BELOW the lenient profile's 8192 baseline, so setting
         // the cap outright turned this carve-out into a per-header TIGHTENING on every shipped-default
@@ -1366,9 +1385,10 @@ public class GatewayEdgeRoute {
      */
     static SecurityConfiguration authorizationHeaderConfigurationFor(GatewayConfig gatewayConfig,
             SecurityConfiguration baseline) {
-        int budget = gatewayConfig.securityDefaults()
-                .map(SecurityDefaultsConfig::effectiveMaxAuthorizationHeaderValueLength)
-                .orElse(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH);
+        SecurityDefaultsConfig securityDefaults = gatewayConfig.securityDefaults();
+        int budget = securityDefaults != null
+                ? securityDefaults.effectiveMaxAuthorizationHeaderValueLength()
+                : SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH;
         return SecurityConfigurations.builderSeededFrom(baseline)
                 .maxHeaderValueLength(budget)
                 .build();
@@ -1393,13 +1413,12 @@ public class GatewayEdgeRoute {
      * of only through a booted edge, whose assembled routes are not observable.
      */
     static RouteRuntimeAssembler.SecurityPosture securityPostureFor(
-            Optional<SecurityFilterConfig> filter, SecurityProfile globalProfile) {
-        SecurityProfile effective = filter.flatMap(SecurityFilterConfig::profile)
-                .flatMap(SecurityProfile::parse)
+            @Nullable SecurityFilterConfig filter, SecurityProfile globalProfile) {
+        SecurityProfile effective = SecurityProfile.parse(filter == null ? null : filter.profile())
                 .orElse(globalProfile);
         SecurityConfiguration preset = SecurityProfile.limitsProfile(effective, globalProfile).preset();
         return new RouteRuntimeAssembler.SecurityPosture(effective,
-                filter.map(declared -> applyDeclaredLimits(preset, declared)).orElse(preset));
+                filter == null ? preset : applyDeclaredLimits(preset, filter));
     }
 
     /**
@@ -1413,11 +1432,21 @@ public class GatewayEdgeRoute {
     private static SecurityConfiguration applyDeclaredLimits(SecurityConfiguration preset,
             SecurityFilterConfig filter) {
         SecurityConfigurationBuilder builder = SecurityConfigurations.builderSeededFrom(preset);
-        filter.maxBodyBytes().ifPresent(value -> builder.maxBodySize(value.longValue()));
-        filter.maxQueryParams().ifPresent(builder::maxParameterCount);
-        filter.maxHeaderCount().ifPresent(builder::maxHeaderCount);
-        filter.maxParamValueLength().ifPresent(builder::maxParameterValueLength);
-        filter.maxHeaderValueLength().ifPresent(builder::maxHeaderValueLength);
+        if (filter.maxBodyBytes() != null) {
+            builder.maxBodySize(filter.maxBodyBytes().longValue());
+        }
+        if (filter.maxQueryParams() != null) {
+            builder.maxParameterCount(filter.maxQueryParams());
+        }
+        if (filter.maxHeaderCount() != null) {
+            builder.maxHeaderCount(filter.maxHeaderCount());
+        }
+        if (filter.maxParamValueLength() != null) {
+            builder.maxParameterValueLength(filter.maxParamValueLength());
+        }
+        if (filter.maxHeaderValueLength() != null) {
+            builder.maxHeaderValueLength(filter.maxHeaderValueLength());
+        }
         if (!filter.allowedHeaderNames().isEmpty()) {
             builder.allowedHeaderNames(Set.copyOf(filter.allowedHeaderNames()));
         }

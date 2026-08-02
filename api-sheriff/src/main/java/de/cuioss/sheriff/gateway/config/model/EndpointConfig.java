@@ -17,7 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -41,34 +42,31 @@ import lombok.Builder;
  * @param id               the unique endpoint id (mandatory)
  * @param enabled          whether the endpoint is active
  * @param baseUrl          the topology alias (mandatory)
- * @param anchor           the default anchor membership, empty when the endpoint
+ * @param anchor           the default anchor membership, {@code null} when the endpoint
  *                         declares none
- * @param auth             the default auth posture for the routes, empty when the
+ * @param auth             the default auth posture for the routes, {@code null} when the
  *                         endpoint relies on an anchor- or route-provided posture
  * @param allowedMethods   the per-endpoint verb allowlist, empty meaning the
  *                         global/anchor list applies
- * @param upstreamDefaults the endpoint-level retry/not-modified defaults, empty
+ * @param upstreamDefaults the endpoint-level retry/not-modified defaults, {@code null}
  *                         when the global block applies
  * @param routes           the routes declared by this endpoint, empty when none
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record EndpointConfig(String id, boolean enabled, String baseUrl, Optional<String> anchor,
-Optional<AuthConfig> auth, List<HttpMethod> allowedMethods, Optional<UpstreamDefaultsConfig> upstreamDefaults,
+public record EndpointConfig(String id, boolean enabled, String baseUrl, @Nullable String anchor,
+@Nullable AuthConfig auth, List<HttpMethod> allowedMethods, @Nullable UpstreamDefaultsConfig upstreamDefaults,
 List<RouteConfig> routes) {
 
     /**
-     * Canonical constructor requiring the mandatory fields, defensively copying the
-     * collections, and normalizing absent components.
+     * Canonical constructor requiring the mandatory fields and defensively copying
+     * the collections.
      */
     public EndpointConfig {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(baseUrl, "baseUrl");
-        anchor = Objects.requireNonNullElse(anchor, Optional.empty());
-        auth = Objects.requireNonNullElse(auth, Optional.empty());
         allowedMethods = allowedMethods == null ? List.of() : List.copyOf(allowedMethods);
-        upstreamDefaults = Objects.requireNonNullElse(upstreamDefaults, Optional.empty());
         routes = routes == null ? List.of() : List.copyOf(routes);
     }
 }

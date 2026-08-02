@@ -15,8 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.Objects;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -26,19 +25,11 @@ import lombok.Builder;
  * The rate-limiting feature is deferred; the block is accepted and ignored so
  * the schema need not change when the feature ships.
  *
- * @param requestsPerSecond the sustained request rate, empty when omitted
- * @param burst             the burst allowance, empty when omitted
+ * @param requestsPerSecond the sustained request rate, {@code null} when omitted
+ * @param burst             the burst allowance, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record RateLimitConfig(Optional<Integer> requestsPerSecond, Optional<Integer> burst) {
-
-    /**
-     * Canonical constructor normalizing absent components to {@link Optional#empty()}.
-     */
-    public RateLimitConfig {
-        requestsPerSecond = Objects.requireNonNullElse(requestsPerSecond, Optional.empty());
-        burst = Objects.requireNonNullElse(burst, Optional.empty());
-    }
+public record RateLimitConfig(@Nullable Integer requestsPerSecond, @Nullable Integer burst) {
 }

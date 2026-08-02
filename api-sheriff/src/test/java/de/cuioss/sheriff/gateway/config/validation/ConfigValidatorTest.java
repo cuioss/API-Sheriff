@@ -25,9 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Stream;
-
 
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -63,6 +61,7 @@ import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -114,7 +113,7 @@ class ConfigValidatorTest {
         MatchConfig match = MatchConfig.builder()
                 .pathPrefix("/" + id)
                 .methods(List.of(methods))
-                .host(Optional.of(host))
+                .host(host)
                 .build();
         return RouteConfig.builder().id(id).match(match).build();
     }
@@ -123,15 +122,15 @@ class ConfigValidatorTest {
      * A gateway declaring the given global {@code profile} and — when present — the
      * {@code max_authorization_header_value_length} carve-out budget the boot rule bounds.
      */
-    private static GatewayConfig gatewayWithAuthorizationCap(String profile, Optional<Integer> cap) {
+    private static GatewayConfig gatewayWithAuthorizationCap(String profile, @Nullable Integer cap) {
         return validGateway()
-                .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(profile), cap)))
+                .securityDefaults(new SecurityDefaultsConfig(profile, cap))
                 .build();
     }
 
     private static GatewayConfig gatewayWithPassthrough(Map<String, String> passthroughSni) {
         return validGateway()
-                .tls(Optional.of(TlsConfig.builder().passthroughSni(passthroughSni).build()))
+                .tls(TlsConfig.builder().passthroughSni(passthroughSni).build())
                 .build();
     }
 
@@ -141,7 +140,7 @@ class ConfigValidatorTest {
                 .id(id)
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(Optional.of(new AuthConfig("none", List.of())))
+                .auth(new AuthConfig("none", List.of()))
                 .allowedMethods(allowedMethods)
                 .routes(List.of(routes))
                 .build();
@@ -165,7 +164,7 @@ class ConfigValidatorTest {
                 .pathPrefix(prefix)
                 .type(AnchorType.PROXY)
                 .access(require == null ? AccessLevel.PUBLIC : AccessLevel.AUTHENTICATED)
-                .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                .auth(require == null ? null : new AuthConfig(require, List.of()))
                 .build();
     }
 
@@ -176,15 +175,15 @@ class ConfigValidatorTest {
                 .pathPrefix(prefix)
                 .type(type)
                 .access(access)
-                .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
+                .auth(require == null ? null : new AuthConfig(require, List.of()))
                 .build();
     }
 
     private static GatewayConfig gatewayWithAnchorAndIssuer(AnchorConfig anchorConfig) {
         return validGateway()
                 .anchors(Map.of(anchorConfig.name(), anchorConfig))
-                .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
-                        IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                .tokenValidation(new TokenValidationConfig(List.of(
+                        IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                 .build();
     }
 
@@ -192,13 +191,13 @@ class ConfigValidatorTest {
         return validGateway().anchors(anchors).build();
     }
 
-    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName, Optional<AuthConfig> auth,
-            RouteConfig... routes) {
+    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName,
+            @Nullable AuthConfig auth, RouteConfig... routes) {
         return EndpointConfig.builder()
                 .id(id)
                 .enabled(true)
                 .baseUrl(alias)
-                .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                .anchor(anchorName)
                 .auth(auth)
                 .routes(List.of(routes))
                 .build();
@@ -207,7 +206,7 @@ class ConfigValidatorTest {
     private static RouteConfig anchoredRoute(String id, String prefix, String anchorName, HttpMethod... methods) {
         return RouteConfig.builder()
                 .id(id)
-                .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                .anchor(anchorName)
                 .match(match(prefix, methods))
                 .build();
     }
@@ -216,20 +215,20 @@ class ConfigValidatorTest {
             HttpMethod... methods) {
         return RouteConfig.builder()
                 .id(id)
-                .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                .anchor(anchorName)
                 .match(match(prefix, methods))
-                .asset(Optional.of(asset))
+                .asset(asset)
                 .build();
     }
 
     private static AssetConfig directoryAsset(String root) {
         return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
-                .directory(root == null ? Optional.empty() : Optional.of(root)).build();
+                .directory(root).build();
     }
 
     private static AssetConfig upstreamAsset(String alias) {
         return AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                .upstream(alias == null ? Optional.empty() : Optional.of(alias)).build();
+                .upstream(alias).build();
     }
 
     @Nested
@@ -242,7 +241,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -256,7 +255,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     assetRoute("cdn", "/assets", "assets", upstreamAsset("SECONDARY"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
@@ -270,7 +269,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     anchoredRoute("noasset", "/assets", "assets", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -284,7 +283,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api",
                     matrixAnchor("api", "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     assetRoute("mixed", "/api", "api", directoryAsset("/srv/assets"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -298,7 +297,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = validGateway().build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("plain").enabled(true).baseUrl("PLAIN")
-                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .auth(new AuthConfig("none", List.of()))
                     .routes(List.of(assetRoute("loose", "/loose", null, directoryAsset("/srv/assets"), HttpMethod.GET)))
                     .build();
 
@@ -313,7 +312,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     assetRoute("cdn", "/assets", "assets", upstreamAsset("MISSING"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -327,7 +326,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     assetRoute("bundle", "/assets", "assets", directoryAsset(null), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -411,7 +410,7 @@ class ConfigValidatorTest {
         @DisplayName("Should reject an edge_hardening admission_cap below 1")
         void shouldRejectAdmissionCapBelowOne() {
             GatewayConfig gateway = validGateway()
-                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(0), Optional.of(1)))).build();
+                    .edgeHardening(new EdgeHardeningConfig(0, 1)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -423,7 +422,7 @@ class ConfigValidatorTest {
         @DisplayName("Should reject an edge_hardening websocket_relay_cap below 1")
         void shouldRejectWebsocketRelayCapBelowOne() {
             GatewayConfig gateway = validGateway()
-                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(8), Optional.of(0)))).build();
+                    .edgeHardening(new EdgeHardeningConfig(8, 0)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -436,7 +435,7 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a websocket_relay_cap exceeding admission_cap, which could never bind")
         void shouldRejectInvertedCapPair() {
             GatewayConfig gateway = validGateway()
-                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(4), Optional.of(16)))).build();
+                    .edgeHardening(new EdgeHardeningConfig(4, 16)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -448,14 +447,14 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a lowered admission_cap with websocket_relay_cap omitted")
         void shouldAcceptLoweredAdmissionCapWithoutRelayCap() {
             GatewayConfig gateway = validGateway()
-                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(64), Optional.empty()))).build();
+                    .edgeHardening(new EdgeHardeningConfig(64, null)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(),
                     "A partially declared edge_hardening block must not self-reject, but got: " + errors);
-            assertEquals(16, gateway.edgeHardening().orElseThrow().effectiveWebsocketRelayCap(),
+            assertEquals(16, gateway.edgeHardening().effectiveWebsocketRelayCap(),
                     "The implicit relay sub-budget stays a quarter of the effective admission cap");
         }
 
@@ -463,7 +462,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a well-formed edge_hardening block")
         void shouldAcceptValidEdgeHardeningBlock() {
             GatewayConfig gateway = validGateway()
-                    .edgeHardening(Optional.of(new EdgeHardeningConfig(Optional.of(64), Optional.of(8)))).build();
+                    .edgeHardening(new EdgeHardeningConfig(64, 8)).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -476,7 +475,7 @@ class ConfigValidatorTest {
         void shouldRejectAuthorizationCapBelowStrictBaseline() {
             // Arrange — strict resolves a 1024-character baseline; 512 would make the 'carve-out'
             // a per-header tightening wearing a relaxation key's name.
-            GatewayConfig gateway = gatewayWithAuthorizationCap("strict", Optional.of(512));
+            GatewayConfig gateway = gatewayWithAuthorizationCap("strict", 512);
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             // Act
@@ -494,7 +493,7 @@ class ConfigValidatorTest {
             // Arrange — the value that is legal under strict (2048 > 1024) is refused under lenient
             // (2048 < 8192), which is what proves the rule compares against the RESOLVED profile
             // rather than against a constant.
-            GatewayConfig gateway = gatewayWithAuthorizationCap("lenient", Optional.of(2048));
+            GatewayConfig gateway = gatewayWithAuthorizationCap("lenient", 2048);
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             // Act
@@ -510,8 +509,8 @@ class ConfigValidatorTest {
         void shouldAcceptAuthorizationCapAtOrAboveBaseline() {
             // Arrange — the matched positive half: 2048 clears the strict 1024 baseline, and 1024 is
             // the boundary case 'exactly at the baseline', which is not below it and is not refused.
-            GatewayConfig above = gatewayWithAuthorizationCap("strict", Optional.of(2048));
-            GatewayConfig atBaseline = gatewayWithAuthorizationCap("strict", Optional.of(1024));
+            GatewayConfig above = gatewayWithAuthorizationCap("strict", 2048);
+            GatewayConfig atBaseline = gatewayWithAuthorizationCap("strict", 1024);
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
             // Act
@@ -530,8 +529,8 @@ class ConfigValidatorTest {
         void shouldAcceptOmittedAuthorizationCap() {
             // Arrange — an omitted key resolves to the documented default and is never a violation,
             // under either profile.
-            GatewayConfig strict = gatewayWithAuthorizationCap("strict", Optional.empty());
-            GatewayConfig lenient = gatewayWithAuthorizationCap("lenient", Optional.empty());
+            GatewayConfig strict = gatewayWithAuthorizationCap("strict", null);
+            GatewayConfig lenient = gatewayWithAuthorizationCap("lenient", null);
             GatewayConfig blockAbsent = validGateway().build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -583,7 +582,7 @@ class ConfigValidatorTest {
         void shouldRejectBearerWithoutIssuer() {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(Optional.of(new AuthConfig("bearer", List.of())))
+                    .auth(new AuthConfig("bearer", List.of()))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -598,7 +597,7 @@ class ConfigValidatorTest {
         void shouldRejectSessionWithoutOidc() {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(Optional.of(new AuthConfig("session", List.of())))
+                    .auth(new AuthConfig("session", List.of()))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -625,11 +624,11 @@ class ConfigValidatorTest {
         void shouldAcceptMillisecondPrecisionTimeout() {
             RouteConfig route = RouteConfig.builder()
                     .id("r").match(match("/r", HttpMethod.GET))
-                    .upstream(Optional.of(UpstreamConfig.builder().readTimeoutMs(Optional.of(2500)).build()))
+                    .upstream(UpstreamConfig.builder().readTimeoutMs(2500).build())
                     .build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .auth(new AuthConfig("none", List.of()))
                     .routes(List.of(route))
                     .build();
 
@@ -656,7 +655,7 @@ class ConfigValidatorTest {
         void shouldRejectFullAddressSpaceTrustedProxies(String label, List<String> trustedProxies,
                 String expectedDetail) {
             GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder().trustedProxies(trustedProxies).build()))
+                    .forwarded(ForwardedConfig.builder().trustedProxies(trustedProxies).build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -675,8 +674,8 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a malformed trusted_proxies CIDR entry with file/pointer context")
         void shouldRejectMalformedCidr(String malformedCidr) {
             GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of(malformedCidr)).build()))
+                    .forwarded(ForwardedConfig.builder()
+                            .trustedProxies(List.of(malformedCidr)).build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -689,8 +688,8 @@ class ConfigValidatorTest {
         @DisplayName("Should boot-WARN a very broad but not total CIDR without failing the boot")
         void shouldWarnBroadButNotTotalCidr() {
             GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.0.0.0/4")).build()))
+                    .forwarded(ForwardedConfig.builder()
+                            .trustedProxies(List.of("10.0.0.0/4")).build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -705,8 +704,8 @@ class ConfigValidatorTest {
         @DisplayName("Should accept tightly scoped IPv4 and IPv6 trusted_proxies CIDRs without warning")
         void shouldAcceptTightlyScopedCidrs() {
             GatewayConfig gateway = validGateway()
-                    .forwarded(Optional.of(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.0.0.0/8", "2001:db8::/32")).build()))
+                    .forwarded(ForwardedConfig.builder()
+                            .trustedProxies(List.of("10.0.0.0/8", "2001:db8::/32")).build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -763,12 +762,12 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a wildcard CORS origin combined with allow_credentials")
         void shouldRejectWildcardOriginWithCredentials() {
             GatewayConfig gateway = validGateway()
-                    .securityHeaders(Optional.of(SecurityHeadersConfig.builder()
-                            .cors(Optional.of(SecurityHeadersConfig.Cors.builder()
+                    .securityHeaders(SecurityHeadersConfig.builder()
+                            .cors(SecurityHeadersConfig.Cors.builder()
                                     .allowedOrigins(List.of("*"))
-                                    .allowCredentials(Optional.of(true))
-                                    .build()))
-                            .build()))
+                                    .allowCredentials(true)
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -781,11 +780,11 @@ class ConfigValidatorTest {
         @DisplayName("Should accept cookie session mode without an encryption_key (generate-on-startup)")
         void shouldAcceptCookieSessionWithoutEncryptionKey() {
             GatewayConfig gateway = validGateway()
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of("cookie"))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("cookie")
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -799,12 +798,12 @@ class ConfigValidatorTest {
         @DisplayName("Should reject previous_key without encryption_key")
         void shouldRejectPreviousKeyWithoutEncryptionKey() {
             GatewayConfig gateway = validGateway()
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of("cookie"))
-                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("cookie")
+                                    .previousKey("${SHERIFF_SESSION_KEY_PREVIOUS}")
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -818,13 +817,13 @@ class ConfigValidatorTest {
         @DisplayName("Should accept cookie session mode with both an encryption_key and a previous_key")
         void shouldAcceptCookieSessionWithRotationKeys() {
             GatewayConfig gateway = validGateway()
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of("cookie"))
-                                    .encryptionKey(Optional.of("${SHERIFF_SESSION_KEY}"))
-                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("cookie")
+                                    .encryptionKey("${SHERIFF_SESSION_KEY}")
+                                    .previousKey("${SHERIFF_SESSION_KEY_PREVIOUS}")
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -838,11 +837,11 @@ class ConfigValidatorTest {
         @DisplayName("Should reject server session mode without a store")
         void shouldRejectServerSessionWithoutStore() {
             GatewayConfig gateway = validGateway()
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of("server"))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("server")
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -855,12 +854,12 @@ class ConfigValidatorTest {
         @DisplayName("Should apply the cookie-mode companion rule to a mixed-case mode value")
         void shouldApplyCookieRuleToMixedCaseMode() {
             GatewayConfig gateway = validGateway()
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of("  CoOkIe "))
-                                    .previousKey(Optional.of("${SHERIFF_SESSION_KEY_PREVIOUS}"))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("  CoOkIe ")
+                                    .previousKey("${SHERIFF_SESSION_KEY_PREVIOUS}")
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -874,11 +873,11 @@ class ConfigValidatorTest {
         @DisplayName("Should apply the server-mode companion rule to a mixed-case mode value")
         void shouldApplyServerRuleToMixedCaseMode() {
             GatewayConfig gateway = validGateway()
-                    .oidc(Optional.of(OidcConfig.builder()
-                            .session(Optional.of(OidcConfig.Session.builder()
-                                    .mode(Optional.of("SERVER"))
-                                    .build()))
-                            .build()))
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("SERVER")
+                                    .build())
+                            .build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -891,12 +890,12 @@ class ConfigValidatorTest {
         @DisplayName("Should accept effective auth 'bearer' when a token_validation issuer is present")
         void shouldAcceptBearerWithIssuer() {
             GatewayConfig gateway = validGateway()
-                    .tokenValidation(Optional.of(new TokenValidationConfig(
-                            List.of(IssuerConfig.builder().name("primary").issuer("https://idp.example").build()))))
+                    .tokenValidation(new TokenValidationConfig(
+                            List.of(IssuerConfig.builder().name("primary").issuer("https://idp.example").build())))
                     .build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(Optional.of(new AuthConfig("bearer", List.of())))
+                    .auth(new AuthConfig("bearer", List.of()))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -967,7 +966,7 @@ class ConfigValidatorTest {
         void shouldRejectUndefinedAnchorReference() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "ghost",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     anchoredRoute("r", "/other", null, HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -980,7 +979,7 @@ class ConfigValidatorTest {
         void shouldRejectRoutePathOutsideDeclaredAnchor() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api",
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     anchoredRoute("r", "/billing", "api", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -993,7 +992,7 @@ class ConfigValidatorTest {
         void shouldRejectUndeclaredSquatter() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null,
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     anchoredRoute("r", "/api/secret", null, HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -1005,10 +1004,10 @@ class ConfigValidatorTest {
         @DisplayName("Rule 5: Should reject an effective 'none' auth that weakens a non-none anchor floor")
         void shouldRejectWeakenedAuthFloor() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", "bearer")));
-            RouteConfig weakening = RouteConfig.builder().id("r").anchor(Optional.of("api"))
+            RouteConfig weakening = RouteConfig.builder().id("r").anchor("api")
                     .match(match("/api/x", HttpMethod.GET))
-                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
-            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(), weakening);
+                    .auth(new AuthConfig("none", List.of())).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null, weakening);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -1019,7 +1018,7 @@ class ConfigValidatorTest {
         @DisplayName("Rule 6: Should reject a route that resolves no auth from route, endpoint, or anchor")
         void shouldRejectRouteWithoutAnyAuthSource() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
-            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(),
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null,
                     anchoredRoute("r", "/api/x", "api", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -1032,8 +1031,8 @@ class ConfigValidatorTest {
         void shouldAcceptEndpointWhereEveryRouteSuppliesOwnAuth() {
             GatewayConfig gateway = validGateway().build();
             RouteConfig selfAuth = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
-                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
-            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null, Optional.empty(), selfAuth);
+                    .auth(new AuthConfig("none", List.of())).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null, null, selfAuth);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -1047,9 +1046,9 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
                     "secured", anchor("secured", "/api", "bearer"),
                     "open", anchor("open", "/open", null)));
-            RouteConfig override = RouteConfig.builder().id("r").anchor(Optional.of("open"))
+            RouteConfig override = RouteConfig.builder().id("r").anchor("open")
                     .match(match("/open/x", HttpMethod.GET)).build();
-            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "secured", Optional.empty(), override);
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "secured", null, override);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -1066,7 +1065,7 @@ class ConfigValidatorTest {
         @DisplayName("Rule 7: Should carry an anchor-provided bearer posture into the effective-auth completeness check")
         void shouldPropagateAnchorAuthIntoEffectiveAuthCheck() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", "bearer")));
-            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(),
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null,
                     anchoredRoute("r", "/api/x", "api", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -1079,10 +1078,10 @@ class ConfigValidatorTest {
         void shouldAcceptValidAnchoredConfig() {
             GatewayConfig gateway = validGateway()
                     .anchors(Map.of("api", anchor("api", "/api", "bearer")))
-                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
-                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .tokenValidation(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
-            EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api", Optional.empty(),
+            EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api", null,
                     anchoredRoute("r", "/api/orders", "api", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1097,7 +1096,7 @@ class ConfigValidatorTest {
                     "api", anchor("api", "/api", null),
                     "apiv1", anchor("apiv1", "/api/v1", null)));
             EndpointConfig squatter = anchoredEndpoint("s", "S", null,
-                    Optional.of(new AuthConfig("none", List.of())),
+                    new AuthConfig("none", List.of()),
                     anchoredRoute("sr", "/api/secret", null, HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(squatter), topologyWith("S"));
@@ -1143,11 +1142,11 @@ class ConfigValidatorTest {
         private static final String ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.Echo";
         private static final String SECURE_ECHO_PATH = "/de.cuioss.sheriff.api.integration.grpc.SecureEcho";
 
-        private static RouteConfig grpcRoute(String id, String prefix, String anchorName, Optional<AuthConfig> auth) {
+        private static RouteConfig grpcRoute(String id, String prefix, String anchorName, @Nullable AuthConfig auth) {
             return RouteConfig.builder()
                     .id(id)
-                    .protocol(Optional.of(Protocol.GRPC))
-                    .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                    .protocol(Protocol.GRPC)
+                    .anchor(anchorName)
                     .match(match(prefix, HttpMethod.POST))
                     .auth(auth)
                     .build();
@@ -1158,8 +1157,8 @@ class ConfigValidatorTest {
         void shouldExemptGrpcRouteFromDeclaredAnchorContainment() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
-                    Optional.of(new AuthConfig("none", List.of())),
-                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.empty()));
+                    new AuthConfig("none", List.of()),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
 
@@ -1173,9 +1172,9 @@ class ConfigValidatorTest {
         void shouldAcceptTwoGrpcRoutesUnderOneAnchorOnBareServicePaths() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
-                    Optional.of(new AuthConfig("none", List.of())),
-                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.empty()),
-                    grpcRoute("grpc-bearer", SECURE_ECHO_PATH, "grpc", Optional.empty()));
+                    new AuthConfig("none", List.of()),
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", null),
+                    grpcRoute("grpc-bearer", SECURE_ECHO_PATH, "grpc", null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
 
@@ -1188,8 +1187,8 @@ class ConfigValidatorTest {
         void shouldExemptGrpcRouteFromUndeclaredSquatterRule() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("root", anchor("root", "/", null)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", null,
-                    Optional.of(new AuthConfig("none", List.of())),
-                    grpcRoute("grpc-echo", ECHO_PATH, null, Optional.empty()));
+                    new AuthConfig("none", List.of()),
+                    grpcRoute("grpc-echo", ECHO_PATH, null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
 
@@ -1202,11 +1201,11 @@ class ConfigValidatorTest {
         @DisplayName("Containment stays enforced for a websocket route outside its declared anchor namespace")
         void shouldStillEnforceContainmentForNonGrpcRoute() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
-            RouteConfig websocket = RouteConfig.builder().id("ws").anchor(Optional.of("api"))
-                    .protocol(Optional.of(Protocol.WEBSOCKET))
+            RouteConfig websocket = RouteConfig.builder().id("ws").anchor("api")
+                    .protocol(Protocol.WEBSOCKET)
                     .match(match("/billing", HttpMethod.GET))
-                    .auth(Optional.of(new AuthConfig("none", List.of()))).build();
-            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", Optional.empty(), websocket);
+                    .auth(new AuthConfig("none", List.of())).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null, websocket);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
@@ -1217,8 +1216,8 @@ class ConfigValidatorTest {
         @DisplayName("Auth floor stays enforced for a gRPC route: effective 'none' still weakens a non-none anchor floor")
         void shouldStillEnforceAuthFloorForGrpcRoute() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", "bearer")));
-            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc", Optional.empty(),
-                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", Optional.of(new AuthConfig("none", List.of()))));
+            EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc", null,
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", new AuthConfig("none", List.of())));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
 
@@ -1357,7 +1356,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = GatewayConfig.builder().version(2).build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("MISSING")
-                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .auth(new AuthConfig("none", List.of()))
                     .allowedMethods(List.of(HttpMethod.GET))
                     .routes(List.of(route("orders-post", HttpMethod.POST)))
                     .build();
@@ -1378,39 +1377,39 @@ class ConfigValidatorTest {
 
         private static GatewayConfig gatewayWithIssuer() {
             return validGateway()
-                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
-                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .tokenValidation(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
         }
 
         private static EndpointConfig webSocketEndpoint(String alias, RouteConfig route) {
             return EndpointConfig.builder()
                     .id("ws-ep").enabled(true).baseUrl(alias)
-                    .auth(Optional.of(new AuthConfig("none", List.of())))
+                    .auth(new AuthConfig("none", List.of()))
                     .routes(List.of(route))
                     .build();
         }
 
-        private static RouteConfig webSocketRoute(String id, Optional<WebSocketConfig> websocket,
-                Optional<AuthConfig> auth) {
+        private static RouteConfig webSocketRoute(String id, @Nullable WebSocketConfig websocket,
+                @Nullable AuthConfig auth) {
             return RouteConfig.builder()
                     .id(id)
-                    .protocol(Optional.of(Protocol.WEBSOCKET))
+                    .protocol(Protocol.WEBSOCKET)
                     .match(match("/" + id, HttpMethod.GET))
                     .auth(auth)
                     .websocket(websocket)
                     .build();
         }
 
-        private static Optional<AuthConfig> bearer() {
-            return Optional.of(new AuthConfig("bearer", List.of()));
+        private static AuthConfig bearer() {
+            return new AuthConfig("bearer", List.of());
         }
 
         @Test
         @DisplayName("Should reject a bearer WebSocket route with no websocket block (fail-closed)")
         void shouldRejectBearerWebSocketRouteWithAbsentAllowedOrigins() {
             GatewayConfig gateway = gatewayWithIssuer();
-            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", Optional.empty(), bearer()));
+            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, bearer()));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
@@ -1421,9 +1420,9 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a bearer WebSocket route with an empty allowed_origins allowlist")
         void shouldRejectBearerWebSocketRouteWithEmptyAllowedOrigins() {
             GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = new WebSocketConfig(List.of(), Optional.empty());
+            WebSocketConfig websocket = new WebSocketConfig(List.of(), null);
             EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+                    webSocketRoute("chat", websocket, bearer()));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
@@ -1435,9 +1434,9 @@ class ConfigValidatorTest {
         @DisplayName("Should reject wildcard entries in allowed_origins")
         void shouldRejectWildcardAllowedOrigin(String wildcard) {
             GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = new WebSocketConfig(List.of(wildcard), Optional.empty());
+            WebSocketConfig websocket = new WebSocketConfig(List.of(wildcard), null);
             EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+                    webSocketRoute("chat", websocket, bearer()));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
@@ -1449,9 +1448,9 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a non-positive idle_timeout_seconds")
         void shouldRejectNonPositiveIdleTimeout(int timeout) {
             GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(timeout));
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), timeout);
             EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+                    webSocketRoute("chat", websocket, bearer()));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
@@ -1462,9 +1461,9 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a bearer WebSocket route with exact origins and a positive idle timeout")
         void shouldAcceptBearerWebSocketRouteWithExactOrigins() {
             GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(60));
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), 60);
             EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", Optional.of(websocket), bearer()));
+                    webSocketRoute("chat", websocket, bearer()));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
@@ -1475,7 +1474,7 @@ class ConfigValidatorTest {
         @DisplayName("Should not require allowed_origins for a non-bearer WebSocket route")
         void shouldNotRequireAllowedOriginsForNonBearerWebSocketRoute() {
             GatewayConfig gateway = validGateway().build();
-            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", Optional.empty(), Optional.empty()));
+            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
 
@@ -1487,13 +1486,13 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a non-websocket route that declares a websocket block")
         void shouldRejectWebSocketBlockOnNonWebSocketRoute() {
             GatewayConfig gateway = validGateway().build();
-            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), Optional.of(60));
+            WebSocketConfig websocket = new WebSocketConfig(List.of("https://app.example.com"), 60);
             RouteConfig httpRoute = RouteConfig.builder()
                     .id("http-with-ws")
-                    .protocol(Optional.of(Protocol.HTTP))
+                    .protocol(Protocol.HTTP)
                     .match(match("/http-with-ws", HttpMethod.GET))
-                    .auth(Optional.empty())
-                    .websocket(Optional.of(websocket))
+                    .auth(null)
+                    .websocket(websocket)
                     .build();
             EndpointConfig endpoint = webSocketEndpoint("WS", httpRoute);
 
@@ -1509,18 +1508,18 @@ class ConfigValidatorTest {
     class BffOidcFoldRules {
 
         private static GatewayConfig gatewayWithOidc(OidcConfig oidc) {
-            return validGateway().oidc(Optional.of(oidc)).build();
+            return validGateway().oidc(oidc).build();
         }
 
         @Test
         @DisplayName("Should accept a user_info block whose default_view claims all lie within the allowlist")
         void shouldAcceptUserInfoWithDefaultViewWithinAllowlist() {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(Optional.of(OidcConfig.UserInfo.builder()
-                            .path(Optional.of("/session/userinfo"))
+                    .userInfo(OidcConfig.UserInfo.builder()
+                            .path("/session/userinfo")
                             .allowedClaims(List.of("sub", "name", "roles"))
                             .defaultView(List.of("sub", "name"))
-                            .build()))
+                            .build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1532,9 +1531,9 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a user_info block with an empty allowlist as the secure closed default")
         void shouldAcceptUserInfoWithEmptyAllowlistSecureDefault() {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(Optional.of(OidcConfig.UserInfo.builder()
-                            .path(Optional.of("/session/userinfo"))
-                            .build()))
+                    .userInfo(OidcConfig.UserInfo.builder()
+                            .path("/session/userinfo")
+                            .build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1547,11 +1546,11 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a default_view claim that lies outside the operator allowlist")
         void shouldRejectDefaultViewClaimOutsideAllowlist() {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(Optional.of(OidcConfig.UserInfo.builder()
-                            .path(Optional.of("/session/userinfo"))
+                    .userInfo(OidcConfig.UserInfo.builder()
+                            .path("/session/userinfo")
                             .allowedClaims(List.of("sub", "name"))
                             .defaultView(List.of("sub", "email"))
-                            .build()))
+                            .build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1564,7 +1563,7 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a malformed user_info path that is not an absolute gateway path")
         void shouldRejectNonAbsoluteUserInfoPath(String path) {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .userInfo(Optional.of(OidcConfig.UserInfo.builder().path(Optional.of(path)).build()))
+                    .userInfo(OidcConfig.UserInfo.builder().path(path).build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1577,7 +1576,7 @@ class ConfigValidatorTest {
         @DisplayName("Should reject an off-path login value")
         void shouldRejectOffPathLoginValue(String path) {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .login(Optional.of(OidcConfig.Login.builder().path(Optional.of(path)).build()))
+                    .login(OidcConfig.Login.builder().path(path).build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1589,7 +1588,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept an absolute login path")
         void shouldAcceptAbsoluteLoginPath() {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .login(Optional.of(OidcConfig.Login.builder().path(Optional.of("/session/login")).build()))
+                    .login(OidcConfig.Login.builder().path("/session/login").build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1602,7 +1601,7 @@ class ConfigValidatorTest {
         @DisplayName("Should reject a non-positive session max_sessions bound")
         void shouldRejectNonPositiveMaxSessions(int maxSessions) {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .session(Optional.of(OidcConfig.Session.builder().maxSessions(Optional.of(maxSessions)).build()))
+                    .session(OidcConfig.Session.builder().maxSessions(maxSessions).build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1614,7 +1613,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a positive session max_sessions bound")
         void shouldAcceptPositiveMaxSessions() {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .session(Optional.of(OidcConfig.Session.builder().maxSessions(Optional.of(10000)).build()))
+                    .session(OidcConfig.Session.builder().maxSessions(10000).build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1629,8 +1628,8 @@ class ConfigValidatorTest {
             // Arrange — below the floor no sealed value could ever be emitted; above the ceiling the
             // derived pre-route Cookie cap would exceed what the transport carries.
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .session(Optional.of(OidcConfig.Session.builder()
-                            .maxCookieSize(Optional.of(maxCookieSize)).build()))
+                    .session(OidcConfig.Session.builder()
+                            .maxCookieSize(maxCookieSize).build())
                     .build());
 
             // Act
@@ -1645,8 +1644,8 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a session max_cookie_size on and inside the viable budget bounds")
         void shouldAcceptInBoundsMaxCookieSize(int maxCookieSize) {
             GatewayConfig gateway = gatewayWithOidc(OidcConfig.builder()
-                    .session(Optional.of(OidcConfig.Session.builder()
-                            .maxCookieSize(Optional.of(maxCookieSize)).build()))
+                    .session(OidcConfig.Session.builder()
+                            .maxCookieSize(maxCookieSize).build())
                     .build());
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1665,14 +1664,14 @@ class ConfigValidatorTest {
         private static final String REFUSAL_MESSAGE = "resolves inbound-filter profile 'none'";
 
         private static RouteConfig profiledRoute(String id, String prefix, String anchorName, String profile,
-                Optional<AuthConfig> auth) {
+                @Nullable AuthConfig auth) {
             return RouteConfig.builder()
                     .id(id)
-                    .anchor(anchorName == null ? Optional.empty() : Optional.of(anchorName))
+                    .anchor(anchorName)
                     .match(match(prefix, HttpMethod.GET))
                     .auth(auth)
-                    .securityFilter(profile == null ? Optional.empty()
-                            : Optional.of(SecurityFilterConfig.builder().profile(Optional.of(profile)).build()))
+                    .securityFilter(profile == null ? null
+                            : SecurityFilterConfig.builder().profile(profile).build())
                     .build();
         }
 
@@ -1683,9 +1682,9 @@ class ConfigValidatorTest {
                     .pathPrefix(prefix)
                     .type(type)
                     .access(access)
-                    .auth(require == null ? Optional.empty() : Optional.of(new AuthConfig(require, List.of())))
-                    .securityFilter(Optional.of(
-                            SecurityFilterConfig.builder().profile(Optional.of(profile)).build()))
+                    .auth(require == null ? null : new AuthConfig(require, List.of()))
+                    .securityFilter(
+                            SecurityFilterConfig.builder().profile(profile).build())
                     .build();
         }
 
@@ -1693,21 +1692,21 @@ class ConfigValidatorTest {
         private static RouteConfig profileLessFilterRoute(String id, String prefix, String anchorName) {
             return RouteConfig.builder()
                     .id(id)
-                    .anchor(Optional.of(anchorName))
+                    .anchor(anchorName)
                     .match(match(prefix, HttpMethod.GET))
-                    .auth(Optional.empty())
-                    .securityFilter(Optional.of(
-                            SecurityFilterConfig.builder().maxBodyBytes(Optional.of(4096)).build()))
+                    .auth(null)
+                    .securityFilter(
+                            SecurityFilterConfig.builder().maxBodyBytes(4096).build())
                     .build();
         }
 
         private static GatewayConfig gatewayWithGlobalProfile(AnchorConfig anchorConfig, String globalProfile) {
             return validGateway()
                     .anchors(Map.of(anchorConfig.name(), anchorConfig))
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(globalProfile),
-                            Optional.empty())))
-                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
-                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .securityDefaults(new SecurityDefaultsConfig(globalProfile,
+                            null))
+                    .tokenValidation(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
         }
 
@@ -1717,8 +1716,8 @@ class ConfigValidatorTest {
             // Arrange — the anchor's bearer floor makes every route under it effectively authenticated.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
-                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
+                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1735,8 +1734,8 @@ class ConfigValidatorTest {
             // bff fixture necessarily trips both refusal dimensions; the anchor-type one must be named.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("shell", "/shell", AnchorType.BFF, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
-            EndpointConfig endpoint = anchoredEndpoint("bff", "BFF", "shell", Optional.empty(),
-                    profiledRoute("shell-view", "/shell/view", "shell", NONE_PROFILE, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("bff", "BFF", "shell", null,
+                    profiledRoute("shell-view", "/shell/view", "shell", NONE_PROFILE, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("BFF"));
@@ -1754,9 +1753,9 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
+                    new AuthConfig(REQUIRE_NONE, List.of()),
                     profiledRoute("open-secured", "/open/secured", "open", NONE_PROFILE,
-                            Optional.of(new AuthConfig(REQUIRE_BEARER, List.of()))));
+                            new AuthConfig(REQUIRE_BEARER, List.of())));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1772,8 +1771,8 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("open",
                     matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
-                    profiledRoute("open-read", "/open/read", "open", NONE_PROFILE, Optional.empty()));
+                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    profiledRoute("open-read", "/open/read", "open", NONE_PROFILE, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
@@ -1788,8 +1787,8 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithGlobalProfile(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER),
                     NONE_PROFILE);
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
-                    profiledRoute("secure-read", "/secure/read", "secure", null, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
+                    profiledRoute("secure-read", "/secure/read", "secure", null, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1804,12 +1803,12 @@ class ConfigValidatorTest {
             GatewayConfig gateway = validGateway()
                     .anchors(Map.of("open",
                             matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)))
-                    .securityDefaults(Optional.of(new SecurityDefaultsConfig(Optional.of(NONE_PROFILE),
-                            Optional.empty())))
+                    .securityDefaults(new SecurityDefaultsConfig(NONE_PROFILE,
+                            null))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
-                    profiledRoute("open-read", "/open/read", "open", null, Optional.empty()));
+                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    profiledRoute("open-read", "/open/read", "open", null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
@@ -1823,8 +1822,8 @@ class ConfigValidatorTest {
             // so 'none' reaches it from the anchor's own block rather than per route or gateway-wide.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchorWithProfile("secure", "/secure",
                     AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE));
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
-                    profiledRoute("secure-read", "/secure/read", "secure", null, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
+                    profiledRoute("secure-read", "/secure/read", "secure", null, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1841,8 +1840,8 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithProfile("open", "/open",
                     AnchorType.PROXY, AccessLevel.PUBLIC, null, NONE_PROFILE)));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    Optional.of(new AuthConfig(REQUIRE_NONE, List.of())),
-                    profiledRoute("open-read", "/open/read", "open", null, Optional.empty()));
+                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    profiledRoute("open-read", "/open/read", "open", null, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1859,7 +1858,7 @@ class ConfigValidatorTest {
             // gateway-wide 'strict' and never to the anchor's 'none' — a merge would refuse here.
             GatewayConfig gateway = gatewayWithGlobalProfile(anchorWithProfile("secure", "/secure",
                     AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE), "strict");
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profileLessFilterRoute("secure-read", "/secure/read", "secure"));
 
             // Act
@@ -1875,8 +1874,8 @@ class ConfigValidatorTest {
         void shouldAcceptNonNoneProfileOnAuthenticatedRoute(String profile) {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
-                    profiledRoute("secure-read", "/secure/read", "secure", profile, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
+                    profiledRoute("secure-read", "/secure/read", "secure", profile, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
@@ -1892,11 +1891,11 @@ class ConfigValidatorTest {
                     .anchors(Map.of("secure",
                             matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
                                     REQUIRE_BEARER)))
-                    .tokenValidation(Optional.of(new TokenValidationConfig(List.of(
-                            IssuerConfig.builder().name("main").issuer("https://idp.example").build()))))
+                    .tokenValidation(new TokenValidationConfig(List.of(
+                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
-                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
+                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1912,8 +1911,8 @@ class ConfigValidatorTest {
         void shouldNameRemedyWithoutEchoingConfiguredScalars() {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
-            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", Optional.empty(),
-                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, Optional.empty()));
+            EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
+                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 

@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 
@@ -125,7 +124,7 @@ class EdgeHardeningTest {
     @DisplayName("carries the operator-configured caps when the edge_hardening block declares them")
     void carriesOperatorConfiguredCaps() {
         // Arrange
-        EdgeHardeningConfig configured = new EdgeHardeningConfig(Optional.of(64), Optional.of(8));
+        EdgeHardeningConfig configured = new EdgeHardeningConfig(64, 8);
 
         // Act
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(configured);
@@ -139,7 +138,7 @@ class EdgeHardeningTest {
     @DisplayName("falls back per member, deriving an omitted relay cap from the declared admission cap")
     void fallsBackPerOmittedMember() {
         // Arrange — only the admission cap is declared, and it is raised above the default
-        EdgeHardeningConfig partial = new EdgeHardeningConfig(Optional.of(4096), Optional.empty());
+        EdgeHardeningConfig partial = new EdgeHardeningConfig(4096, null);
 
         // Act
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(partial);
@@ -156,7 +155,7 @@ class EdgeHardeningTest {
     @DisplayName("keeps a lowered admission cap valid, deriving a relay sub-budget that stays inside it")
     void derivesRelayCapBelowALoweredAdmissionCap() {
         // Arrange — the operator lowers only the admission cap, well below the shipped relay default
-        EdgeHardeningConfig partial = new EdgeHardeningConfig(Optional.of(64), Optional.empty());
+        EdgeHardeningConfig partial = new EdgeHardeningConfig(64, null);
 
         // Act
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(partial);

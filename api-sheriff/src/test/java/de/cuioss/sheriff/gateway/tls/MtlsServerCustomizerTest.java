@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -28,6 +27,7 @@ import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.http.HttpServerOptions;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -55,7 +55,7 @@ class MtlsServerCustomizerTest {
     @DisplayName("enabled mTLS requires client-auth and binds the client_ca trust anchor")
     void enabledRequiresClientAuthWithTrustAnchor() {
         // Arrange
-        MtlsServerCustomizer customizer = customizerFor(mtls(true, Optional.of(CLIENT_CA_PATH)));
+        MtlsServerCustomizer customizer = customizerFor(mtls(true, CLIENT_CA_PATH));
         HttpServerOptions options = new HttpServerOptions();
 
         // Act
@@ -70,7 +70,7 @@ class MtlsServerCustomizerTest {
     @DisplayName("disabled mTLS leaves client-auth off")
     void disabledLeavesClientAuthOff() {
         // Arrange
-        MtlsServerCustomizer customizer = customizerFor(mtls(false, Optional.of(CLIENT_CA_PATH)));
+        MtlsServerCustomizer customizer = customizerFor(mtls(false, CLIENT_CA_PATH));
         HttpServerOptions options = new HttpServerOptions();
 
         // Act
@@ -86,7 +86,7 @@ class MtlsServerCustomizerTest {
     void absentMtlsIsNoOp() {
         // Arrange
         GatewayConfig gateway = GatewayConfig.builder().version(1)
-                .tls(Optional.of(TlsConfig.builder().build())).build();
+                .tls(TlsConfig.builder().build()).build();
         MtlsServerCustomizer customizer = new MtlsServerCustomizer(gateway);
         HttpServerOptions options = new HttpServerOptions();
 
@@ -102,7 +102,7 @@ class MtlsServerCustomizerTest {
     @DisplayName("enabled mTLS with no client_ca fails the boot (fail-closed)")
     void enabledWithoutClientCaFailsBoot() {
         // Arrange
-        MtlsServerCustomizer customizer = customizerFor(mtls(true, Optional.empty()));
+        MtlsServerCustomizer customizer = customizerFor(mtls(true, null));
         HttpServerOptions options = new HttpServerOptions();
 
         // Act + Assert
@@ -112,12 +112,12 @@ class MtlsServerCustomizerTest {
 
     private static MtlsServerCustomizer customizerFor(TlsConfig.Mtls mtls) {
         GatewayConfig gateway = GatewayConfig.builder().version(1)
-                .tls(Optional.of(TlsConfig.builder().mtls(Optional.of(mtls)).build()))
+                .tls(TlsConfig.builder().mtls(mtls).build())
                 .build();
         return new MtlsServerCustomizer(gateway);
     }
 
-    private static TlsConfig.Mtls mtls(boolean enabled, Optional<String> clientCa) {
+    private static TlsConfig.Mtls mtls(boolean enabled, @Nullable String clientCa) {
         return new TlsConfig.Mtls(enabled, clientCa);
     }
 }

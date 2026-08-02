@@ -25,7 +25,6 @@ import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -66,6 +65,7 @@ import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -125,15 +125,15 @@ class WebSocketRelayStageTest {
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
         RouteTable routeTable = new RouteTable(List.of(
-                wsRoute("wsopen", "/ws-open", "none", upstreamPort, Set.of(), Optional.empty()),
-                wsRoute("wsorigin", "/ws-origin", "none", upstreamPort, Set.of(ALLOWED_ORIGIN), Optional.empty()),
-                wsRoute("wssecure", "/ws-secure", "bearer", upstreamPort, Set.of(ALLOWED_ORIGIN), Optional.empty()),
-                wsRoute("wsidle", "/ws-idle", "none", upstreamPort, Set.of(), Optional.of(1)),
-                wsRoute("wsdead", "/ws-dead", "none", deadPort, Set.of(), Optional.empty())));
+                wsRoute("wsopen", "/ws-open", "none", upstreamPort, Set.of(), null),
+                wsRoute("wsorigin", "/ws-origin", "none", upstreamPort, Set.of(ALLOWED_ORIGIN), null),
+                wsRoute("wssecure", "/ws-secure", "bearer", upstreamPort, Set.of(ALLOWED_ORIGIN), null),
+                wsRoute("wsidle", "/ws-idle", "none", upstreamPort, Set.of(), 1),
+                wsRoute("wsdead", "/ws-dead", "none", deadPort, Set.of(), null)));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
-                .securityHeaders(Optional.of(securityHeaders()))
+                .securityHeaders(securityHeaders())
                 .build();
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
@@ -402,9 +402,9 @@ class WebSocketRelayStageTest {
         RouteRuntime route = RouteRuntime.builder()
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
-                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamTargetPort, "")))
-                .httpClient(Optional.of(relayUpstreamClient))
-                .effectiveWebSocketIdleTimeoutSeconds(Optional.of(300))
+                .upstream(new ResolvedUpstream("http", "localhost", upstreamTargetPort, ""))
+                .httpClient(relayUpstreamClient)
+                .effectiveWebSocketIdleTimeoutSeconds(300)
                 .build();
         WebSocketRelayStage stage = new WebSocketRelayStage(
                 new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter());
@@ -447,20 +447,20 @@ class WebSocketRelayStageTest {
 
     private static SecurityHeadersConfig securityHeaders() {
         return SecurityHeadersConfig.builder()
-                .contentTypeNosniff(Optional.of(Boolean.TRUE))
-                .frameDeny(Optional.of(Boolean.TRUE))
+                .contentTypeNosniff(Boolean.TRUE)
+                .frameDeny(Boolean.TRUE)
                 .build();
     }
 
     private static ResolvedRoute wsRoute(String id, String pathPrefix, String require, int upstreamPort,
-            Set<String> allowedOrigins, Optional<Integer> idleTimeoutSeconds) {
+            Set<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds) {
         return ResolvedRoute.builder()
                 .id(id)
                 .protocol(Protocol.WEBSOCKET)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(Optional.of(new ResolvedUpstream("http", "localhost", upstreamPort, "")))
+                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
                 .build();

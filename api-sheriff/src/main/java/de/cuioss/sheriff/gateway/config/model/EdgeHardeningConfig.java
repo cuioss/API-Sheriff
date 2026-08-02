@@ -16,7 +16,8 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -41,14 +42,14 @@ import lombok.Builder;
  * this record only carries them.
  *
  * @param admissionCap       the maximum number of concurrently in-flight requests the edge admits,
- *                           empty when the operator did not declare one
- * @param websocketRelayCap  the maximum number of concurrently established WebSocket relays, empty
- *                           when the operator did not declare one
+ *                           {@code null} when the operator did not declare one
+ * @param websocketRelayCap  the maximum number of concurrently established WebSocket relays,
+ *                           {@code null} when the operator did not declare one
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record EdgeHardeningConfig(Optional<Integer> admissionCap, Optional<Integer> websocketRelayCap) {
+public record EdgeHardeningConfig(@Nullable Integer admissionCap, @Nullable Integer websocketRelayCap) {
 
     /** The admission cap applied when the operator declares none — the gateway's historical bound. */
     public static final int DEFAULT_ADMISSION_CAP = 2048;
@@ -64,26 +65,19 @@ public record EdgeHardeningConfig(Optional<Integer> admissionCap, Optional<Integ
      */
     public static final int DEFAULT_WEBSOCKET_RELAY_CAP = 512;
 
-    /** Canonical constructor normalizing absent optionals to {@link Optional#empty()}. */
-    public EdgeHardeningConfig {
-        admissionCap = Objects.requireNonNullElse(admissionCap, Optional.empty());
-        websocketRelayCap = Objects.requireNonNullElse(websocketRelayCap, Optional.empty());
-    }
-
     /**
      * @return the block an omitted {@code edge_hardening} resolves to — both caps at their documented
      *         defaults, preserving the behaviour of a gateway that never declares the block
      */
     public static EdgeHardeningConfig defaults() {
-        return new EdgeHardeningConfig(Optional.of(DEFAULT_ADMISSION_CAP),
-                Optional.of(DEFAULT_WEBSOCKET_RELAY_CAP));
+        return new EdgeHardeningConfig(DEFAULT_ADMISSION_CAP, DEFAULT_WEBSOCKET_RELAY_CAP);
     }
 
     /**
      * @return the declared admission cap, or {@link #DEFAULT_ADMISSION_CAP} when the member is absent
      */
     public int effectiveAdmissionCap() {
-        return admissionCap.orElse(DEFAULT_ADMISSION_CAP);
+        return Objects.requireNonNullElse(admissionCap, DEFAULT_ADMISSION_CAP);
     }
 
     /**
@@ -99,6 +93,6 @@ public record EdgeHardeningConfig(Optional<Integer> admissionCap, Optional<Integ
      *         {@code 1}
      */
     public int effectiveWebsocketRelayCap() {
-        return websocketRelayCap.orElseGet(() -> Math.max(1, effectiveAdmissionCap() / 4));
+        return websocketRelayCap != null ? websocketRelayCap : Math.max(1, effectiveAdmissionCap() / 4);
     }
 }

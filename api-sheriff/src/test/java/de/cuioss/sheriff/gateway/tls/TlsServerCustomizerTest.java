@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 
@@ -77,7 +76,7 @@ class TlsServerCustomizerTest {
         void floor12EnablesBothModernProtocols() {
             HttpServerOptions options = new HttpServerOptions();
 
-            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.2")).build())
+            customizerFor(TlsConfig.builder().minVersion("1.2").build())
                     .customizeHttpsServer(options);
 
             assertEquals(Set.of(TLS_V1_2, TLS_V1_3), options.getEnabledSecureTransportProtocols(),
@@ -89,7 +88,7 @@ class TlsServerCustomizerTest {
         void floor13EnablesOnlyTls13() {
             HttpServerOptions options = new HttpServerOptions();
 
-            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3")).build())
+            customizerFor(TlsConfig.builder().minVersion("1.3").build())
                     .customizeHttpsServer(options);
 
             assertEquals(Set.of(TLS_V1_3), options.getEnabledSecureTransportProtocols(),
@@ -113,7 +112,7 @@ class TlsServerCustomizerTest {
         @DisplayName("an unsupported min_version fails the boot (fail-closed)")
         void unsupportedMinVersionFailsBoot() {
             TlsServerCustomizer customizer = customizerFor(
-                    TlsConfig.builder().minVersion(Optional.of("1.1")).build());
+                    TlsConfig.builder().minVersion("1.1").build());
             HttpServerOptions options = new HttpServerOptions();
 
             assertThrows(IllegalStateException.class, () -> customizer.customizeHttpsServer(options),
@@ -132,7 +131,7 @@ class TlsServerCustomizerTest {
             // under the default 1.2/1.3 protocol set they would (correctly) fail the reachability guard.
             HttpServerOptions options = new HttpServerOptions();
 
-            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+            customizerFor(TlsConfig.builder().minVersion("1.3")
                     .cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build())
                     .customizeHttpsServer(options);
 
@@ -148,7 +147,7 @@ class TlsServerCustomizerTest {
             HttpServerOptions options = new HttpServerOptions();
 
             // Act
-            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+            customizerFor(TlsConfig.builder().minVersion("1.3")
                     .cipherSuites(List.of(SUITE_AES_256, SUITE_AES_256, SUITE_CHACHA20)).build())
                     .customizeHttpsServer(options);
 
@@ -215,7 +214,7 @@ class TlsServerCustomizerTest {
             HttpServerOptions options = new HttpServerOptions();
 
             // Act
-            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.2"))
+            customizerFor(TlsConfig.builder().minVersion("1.2")
                     .cipherSuites(spanning).build()).customizeHttpsServer(options);
 
             // Assert
@@ -240,7 +239,7 @@ class TlsServerCustomizerTest {
             // Arrange — the concrete hazard: a 1.2 floor enables TLSv1.2 as well as TLSv1.3, so these
             // two valid TLS 1.3 suite names leave every TLS 1.2 client unable to complete a handshake.
             TlsServerCustomizer customizer = customizerFor(TlsConfig.builder()
-                    .minVersion(Optional.of("1.2"))
+                    .minVersion("1.2")
                     .cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build());
             HttpServerOptions options = new HttpServerOptions();
 
@@ -286,7 +285,7 @@ class TlsServerCustomizerTest {
             HttpServerOptions options = new HttpServerOptions();
 
             // Act
-            customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+            customizerFor(TlsConfig.builder().minVersion("1.3")
                     .cipherSuites(List.of(SUITE_AES_256, SUITE_CHACHA20)).build())
                     .customizeHttpsServer(options);
 
@@ -303,7 +302,7 @@ class TlsServerCustomizerTest {
             // Arrange — the mirror case, proving the guard checks every enabled protocol rather than
             // just the lowest one: these ECDHE suites cannot be negotiated under TLSv1.3.
             TlsServerCustomizer customizer = customizerFor(TlsConfig.builder()
-                    .minVersion(Optional.of("1.2"))
+                    .minVersion("1.2")
                     .cipherSuites(List.of(SUITE_ECDHE_RSA_AES_256, SUITE_ECDHE_RSA_AES_128)).build());
             HttpServerOptions options = new HttpServerOptions();
 
@@ -380,7 +379,7 @@ class TlsServerCustomizerTest {
         HttpServerOptions untouched = new HttpServerOptions();
         HttpServerOptions options = new HttpServerOptions();
 
-        customizerFor(TlsConfig.builder().minVersion(Optional.of("1.3"))
+        customizerFor(TlsConfig.builder().minVersion("1.3")
                 .cipherSuites(List.of(SUITE_AES_256)).alpn(List.of("h2")).build())
                 .customizeHttpsServer(options);
 
@@ -389,7 +388,7 @@ class TlsServerCustomizerTest {
     }
 
     private static TlsServerCustomizer customizerFor(TlsConfig tls) {
-        GatewayConfig gateway = GatewayConfig.builder().version(1).tls(Optional.of(tls)).build();
+        GatewayConfig gateway = GatewayConfig.builder().version(1).tls(tls).build();
         return new TlsServerCustomizer(gateway);
     }
 }

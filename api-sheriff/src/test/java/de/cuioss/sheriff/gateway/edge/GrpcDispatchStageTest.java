@@ -29,7 +29,6 @@ import java.net.ConnectException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -154,8 +153,8 @@ class GrpcDispatchStageTest {
                     "both targets address the same host");
             assertEquals(capturedTargets.getFirst().port(), capturedTargets.get(1).port(),
                     "both targets address the same port");
-            assertNotSame(runtimes.getFirst().getHttpClient().orElseThrow(),
-                    runtimes.get(1).getHttpClient().orElseThrow(),
+            assertNotSame(runtimes.getFirst().getHttpClient(),
+                    runtimes.get(1).getHttpClient(),
                     "a gRPC route gets a forced-h2 client distinct from the HTTP/1.1 client to the same host:port");
         }
 
@@ -174,8 +173,8 @@ class GrpcDispatchStageTest {
             // Assert — one forced-h2 tuple, one shared client
             assertEquals(1, capturedTargets.size(), "two gRPC routes to one host:port share a single forced-h2 tuple");
             assertTrue(capturedTargets.getFirst().forcedHttp2(), "the shared tuple is forced to HTTP/2");
-            assertSame(runtimes.getFirst().getHttpClient().orElseThrow(),
-                    runtimes.get(1).getHttpClient().orElseThrow(),
+            assertSame(runtimes.getFirst().getHttpClient(),
+                    runtimes.get(1).getHttpClient(),
                     "gRPC routes sharing a host:port reuse one forced-h2 client");
         }
     }
@@ -356,7 +355,7 @@ class GrpcDispatchStageTest {
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require("none").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.POST))
-                .upstream(Optional.of(upstream))
+                .upstream(upstream)
                 .build();
     }
 

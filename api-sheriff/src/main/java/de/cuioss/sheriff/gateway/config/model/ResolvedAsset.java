@@ -16,7 +16,8 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -47,22 +48,22 @@ import lombok.Builder;
  * @param access    the effective access level of the serving route (mandatory), the
  *                  axis the response envelope keys governed caching on
  * @param directory the configured directory root, present for
- *                  {@link AssetConfig.Source#DIRECTORY} and empty otherwise
+ *                  {@link AssetConfig.Source#DIRECTORY} and {@code null} otherwise
  * @param upstream  the boot-resolved secondary origin, present for
- *                  {@link AssetConfig.Source#UPSTREAM} and empty otherwise
+ *                  {@link AssetConfig.Source#UPSTREAM} and {@code null} otherwise
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record ResolvedAsset(AssetConfig.Source source, AccessLevel access, Optional<String> directory,
-Optional<ResolvedUpstream> upstream) {
+public record ResolvedAsset(AssetConfig.Source source, AccessLevel access, @Nullable String directory,
+@Nullable ResolvedUpstream upstream) {
 
     /**
-     * Canonical constructor requiring {@code source} and {@code access}, normalizing
-     * absent optionals, and enforcing the source-to-field invariant — a
-     * {@link AssetConfig.Source#DIRECTORY} action carries a directory root and no
-     * upstream, an {@link AssetConfig.Source#UPSTREAM} action carries a resolved
-     * upstream and no directory.
+     * Canonical constructor requiring {@code source} and {@code access} and enforcing
+     * the source-to-field invariant — a {@link AssetConfig.Source#DIRECTORY} action
+     * carries a directory root and no upstream, an
+     * {@link AssetConfig.Source#UPSTREAM} action carries a resolved upstream and no
+     * directory.
      */
     // NOSONAR java:S6916 - the rule suggests replacing each case's if with a `when` guard, but
     // guards attach only to PATTERN labels; `case DIRECTORY when ...` on an enum CONSTANT label
@@ -73,17 +74,15 @@ Optional<ResolvedUpstream> upstream) {
     public ResolvedAsset {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(access, "access");
-        directory = Objects.requireNonNullElse(directory, Optional.empty());
-        upstream = Objects.requireNonNullElse(upstream, Optional.empty());
         switch (source) {
             case DIRECTORY -> {
-                if (directory.isEmpty() || upstream.isPresent()) {
+                if (directory == null || upstream != null) {
                     throw new IllegalArgumentException(
                             "DIRECTORY asset requires a directory root and no upstream target");
                 }
             }
             case UPSTREAM -> {
-                if (upstream.isEmpty() || directory.isPresent()) {
+                if (upstream == null || directory != null) {
                     throw new IllegalArgumentException(
                             "UPSTREAM asset requires a resolved upstream and no directory root");
                 }
@@ -99,7 +98,7 @@ Optional<ResolvedUpstream> upstream) {
      * @return the resolved directory asset action
      */
     public static ResolvedAsset directory(String root, AccessLevel access) {
-        return new ResolvedAsset(AssetConfig.Source.DIRECTORY, access, Optional.of(root), Optional.empty());
+        return new ResolvedAsset(AssetConfig.Source.DIRECTORY, access, root, null);
     }
 
     /**
@@ -110,6 +109,6 @@ Optional<ResolvedUpstream> upstream) {
      * @return the resolved upstream asset action
      */
     public static ResolvedAsset upstream(ResolvedUpstream upstream, AccessLevel access) {
-        return new ResolvedAsset(AssetConfig.Source.UPSTREAM, access, Optional.empty(), Optional.of(upstream));
+        return new ResolvedAsset(AssetConfig.Source.UPSTREAM, access, null, upstream);
     }
 }

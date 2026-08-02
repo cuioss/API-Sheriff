@@ -27,7 +27,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Stream;
 
 
@@ -63,7 +62,7 @@ class TopologyResolverTest {
                 .id(alias.toLowerCase(Locale.ROOT))
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(Optional.of(new AuthConfig("none", List.of())))
+                .auth(new AuthConfig("none", List.of()))
                 .build();
     }
 

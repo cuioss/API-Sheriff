@@ -16,7 +16,8 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code security_defaults} block of {@code gateway.yaml}.
@@ -43,16 +44,16 @@ import java.util.Optional;
  * It is boot-validated: a declared value below the resolved baseline {@code maxHeaderValueLength}
  * would make the "carve-out" a tightening in disguise and is refused.
  *
- * @param profile the baseline security-filter profile, empty when omitted
- * @param maxAuthorizationHeaderValueLength the {@code Authorization} header-value cap, empty when
- *                                          omitted — resolve it through
+ * @param profile the baseline security-filter profile, {@code null} when omitted
+ * @param maxAuthorizationHeaderValueLength the {@code Authorization} header-value cap, {@code null}
+ *                                          when omitted — resolve it through
  *                                          {@link #effectiveMaxAuthorizationHeaderValueLength()}
  *                                          rather than reading this component directly
  * @author API Sheriff Team
  * @since 1.0
  */
-public record SecurityDefaultsConfig(Optional<String> profile,
-Optional<Integer> maxAuthorizationHeaderValueLength) {
+public record SecurityDefaultsConfig(@Nullable String profile,
+@Nullable Integer maxAuthorizationHeaderValueLength) {
 
     /**
      * The {@code Authorization} header-value cap an omitted
@@ -68,22 +69,13 @@ Optional<Integer> maxAuthorizationHeaderValueLength) {
     public static final int DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH = 8192;
 
     /**
-     * Canonical constructor normalizing an absent {@code profile} or
-     * {@code maxAuthorizationHeaderValueLength} to {@link Optional#empty()}.
-     */
-    public SecurityDefaultsConfig {
-        profile = Objects.requireNonNullElse(profile, Optional.empty());
-        maxAuthorizationHeaderValueLength =
-                Objects.requireNonNullElse(maxAuthorizationHeaderValueLength, Optional.empty());
-    }
-
-    /**
      * Resolves the {@code Authorization} header-value cap actually enforced at the pre-route floor.
      *
      * @return the declared {@code max_authorization_header_value_length}, or
      *         {@link #DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH} when the key is omitted
      */
     public int effectiveMaxAuthorizationHeaderValueLength() {
-        return maxAuthorizationHeaderValueLength.orElse(DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH);
+        return Objects.requireNonNullElse(maxAuthorizationHeaderValueLength,
+                DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH);
     }
 }

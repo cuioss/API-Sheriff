@@ -16,7 +16,8 @@
 package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import lombok.Builder;
 
@@ -30,46 +31,36 @@ import lombok.Builder;
  * (ADR-0007).
  *
  * @param id             the route id, unique across all endpoint files (mandatory)
- * @param protocol       the served protocol, empty meaning HTTP
- * @param anchor         the per-route anchor override, empty when the endpoint
+ * @param protocol       the served protocol, {@code null} meaning HTTP
+ * @param anchor         the per-route anchor override, {@code null} when the endpoint
  *                       anchor applies
  * @param match          the matcher set (mandatory)
- * @param auth           the route-level auth override, empty when inheriting the
+ * @param auth           the route-level auth override, {@code null} when inheriting the
  *                       endpoint/anchor default
- * @param securityFilter the route-level security filter, empty when the anchor or
+ * @param securityFilter the route-level security filter, {@code null} when the anchor or
  *                       global default applies
- * @param forward        the forwarding allowlist, empty when nothing is forwarded
- * @param upstream       the upstream target settings, empty when omitted
- * @param asset          the asset terminal-action settings, empty when omitted; a
+ * @param forward        the forwarding allowlist, {@code null} when nothing is forwarded
+ * @param upstream       the upstream target settings, {@code null} when omitted
+ * @param asset          the asset terminal-action settings, {@code null} when omitted; a
  *                       route carries at most one terminal action, so {@code asset}
  *                       and {@code upstream} are mutually exclusive (ADR-0014)
- * @param rateLimit      the reserved rate-limit block, empty when omitted
+ * @param rateLimit      the reserved rate-limit block, {@code null} when omitted
  * @param websocket      the per-route WebSocket settings ({@code allowed_origins},
- *                       {@code idle_timeout_seconds}), empty for non-WebSocket routes
+ *                       {@code idle_timeout_seconds}), {@code null} for non-WebSocket routes
  * @author API Sheriff Team
  * @since 1.0
  */
 @Builder
-public record RouteConfig(String id, Optional<Protocol> protocol, Optional<String> anchor, MatchConfig match,
-Optional<AuthConfig> auth, Optional<SecurityFilterConfig> securityFilter, Optional<ForwardConfig> forward,
-Optional<UpstreamConfig> upstream, Optional<AssetConfig> asset, Optional<RateLimitConfig> rateLimit,
-Optional<WebSocketConfig> websocket) {
+public record RouteConfig(String id, @Nullable Protocol protocol, @Nullable String anchor, MatchConfig match,
+@Nullable AuthConfig auth, @Nullable SecurityFilterConfig securityFilter, @Nullable ForwardConfig forward,
+@Nullable UpstreamConfig upstream, @Nullable AssetConfig asset, @Nullable RateLimitConfig rateLimit,
+@Nullable WebSocketConfig websocket) {
 
     /**
-     * Canonical constructor requiring {@code id} and {@code match} and normalizing
-     * absent optionals to {@link Optional#empty()}.
+     * Canonical constructor requiring {@code id} and {@code match}.
      */
     public RouteConfig {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(match, "match");
-        protocol = Objects.requireNonNullElse(protocol, Optional.empty());
-        anchor = Objects.requireNonNullElse(anchor, Optional.empty());
-        auth = Objects.requireNonNullElse(auth, Optional.empty());
-        securityFilter = Objects.requireNonNullElse(securityFilter, Optional.empty());
-        forward = Objects.requireNonNullElse(forward, Optional.empty());
-        upstream = Objects.requireNonNullElse(upstream, Optional.empty());
-        asset = Objects.requireNonNullElse(asset, Optional.empty());
-        rateLimit = Objects.requireNonNullElse(rateLimit, Optional.empty());
-        websocket = Objects.requireNonNullElse(websocket, Optional.empty());
     }
 }

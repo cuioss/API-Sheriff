@@ -124,7 +124,7 @@ class GatewayEdgeRouteBffWiringTest {
     @DisplayName("ReservedPathRegistry registers the user_info and login folds (D11/D12)")
     class RegistryFolds {
 
-        private final ReservedPathRegistry registry = ReservedPathRegistry.from(Optional.of(fullOidc()));
+        private final ReservedPathRegistry registry = ReservedPathRegistry.from(fullOidc());
 
         @Test
         @DisplayName("Should register the user_info fold path as USER_INFO")
@@ -218,7 +218,7 @@ class GatewayEdgeRouteBffWiringTest {
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(Optional.of(fullOidc())).build();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(rejectEverythingRoute())),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
@@ -281,9 +281,9 @@ class GatewayEdgeRouteBffWiringTest {
                     .match(MatchConfig.builder().pathPrefix("/auth").build())
                     .effectiveAuth(AuthConfig.builder().require("none").build())
                     .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                    .effectiveSecurityFilter(Optional.of(SecurityFilterConfig.builder()
-                            .allowedPaths(List.of("/auth/never-matches")).build()))
-                    .upstream(Optional.of(new ResolvedUpstream("http", "localhost", 1, "")))
+                    .effectiveSecurityFilter(SecurityFilterConfig.builder()
+                            .allowedPaths(List.of("/auth/never-matches")).build())
+                    .upstream(new ResolvedUpstream("http", "localhost", 1, ""))
                     .build();
         }
     }
@@ -610,15 +610,15 @@ class GatewayEdgeRouteBffWiringTest {
 
     private static OidcConfig fullOidc() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
-                .path(Optional.of(LOGOUT_PATH))
-                .postLogoutRedirectUri(Optional.of(ORIGIN + LOGOUT_RETURN_PATH))
-                .backchannelPath(Optional.of(BACKCHANNEL_PATH))
+                .path(LOGOUT_PATH)
+                .postLogoutRedirectUri(ORIGIN + LOGOUT_RETURN_PATH)
+                .backchannelPath(BACKCHANNEL_PATH)
                 .build();
         return OidcConfig.builder()
-                .redirectUri(Optional.of(ORIGIN + CALLBACK_PATH))
-                .logout(Optional.of(logout))
-                .userInfo(Optional.of(OidcConfig.UserInfo.builder().path(Optional.of(USER_INFO_PATH)).build()))
-                .login(Optional.of(OidcConfig.Login.builder().path(Optional.of(LOGIN_PATH)).build()))
+                .redirectUri(ORIGIN + CALLBACK_PATH)
+                .logout(logout)
+                .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build())
+                .login(OidcConfig.Login.builder().path(LOGIN_PATH).build())
                 .build();
     }
 
@@ -702,7 +702,7 @@ class GatewayEdgeRouteBffWiringTest {
                 .match(MatchConfig.builder().pathPrefix("/s").build())
                 .effectiveAuth(AuthConfig.builder().require("session").build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(Optional.of(new ResolvedUpstream("https", "s.example", 443, "")))
+                .upstream(new ResolvedUpstream("https", "s.example", 443, ""))
                 .build();
     }
 
