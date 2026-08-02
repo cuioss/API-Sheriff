@@ -8,7 +8,7 @@
   "purpose": "e2e-tests",
   "purpose_reasoning": "packaging=pom with maven.compiler.skip and skipTests true and zero Java sources; the only executions are Playwright browser tests bound to integration-test behind -Pe2e-demo",
   "responsibility": "Reactor-visible shell for the demo client: a Java-free pom-packaging module that owns the dependency-free demo SPA sources and the Playwright end-to-end suite, and wires the pinned Node/npm toolchain plus the stack bring-up and teardown scripts behind the opt-in e2e-demo profile. A default reactor build of this module is a deliberate no-op - no Node download, no npm install, no container, no artifact - and nothing here ever reaches the production image or the native build.",
-  "responsibility_reasoning": "demo-client/pom.xml description and comments, the e2e-demo profile executions (frontend-maven-plugin install-node-and-npm, npm install, npm run lint:strict, npx playwright test) and the exec-maven-plugin start/stop-dev-environment bindings",
+  "responsibility_reasoning": "demo-client/pom.xml description and comments, the e2e-demo profile executions (frontend-maven-plugin install-node-and-npm, npm ci, npm run lint:strict, npm run install-browser, npm run test) and the exec-maven-plugin start/stop-dev-environment bindings",
   "skills_by_profile": {
     "implementation": {
       "defaults": [

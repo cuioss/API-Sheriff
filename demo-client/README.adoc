@@ -19,12 +19,13 @@ native executable.
 * Docker with Compose
 * A built `api-sheriff:distroless` native image
 
-Node is *not* a prerequisite -- the `e2e-demo` profile downloads a pinned toolchain into `target/`.
+Neither Node nor a browser is a prerequisite -- the `e2e-demo` profile downloads a pinned Node
+toolchain into `target/` and installs the Chromium build Playwright drives.
 
 == Running It
 
-One command does everything -- toolchain install, lint, three-container bring-up, both Playwright
-projects, teardown:
+One command does everything -- toolchain install, lint, browser install, three-container bring-up,
+both Playwright projects, teardown:
 
 [source,bash]
 ----
@@ -37,9 +38,13 @@ When iterating on specs, hold the stack up and re-run only the tests:
 [source,bash]
 ----
 demo-client/scripts/start-dev-environment.sh
-cd demo-client && npx playwright test
+cd demo-client && npm run test
 demo-client/scripts/stop-dev-environment.sh
 ----
+
+`npm run test`, never `npx`: `npm run` resolves the binary from `node_modules/.bin` only, so a
+missing binary is a hard failure rather than a silent registry download. The build makes the same
+choice, for the same reason.
 
 Without `-Pe2e-demo` this module is a no-op: a default reactor build downloads no Node, runs no npm
 command, starts no container and produces no artifact.
