@@ -15,15 +15,19 @@
  */
 package de.cuioss.sheriff.gateway.auth;
 
+import java.io.IOException;
 import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 
 import io.quarkus.tls.BaseTlsConfiguration;
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
+import io.vertx.core.net.TrustOptions;
 
 /**
  * An in-memory {@link TlsConfigurationRegistry} standing in for the runtime's registry, so the
@@ -54,17 +58,46 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
 
     /**
      * @param name the logical profile name to define
-     * @return a registry defining {@code name} against a usable SSL context
+     * @return a registry defining {@code name} against trust material and a usable SSL context —
+     *         the shape a correctly bound deployment has
      */
     static TestTlsConfigurationRegistry with(String name) {
         TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
-        registry.register(name, new UsableTlsConfiguration(registry.profileContext));
+        registry.register(name, new UsableTlsConfiguration(registry.profileContext, trustStore(), null));
+        return registry;
+    }
+
+    /**
+     * The runtime may express the same anchors as Vert.x {@link TrustOptions} rather than as a
+     * loaded {@link KeyStore} — a PEM-bound bucket is the common case. Both count as material, so
+     * the resolver must accept this shape too.
+     *
+     * @param name the logical profile name to define
+     * @return a registry where {@code name} carries trust material only as {@link TrustOptions}
+     */
+    static TestTlsConfigurationRegistry withTrustOptionsOnly(String name) {
+        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
+        registry.register(name, new UsableTlsConfiguration(registry.profileContext, null, trustOptions()));
+        return registry;
+    }
+
+    /**
+     * The shape a bucket has when the deployment declares {@code quarkus.tls.<name>.*} without any
+     * anchors — the gateway ships exactly such a bucket for the plain-HTTP management marker, so
+     * this is reachable by naming the wrong profile rather than by exotic misconfiguration.
+     *
+     * @param name the logical profile name to define
+     * @return a registry where {@code name} resolves but carries no trust material at all
+     */
+    static TestTlsConfigurationRegistry withoutTrustMaterial(String name) {
+        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
+        registry.register(name, new UsableTlsConfiguration(registry.profileContext, null, null));
         return registry;
     }
 
     /**
      * @param name the logical profile name to define
-     * @return a registry where {@code name} exists but its trust material cannot be loaded
+     * @return a registry where {@code name} carries trust material that cannot be loaded
      */
     static TestTlsConfigurationRegistry withBrokenMaterial(String name) {
         TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
@@ -108,13 +141,62 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
         }
     }
 
-    /** A profile whose trust material resolves to a real, usable context. */
+    /**
+     * A loaded, empty trust store. Presence is what the resolver checks — the seam refuses a bucket
+     * that carries no anchors at all, and never inspects which anchors a bound bucket holds — so an
+     * empty store is the faithful stand-in for "the deployment supplied material".
+     *
+     * @return a trust store instance the resolver accepts as material
+     */
+    private static KeyStore trustStore() {
+        try {
+            KeyStore store = KeyStore.getInstance("PKCS12");
+            store.load(null, null);
+            return store;
+        } catch (GeneralSecurityException | IOException e) {
+            throw new IllegalStateException("PKCS12 must be available to the test JVM", e);
+        }
+    }
+
+    /**
+     * @return the same material expressed the way a PEM-bound bucket expresses it
+     */
+    private static TrustOptions trustOptions() {
+        try {
+            TrustManagerFactory factory =
+                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            factory.init(trustStore());
+            return TrustOptions.wrap(factory);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("the default trust-manager algorithm must be available", e);
+        }
+    }
+
+    /**
+     * A profile whose trust material — in either of the two shapes the runtime exposes — resolves
+     * to a real, usable context. Passing {@code null} for both shapes models a bound bucket that
+     * carries no anchors.
+     */
     private static final class UsableTlsConfiguration extends BaseTlsConfiguration {
 
         private final SSLContext context;
+        private final KeyStore trustStore;
+        private final TrustOptions trustOptions;
 
-        private UsableTlsConfiguration(SSLContext context) {
+        private UsableTlsConfiguration(SSLContext context, KeyStore trustStore, TrustOptions trustOptions) {
             this.context = context;
+            this.trustStore = trustStore;
+            this.trustOptions = trustOptions;
+        }
+
+        @Override
+        public KeyStore getTrustStore() {
+            return trustStore;
+        }
+
+        @Override
+        public TrustOptions getTrustStoreOptions() {
+            return trustOptions;
         }
 
         @Override
@@ -123,9 +205,16 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
         }
     }
 
-    /** A profile that is defined but whose trust material fails to load — an unreadable or
+    /** A profile that carries trust material but fails to load it — an unreadable or
      * wrong-password trust store in a real deployment. */
     private static final class BrokenTlsConfiguration extends BaseTlsConfiguration {
+
+        private final KeyStore trustStore = trustStore();
+
+        @Override
+        public KeyStore getTrustStore() {
+            return trustStore;
+        }
 
         @Override
         public SSLContext createSSLContext() {

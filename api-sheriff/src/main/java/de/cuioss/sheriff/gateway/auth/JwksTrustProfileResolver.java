@@ -69,6 +69,13 @@ import jakarta.inject.Inject;
  * fails obscurely later or — worse — succeeds against anchors the operator did not intend. This
  * matches {@code ConfigProducer}'s existing refuse-to-start posture for invalid configuration.
  * <p>
+ * A profile that <em>is</em> bound but carries no trust material is refused for the same reason.
+ * The runtime registers a named bucket as soon as any {@code quarkus.tls.<name>.*} key exists —
+ * this gateway ships exactly such a material-free bucket for the plain-HTTP management marker — and
+ * a bucket with no anchors yields an {@link SSLContext} backed by the JVM default trust store.
+ * Accepting it would reintroduce the silent fallback through the back door: the operator named a
+ * profile, the startup succeeded, and the JWKS fetch trusts anchors nobody chose.
+ * <p>
  * An issuer that omits {@code tls_profile} never reaches this class: the caller skips resolution
  * entirely, so the JWKS client keeps the JVM default trust store with no behavioural change.
  *
@@ -97,8 +104,9 @@ public class JwksTrustProfileResolver {
      * @param tlsProfile  the logical profile name from {@code jwks.tls_profile}
      * @return the SSL context carrying the profile's trust anchors, never {@code null}
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the deployment defines
-     *                          no such profile, or when the profile is defined but its trust
-     *                          material cannot be turned into an {@link SSLContext}
+     *                          no such profile, when the profile is defined but carries no trust
+     *                          material, or when its trust material cannot be turned into an
+     *                          {@link SSLContext}
      */
     public SSLContext resolve(IssuerConfig issuer, String tlsProfile) {
         TlsConfiguration configuration = registry.get(tlsProfile)
@@ -106,6 +114,14 @@ public class JwksTrustProfileResolver {
                         "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
                                 + "' but no such trust profile is configured — define it via "
                                 + "quarkus.tls." + tlsProfile + ".trust-store.*"));
+        if (configuration.getTrustStore() == null && configuration.getTrustStoreOptions() == null) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
+                            + "' but that profile carries no trust material — it would verify the "
+                            + "IdP against the JVM default trust store instead of the anchors the "
+                            + "name promises; define it via quarkus.tls." + tlsProfile
+                            + ".trust-store.*");
+        }
         try {
             return configuration.createSSLContext();
             // Catching Exception is forced by the contract: TlsConfiguration#createSSLContext

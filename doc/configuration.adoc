@@ -1462,8 +1462,34 @@ Falling back to default trust would be worse than failing: it would either surfa
 obscure JWKS fetch error, or -- if the IdP happens to chain to a public CA -- quietly succeed
 against anchors the operator never intended to trust.
 
+===== When the profile is bound but carries no anchors
+
+A profile that exists but supplies no trust material is refused too -- for exactly the same reason,
+and this is the case that is easy to reach by accident. The runtime registers a named bucket as
+soon as *any* `quarkus.tls.<name>.*` key is present, so a bucket that sets only, say, a reload
+period is a real, resolvable profile with nothing in it:
+
+[source,properties]
+----
+# a bound profile with no anchors -- refused, not silently accepted
+quarkus.tls.corporate-idp.reload-period=24H
+----
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but that profile carries no trust
+material — it would verify the IdP against the JVM default trust store instead of the anchors
+the name promises; define it via quarkus.tls.corporate-idp.trust-store.*
+----
+
+Without this check the deployment would start and the JWKS client would verify the IdP against the
+JVM default trust store -- the very fallback the previous section refuses -- while `gateway.yaml`
+still reads as though corporate anchors were in force. A named profile therefore means *these
+anchors*, never *whatever the JVM happens to trust*.
+
 An issuer that omits `tls_profile` is unaffected: no trust configuration is applied at all, and
-the JWKS client keeps the JVM default trust store.
+the JWKS client keeps the JVM default trust store. That is the one supported way to ask for default
+trust -- by saying nothing, not by naming an empty profile.
 
 ===== Relationship to `allowed_egress_hosts`
 
