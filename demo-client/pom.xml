@@ -176,7 +176,17 @@
                                     <goal>npm</goal>
                                 </goals>
                                 <configuration>
-                                    <arguments>install</arguments>
+                                    <!-- 'ci', NOT 'install'. package-lock.json is committed with a
+                                         'resolved' + 'integrity' entry for all 80 packages, and only
+                                         'npm ci' treats it as authoritative: it installs exactly the
+                                         locked tree and FAILS when the lock and package.json have
+                                         drifted apart. 'npm install' is permitted to re-resolve within
+                                         the manifest's caret ranges and to silently rewrite the lock,
+                                         which would let an unreviewed transitive version enter a build
+                                         that still looks reproducible. Fail-closed lock-file discipline
+                                         is the point; the from-scratch reinstall it implies costs
+                                         seconds in an opt-in profile. -->
+                                    <arguments>ci</arguments>
                                 </configuration>
                             </execution>
                             <execution>
@@ -193,10 +203,22 @@
                                 <id>playwright-test</id>
                                 <phase>integration-test</phase>
                                 <goals>
-                                    <goal>npx</goal>
+                                    <goal>npm</goal>
                                 </goals>
                                 <configuration>
-                                    <arguments>--yes playwright test</arguments>
+                                    <!-- 'npm run test' (the package.json script, which is
+                                         'playwright test'), NOT npx with its auto-confirm flag. npx
+                                         resolves the binary from node_modules/.bin when present, but
+                                         auto-confirm suppresses the prompt guarding npx's fallback
+                                         path — so if the locked install ever failed to place the
+                                         binary, npx would silently FETCH AND EXECUTE an unpinned
+                                         'playwright' package straight from the registry, outside the
+                                         integrity-pinned lock file the step above just enforced. That
+                                         is remote code execution from an unreviewed source inside the
+                                         build. 'npm run' only ever resolves node_modules/.bin and has
+                                         no registry fallback: a missing binary is a hard failure
+                                         instead of a silent download. -->
+                                    <arguments>run test</arguments>
                                     <environmentVariables>
                                         <PLAYWRIGHT_BASE_URL_SERVER>${demo.baseUrl.server}</PLAYWRIGHT_BASE_URL_SERVER>
                                         <PLAYWRIGHT_BASE_URL_COOKIE>${demo.baseUrl.cookie}</PLAYWRIGHT_BASE_URL_COOKIE>
