@@ -991,24 +991,15 @@ public final class ConfigValidator {
      * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require an
      * {@code encryption_key} — omitting it selects the generate-on-startup key mode, a first-class
      * production option (at the cost of dropping every session on restart and being unshareable
-     * across replicas). Its companion rule survives the relaxation: a {@code previous_key} present
-     * <em>without</em> an {@code encryption_key} is still invalid, because a decrypt-only rotation
-     * key with no current key to roll onto is semantically nonsensical and rotation composes with
-     * the passed-key mode only.
+     * across replicas).
      */
     private static void validateSessionMode(GatewayConfig gateway, List<ConfigError> errors) {
-        // isCookieMode() / isServerMode() are the SHARED predicates over the mode value the
-        // OidcConfig.Session canonical constructor already canonicalized. Comparing against a
-        // literal here is what previously let 'Cookie' skip both rules while the edge still read it
-        // as active cookie mode and relaxed the pre-route Cookie header-value cap.
+        // isServerMode() is the SHARED predicate over the mode value the OidcConfig.Session canonical
+        // constructor already canonicalized. Comparing against a literal here is what previously let
+        // a value like 'Server' skip this rule while the runtime still read it as an active mode.
         OidcConfig.Session session = oidcSession(gateway);
         if (session == null) {
             return;
-        }
-        if (session.isCookieMode() && session.encryptionKey() == null && session.previousKey() != null) {
-            errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/previous_key",
-                    "cookie session mode with a previous_key requires an encryption_key — "
-                            + "the decrypt-only rotation key composes with the passed-key mode only"));
         }
         if (session.isServerMode() && session.store() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",

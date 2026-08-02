@@ -159,7 +159,28 @@ final class BffKeycloakLoginFlow {
      * @return the established gateway {@link Session}
      */
     static Session login(String startPath, String gatewayOrigin) {
-        Map<String, String> gatewayCookies = new HashMap<>();
+        return login(startPath, gatewayOrigin, Map.of());
+    }
+
+    /**
+     * Runs the full auth-code flow with the browser already holding {@code initialGatewayCookies} at
+     * the moment it navigates onto {@code startPath}.
+     * <p>
+     * This is the re-authentication shape: a browser whose session cookie the gateway can no longer
+     * authenticate still <em>sends</em> that cookie on the navigation, and the flow must complete a
+     * fresh login from there. Starting from an empty jar would exercise a first-ever login instead
+     * and would never observe the stale cookie on the wire, so the seam the re-authentication
+     * actually depends on would go unproven.
+     *
+     * @param startPath             the gateway path to navigate to (a require:session route)
+     * @param gatewayOrigin         the browser-facing gateway origin to drive
+     * @param initialGatewayCookies the gateway cookies the browser already holds; entries the flow
+     *                              re-sets (the binding cookie, the session cookie) are overwritten
+     *                              as the round trip progresses
+     * @return the established gateway {@link Session}
+     */
+    static Session login(String startPath, String gatewayOrigin, Map<String, String> initialGatewayCookies) {
+        Map<String, String> gatewayCookies = new HashMap<>(initialGatewayCookies);
         Map<String, String> keycloakCookies = new HashMap<>();
 
         // Step 1 — navigate onto the require:session route: the gateway sets the pending-auth binding

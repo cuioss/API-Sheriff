@@ -114,7 +114,7 @@ public final class ConfigLoader {
     private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     private static final List<String> SECRET_POINTERS = List.of(
-            "/oidc/client_secret", "/oidc/session/encryption_key", "/oidc/session/previous_key");
+            "/oidc/client_secret", "/oidc/session/encryption_key");
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;

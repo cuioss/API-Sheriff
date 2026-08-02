@@ -36,8 +36,8 @@ The cookie-specific code is in the `api-sheriff` module under
   `decode(...)`) and redacts every credential from `toString()`.
 
 | `SealedSessionCookieCodec`
-| The AES-256-GCM seal/unseal, the outer value layout, the `FORMAT_VERSION` stamp, deterministic
-  key selection by key id, the `Set-Cookie` hardening, and the seal-time size budget.
+| The AES-256-GCM seal/unseal, the outer value layout, the `FORMAT_VERSION` stamp, the key-id gate,
+  the `Set-Cookie` hardening, and the seal-time size budget.
 
 | `CookieSessionBinding`
 | The `SessionBinding` implementation: `bind` (seal on login, mint the nonce), `resolve` (unseal,
@@ -45,8 +45,8 @@ The cookie-specific code is in the `api-sheriff` module under
   identity. Reports `IdpDestruction.UNSUPPORTED`.
 
 | `CookieKeyMaterial`
-| Resolves the key material -- passed `encryption_key` versus generate-on-startup -- plus the
-  decrypt-only `previous_key` and the derived per-gateway identity salt.
+| Resolves the one sealing key -- passed `encryption_key` versus generate-on-startup -- and the
+  derived per-gateway identity salt.
 |===
 
 Everything else is shared with the server-session variant; see
@@ -78,8 +78,9 @@ version(1B) | key-id(1B) | GCM nonce(12B) | ciphertext | GCM tag(16B)
 ----
 
 The `version` and `key-id` bytes are bound into the GCM *associated data*, so tampering with either
-fails the tag check rather than silently selecting a different parse. Key selection is deterministic
-by the stamped key id -- never a try-every-key decrypt.
+fails the tag check rather than silently selecting a different parse. The gateway holds exactly one
+sealing key: a stamped id that does not match it is refused outright -- never a try-every-key
+decrypt -- which is what makes withdrawing a key a clean, fail-closed break.
 
 The *inner* plaintext (what `SealedSessionPayload.encode()` produces) is nine newline-separated
 fields in record-declaration order, each URL-safe base64 of its UTF-8 bytes so no value can collide
@@ -126,11 +127,9 @@ Unit-test entry points:
 * `SealedSessionPayloadTest` -- the inner wire format: round trips, absent optionals,
   separator-bearing values, the strict field-count guard, and credential redaction.
 * `SealedSessionCookieCodecTest` -- seal/unseal, the version and key-id header, fail-closed rejection
-  of a tampered nonce/ciphertext/tag, unknown version or key id, `previous_key` rotation, and the
-  size budget.
-* `CookieSessionBindingTest` -- bind/resolve/persist, the server-side TTL enforcement, rotation
-  re-seal, and the identity properties (stability across a re-seal, uniqueness within a clock
-  second).
+  of a tampered nonce/ciphertext/tag, unknown version or key id, and the size budget.
+* `CookieSessionBindingTest` -- bind/resolve/persist, the server-side TTL enforcement, and the
+  identity properties (stability across a re-seal, uniqueness within a clock second).
 * `TokenRefreshCoordinatorTest` -- its `CookieMode` group covers the stateless refresh: re-seal into
   a new `Set-Cookie` and nonce propagation across `rotate()`.
 

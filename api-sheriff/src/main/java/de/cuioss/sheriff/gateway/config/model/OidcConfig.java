@@ -130,12 +130,6 @@ List<String> scopes,
      *                      fully supported production mode whose key is fresh per
      *                      boot — so every session is dropped on restart and the key
      *                      cannot be shared across replicas
-     * @param previousKey   the optional decrypt-only rotation key ({@code ${ENV_VAR}}
-     *                      reference), {@code null} when no rotation is in progress. Values
-     *                      sealed under it still unseal, but nothing is ever sealed
-     *                      under it again. It composes with the passed-key mode only:
-     *                      supplying it without an {@code encryptionKey} is a
-     *                      configuration error the validator rejects
      * @param ttlSeconds    the absolute session lifetime in seconds, {@code null} when
      *                      omitted
      * @param csrf          the CSRF settings, {@code null} when omitted
@@ -159,7 +153,6 @@ List<String> scopes,
     @Nullable String store,
     @Nullable String cookieName,
     @Nullable String encryptionKey,
-    @Nullable String previousKey,
     @Nullable Integer ttlSeconds,
     @Nullable Csrf csrf,
     @Nullable Refresh refresh,
@@ -219,17 +212,17 @@ List<String> scopes,
         }
 
         /**
-         * Overridden to redact {@link #encryptionKey()} and {@link #previousKey()}.
-         * The default record {@code toString()} would otherwise print the resolved
-         * cookie-encryption key values verbatim into any log line, exception message,
-         * or debugger view that captures this instance.
+         * Overridden to redact {@link #encryptionKey()}. The default record
+         * {@code toString()} would otherwise print the resolved cookie-encryption key
+         * value verbatim into any log line, exception message, or debugger view that
+         * captures this instance.
          *
-         * @return a string representation with both key fields redacted
+         * @return a string representation with the key field redacted
          */
         @Override
         public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, previousKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s]"
-                    .formatted(mode, store, cookieName, redact(encryptionKey), redact(previousKey), ttlSeconds, csrf,
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s]"
+                    .formatted(mode, store, cookieName, redact(encryptionKey), ttlSeconds, csrf,
                             refresh, maxSessions, maxCookieSize);
         }
     }

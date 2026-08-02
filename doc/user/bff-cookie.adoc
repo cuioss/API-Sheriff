@@ -46,7 +46,6 @@ oidc:
     mode: cookie                              # sealed cookie, no store (this variant)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
-    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only (rotation)
     max_cookie_size: 4096                     # seal-time budget; see "Cookie size budget"
     ttl_seconds: 3600                         # absolute lifetime from login
     csrf:
@@ -81,20 +80,34 @@ The sealing key has *two modes*, selected by whether you declare `session.encryp
 
 Use generate-on-startup for a single-replica deployment or a development environment. Use a passed
 key for anything multi-replica or restart-sensitive. The gateway raises a startup diagnostic naming
-the active key mode and rotation state -- it never logs key bytes.
+the active key mode -- it never logs key bytes.
 
-=== Rotating the key
+=== Changing the key
 
-`session.previous_key` is *decrypt-only*: a cookie still sealed under it keeps resolving, and the
-session's next write re-seals it under the current key. Sealing is always done with
-`encryption_key`, never with `previous_key`.
+There is exactly *one* sealing key. The gateway holds no decrypt-only companion key, so there is no
+rotation window and nothing to stage: replacing `session.encryption_key` is a clean break. Every
+cookie sealed under the withdrawn key carries a key id the gateway no longer holds, is refused as
+"no session", and those users simply log in again.
 
-`previous_key` *requires* an `encryption_key` -- declaring it alone is rejected at boot, because a
-decrypt-only rotation key with no current key to roll onto is nonsensical. Rotation therefore
-composes only with the passed-key mode; generate-on-startup has no previous key by construction.
+Treat a key change as a scheduled forced re-login -- operationally the same event as the
+format-version bump described under "Upgrading" below.
 
-Withdraw `previous_key` once the rotation window has passed; cookies still carrying the retired key
-id are then refused as "no session" and those users log in again.
+=== Migrating from a configuration that declared `previous_key`
+
+[WARNING]
+====
+`oidc.session.previous_key` *has been removed*, and the configuration schema rejects unknown keys.
+A `gateway.yaml` that still declares `previous_key` therefore *fails at boot* -- the gateway does
+not start, and the failure names the offending key.
+
+*Remedy: delete the `previous_key` line* from `oidc.session`. Nothing replaces it. The environment
+variable it referenced (commonly `SHERIFF_SESSION_KEY_PREVIOUS`) becomes unused and can be retired
+from the deployment.
+
+If you were mid-rotation when you upgrade, the cookies still sealed under the retired key are
+refused as "no session" and those users log in again -- so prefer to finish the rotation (or accept
+the re-login) before rolling this version out.
+====
 
 == Cookie size budget
 

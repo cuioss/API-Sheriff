@@ -56,14 +56,11 @@ import org.jspecify.annotations.Nullable;
  * {@link Optional#empty()}: a tampered cookie is "no session", never a {@code 500}. The rejection
  * is logged with its non-sensitive disposition only.
  * <p>
- * <strong>Key rotation (D2) — the previous key is decrypt-only.</strong> The codec holds a current
- * key and, optionally, one previous key. {@link #seal} <em>always</em> uses the current key and
- * stamps its key id; the previous key is never selected for a seal, so a rollover is strictly
- * one-way and cannot be walked backwards. {@link #unseal} selects between the two by the stamped
- * key id and reports which one authenticated the value through
- * {@link Unsealed#sealedWithPreviousKey()}, so the binding can complete the rollover on the
- * session's next write. Withdrawing the previous key makes every value still sealed under it
- * <em>unauthenticated</em> — an unknown key id, hence "no session", never an error.
+ * <strong>Exactly one key.</strong> The codec holds a single sealing key and stamps its key id into
+ * every value; there is no decrypt-only companion key and no in-flight rotation state. Changing the
+ * configured key is a clean break: every value still sealed under the withdrawn key carries an
+ * unknown key id and is therefore <em>unauthenticated</em> — "no session", never an error — so the
+ * browser simply re-authenticates.
  * <p>
  * <strong>Size budget.</strong> A sealed value larger than the configured
  * {@linkplain #maxCookieValueBytes() budget} fails the seal with
@@ -149,19 +146,16 @@ public final class SealedSessionCookieCodec {
     private final int maxCookieValueBytes;
     private final SecretKey currentKey;
     private final byte currentKeyId;
-    private final @Nullable SecretKey previousKey;
-    private final byte previousKeyId;
 
     /**
-     * Assembles the codec without a rotation key — every value is sealed and unsealed under the one
-     * current key. This is the shape the generate-on-startup key mode takes, where there is by
-     * construction no previous key.
+     * Assembles the codec over its one sealing key — every value is sealed and unsealed under that
+     * single key.
      *
      * @param cookieName          the session-cookie name (bound into the associated data)
      * @param sessionTtl          the absolute session lifetime from login
      * @param maxCookieValueBytes the sealed cookie-value size budget, the ONE declared number that
      *                            also drives the gateway's pre-route {@code Cookie} header-value cap
-     * @param currentKey          the AES-256 key new values are sealed under
+     * @param currentKey          the AES-256 key values are sealed under
      * @param currentKeyId        the id identifying {@code currentKey} in the cookie header
      */
     public SealedSessionCookieCodec(String cookieName, Duration sessionTtl, int maxCookieValueBytes,
@@ -171,38 +165,6 @@ public final class SealedSessionCookieCodec {
         this.maxCookieValueBytes = requireViableBudget(maxCookieValueBytes);
         this.currentKey = Objects.requireNonNull(currentKey, "currentKey");
         this.currentKeyId = currentKeyId;
-        this.previousKey = null;
-        this.previousKeyId = currentKeyId;
-    }
-
-    /**
-     * Assembles the codec with a decrypt-only rotation key. Values already sealed under
-     * {@code previousKey} keep unsealing, but nothing is ever sealed under it again.
-     *
-     * @param cookieName          the session-cookie name (bound into the associated data)
-     * @param sessionTtl          the absolute session lifetime from login
-     * @param maxCookieValueBytes the sealed cookie-value size budget, the ONE declared number that
-     *                            also drives the gateway's pre-route {@code Cookie} header-value cap
-     * @param currentKey          the AES-256 key new values are sealed under
-     * @param currentKeyId        the id identifying {@code currentKey} in the cookie header
-     * @param previousKey         the AES-256 key retired values are still accepted under, decrypt-only
-     * @param previousKeyId       the id identifying {@code previousKey}; must differ from
-     *                            {@code currentKeyId}, otherwise the stamped id could not select a key
-     */
-    public SealedSessionCookieCodec(String cookieName, Duration sessionTtl, int maxCookieValueBytes,
-            SecretKey currentKey, byte currentKeyId, SecretKey previousKey, byte previousKeyId) {
-        this.cookieName = requireNonBlank(cookieName);
-        this.sessionTtl = Objects.requireNonNull(sessionTtl, "sessionTtl");
-        this.maxCookieValueBytes = requireViableBudget(maxCookieValueBytes);
-        this.currentKey = Objects.requireNonNull(currentKey, "currentKey");
-        this.currentKeyId = currentKeyId;
-        this.previousKey = Objects.requireNonNull(previousKey, "previousKey");
-        if (previousKeyId == currentKeyId) {
-            // Unsealing selects the key by the stamped id alone; a shared id would make that
-            // selection ambiguous and silently turn the rotation into a try-both decrypt.
-            throw new IllegalArgumentException("previousKeyId must differ from currentKeyId");
-        }
-        this.previousKeyId = previousKeyId;
     }
 
     /**
@@ -245,9 +207,9 @@ public final class SealedSessionCookieCodec {
      * Unseals a cookie value back into its payload, fail-closed.
      *
      * @param cookieValue the base64url-encoded sealed value read from the request cookie
-     * @return the payload together with the key generation that authenticated it; empty when the
-     *         value is malformed, carries an unknown version or key id, or fails its authentication
-     *         tag — every rejection is "no session", never an error
+     * @return the authenticated payload; empty when the value is malformed, carries an unknown
+     *         version or key id, or fails its authentication tag — every rejection is "no session",
+     *         never an error
      */
     public Optional<Unsealed> unseal(String cookieValue) {
         Objects.requireNonNull(cookieValue, "cookieValue");
@@ -267,16 +229,8 @@ public final class SealedSessionCookieCodec {
             return reject(DISPOSITION_UNKNOWN_VERSION);
         }
         byte keyId = raw[1];
-        // Deterministic selection by the stamped id — never a try-both decrypt.
-        SecretKey key;
-        boolean sealedWithPreviousKey;
-        if (keyId == currentKeyId) {
-            key = currentKey;
-            sealedWithPreviousKey = false;
-        } else if (previousKey != null && keyId == previousKeyId) {
-            key = previousKey;
-            sealedWithPreviousKey = true;
-        } else {
+        // Deterministic check against the one stamped id — never a try-every-key decrypt.
+        if (keyId != currentKeyId) {
             return reject(DISPOSITION_UNKNOWN_KEY_ID);
         }
 
@@ -288,7 +242,7 @@ public final class SealedSessionCookieCodec {
         byte[] plaintext;
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, nonce));
+            cipher.init(Cipher.DECRYPT_MODE, currentKey, new GCMParameterSpec(TAG_BITS, nonce));
             cipher.updateAAD(associatedData(version, keyId));
             plaintext = cipher.doFinal(sealed);
         } catch (GeneralSecurityException _) {
@@ -300,7 +254,7 @@ public final class SealedSessionCookieCodec {
         if (payload.isEmpty()) {
             return reject(DISPOSITION_PAYLOAD);
         }
-        return payload.map(decoded -> new Unsealed(decoded, sealedWithPreviousKey));
+        return payload.map(Unsealed::new);
     }
 
     /**
@@ -398,21 +352,13 @@ public final class SealedSessionCookieCodec {
     }
 
     /**
-     * The successful outcome of {@link #unseal(String)}: the authenticated payload plus which key
-     * generation authenticated it.
-     * <p>
-     * {@code sealedWithPreviousKey} is the rotation signal {@link CookieSessionBinding} consumes —
-     * it is <em>not</em> a rejection reason. A value sealed under the previous key is a fully valid
-     * session; the flag only says the session still sits on the retired generation and should be
-     * rolled onto the current key by its next write.
+     * The successful outcome of {@link #unseal(String)}: the authenticated session payload.
      *
-     * @param payload               the authenticated session payload
-     * @param sealedWithPreviousKey {@code true} when the decrypt-only previous key authenticated the
-     *                              value, {@code false} when the current key did
+     * @param payload the authenticated session payload
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record Unsealed(SealedSessionPayload payload, boolean sealedWithPreviousKey) {
+    public record Unsealed(SealedSessionPayload payload) {
 
         /**
          * Canonical constructor rejecting an absent payload.

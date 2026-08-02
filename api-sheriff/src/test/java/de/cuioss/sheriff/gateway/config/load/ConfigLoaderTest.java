@@ -798,6 +798,46 @@ class ConfigLoaderTest {
                         + exception.errors());
     }
 
+    /**
+     * Pins the observable break of collapsing the cookie key material to a single key: a
+     * {@code gateway.yaml} that still declares the removed {@code oidc.session.previous_key} does
+     * not start.
+     * <p>
+     * This is a schema-level refusal, not a validator rule — {@code oidc.session} declares
+     * {@code additionalProperties: false}, so removing the property from the schema converts every
+     * lingering declaration into a boot failure. That is deliberately a clean break with no
+     * accept-and-ignore shim: silently tolerating the key would leave an operator believing a
+     * rotation key is still in force when nothing reads it. The operator remedy — delete the line —
+     * is documented in {@code doc/user/bff-cookie.adoc}.
+     */
+    @Test
+    void rejectsRetiredPreviousKeyAtBoot() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                  session:
+                    mode: cookie
+                    encryption_key: "${SHERIFF_SESSION_KEY}"
+                    previous_key: "${SHERIFF_SESSION_KEY_PREVIOUS}"
+                """);
+
+        ConfigLoader loader = loader(Map.of(
+                "OIDC_CLIENT_SECRET", "s3cr3t",
+                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "SHERIFF_SESSION_KEY_PREVIOUS", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("session")),
+                () -> "a config still declaring the removed oidc.session.previous_key must fail the boot "
+                        + "under additionalProperties: false, got: " + exception.errors());
+    }
+
     @Test
     void strayYmlEndpointFileFailsTheBoot() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");

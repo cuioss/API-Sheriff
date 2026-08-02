@@ -294,7 +294,6 @@
             "store": { "type": "string", "enum": ["memory"] },
             "cookie_name": { "type": "string" },
             "encryption_key": { "type": "string" },
-            "previous_key": { "type": "string" },
             "ttl_seconds": { "type": "integer" },
             "csrf": {
               "type": "object",

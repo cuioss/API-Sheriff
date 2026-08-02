@@ -931,22 +931,25 @@ variants behave per spec; CORS is limited to the configured origin.
 === BFF-12 -- Encrypted-cookie AES-GCM nonce / key rotation (stateless variant)
 
 AES-256-GCM nonce reuse under one key is catastrophic (leaks the GHASH subkey -> tag forgery;
-keystream reuse -> plaintext recovery); a key-rollover bug drops or forges sessions.
+keystream reuse -> plaintext recovery); mis-selecting a key drops or forges sessions.
 
 *Evidence.* "Nonce-Disrespecting Adversaries" (practical GCM nonce-reuse attacks). RFC 9700 /
 crypto guidance.
 
 *Control.* Fresh random 96-bit nonce per seal from a CSPRNG (never counter/derived); cookie
 = `version‖key-id‖nonce‖ciphertext‖tag` with version+key-id+cookie-name in the GCM AAD
-(deterministic key selection, replay-across-format prevention); tamper -> treated as no
-session; `previous_key` decrypt-only with re-seal on next write; ~4 KB size budget enforced
-at seal (fail login loudly, no silent truncation). Plan 08 D2 (strengthened for this class).
+(deterministic key-id gate, replay-across-format prevention); tamper -> treated as no
+session; exactly one sealing key, so withdrawing it is a fail-closed clean break (unknown key
+id -> no session -> re-authentication) with no decrypt-only companion key to mis-select; ~4 KB
+size budget enforced at seal (fail login loudly, no silent truncation). Plan 08 D2
+(strengthened for this class).
 
 *Status:* COVERED. Plan 08 D2.
 
 *Assertion.* Each seal uses a unique random nonce; a flipped byte in ciphertext/nonce/tag ->
-unauthenticated (never `500`); a `previous_key`-sealed cookie decrypts and re-seals under the
-current key; an oversized token set fails login with a clear error; key material never logged.
+unauthenticated (never `500`); a cookie stamped with a key id the gateway does not hold ->
+no session, and the browser completes a full re-authentication; an oversized token set fails
+login with a clear error; key material never logged.
 
 [#bff-13]
 === BFF-13 -- Callback response hygiene (HPP duplicate params, code reuse, error reflection)

@@ -307,7 +307,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
     final_redirect: https://app.example.com/   # where the browser lands after verification
     backchannel_path: /logout/backchannel   # back-channel receiver (mode: server only)
   session:                         # NOTE: exhibit shows the fields of BOTH modes; store is
-                                   #   server-mode-only, the encryption keys cookie-mode-only
+                                   #   server-mode-only, the encryption key cookie-mode-only
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
     store: memory                  # REQUIRED for server mode; memory is the only initial option
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
@@ -315,8 +315,6 @@ oidc:                              # only used by the BFF variants (2 and 3)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
                                    #   generate a key on startup (sessions die on restart)
-    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation;
-                                   #   requires encryption_key
     max_cookie_size: 4096          # cookie mode only: sealed cookie-value size budget in bytes.
                                    #   40..8192, default 4096. Drives BOTH the seal budget and the
                                    #   gateway's pre-route Cookie header-value cap
@@ -1660,7 +1658,7 @@ ignored when no route's effective auth is `require: session`.
 | Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default
   and recommended.
 
-| `session.encryption_key` / `session.previous_key`
+| `session.encryption_key`
 | `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
   fully supported production options:
 
@@ -1671,10 +1669,9 @@ ignored when no route's effective auth is `require: session`.
     *the key cannot be shared across replicas*, so a load-balanced deployment would reject every
     cookie sealed by another instance.
 
-  `previous_key` is optional and *decrypt-only*: during key rotation, cookies sealed with the old
-  key are still accepted (and re-sealed with the current key on next write) for a grace window; it
-  is never used to seal, so a rollover is one-way. It composes with the passed-key mode only, and
-  supplying it without an `encryption_key` is rejected at boot.
+  There is exactly *one* sealing key -- no decrypt-only companion key and no rotation window.
+  Replacing it is a clean break: cookies sealed under the withdrawn key carry a key id the gateway
+  no longer holds, are refused as "no session", and those users log in again.
 
 | `session.max_cookie_size`
 | *Cookie mode only.* The sealed cookie-value size budget in bytes. Optional; range `40`--`8192`,
@@ -2291,14 +2288,12 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second
   restriction, which existed only for the `cui-http` `HttpHandler` builder).
-* Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
-  literals.
+* Secrets in `oidc` (`client_secret`, the session encryption key) must be `${ENV_VAR}` references,
+  not literals.
 * `session.mode: cookie` does *not* require `session.encryption_key` -- omitting it selects the
   generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
-  across replicas). `previous_key` is optional and decrypt-only, and *requires* an
-  `encryption_key`: `previous_key` without `encryption_key` is rejected, because a decrypt-only
-  rotation key with no current key to roll onto is nonsensical. `session.mode: server` requires an
-  explicit `session.store` (only `memory` is valid) and uses neither encryption key.
+  across replicas). `session.mode: server` requires an explicit `session.store` (only `memory` is
+  valid) and uses no encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
   *non-empty* link:#_allowed_origins[`allowed_origins`] list; an absent or empty allowlist *fails
