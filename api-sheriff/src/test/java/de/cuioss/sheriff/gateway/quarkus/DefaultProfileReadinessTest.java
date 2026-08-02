@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
@@ -36,72 +37,66 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Pins what {@code /q/health/ready} reports on the <strong>shipped default profile</strong>, where no
- * {@code sheriff.token.issuers.*} issuer is configured at all.
+ * {@code sheriff.token.issuers.*} issuer is configured at all: aggregate readiness is
+ * <strong>UP</strong>.
  * <p>
- * <strong>This is a CHARACTERIZATION test of a known defect, not an endorsement of the behaviour it
- * pins.</strong> The deciding spike it implements asked whether the token-sheriff validation
- * extension — which requires at least one enabled issuer — drags aggregate readiness DOWN when the
- * shipped configuration names no issuer. The answer, observed rather than inferred, is <em>yes</em>:
+ * This class previously <em>characterized a defect</em>. The deciding spike asked whether the
+ * token-sheriff-validation extension — which requires at least one enabled issuer — drags aggregate
+ * readiness DOWN when the shipped configuration names no issuer, and the observed answer was
+ * <em>yes</em>: its {@code health.JwksEndpointHealthCheck} reported DOWN with
+ * {@code "No issuer configurations found in properties"} while the gateway's own probe reported
+ * {@code jwks: ready} in the very same payload. A deployment could therefore be fully and correctly
+ * configured for token validation and still never reach ready.
+ * <p>
+ * <strong>That defect is now fixed, and this class pins the fix.</strong> The two extension probes
+ * ({@code health.JwksEndpointHealthCheck}, {@code health.TokenValidatorHealthCheck}) report on the
+ * extension's <em>unqualified</em> {@code TokenValidator}, built from its own
+ * {@code sheriff.token.issuers.*} Quarkus namespace. This gateway bypasses that validator entirely:
+ * the request path injects the {@code @GatewayValidator}-qualified validator built from
+ * {@code gateway.yaml}'s {@code token_validation} block. The probes' DOWN was therefore a false
+ * negative about machinery the product does not use, so both beans are excluded from bean discovery
+ * by a single unconditional entry in the shipped {@code application.properties}:
  *
  * <pre>
- * {"status":"DOWN","checks":[
- *   {"name":"de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck_ClientProxy",
- *    "status":"DOWN",
- *    "data":{"exceptionClass":"java.lang.IllegalStateException",
- *            "rootCause":"No issuer configurations found in properties"}},
- *   {"name":"gateway-readiness","status":"UP","data":{"jwks":"ready","issuers":1,...}}]}
+ * quarkus.arc.exclude-types=de.cuioss.sheriff.token.quarkus.health.*
  * </pre>
  *
- * The sharp edge is the contrast inside that one payload. Bearer validation <em>is</em> configured
- * and healthy here — the boot fixture's {@code gateway.yaml} declares a {@code token_validation}
- * issuer, the gateway's own {@code @GatewayValidator} {@link org.eclipse.microprofile.health.HealthCheck}
- * resolves it, and {@code gateway-readiness} reports {@code jwks: ready}. Aggregate readiness is DOWN
- * anyway, because the extension gates on a <em>separate, independent</em> configuration surface: the
- * {@code sheriff.token.issuers.*} Quarkus property namespace, which {@code gateway.yaml} never
- * populates. A deployment can therefore be fully and correctly configured for token validation and
- * still never reach ready.
+ * The exclusion is deliberately scoped to those two beans in that one package — it is <em>not</em>
+ * {@code quarkus.health.extensions.enabled=false} or any other global switch, because
+ * blanket-disabling a security-relevant readiness check is forbidden. Readiness coverage is not lost:
+ * {@link GatewayReadinessCheck} independently reports {@code jwks: ready} for the real validator.
  * <p>
- * The defect is pre-existing and was <em>masked</em>: the {@code %it} profile injected a static-file
- * issuer into that property namespace, so the container the integration suite observes never entered
- * this state and no test ever saw it. Removing that {@code %it} block is what exposes it. The fix
- * belongs to the deliverable that performs the removal, which consequently is not a plain deletion;
- * this test is updated to the post-fix expectation there.
- * <p>
- * The assertion is deliberately made against the <em>aggregate</em>, never against
- * {@link GatewayReadinessCheck} alone. That probe reads {@code gateway.yaml} and the
- * {@code @GatewayValidator} validator only — never {@code sheriff.token.issuers.*} — so it is UP
- * whichever branch it takes (jwks {@code ready} with a {@code token_validation} block, jwks
- * {@code not-applicable} without one at GatewayReadinessCheck.java:132) and carries zero signal about
- * the extension. Reading it alone would have answered the spike wrongly.
+ * <strong>Anti-false-negative guard.</strong> A bare "aggregate is UP" assertion is worthless on its
+ * own, because a run in which the health subsystem contributed <em>nothing</em> would also fold to UP
+ * — vacuously. Every assertion below is therefore paired: the extension's beans must be
+ * <em>absent</em> (proving the exclusion actually took effect rather than the beans silently failing
+ * to register for some unrelated reason), <em>and</em> the gateway's own probe must be
+ * <em>present</em> (proving the readiness machinery genuinely ran and contributed). Only both
+ * together make a green UP distinguishable from a vacuous one.
  * <p>
  * Aggregation goes through SmallRye's own composition via {@link SmallRyeHealthReporter} — the same
  * code path {@code /q/health/ready} serves — so neither HTTP nor the management port is needed (the
  * test profile sets {@code quarkus.management.enabled=false}).
- * <p>
- * <strong>Anti-false-negative guard.</strong> A run in which the extension contributed no readiness
- * bean at all would fold to a vacuous result indistinguishable from a genuine one. Every aggregate
- * assertion below is therefore preceded by a check that the extension's
- * {@code health.JwksEndpointHealthCheck} bean is actually in the resolved contributor set.
  */
 @QuarkusTest
 @DisplayName("Default-profile readiness with zero sheriff.token.issuers.* configured")
 class DefaultProfileReadinessTest {
 
     /**
-     * Fragment of the extension health-check's binary name
-     * ({@code de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck}). Matched as a substring
-     * rather than an exact FQN because CDI hands out a client proxy whose class name carries the bean
-     * class as a prefix, so the package-plus-simple-name fragment is the stable part — and it is the
-     * same fragment the composed payload names the check by.
+     * Package prefix of the token-sheriff-validation extension's health probes
+     * ({@code JwksEndpointHealthCheck}, {@code TokenValidatorHealthCheck}) — and precisely the scope
+     * the {@code quarkus.arc.exclude-types} entry names. Matched as a substring rather than an exact
+     * FQN because CDI hands out a client proxy whose class name carries the bean class as a prefix.
+     * Asserting on the package rather than on one class name covers <em>both</em> probes, whichever
+     * health qualifier each carries.
      */
-    private static final String EXTENSION_READINESS_CHECK = "health.JwksEndpointHealthCheck";
+    private static final String EXTENSION_HEALTH_PACKAGE = "de.cuioss.sheriff.token.quarkus.health.";
 
     /** The gateway's own probe, named by {@code GatewayReadinessCheck.CHECK_NAME}. */
     private static final String GATEWAY_READINESS_CHECK = "gateway-readiness";
 
     private static final String STATUS = "status";
     private static final String UP = "UP";
-    private static final String DOWN = "DOWN";
 
     @Inject
     SmallRyeHealthReporter reporter;
@@ -111,72 +106,86 @@ class DefaultProfileReadinessTest {
     Instance<HealthCheck> healthChecks;
 
     @Test
-    @DisplayName("Should resolve the extension's JWKS check as a @Readiness contributor")
-    void shouldResolveExtensionReadinessContributor() {
-        // Arrange + Act
-        List<String> contributors = readinessContributorNames();
+    @DisplayName("Should exclude both extension health probes from bean discovery entirely")
+    void shouldExcludeExtensionHealthChecksFromBeanDiscovery() {
+        // Arrange + Act — every HealthCheck bean, not just the @Readiness-qualified ones, so the
+        // assertion covers both probes regardless of which health qualifier each carries.
+        List<String> allChecks = beanClassNames(healthChecks);
 
-        // Assert
-        assertTrue(containsExtensionCheck(contributors),
-                "the token-sheriff-validation extension must contribute its " + EXTENSION_READINESS_CHECK
-                        + " bean — without it every aggregate assertion in this class would be vacuous. "
-                        + "Resolved @Readiness contributors: " + contributors);
+        // Assert — the exclusion took effect: neither extension probe is a bean at all.
+        assertFalse(containsExtensionCheck(allChecks),
+                "quarkus.arc.exclude-types=" + EXTENSION_HEALTH_PACKAGE + "* must remove the extension's "
+                        + "health probes from bean discovery; resolved HealthCheck beans: " + allChecks);
     }
 
     @Test
-    @DisplayName("Should report aggregate readiness DOWN — the extension refuses zero issuers (known defect)")
-    void shouldReportAggregateReadinessDownWithZeroIssuers() {
-        // Arrange — the guard runs before the fold, so a vacuous result cannot masquerade as a genuine one.
+    @DisplayName("Should still resolve the gateway's own probe as a @Readiness contributor")
+    void shouldResolveGatewayReadinessContributor() {
+        // Arrange + Act
         List<String> contributors = readinessContributorNames();
-        assertTrue(containsExtensionCheck(contributors),
-                "guard: " + EXTENSION_READINESS_CHECK + " absent from the resolved contributor set "
-                        + contributors + " — the aggregate assertion below would be vacuous");
+
+        // Assert — the readiness machinery genuinely ran; without this, a UP aggregate is vacuous.
+        assertTrue(containsGatewayCheck(contributors),
+                "GatewayReadinessCheck must remain a @Readiness contributor — without it every "
+                        + "aggregate assertion in this class would be vacuously UP. Resolved "
+                        + "@Readiness contributors: " + contributors);
+    }
+
+    @Test
+    @DisplayName("Should report aggregate readiness UP with zero sheriff.token.issuers.* configured")
+    void shouldReportAggregateReadinessUpWithZeroIssuers() {
+        // Arrange — the paired guard runs before the fold, so neither a silently-unregistered
+        // extension bean nor a silently-absent gateway probe can masquerade as a genuine UP.
+        List<String> contributors = readinessContributorNames();
+        assertFalse(containsExtensionCheck(contributors),
+                "guard: an extension health probe is still a @Readiness contributor " + contributors
+                        + " — the exclusion did not take effect, so the aggregate below proves nothing");
+        assertTrue(containsGatewayCheck(contributors),
+                "guard: " + GATEWAY_READINESS_CHECK + " absent from the resolved contributor set "
+                        + contributors + " — the aggregate assertion below would be vacuously UP");
 
         // Act
         SmallRyeHealth readiness = reporter.getReadiness();
         JsonObject payload = readiness.getPayload();
 
-        // Assert — the aggregate is DOWN, so a no-token-validation deployment never reaches ready.
-        assertEquals(DOWN, payload.getString(STATUS),
+        // Assert — the aggregate is UP: an issuer-less shipped configuration now reaches ready.
+        assertEquals(UP, payload.getString(STATUS),
                 "the composed /q/health/ready status with zero issuers configured; payload: " + payload);
 
-        // Assert — the extension's check is the contributor that drags it down, and why.
-        JsonObject extensionCheck = checkNamed(payload, EXTENSION_READINESS_CHECK);
-        assertEquals(DOWN, extensionCheck.getString(STATUS),
-                "the extension's JWKS check is the DOWN contributor; payload: " + payload);
-        assertEquals("No issuer configurations found in properties",
-                extensionCheck.getJsonObject("data").getString("rootCause"),
-                "the extension refuses an issuer-less configuration outright; payload: " + payload);
-
-        // Assert — the gateway's own bearer validation is configured AND healthy at the same moment the
-        // aggregate is DOWN. The two surfaces are independent: gateway.yaml's token_validation block
-        // drives this probe, sheriff.token.issuers.* drives the extension's. That contrast is the whole
-        // finding, and it is why the spike had to fold the aggregate rather than read this one check.
+        // Assert — and it is UP for the right reason: the gateway's own validator resolved from
+        // gateway.yaml's token_validation block, which is the coverage the excluded probes duplicated.
         JsonObject gatewayCheck = checkNamed(payload, GATEWAY_READINESS_CHECK);
         assertEquals(UP, gatewayCheck.getString(STATUS),
                 "gateway-readiness is UP — the gateway's own validator resolved; payload: " + payload);
         assertEquals("ready", gatewayCheck.getJsonObject("data").getString("jwks"),
-                "the boot fixture declares a token_validation issuer, so the gateway's own JWKS is ready "
-                        + "while the extension's independent issuer surface is empty; payload: " + payload);
+                "the boot fixture declares a token_validation issuer, so the gateway's own JWKS is "
+                        + "ready — this is the real readiness coverage; payload: " + payload);
     }
 
     /** @return the binary class names of every {@code @Readiness}-qualified {@link HealthCheck} bean */
     private List<String> readinessContributorNames() {
+        return beanClassNames(healthChecks.select(new ReadinessLiteral()));
+    }
+
+    private static List<String> beanClassNames(Instance<HealthCheck> beans) {
         List<String> names = new ArrayList<>();
-        for (HealthCheck check : healthChecks.select(new ReadinessLiteral())) {
+        for (HealthCheck check : beans) {
             names.add(check.getClass().getName());
         }
         return names;
     }
 
-    private static boolean containsExtensionCheck(List<String> contributors) {
-        return contributors.stream().anyMatch(name -> name.contains(EXTENSION_READINESS_CHECK));
+    private static boolean containsExtensionCheck(List<String> names) {
+        return names.stream().anyMatch(name -> name.contains(EXTENSION_HEALTH_PACKAGE));
+    }
+
+    private static boolean containsGatewayCheck(List<String> names) {
+        return names.stream().anyMatch(name -> name.contains(GatewayReadinessCheck.class.getName()));
     }
 
     /**
-     * @param payload   the composed readiness payload
-     * @param nameOrFragment the check name, or a fragment of it (the extension's check is named by its
-     *                       proxied binary class name, so an exact match is not stable)
+     * @param payload        the composed readiness payload
+     * @param nameOrFragment the check name, or a fragment of it
      * @return the single check entry whose name contains {@code nameOrFragment}
      */
     private static JsonObject checkNamed(JsonObject payload, String nameOrFragment) {
