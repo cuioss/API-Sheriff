@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam
-// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie
+// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -125,6 +125,154 @@ sealed-cookie format version is bound into the cookie's authenticated data, the 
 and there is deliberately no acceptance path for the previous format: admitting an older cookie
 would require synthesizing the missing nonce, which would silently change the derived identity —
 exactly the defect the nonce exists to prevent.
+
+== Amendment: the fixed `SameSite=Lax` policy determines the OIDC authorization-response transport
+
+*This record is amended, not superseded. Decisions (i) through (v) are unchanged. This amendment
+records a decision that decision (ii) forces — the authorization-response transport is not free to
+be chosen once the cookie policy is fixed — together with the tradeoff that choice accepts.*
+
+=== The coupling
+
+A BFF acting as an OIDC confidential client must choose how the authorization response travels from
+the identity provider back to the gateway. Two transports are standard: an auto-submitted cross-site
+`POST` to the redirect URI (`response_mode=form_post`), or a top-level `GET` navigation carrying the
+parameters in the query string (`response_mode=query`). Read on its own, that choice has a
+well-known answer — `form_post` keeps the authorization code out of the URL, and therefore out of
+the `Referer` header, out of proxy, CDN and server access logs, and out of browser history. Most
+OIDC client libraries default to it for exactly that reason.
+
+The choice is not on its own. The gateway binds the *in-flight* authorization transaction to the
+browser that started it, using a short-lived pre-session binding cookie — the pre-session analogue of
+the session cookie, and the control that makes a callback replayed from a different browser
+rejectable even while the code is still live. That cookie carries `SameSite=Lax` under decision
+(ii), and a `Lax` cookie accompanies top-level `GET` navigations only: it is *not* sent on a
+cross-site `POST`.
+
+The transport decision and the cookie-policy decision are therefore coupled, and the coupling is
+easy to miss because each looks locally correct. Driving the request with `form_post` while holding a
+`Lax` binding cookie produces a callback that *structurally cannot* carry the binding: the browser
+drops the cookie on the cross-site POST leg, the gateway resolves no pending record, and every
+real-browser login terminates at the "no binding cookie" `403`. The pre-session control does not fail
+loudly — it is simply never presented. Because decision (ii) makes `SameSite=Lax` a fixed property
+with no configuration switch, the cookie side cannot move; the transport side is the only side that
+can.
+
+Two properties make the coupling worth recording rather than leaving implicit. It is *invisible
+below a real browser* — any client that constructs the callback request directly supplies its own
+cookies and passes on either transport, so the entire test pyramid can be green while the
+browser-facing flow is unusable. And its *obvious local fix inverts a security property*, as the
+rejected alternatives below set out.
+
+=== The decision
+
+*The gateway itself selects the authorization response mode, and it selects `query`. The
+consequential exposure of the authorization code in the callback URL is accepted and explicitly
+bounded; the binding cookie is not weakened by one attribute.*
+
+A gateway-owned authorization-request builder overrides the client engine's built-in `form_post` and
+emits `response_mode=query`, making the callback a top-level `GET` navigation for which `SameSite=Lax`
+*is* sent. The override rewrites that one parameter and copies every other authorization parameter
+through byte-for-byte in its original order and encoding, so no decode/re-encode round-trip can
+corrupt an already-encoded value; it is idempotent and total. The same builder is wired into *both*
+seams that construct an authorization URL — the login leg and the step-up re-drive leg — so a second
+entry point cannot keep emitting the broken mode. There is deliberately no configuration key: the
+mode is a property of the gateway's own browser-facing contract, because the alternative value
+re-creates a login flow that cannot work.
+
+*The accepted tradeoff.* `response_mode=query` places the authorization code in the callback URL,
+exposing it to the `Referer` header, to intermediary access logs, and to browser history. That
+exposure is real, it is the standard reason `form_post` is preferred, and nothing below removes it.
+It is accepted deliberately, because it is what makes the browser-facing flow work at all.
+
+=== The mitigations are standing obligations, not observations
+
+The tradeoff above is acceptable only while all four of the following hold. Each is an obligation on
+future work: an edit that removes one removes the basis on which the exposure was accepted, and the
+first two are one-line edits that look harmless in isolation.
+
+. *The binding cookie keeps `SameSite=Lax` and every other attribute.* Relaxing it to `SameSite=None`
+  is the change this decision exists to avoid; relaxing it would also make the transport choice moot
+  in the wrong direction.
+. *The response mode stays `query`.* Reverting to `form_post` — directly, or by adding an
+  authorization-URL seam that bypasses the gateway-owned builder, or through a client-engine upgrade
+  that changes the override's shape — re-breaks the browser-facing flow silently.
+. *PKCE stays mandatory with the verifier gateway-held.* The flow context carries a non-optional PKCE
+  challenge, the request always emits `code_challenge` / `code_challenge_method`, and the flow
+  refuses a provider that does not advertise `S256`. A code observed in a log or a history entry is
+  not redeemable without the verifier.
+. *The pending record stays single-use and the `state` check stays.* Resolution removes the record as
+  it returns it under the store's own lock, so a second callback for the same transaction resolves to
+  empty; the record is short-lived, with TTL expiry enforced on that same consumption path. A
+  callback is honoured only when the binding cookie resolves a live record *and* the returned `state`
+  matches it in constant time, so a code replayed from a different browser is rejected `403` even
+  while the code itself is still live at the token endpoint.
+
+No lifetime figure is asserted here for the authorization code. The short lifetime that bounds it is
+the identity provider's own default — the gateway does not widen it and does not restate it. The
+TTL the gateway does own is the pending record's, which is a distinct quantity and must not be read
+as the code's.
+
+Not overstated: the exposure of the code to intermediaries is real and is bounded by the above, never
+removed by it.
+
+=== Consequential narrowing of the edge surface
+
+A `query`-mode callback is a top-level `GET` that reads no request body at all, so the callback path
+is removed from the edge's reserved-body-read allowlist rather than left in it as an apparently inert
+entry. The removal is not cosmetic: retaining the entry would keep granting *any unauthenticated*
+`POST` to the callback path a pre-authentication, pre-pipeline body read up to the reserved-body
+ceiling before any handler could reject it. A stray `POST` now takes the ordinary path, reaches the
+callback with no body, and is rejected `400` for a missing `state`. Back-channel logout remains a
+genuinely body-carrying reserved `POST` and stays in the allowlist with its ceiling unchanged — it is
+now the only entry.
+
+An identity provider still configured to `form_post` to this gateway is consequently no longer
+supported. That is intended: the gateway selects the mode.
+
+=== Alternatives considered for this amendment
+
+*Relax the browser-binding cookie to `SameSite=None`.* The shortest path: it keeps `form_post`, keeps
+the code out of the URL, and makes the cookie survive the cross-site POST. Rejected because it
+weakens the exact cross-site binding control the cookie exists to provide. The cookie's whole purpose
+is to bind an in-flight authorization to one browser; a binding cookie sent cross-site no longer
+distinguishes the browser that started the transaction from one that did not, which is precisely the
+check the `403` branch performs. It would also contradict decision (ii) directly. The code's URL
+exposure is bounded on four independent axes; the binding has no layer behind it.
+
+*Stay on `form_post` and accept that the binding cookie is absent on the callback.* This would
+preserve the preferred transport and require no change. Rejected because it is not a choice between
+two working designs: with the cookie absent the callback resolves no pending record, so the
+browser-facing flow simply does not work. Making it work means dropping the binding requirement,
+which is the previous alternative under another name.
+
+*Expose the response mode as a configuration key defaulting to `query`.* Rejected because the
+non-default value produces a login flow that structurally cannot succeed while the binding cookie
+stays `Lax`, so the key's only reachable second value is a broken one. A knob whose alternative
+setting is always wrong is a trap, not flexibility.
+
+*Bind the transaction through the `state` parameter alone and drop the pre-session cookie.* With no
+cookie in play either transport would work and the coupling would disappear. Rejected because `state`
+travels with the callback wherever the callback goes: it is returned by whichever browser presents
+the code, so it correlates a response to a request but cannot attest that the response arrived in the
+browser that started it. This would remove the replay-from-another-browser rejection entirely — a
+strictly larger loss than the URL exposure it avoids.
+
+These alternatives fall into the same class as those below: each restores a local convenience by
+removing a structural guarantee, and each pays for a bounded, well-understood exposure with an
+unbounded one.
+
+=== Residual risks specific to this amendment
+
+* *Diagnostic and test infrastructure republishing the code.* Browser-automation failure traces
+  capture the code-bearing callback URL, and a CI system retaining those traces as artifacts
+  republishes it to everyone who can read the build. The residual is bounded by the code being
+  single-use, already consumed by the time the trace is written, PKCE-bound, and issued by a
+  disposable test realm — but the shape (a tool that faithfully records URLs now records a
+  credential) applies to any URL-carried secret and outlives any one tool's retention setting.
+* *Green tests over a broken flow.* The defect class this amendment resolves is invisible to every
+  test that constructs the callback itself. Only a real-browser end-to-end path can detect its
+  return.
 
 == Consequences
 

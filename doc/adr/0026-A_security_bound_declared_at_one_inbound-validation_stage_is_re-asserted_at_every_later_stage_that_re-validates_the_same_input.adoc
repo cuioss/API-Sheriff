@@ -1,4 +1,4 @@
-= ADR-0025: A security bound declared at one inbound-validation stage is re-asserted at every later stage that re-validates the same input
+= ADR-0026: A security bound declared at one inbound-validation stage is re-asserted at every later stage that re-validates the same input
 :toc: left
 :toclevels: 2
 :sectnums:
