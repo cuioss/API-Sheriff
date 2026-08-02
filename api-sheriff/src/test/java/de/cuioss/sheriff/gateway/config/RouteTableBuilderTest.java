@@ -630,7 +630,7 @@ class RouteTableBuilderTest {
 
         @Test
         @DisplayName("Should leave an unanchored route's anchor absent and behave exactly as before")
-        void shouldLeaveUnanchoredRouteEmpty() {
+        void shouldLeaveUnanchoredRouteAnchorAbsent() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(route("r", HttpMethod.GET))).build();
 

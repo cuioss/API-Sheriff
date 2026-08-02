@@ -317,7 +317,7 @@ class ConfigLoaderTest {
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        // Assert — an absent profile means default trust, never null
+        // Assert — an absent profile binds to null, which the runtime reads as default trust
         IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
         assertNull(issuer.jwks().tlsProfile());
     }
