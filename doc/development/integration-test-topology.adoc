@@ -195,6 +195,19 @@ nothing and costs a broken run only the time until it gives up. It is *not* to b
 observed figures -- CI runners are slower than the machine measured here, and the measurement bounds
 the live-to-ready delta, not the absolute container start.
 
+=== This contract covers the integration-tests bring-up only
+
+Everything above describes `integration-tests/scripts/start-integration-container.sh`. The parallel
+developer bring-up, `demo-client/scripts/start-dev-environment.sh`, still gates its gateway wait on
+`/q/health/live` with an unmeasured 30-attempt budget. The two scripts therefore *diverge* on the
+readiness contract from this change onward.
+
+That is a stated decision, not an oversight: the change was deliberately scoped to the
+integration-tests bring-up, whose suite is the thing a half-initialised instance actually breaks.
+The demo bring-up is driven interactively by a developer who sees a failing first request, so the
+same exposure carries a far smaller cost there. Aligning it is a follow-up; until then, do not read
+this section as describing the demo environment.
+
 === `-plain-mgmt` serves plain HTTP by design
 
 `api-sheriff-plain-mgmt` is the one instance whose management interface is plain HTTP. That is the
