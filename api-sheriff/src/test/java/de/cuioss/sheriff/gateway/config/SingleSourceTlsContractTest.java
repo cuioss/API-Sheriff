@@ -25,6 +25,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -152,10 +153,10 @@ class SingleSourceTlsContractTest {
     @Test
     @DisplayName("Profiled keys are outside the bar, but the exceptions are not smuggled through one")
     void theBarAppliesToTheDefaultProfile() throws Exception {
-        // The %it JWKS trust-material carve-out is deliberately outside the bar: it binds a logical
-        // trust-profile name to concrete test anchors (ADR-0011) and is material, not policy. This
-        // assertion pins the reason rather than the carve-out's contents, so the bar cannot be
-        // sidestepped by moving a policy key behind a profile prefix.
+        // The shipped file now declares NO profiled key at all — ShippedApplicationPropertiesTest
+        // asserts that separately, and this assertion is consequently vacuous today. It is kept as a
+        // standing guard rather than deleted: it pins the RULE that a profile prefix does not change
+        // a key's class, so a policy key cannot be sidestepped back in behind one.
         List<String> profiledPolicyKeys = profiledKeys().stream()
                 .filter(SingleSourceTlsContractTest::isInScopeOfTheBar)
                 .filter(key -> !isMaterial(key))

@@ -1465,8 +1465,65 @@ Falling back to default trust would be worse than failing: it would either surfa
 obscure JWKS fetch error, or -- if the IdP happens to chain to a public CA -- quietly succeed
 against anchors the operator never intended to trust.
 
+===== When the profile is bound but carries no anchors
+
+A profile that exists but supplies no trust material is refused too -- for exactly the same reason,
+and this is the case that is easy to reach by accident. The runtime registers a named bucket as
+soon as *any* `quarkus.tls.<name>.*` key is present, so a bucket that sets only, say, a reload
+period is a real, resolvable profile with nothing in it:
+
+[source,properties]
+----
+# a bound profile with no anchors -- refused, not silently accepted
+quarkus.tls.corporate-idp.reload-period=24H
+----
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but that profile carries no trust
+material — it would verify the IdP against the JVM default trust store instead of the anchors
+the name promises; define it via quarkus.tls.corporate-idp.trust-store.*
+----
+
+Without this check the deployment would start and the JWKS client would verify the IdP against the
+JVM default trust store -- the very fallback the previous section refuses -- while `gateway.yaml`
+still reads as though corporate anchors were in force. A named profile therefore means *these
+anchors*, never *whatever the JVM happens to trust*.
+
+===== When the profile disables verification entirely
+
+A profile that sets `trust-all` is refused as well. It is the same failure one step worse: the
+bucket resolves, it does carry trust options, and the SSL context it yields accepts *any*
+certificate.
+
+[source,properties]
+----
+# a bound profile that verifies nothing -- refused, not silently accepted
+quarkus.tls.corporate-idp.trust-all=true
+----
+
+[source,text]
+----
+Issuer 'corporate' names jwks.tls_profile 'corporate-idp' but that profile sets
+quarkus.tls.corporate-idp.trust-all — the JWKS client would accept any certificate, so a machine
+on the path to the IdP could serve its own signing keys; bind the profile to real anchors via
+quarkus.tls.corporate-idp.trust-store.*
+----
+
+This is a man-in-the-middle vector on the JWKS path rather than a merely weakened check. The key
+set fetched over that connection is what every bearer token is validated against, so an on-path
+machine free to serve its own JWKS chooses the signing keys the gateway will accept -- and
+certificate verification is the only thing standing in its way.
+
+The check runs *before* the anchor-free check above, and that order is load-bearing rather than
+incidental. A `trust-all` bucket carries trust material -- the runtime binds it to a
+trust-everything configuration -- so it satisfies the anchor-free guard and would slip past it
+undetected. Testing for it first is what keeps the worse failure from hiding behind the weaker
+one. A named profile means *these anchors*; it never means *no verification at all*.
+
 An issuer that omits `tls_profile` is unaffected: no trust configuration is applied at all, and
-the JWKS client keeps the JVM default trust store.
+the JWKS client keeps the JVM default trust store. That is the one supported way to ask for default
+trust -- by saying nothing, not by naming an empty profile.
 
 ===== Relationship to `allowed_egress_hosts`
 

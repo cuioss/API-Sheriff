@@ -39,8 +39,8 @@ import jakarta.inject.Inject;
  * <p>
  * The produced validator carries the {@link GatewayValidator} qualifier so it coexists with the
  * unqualified validator the {@code token-sheriff-validation-quarkus} extension produces from its
- * {@code cui.jwt.*} property surface — the gateway drives issuers from its own YAML model, not the
- * extension's properties. Each gateway {@link IssuerConfig} maps to a token-sheriff
+ * {@code sheriff.token.*} property surface — the gateway drives issuers from its own YAML model, not
+ * the extension's properties. Each gateway {@link IssuerConfig} maps to a token-sheriff
  * {@link de.cuioss.sheriff.token.validation.IssuerConfig}: an {@code http} JWKS source becomes an
  * {@link HttpJwksLoaderConfig}, a {@code file} source becomes a JWKS file path. Validation is fully
  * offline once the key material has loaded.
