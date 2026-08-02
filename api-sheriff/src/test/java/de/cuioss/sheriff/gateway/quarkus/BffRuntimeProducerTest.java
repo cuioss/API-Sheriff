@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -186,11 +187,11 @@ class BffRuntimeProducerTest {
                         if (value != null && isWalkable(value.getClass())) {
                             pending.push(value);
                         }
-                    }
-                    /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
-                    catch (ReflectiveOperationException | RuntimeException skipped) {
+                    } catch (ReflectiveOperationException | InaccessibleObjectException skipped) {
                         // A field the JVM will not open tells us nothing; the non-empty assertion above
-                        // is what keeps an over-skipped walk from passing vacuously.
+                        // is what keeps an over-skipped walk from passing vacuously. Only the two
+                        // exceptions setAccessible/get can actually raise here are caught: a broader
+                        // catch would swallow a genuine defect in the walk itself.
                     }
                 }
             }

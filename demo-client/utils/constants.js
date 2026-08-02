@@ -29,10 +29,15 @@ export const SPA = {
   landing: '/assets/demo/landing.html',
 };
 
-/** The `integration` realm's test user, imported from integration-realm.json. */
+/**
+ * The `integration` realm's test user, imported from integration-realm.json.
+ *
+ * Stated literally rather than read from the environment: the suite drives the realm that
+ * docker-compose imports, so these credentials are a property of that fixed realm, not a knob.
+ */
 export const REALM_USER = {
-  username: process.env.KEYCLOAK_USERNAME ?? 'integration-user',
-  password: process.env.KEYCLOAK_PASSWORD ?? 'integration-password',
+  username: 'integration-user',
+  password: 'integration-password',
 };
 
 /**

@@ -9,7 +9,6 @@
     "node": ">=20"
   },
   "scripts": {
-    "lint": "eslint '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",
     "lint:strict": "eslint --max-warnings 0 --report-unused-disable-directives '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",
     "format": "prettier --write '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",
     "format:check": "prettier --check '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",

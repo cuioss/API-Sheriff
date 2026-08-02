@@ -42,8 +42,7 @@ fi
 cd "${IT_DIR}"
 COMPOSE_CMD="$COMPOSE_BASE -f docker-compose.yml"
 
-# `rm -s -f` stops the named containers and removes them without prompting. Nothing running is the
-# normal case (an aborted run may have left nothing behind), not a failure.
+# Nothing running is the normal case (an aborted run may have left nothing behind), not a failure.
 echo "📦 Stopping and removing the demo containers..."
 $COMPOSE_CMD rm --stop --force "${DEMO_SERVICES[@]}"
 
