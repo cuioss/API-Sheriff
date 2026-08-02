@@ -394,6 +394,6 @@ class NativeRuntimeInitRegistrationArchTest {
 
     private static boolean residesInBffPackage(JavaClass javaClass) {
         String packageName = javaClass.getPackageName();
-        return packageName.equals(BFF_PACKAGE) || packageName.startsWith(BFF_PACKAGE + ".");
+        return BFF_PACKAGE.equals(packageName) || packageName.startsWith(BFF_PACKAGE + ".");
     }
 }
