@@ -85,13 +85,8 @@ class ItProfileConfigBindingWiringTest {
     @DisplayName("every it-profile gateway instance binds the mounted trust file")
     void everyItProfileInstanceBindsTheMountedTrustFile() throws Exception {
         // Arrange — derived from the compose file itself, so a seventh instance added there is
-        // covered without a manual edit here.
+        // covered without a manual edit here. The derivation asserts its own non-emptiness.
         List<String> itServices = itProfileServices();
-
-        // Guard the derivation: an empty set would turn every assertion below into a vacuous pass.
-        assertFalse(itServices.isEmpty(),
-                "the derived it-profile gateway-instance set must not be empty — an empty set turns "
-                        + "this guard into a vacuous pass");
 
         // Act + Assert
         for (String service : itServices) {
@@ -107,10 +102,6 @@ class ItProfileConfigBindingWiringTest {
     void everyItProfileInstanceEnablesFileLogging() throws Exception {
         // Arrange — same derived set, same reason: a seventh instance is covered without an edit here.
         List<String> itServices = itProfileServices();
-
-        assertFalse(itServices.isEmpty(),
-                "the derived it-profile gateway-instance set must not be empty — an empty set turns "
-                        + "this guard into a vacuous pass");
 
         // Act + Assert — the shipped artifact now defaults quarkus.log.file.enable to false, so a
         // LOG_FILE_PATH on its own produces no file at all. The IT suite reads those files
@@ -196,6 +187,11 @@ class ItProfileConfigBindingWiringTest {
     /**
      * Every gateway instance that selects the {@code it} profile. Derived from the compose file so it
      * cannot drift from the deployment.
+     * <p>
+     * The derivation asserts its own non-emptiness rather than leaving that to each caller: a
+     * silently-empty set would turn every per-service loop in this class into a vacuous pass, and
+     * pinning it here means a new per-service guard inherits the anti-vacuity check by construction
+     * instead of having to remember to restate it.
      */
     private static List<String> itProfileServices() throws IOException {
         List<String> matches = new java.util.ArrayList<>();
@@ -204,6 +200,9 @@ class ItProfileConfigBindingWiringTest {
                 matches.add(service);
             }
         }
+        assertFalse(matches.isEmpty(),
+                "the derived it-profile gateway-instance set must not be empty — an empty set turns "
+                        + "every per-service guard in this class into a vacuous pass");
         return List.copyOf(matches);
     }
 

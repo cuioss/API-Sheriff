@@ -108,7 +108,12 @@ class MountedTlsMapKeyTest {
     private static final String PATH_KEY = PREFIX + "path";
     private static final String PASSWORD_KEY = PREFIX + "password";
 
-    /** Above the shipped application.properties (250), as a mounted config location outranks it. */
+    /**
+     * The ordinal {@link PropertiesConfigSource} requires. It ranks nothing here — the config built
+     * in {@link #configFromMountedFile()} deliberately carries this source and no other — and the
+     * value mirrors what a real mounted config location scores (above the shipped
+     * application.properties at 250) purely so it reads as the same thing the deployment does.
+     */
     private static final int MOUNTED_SOURCE_ORDINAL = 275;
 
     @Inject

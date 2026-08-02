@@ -62,9 +62,7 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      *         the shape a correctly bound deployment has
      */
     static TestTlsConfigurationRegistry with(String name) {
-        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
-        registry.register(name, new UsableTlsConfiguration(registry.profileContext, trustStore(), null));
-        return registry;
+        return usable(name, trustStore(), null);
     }
 
     /**
@@ -76,9 +74,7 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      * @return a registry where {@code name} carries trust material only as {@link TrustOptions}
      */
     static TestTlsConfigurationRegistry withTrustOptionsOnly(String name) {
-        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
-        registry.register(name, new UsableTlsConfiguration(registry.profileContext, null, trustOptions()));
-        return registry;
+        return usable(name, null, trustOptions());
     }
 
     /**
@@ -90,9 +86,7 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      * @return a registry where {@code name} resolves but carries no trust material at all
      */
     static TestTlsConfigurationRegistry withoutTrustMaterial(String name) {
-        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
-        registry.register(name, new UsableTlsConfiguration(registry.profileContext, null, null));
-        return registry;
+        return usable(name, null, null);
     }
 
     /**
@@ -102,6 +96,22 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
     static TestTlsConfigurationRegistry withBrokenMaterial(String name) {
         TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
         registry.register(name, new BrokenTlsConfiguration());
+        return registry;
+    }
+
+    /**
+     * Shared body of the three usable-profile factories above. They differ only in which of the two
+     * trust-material shapes they supply — including neither, which is the anchor-free bucket — so the
+     * distinct scenario NAMES stay, and only the construct-register-return triplet is shared.
+     *
+     * @param name         the logical profile name to define
+     * @param trustStore   the loaded trust store, or {@code null} when this shape is not supplied
+     * @param trustOptions the Vert.x trust options, or {@code null} when this shape is not supplied
+     * @return a registry defining {@code name} against a usable SSL context and the given material
+     */
+    private static TestTlsConfigurationRegistry usable(String name, KeyStore trustStore, TrustOptions trustOptions) {
+        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
+        registry.register(name, new UsableTlsConfiguration(registry.profileContext, trustStore, trustOptions));
         return registry;
     }
 
