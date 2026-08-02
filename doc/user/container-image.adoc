@@ -24,9 +24,9 @@ notes.
 Immutable provenance. `<commit>` is the full 40-character SHA of the commit the release tag points
 at. Use it when you need an unambiguous, provably-immutable reference.
 
-*There is no `:latest` tag, and that is deliberate -- the registry is not broken.* A floating tag
-invites an unpinned production pull whose contents change under you, which is not a posture a
-security gateway should encourage.
+*There is no `:latest` tag, and that is deliberate -- the registry is not broken.* Pin by version,
+or by digest for production. The decision and the reasoning behind it are recorded once, in
+link:../development/release-process.adoc#_container_image_tags[the release-artifact policy].
 
 [TIP]
 ====
@@ -53,7 +53,7 @@ package to public in the organisation's package settings.
 == Pull and run
 
 The image is distroless: it carries no shell and no package manager, and it runs as `nonroot`. It
-ships a statically linked native executable and nothing else.
+ships one ahead-of-time-compiled native executable and nothing else.
 
 [source,bash]
 ----
@@ -97,17 +97,19 @@ port 9000 speak HTTPS, so health probes against it must speak TLS.
 
 == What the SBOM and the scan guarantee -- and what they do not
 
-Each release publishes an SPDX SBOM for the exact published image, and the release fails before
-anything is pushed if Trivy reports a finding at *HIGH or CRITICAL* on that same image.
+Each release produces an SPDX SBOM for the exact published image -- retained as an artifact of the
+release workflow run, not attached to the registry or to a GitHub release -- and the release fails
+before anything is pushed if Trivy reports a finding at *HIGH or CRITICAL* on that same image.
 
-*Read the scan's scope honestly.* The image is the pinned distroless base plus exactly one layer: a
-statically linked native executable that carries no package metadata. There are no jars in the
-image, so an image scan is in substance a scan of the base image's OS packages. It is not a
-statement about the application's Java dependency tree.
+*Read the scope honestly.* The image is the pinned distroless base plus exactly one layer: a native
+executable that carries no package metadata. There are no jars in the image, so an image scan is in
+substance a scan of the base image's OS packages -- and *the SBOM has exactly that scope too*,
+because it catalogues that same image. Neither artifact is an inventory of, or a statement about,
+the application's Java dependency tree.
 
-If you need a Java dependency inventory, *read the SBOM* -- do not infer it from a clean scan
-result. Java dependency findings are covered upstream by the project's per-pull-request
-supply-chain scan and by its Sonar and Dependabot lanes.
+Do not read either one as if it were. Java dependency findings come from the project's
+per-pull-request supply-chain scan -- a Trivy filesystem scan of the repository -- and from its
+Sonar and Dependabot lanes.
 
 == Verify the signature before deploying
 
@@ -126,15 +128,16 @@ cosign verify \
 Both flags are mandatory, and each pins a different half of the claim:
 
 `--certificate-identity`::
-*Who* signed it -- the exact workflow, in the exact repository, on the exact ref. Without it, any
-signature produced by any workflow anywhere would satisfy the check.
+*Who* signed it -- the exact workflow, in the exact repository, on the exact ref. It is what binds
+the check to this project's release lane rather than to any workflow anywhere.
 
 `--certificate-oidc-issuer`::
-*Which identity provider* vouched for that identity. Without it, an identity string asserted by some
-other issuer would be accepted.
+*Which identity provider* vouched for that identity. It is what stops the same identity string,
+asserted by some other issuer, from satisfying the check.
 
-Omitting either flag makes the verification meaningless: an unconstrained `cosign verify` accepts
-any Sigstore identity, so it proves only that *somebody* signed the artifact.
+`cosign` refuses to run a keyless verification without both, and that refusal is the point: a check
+that constrained neither the signer nor the issuer would prove only that *somebody* signed the
+artifact.
 
 On success, `cosign` prints the verification checks it applied and the signature payload, and exits
 zero:

@@ -83,10 +83,10 @@ drift the inversion removes -- and the drift is silent, because both builds succ
   key material and no new secret is involved. A tag is a mutable pointer, so signing one would sign
   nothing durable.
 
-The image scan is narrower than it looks. The image is the pinned distroless base plus one
-statically linked native executable and contains no jars, so it is in substance a scan of the base
-image's OS packages. Java dependency findings come from the pull-request supply-chain scan and from
-the Sonar and Dependabot lanes, not from here.
+The image scan is narrower than it looks. The image is the pinned distroless base plus one native
+executable and contains no jars, so it is in substance a scan of the base image's OS packages -- and
+the SBOM, cataloguing that same image, carries exactly the same scope. Java dependency findings come
+from the pull-request supply-chain scan and from the Sonar and Dependabot lanes, not from here.
 
 === One-time action after the first release
 

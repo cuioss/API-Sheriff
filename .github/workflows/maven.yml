@@ -37,8 +37,9 @@ jobs:
   # plus a filesystem scan of the repository. It deliberately does NOT build the application image:
   # that would put a GraalVM native compile on every pull request, which is exactly the cost this
   # arrangement avoids. The proxy is not as weak as it looks — the release image is the same pinned
-  # base plus one static binary carrying no package metadata, so a full app-image scan would report
-  # the same package findings, and the `fs` scan is what actually surfaces Java dependency CVEs.
+  # base plus one native executable carrying no package metadata and no jars, so a full app-image
+  # scan would report the same package findings, and the `fs` scan is what actually surfaces Java
+  # dependency CVEs.
   supply-chain-scan:
     name: Supply-chain scan (non-gating)
     runs-on: ubuntu-latest
