@@ -154,45 +154,19 @@ public final class RouteTableBuilder {
     private static ResolvedRoute resolveRoute(GatewayConfig gateway, RouteConfig route, EndpointConfig endpoint,
             @Nullable AnchorConfig anchor, ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
             ResolvedTopology topology) {
-        AuthConfig auth = route.auth();
-        if (auth == null) {
-            auth = endpoint.auth();
-        }
-        if (auth == null && anchor != null) {
-            auth = anchor.auth();
-        }
-        if (auth == null) {
-            throw new RouteTableException(
-                    "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
-                            .formatted(route.id()));
-        }
+        AuthConfig auth = resolveEffectiveAuth(route, endpoint, anchor);
         List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint, anchor);
-        SecurityFilterConfig routeFilter = route.securityFilter();
-        SecurityFilterConfig securityFilter = routeFilter != null
-                ? routeFilter
-                : (anchor == null ? null : anchor.securityFilter());
-        SecurityHeadersConfig anchorHeaders = anchor == null ? null : anchor.securityHeaders();
-        SecurityHeadersConfig securityHeaders = anchorHeaders != null ? anchorHeaders : gateway.securityHeaders();
+        SecurityFilterConfig securityFilter = resolveSecurityFilter(route, anchor);
+        SecurityHeadersConfig securityHeaders = resolveSecurityHeaders(gateway, anchor);
         warnOnWeakeningOverride(route, endpoint, anchor);
         UpstreamConfig routeUpstream = route.upstream();
-        UpstreamConfig.Retry retry = routeUpstream == null ? null : routeUpstream.retry();
-        boolean retryEnabled = retry != null && retry.enabled() != null
-                ? retry.enabled()
-                : defaults.retryEnabled();
-        UpstreamConfig.NotModified notModified = routeUpstream == null ? null : routeUpstream.notModified();
-        boolean notModifiedEnabled = notModified != null && notModified.enabled() != null
-                ? notModified.enabled()
-                : defaults.notModifiedEnabled();
+        boolean retryEnabled = resolveRetryEnabled(routeUpstream, defaults);
+        boolean notModifiedEnabled = resolveNotModifiedEnabled(routeUpstream, defaults);
         ForwardConfig effectiveForward = Objects.requireNonNullElseGet(route.forward(),
                 () -> ForwardConfig.builder().build());
         Protocol protocol = Objects.requireNonNullElse(route.protocol(), Protocol.HTTP);
         Set<String> allowedOrigins = effectiveAllowedOrigins(route);
-        Integer idleTimeout = null;
-        if (protocol == Protocol.WEBSOCKET) {
-            WebSocketConfig websocket = route.websocket();
-            Integer declaredIdleTimeout = websocket == null ? null : websocket.idleTimeoutSeconds();
-            idleTimeout = declaredIdleTimeout != null ? declaredIdleTimeout : DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS;
-        }
+        Integer idleTimeout = resolveWebSocketIdleTimeout(route, protocol);
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())
                 .protocol(protocol)
@@ -219,6 +193,95 @@ public final class RouteTableBuilder {
         ResolvedRoute resolved = builder.build();
         logPosture(resolved, globalProfile(gateway));
         return resolved;
+    }
+
+    /**
+     * Resolves the route's effective auth block through the {@code route → endpoint → anchor}
+     * cascade. Every route must end up with one: a route that reaches the end of the cascade
+     * without an auth block is a configuration error, not a defaultable omission.
+     *
+     * @throws RouteTableException when no level of the cascade declares an auth block
+     */
+    private static AuthConfig resolveEffectiveAuth(RouteConfig route, EndpointConfig endpoint,
+            @Nullable AnchorConfig anchor) {
+        AuthConfig auth = route.auth();
+        if (auth == null) {
+            auth = endpoint.auth();
+        }
+        if (auth == null && anchor != null) {
+            auth = anchor.auth();
+        }
+        if (auth == null) {
+            throw new RouteTableException(
+                    "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
+                            .formatted(route.id()));
+        }
+        return auth;
+    }
+
+    /**
+     * Resolves the effective {@code security_filter} through the {@code route → anchor} chain. The
+     * endpoint level carries no such block, so it is not part of the chain.
+     *
+     * @return the declared filter, or {@code null} when neither level declares one
+     */
+    private static @Nullable SecurityFilterConfig resolveSecurityFilter(RouteConfig route,
+            @Nullable AnchorConfig anchor) {
+        SecurityFilterConfig routeFilter = route.securityFilter();
+        if (routeFilter != null) {
+            return routeFilter;
+        }
+        return anchor == null ? null : anchor.securityFilter();
+    }
+
+    /**
+     * Resolves the effective response-header posture through the {@code anchor → gateway} chain.
+     *
+     * @return the declared posture, or {@code null} when neither level declares one
+     */
+    private static @Nullable SecurityHeadersConfig resolveSecurityHeaders(GatewayConfig gateway,
+            @Nullable AnchorConfig anchor) {
+        SecurityHeadersConfig anchorHeaders = anchor == null ? null : anchor.securityHeaders();
+        return anchorHeaders != null ? anchorHeaders : gateway.securityHeaders();
+    }
+
+    /**
+     * Resolves the route's effective retry toggle: the declared {@code upstream.retry.enabled} when
+     * present, otherwise the endpoint- or gateway-level default.
+     */
+    private static boolean resolveRetryEnabled(@Nullable UpstreamConfig routeUpstream,
+            UpstreamDefaultsConfig defaults) {
+        UpstreamConfig.Retry retry = routeUpstream == null ? null : routeUpstream.retry();
+        Boolean declared = retry == null ? null : retry.enabled();
+        return declared != null ? declared : defaults.retryEnabled();
+    }
+
+    /**
+     * Resolves the route's effective not-modified toggle: the declared
+     * {@code upstream.not_modified.enabled} when present, otherwise the endpoint- or gateway-level
+     * default.
+     */
+    private static boolean resolveNotModifiedEnabled(@Nullable UpstreamConfig routeUpstream,
+            UpstreamDefaultsConfig defaults) {
+        UpstreamConfig.NotModified notModified = routeUpstream == null ? null : routeUpstream.notModified();
+        Boolean declared = notModified == null ? null : notModified.enabled();
+        return declared != null ? declared : defaults.notModifiedEnabled();
+    }
+
+    /**
+     * Resolves the WebSocket idle timeout, which exists only for a {@code WEBSOCKET} route: the
+     * declared {@code websocket.idle_timeout_seconds} when present, otherwise
+     * {@link #DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS}.
+     *
+     * @return the effective timeout in seconds, or {@code null} for a non-WebSocket route
+     */
+    private static @Nullable Integer resolveWebSocketIdleTimeout(RouteConfig route, Protocol protocol) {
+        if (protocol != Protocol.WEBSOCKET) {
+            return null;
+        }
+        WebSocketConfig websocket = route.websocket();
+        Integer declaredIdleTimeout = websocket == null ? null : websocket.idleTimeoutSeconds();
+        return declaredIdleTimeout != null ? declaredIdleTimeout : DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS;
     }
 
     /**
@@ -369,7 +432,8 @@ public final class RouteTableBuilder {
         if (endpointDefaults != null) {
             return endpointDefaults;
         }
-        return Objects.requireNonNullElseGet(gateway.upstreamDefaults(), UpstreamDefaultsConfig::defaults);
+        UpstreamDefaultsConfig gatewayDefaults = gateway.upstreamDefaults();
+        return gatewayDefaults == null ? UpstreamDefaultsConfig.defaults() : gatewayDefaults;
     }
 
     private static List<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,

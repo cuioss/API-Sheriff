@@ -1432,20 +1432,25 @@ public class GatewayEdgeRoute {
     private static SecurityConfiguration applyDeclaredLimits(SecurityConfiguration preset,
             SecurityFilterConfig filter) {
         SecurityConfigurationBuilder builder = SecurityConfigurations.builderSeededFrom(preset);
-        if (filter.maxBodyBytes() != null) {
-            builder.maxBodySize(filter.maxBodyBytes().longValue());
+        Integer maxBodyBytes = filter.maxBodyBytes();
+        if (maxBodyBytes != null) {
+            builder.maxBodySize(maxBodyBytes.longValue());
         }
-        if (filter.maxQueryParams() != null) {
-            builder.maxParameterCount(filter.maxQueryParams());
+        Integer maxQueryParams = filter.maxQueryParams();
+        if (maxQueryParams != null) {
+            builder.maxParameterCount(maxQueryParams);
         }
-        if (filter.maxHeaderCount() != null) {
-            builder.maxHeaderCount(filter.maxHeaderCount());
+        Integer maxHeaderCount = filter.maxHeaderCount();
+        if (maxHeaderCount != null) {
+            builder.maxHeaderCount(maxHeaderCount);
         }
-        if (filter.maxParamValueLength() != null) {
-            builder.maxParameterValueLength(filter.maxParamValueLength());
+        Integer maxParamValueLength = filter.maxParamValueLength();
+        if (maxParamValueLength != null) {
+            builder.maxParameterValueLength(maxParamValueLength);
         }
-        if (filter.maxHeaderValueLength() != null) {
-            builder.maxHeaderValueLength(filter.maxHeaderValueLength());
+        Integer maxHeaderValueLength = filter.maxHeaderValueLength();
+        if (maxHeaderValueLength != null) {
+            builder.maxHeaderValueLength(maxHeaderValueLength);
         }
         if (!filter.allowedHeaderNames().isEmpty()) {
             builder.allowedHeaderNames(Set.copyOf(filter.allowedHeaderNames()));

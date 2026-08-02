@@ -15,8 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.Objects;
-
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
@@ -77,7 +75,7 @@ public record EdgeHardeningConfig(@Nullable Integer admissionCap, @Nullable Inte
      * @return the declared admission cap, or {@link #DEFAULT_ADMISSION_CAP} when the member is absent
      */
     public int effectiveAdmissionCap() {
-        return Objects.requireNonNullElse(admissionCap, DEFAULT_ADMISSION_CAP);
+        return admissionCap != null ? admissionCap : DEFAULT_ADMISSION_CAP;
     }
 
     /**

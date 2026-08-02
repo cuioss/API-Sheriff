@@ -180,8 +180,8 @@ public class BffRuntimeProducer {
     }
 
     private BffRuntime build(OidcConfig oidc) {
-        // Both are guaranteed non-null by isBffMode, which every caller of build(...) clears first;
-        // the guards make that boot-time contract explicit rather than implied.
+        // Both are guaranteed non-null by the isBffMode predicate, which every caller of this method
+        // clears first; the guards make that boot-time contract explicit rather than implied.
         String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
         OidcConfig.Session session = Objects.requireNonNull(oidc.session(), "oidc.session");
         String gatewayOrigin = originOf(redirectUri);
@@ -191,8 +191,10 @@ public class BffRuntimeProducer {
 
         Duration sessionTtl = Duration.ofSeconds(
                 Objects.requireNonNullElse(session.ttlSeconds(), DEFAULT_SESSION_TTL_SECONDS));
-        String cookieName = Objects.requireNonNullElse(session.cookieName(),
-                SessionCookieCodec.DEFAULT_COOKIE_NAME);
+        String declaredCookieName = session.cookieName();
+        String cookieName = declaredCookieName == null
+                ? SessionCookieCodec.DEFAULT_COOKIE_NAME
+                : declaredCookieName;
         int maxSessions = Objects.requireNonNullElse(session.maxSessions(), DEFAULT_MAX_SESSIONS);
         OidcConfig.Refresh refresh = session.refresh();
         Duration refreshLeeway = Duration.ofSeconds(Objects.requireNonNullElse(
@@ -353,8 +355,10 @@ public class BffRuntimeProducer {
     private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
             Duration sessionTtl) {
         CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey(), session.previousKey());
-        int maxCookieSize = Objects.requireNonNullElse(session.maxCookieSize(),
-                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
+        Integer declaredMaxCookieSize = session.maxCookieSize();
+        int maxCookieSize = declaredMaxCookieSize == null
+                ? SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET
+                : declaredMaxCookieSize;
         LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s, maxCookieSize=%s",
                 keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey(), maxCookieSize);
         return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
@@ -364,10 +368,14 @@ public class BffRuntimeProducer {
     private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,
             SessionBinding sessionBinding) {
         OidcConfig.Logout logout = oidc.logout();
-        String postLogoutRedirectUri = Objects.requireNonNullElse(
-                logout == null ? null : logout.postLogoutRedirectUri(), gatewayOrigin + "/");
-        String finalRedirect = Objects.requireNonNullElse(
-                logout == null ? null : logout.finalRedirect(), DEFAULT_FINAL_REDIRECT);
+        String declaredPostLogoutRedirectUri = logout == null ? null : logout.postLogoutRedirectUri();
+        String postLogoutRedirectUri = declaredPostLogoutRedirectUri == null
+                ? gatewayOrigin + "/"
+                : declaredPostLogoutRedirectUri;
+        String declaredFinalRedirect = logout == null ? null : logout.finalRedirect();
+        String finalRedirect = declaredFinalRedirect == null
+                ? DEFAULT_FINAL_REDIRECT
+                : declaredFinalRedirect;
         String endSessionEndpoint = metadata.getEndSessionEndpoint()
                 .orElseThrow(() -> new IllegalStateException(
                         "OIDC provider metadata declares no end_session_endpoint — RP-initiated logout unavailable"));

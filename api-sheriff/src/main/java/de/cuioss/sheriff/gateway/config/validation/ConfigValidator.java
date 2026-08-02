@@ -737,26 +737,36 @@ public final class ConfigValidator {
             ResolvedTopology topology, List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
-                boolean assetAnchor = anchor != null && anchor.type() == AnchorType.ASSET;
-                AssetConfig asset = route.asset();
-                if (assetAnchor && asset == null) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
-                                    .formatted(route.id(), anchor.name())));
-                } else if (!assetAnchor && asset != null) {
-                    String context = anchor == null
-                            ? "the route is unanchored"
-                            : "its anchor '%s' is type '%s'".formatted(anchor.name(),
-                            anchor.type().name().toLowerCase(Locale.ROOT));
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
-                                    .formatted(route.id(), context)));
-                }
-                if (asset != null) {
-                    validateAssetSource(endpoint, route, asset, topology, errors);
-                }
+                validateRouteTerminalAction(gateway, endpoint, route, topology, errors);
             }
+        }
+    }
+
+    /**
+     * The per-route half of the terminal-action rule (ADR-0014): the anchor-type / asset-action
+     * consistency check, plus the source-field check for a declared asset action. Every violation
+     * collects into the shared list; the check never fails fast.
+     */
+    private static void validateRouteTerminalAction(GatewayConfig gateway, EndpointConfig endpoint,
+            RouteConfig route, ResolvedTopology topology, List<ConfigError> errors) {
+        AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
+        boolean assetAnchor = anchor != null && anchor.type() == AnchorType.ASSET;
+        AssetConfig asset = route.asset();
+        if (assetAnchor && asset == null) {
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' resolves to asset anchor '%s' but declares no asset terminal action"
+                            .formatted(route.id(), anchor.name())));
+        } else if (!assetAnchor && asset != null) {
+            String context = anchor == null
+                    ? "the route is unanchored"
+                    : "its anchor '%s' is type '%s'".formatted(anchor.name(),
+                    anchor.type().name().toLowerCase(Locale.ROOT));
+            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                    "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
+                            .formatted(route.id(), context)));
+        }
+        if (asset != null) {
+            validateAssetSource(endpoint, route, asset, topology, errors);
         }
     }
 
@@ -1179,7 +1189,8 @@ public final class ConfigValidator {
 
     /** The route's effective protocol — the declared value, or {@link Protocol#HTTP} when omitted. */
     private static Protocol effectiveProtocol(RouteConfig route) {
-        return route.protocol() != null ? route.protocol() : Protocol.HTTP;
+        Protocol declared = route.protocol();
+        return declared != null ? declared : Protocol.HTTP;
     }
 
     private static @Nullable String routeHost(RouteConfig route) {

@@ -106,11 +106,11 @@ String sessionNonce) {
     public byte[] encode() {
         StringBuilder encoded = new StringBuilder();
         appendField(encoded, accessToken);
-        appendField(encoded, Objects.requireNonNullElse(refreshToken, ""));
+        appendField(encoded, refreshToken == null ? "" : refreshToken);
         appendField(encoded, idToken);
         appendField(encoded, sub);
-        appendField(encoded, Objects.requireNonNullElse(sid, ""));
-        appendField(encoded, Objects.requireNonNullElse(acr, ""));
+        appendField(encoded, sid == null ? "" : sid);
+        appendField(encoded, acr == null ? "" : acr);
         appendField(encoded, authTime == null ? "" : Long.toString(authTime.getEpochSecond()));
         appendField(encoded, Long.toString(loginInstant.getEpochSecond()));
         appendField(encoded, sessionNonce);

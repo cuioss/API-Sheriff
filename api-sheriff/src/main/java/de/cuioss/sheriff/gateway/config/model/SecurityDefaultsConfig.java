@@ -15,8 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import java.util.Objects;
-
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -75,7 +73,8 @@ public record SecurityDefaultsConfig(@Nullable String profile, @Nullable Integer
      *         {@link #DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH} when the key is omitted
      */
     public int effectiveMaxAuthorizationHeaderValueLength() {
-        return Objects.requireNonNullElse(maxAuthorizationHeaderValueLength,
-                DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH);
+        return maxAuthorizationHeaderValueLength != null
+                ? maxAuthorizationHeaderValueLength
+                : DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH;
     }
 }

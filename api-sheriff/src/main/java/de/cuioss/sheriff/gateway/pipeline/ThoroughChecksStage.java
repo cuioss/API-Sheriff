@@ -158,8 +158,8 @@ public final class ThoroughChecksStage {
         String canonicalPath = requireCanonicalPath(request);
         // Present for every assembler-produced route (the posture resolver runs for all of them), so
         // the fallback covers only a RouteRuntime built without a resolved configuration.
-        SecurityConfiguration routeConfig = Objects.requireNonNullElse(route.getSecurityConfiguration(),
-                defaultConfiguration);
+        SecurityConfiguration declaredConfig = route.getSecurityConfiguration();
+        SecurityConfiguration routeConfig = declaredConfig == null ? defaultConfiguration : declaredConfig;
 
         // Unconditional half — a resource guard and a path allowlist, neither of which is an
         // injection defence, so neither rides the profile switch.

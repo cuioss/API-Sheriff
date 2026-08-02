@@ -182,8 +182,8 @@ public class ConfigProducer {
     @ApplicationScoped
     public EdgeHardeningOptions edgeHardeningOptions() {
         buildOnce();
-        return new EdgeHardeningOptions(
-                Objects.requireNonNullElseGet(gateway.edgeHardening(), EdgeHardeningConfig::defaults));
+        EdgeHardeningConfig declared = gateway.edgeHardening();
+        return new EdgeHardeningOptions(declared == null ? EdgeHardeningConfig.defaults() : declared);
     }
 
     private synchronized void buildOnce() {

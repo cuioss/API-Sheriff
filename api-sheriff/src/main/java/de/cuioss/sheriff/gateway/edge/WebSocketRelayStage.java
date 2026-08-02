@@ -193,8 +193,8 @@ public final class WebSocketRelayStage {
 
     private void establishRelay(RoutingContext ctx, RouteRuntime route, ServerWebSocket clientWs,
             WebSocket upstreamWs, Runnable releaseAdmission) {
-        int idleSeconds = Objects.requireNonNullElse(route.getEffectiveWebSocketIdleTimeoutSeconds(),
-                DEFAULT_IDLE_TIMEOUT_SECONDS);
+        Integer declaredIdleSeconds = route.getEffectiveWebSocketIdleTimeoutSeconds();
+        int idleSeconds = declaredIdleSeconds == null ? DEFAULT_IDLE_TIMEOUT_SECONDS : declaredIdleSeconds;
         LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.getId());
         eventCounter.increment(EventType.REQUEST_FORWARDED);
         // The admission permit stays held for the relay's whole lifetime — the session releases it from

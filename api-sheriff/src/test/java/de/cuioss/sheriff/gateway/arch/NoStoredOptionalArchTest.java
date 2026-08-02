@@ -258,8 +258,10 @@ class NoStoredOptionalArchTest {
         @Test
         @DisplayName("Guard detects a deliberately stored Optional (negative control)")
         void guardFailsOnStoredOptionalSpecimen() {
+            ArchRule fieldRule = fieldRuleAgainstSpecimens();
+
             assertThrows(AssertionError.class,
-                    () -> fieldRuleAgainstSpecimens().check(SPECIMEN_CLASSES),
+                    () -> fieldRule.check(SPECIMEN_CLASSES),
                     "The guard must fail on OptionalFieldSpecimen's stored Optional — if it does not, the "
                             + "field either gained a matching public accessor (disarming the control via the "
                             + "Lombok @Getter proxy) or the specimen package no longer resolves");
