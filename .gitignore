@@ -20,3 +20,4 @@ benchmarking/doc/templates/data/
 .plan/*
 !.plan/marshal.json
 !.plan/project-architecture/
+node_modules/
