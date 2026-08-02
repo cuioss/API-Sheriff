@@ -333,7 +333,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(Instant.now().plus(Duration.ofHours(1))).build());
             sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
 
-            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(Optional.of(fullOidc())).build();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
