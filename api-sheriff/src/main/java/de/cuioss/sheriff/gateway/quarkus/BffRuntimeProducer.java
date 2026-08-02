@@ -195,7 +195,8 @@ public class BffRuntimeProducer {
         String cookieName = declaredCookieName == null
                 ? SessionCookieCodec.DEFAULT_COOKIE_NAME
                 : declaredCookieName;
-        int maxSessions = Objects.requireNonNullElse(session.maxSessions(), DEFAULT_MAX_SESSIONS);
+        Integer declaredMaxSessions = session.maxSessions();
+        int maxSessions = declaredMaxSessions == null ? DEFAULT_MAX_SESSIONS : declaredMaxSessions;
         OidcConfig.Refresh refresh = session.refresh();
         Duration refreshLeeway = Duration.ofSeconds(Objects.requireNonNullElse(
                 refresh == null ? null : refresh.leewaySeconds(), DEFAULT_REFRESH_LEEWAY_SECONDS));
