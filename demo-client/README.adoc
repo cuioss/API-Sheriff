@@ -1,0 +1,108 @@
+= API Sheriff Demo Client
+:toc:
+:toclevels: 2
+:sectnums:
+
+A dependency-free demo single-page application for the API Sheriff BFF, plus a Playwright suite that
+drives it in a real browser against the running `integration-tests` stack.
+
+The SPA is served *by the gateway itself* as a public asset, so it is same-origin with the reserved
+`/auth` paths and exercises the genuine browser-facing contract. The suite runs the same specs
+against *both* session modes -- `server` on port 10443 and `cookie` on port 10445 -- so "the two
+variants are browser-observably identical" is an executable assertion rather than a claim.
+
+This module ships no Java and produces no artifact. Nothing here reaches the production image or the
+native executable.
+
+== Prerequisites
+
+* Docker with Compose
+* A built `api-sheriff:distroless` native image
+
+Neither Node nor a browser is a prerequisite -- the `e2e-demo` profile downloads a pinned Node
+toolchain into `target/` and installs the Chromium build Playwright drives.
+
+== Running It
+
+One command does everything -- toolchain install, lint, browser install, three-container bring-up,
+both Playwright projects, teardown:
+
+[source,bash]
+----
+python3 .plan/execute-script.py plan-marshall:build-maven:maven \
+  run --command-args "verify -Pe2e-demo -pl demo-client"
+----
+
+When iterating on specs, hold the stack up and re-run only the tests:
+
+[source,bash]
+----
+demo-client/scripts/start-dev-environment.sh
+cd demo-client && npm run test
+demo-client/scripts/stop-dev-environment.sh
+----
+
+`npm run test`, never `npx`: `npm run` resolves the binary from `node_modules/.bin` only, so a
+missing binary is a hard failure rather than a silent registry download. The build makes the same
+choice, for the same reason.
+
+Without `-Pe2e-demo` this module is a no-op: a default reactor build downloads no Node, runs no npm
+command, starts no container and produces no artifact.
+
+Once the stack is up, the application is at `https://localhost:10443/assets/demo/index.html`
+(server-session mode) and `https://localhost:10445/assets/demo/index.html` (cookie mode). Sign in as
+`integration-user` / `integration-password`. Note the explicit filename -- the gateway serves no
+directory index, so `/assets/demo/` returns `404`.
+
+== Where the Output Lands
+
+Everything generated sits under `target/` and is git-ignored:
+
+[cols="1,2"]
+|===
+| Path | Contents
+
+| `target/test-results/`
+| Playwright JSON and JUnit results. There is no HTML reporter, so no report server is spawned.
+
+| `target/screenshots/{project}/`
+| The documentation screenshots -- `anonymous`, `authenticated-default-view`,
+  `full-allowlisted-view`, `claim-denied`, `logged-out` -- one parallel set per session mode.
+
+| `target/node/`, `target/node_modules/`
+| The pinned Node toolchain and the installed packages.
+|===
+
+== Layout
+
+[cols="1,2"]
+|===
+| Path | What it is
+
+| `src/main/resources/spa/`
+| The SPA: `index.html`, `app.js`, `app.css`, `landing.html`. No framework, no bundler, no build
+  step -- the served files are the authored files, bind-mounted into the gateway containers.
+
+| `tests/`, `fixtures/`, `utils/`
+| The Playwright suite, its shared fixtures, and the Keycloak login helper.
+
+| `playwright.config.js`
+| Two projects, `session-server` and `session-cookie`, differing only in `baseURL`.
+
+| `scripts/`
+| The trimmed bring-up and teardown of exactly three containers.
+|===
+
+== Further Reading
+
+Both layers are authoritative; this file is only the front door.
+
+* link:../doc/user/demo-client.adoc[Demo Client -- the BFF Integration Sample] -- the *integrator*
+  layer: the browser-facing contract, the four identity-disclosure states, the same-origin
+  `returnUrl` rule, and the `gateway.yaml` a deployment needs to serve its own bundle this way.
+* link:../doc/development/demo-client.adoc[Demo Client and the Playwright End-to-End Suite] -- the
+  *contributor* layer: the module layout, the opt-in build mechanism, the Chromium host-resolver
+  mapping and why it is required, and the standing prohibitions this module carries.
+
+Read the contributor document before changing the suite. Several of its constraints look arbitrary
+and are not.

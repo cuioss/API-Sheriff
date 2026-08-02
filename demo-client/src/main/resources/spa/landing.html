@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signed out -- API Sheriff BFF Demo</title>
+    <!--
+      The post-logout landing target. It is public static content served by the SAME /assets/demo
+      asset route as the demo app, so it needs no auth, no second route and no second mount.
+
+      It is addressed as /assets/demo/landing.html -- a concrete file, named explicitly, because the
+      gateway's directory asset source performs no directory-index resolution.
+
+      It loads NO JavaScript. This is a landing target, not a second demo. The authoritative proof
+      that logout completed is the info endpoint answering 401 again, not this page rendering.
+    -->
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main class="landing" data-testid="landing">
+      <h1>Signed out</h1>
+      <p>Your session has ended.</p>
+      <p><a href="index.html" data-testid="back-to-demo">Back to the demo</a></p>
+    </main>
+  </body>
+</html>

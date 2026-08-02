@@ -46,6 +46,12 @@ import org.jspecify.annotations.Nullable;
  * so the post-login redirect is never an open redirect. The engine authorization is reached through
  * the {@link AuthorizationInitiation} seam, keeping the flow decoupled from the confidential-client
  * wiring (discovery metadata) and unit-testable without a live IdP.
+ * <p>
+ * <strong>Response mode.</strong> The authorization URL the seam yields carries
+ * {@code response_mode=query} — see {@link QueryResponseModeAuthorizationRequestBuilder}, which the
+ * runtime wires into the engine. That is what makes the later callback a top-level GET navigation,
+ * the only shape on which the browser sends the {@code SameSite=Lax} binding cookie this flow sets
+ * here. The mode is therefore not incidental to the binding cookie — the two are one design.
  *
  * @author API Sheriff Team
  * @since 1.0

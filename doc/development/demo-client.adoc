@@ -1,0 +1,432 @@
+= API Sheriff -- Demo Client and the Playwright End-to-End Suite
+:toc:
+:toclevels: 2
+:sectnums:
+
+The *contributor* view of `demo-client/` -- the dependency-free demo single-page application and the
+Playwright suite that drives it against the real `integration-tests` stack. It exists so a
+contributor changing the demo, or reading a failing browser test, can see why each piece is shaped
+the way it is before touching it. Several of those shapes look arbitrary and are not: they are the
+only forms that work against this gateway, and this document records which.
+
+The operator- and integrator-facing view -- the browser-facing contract, the claim views, the asset
+anchor an integrator declares in their own `gateway.yaml` -- is
+link:../user/demo-client.adoc[Demo Client -- Integration Sample]. The module's one-screen quickstart
+is link:../../demo-client/README.adoc[`demo-client/README.adoc`]. This document does not restate
+either.
+
+[IMPORTANT]
+====
+The demo is *demo and compose configuration only*. It is never a shipped default. No `demo-client`
+path enters `api-sheriff/src/main/docker/Dockerfile.native`, no demo asset is embedded in the native
+executable, and the asset route that serves it lives in the `integration-tests` compose
+configuration -- not in any production example. See <<_the_demo_is_excluded_from_the_production_image>>.
+====
+
+== Why the Demo Exists
+
+The gateway's server-session and cookie-session BFF variants expose a browser-facing contract:
+gateway-owned reserved paths under `/auth`, an XHR identity probe, an operator-capped claim
+allowlist, and an RP-initiated logout round-trip. That contract had two gaps before this module:
+
+* *No executable browser proof.* The landed integration tests drive the contract from Java, through
+  a helper that rewrites redirect locations as strings. A real browser cannot do that, so the Java
+  suite proves the gateway's behaviour without proving that a browser can consume it.
+* *No copyable sample.* A downstream frontend team standing up their own SPA behind the gateway had
+  no worked example of the same-origin `returnUrl` rule, the `401`-versus-`302` split, or the
+  claim-view parameter -- only reference documentation.
+
+`demo-client/` closes both. It is a sample first and a test second: the SPA is written to be read in
+one sitting and copied wholesale, and the suite exists to prove the sample is not merely plausible.
+
+A second property falls out of running the same specs twice: the suite executes against *both*
+session modes -- `session.mode: server` on port 10443 and `session.mode: cookie` on port 10445 --
+as two Playwright projects that differ only in `baseURL`. "The two variants are browser-observably
+identical" stops being a claim in a design document and becomes an executable assertion.
+
+[[_why_the_java_it_suite_could_not_catch_it]]
+=== The first gap was not hypothetical -- it hid a real, total login failure
+
+The "no executable browser proof" gap above is written in the past tense for a reason: the very
+first run of this suite found a defect that made *every* browser login fail, against a Java IT
+suite that was fully green.
+
+The gateway drove the authorization request with the engine's default `response_mode=form_post`, so
+the IdP completed a login by returning an auto-submit form that *POSTs* `code`/`state` to the
+callback -- a *cross-site* POST. The short-lived browser-binding cookie is `SameSite=Lax`, and *a
+Lax cookie is not sent on a cross-site POST*. A real browser therefore arrived at the callback
+without the binding cookie and was rejected `403` on the callback's "no browser-binding cookie"
+branch. Every login. The fix was to drive `response_mode=query` so the callback is a top-level GET
+navigation, on which a Lax cookie *is* sent -- see
+link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode]
+for the mode, the rejected `SameSite=None` alternative, and the accepted code-in-URL tradeoff.
+
+[IMPORTANT]
+.The durable lesson: a green Java IT suite is not evidence about cookie policy
+====
+`BffKeycloakLoginFlow` replays cookies from a `Map` it manages itself. *`SameSite` is a browser
+policy, and RestAssured never enforces it* -- the helper records the attribute and sends the cookie
+regardless. The suite was therefore structurally incapable of observing this defect, and it was
+green throughout. It was not a weak test; it was a test of something else.
+
+Generalise it before adding the next control: *any control whose enforcement lives in the browser --
+`SameSite`, `Secure`, the `__Host-` prefix, CORS, `Referrer-Policy`, CSP -- cannot be proven by a
+programmatic HTTP client, however faithful.* Only a real browser applies the policy. When you add or
+change one, add the assertion to this Playwright suite; a green `Bff*IT` run tells you nothing about
+it. That limitation is now recorded on `BffKeycloakLoginFlow` itself, so the next reader meets it at
+the helper rather than in this document.
+====
+
+== Module Layout
+
+`demo-client/` is a Maven module with `<packaging>pom</packaging>` and no Java. Every Java plugin is
+skipped by property; the module's real toolchain is npm, driven by `frontend-maven-plugin`.
+
+[cols="2,3"]
+|===
+| Path | What it is
+
+| `pom.xml`
+| The module descriptor. Skips every Java plugin, pins the Node/npm versions, and confines *all*
+  npm-touching plugin executions to the `e2e-demo` profile (see <<_the_opt_in_mechanism>>).
+
+| `package.json`
+| `private`, `type: module`. Declares the approved devDependency set and every script the profile
+  drives -- `lint:strict`, `format`, `format:check`, `install-browser` and `test`. The lifecycle
+  invokes each through `npm run`, never `npx`.
+
+| `eslint.config.js`
+| Flat config covering both source trees -- `browser` globals for the SPA, `node` globals for the
+  suite.
+
+| `src/main/resources/spa/`
+| *The SPA*: `index.html`, `app.js`, `app.css`, `landing.html`. No framework, no bundler, no build
+  step -- the served files are the authored files.
+
+| `playwright.config.js`
+| Two projects, `session-server` and `session-cookie`, differing only in `baseURL`.
+
+| `tests/`, `fixtures/`, `utils/`
+| The suite: four spec files, the shared fixtures, and the Keycloak login helper.
+
+| `scripts/`
+| `start-dev-environment.sh` / `stop-dev-environment.sh` -- the trimmed three-container bring-up.
+
+| `target/`
+| Everything generated: the downloaded Node toolchain, test results, and the screenshot set. Already
+  covered by the root `.gitignore`'s `**/target` pattern.
+|===
+
+The SPA lives under `src/main/resources/spa/` rather than at the module root because that is the
+directory the compose stack bind-mounts, and because it keeps the authored web assets on the
+Maven-standard source path even though no Maven plugin processes them.
+
+== Why the Gateway Serves the SPA
+
+The SPA is served *by the gateway itself*, through the `type: asset` / `access: public` terminal
+action decided in link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]. It is not served by
+a side-car static-file container, and that is the load-bearing decision in the whole module.
+
+*Same-origin is what makes the contract observable.* The gateway's reserved paths are exact-match
+paths on the OIDC host -- `/auth/login`, `/auth/callback`, `/auth/userinfo`, `/auth/logout`,
+`/auth/logout/return`. The session cookie is `HttpOnly` and scoped to that origin. A SPA served from
+any other origin would have to reach those paths cross-origin, which changes what is being tested:
+cookies stop riding along on a plain `fetch`, CSRF enters the picture as a separate configuration
+exercise, and the top-level login navigation crosses an origin boundary the real deployment shape
+does not have. Serving the SPA from the gateway puts the demo in the *same* origin as the reserved
+paths, so what the suite asserts is the deployed contract rather than a cross-origin approximation
+of it.
+
+Two consequences follow, and both are landed behaviour rather than demo choices:
+
+* The gateway owns the response envelope. It sets the `Content-Type` from the file extension, adds
+  `X-Content-Type-Options: nosniff`, and strips any `Set-Cookie`. The SPA therefore needs no inline
+  `<script>` and uses none -- `app.css` and `app.js` load as plain relative assets.
+* `DirectoryAssetSource` performs *no* directory-index resolution. `/assets/demo/` without a
+  filename returns `404`. Every entry point in the SPA, in this documentation, in the suite, and in
+  the gateway's `final_redirect` therefore names a concrete file -- `index.html` or `landing.html`
+  -- explicitly. This is not a bug to fix inside the demo.
+
+This module is also the asset action's *first consumer outside the asset package's own tests*, which
+is a deliberate part of its value: it exercises the feature the way a deployment would.
+
+[#_the_opt_in_mechanism]
+== The Opt-In Mechanism: `skipPlaywrightTests` and the `e2e-demo` Profile
+
+`demo-client` is registered in the root reactor, so every default build walks through it. It must
+therefore cost nothing in the default lane: no Node download, no `npm install`, no container, no
+artifact.
+
+Two mechanisms enforce that, and they are complementary:
+
+. *`skipPlaywrightTests` defaults to `true`.* Every `frontend-maven-plugin` and `exec-maven-plugin`
+  execution carries `<skip>${skipPlaywrightTests}</skip>`. The `e2e-demo` profile flips the property
+  to `false`.
+. *Every npm-touching execution lives INSIDE the `e2e-demo` profile.* This is a *deliberate
+  divergence* from the TokenSheriff module this descriptor was modelled on, which wires
+  `install-node-and-npm`, `npm install` and `npm run lint:strict` unconditionally at `initialize` /
+  `verify`. Here, a default reactor build of the module has no executions to skip in the first
+  place, so it downloads no Node even if the skip property were mis-set. The property is the switch;
+  the profile is the floor.
+
+The profile carries the lifecycle bindings:
+
+[cols="2,3"]
+|===
+| Lifecycle phase | Execution
+
+| `pre-clean`
+| `stop-dev-environment.sh` -- tear down any stack left running by an aborted run
+
+| `initialize`
+| `install-node-and-npm`, then `npm ci`
+
+| `process-resources`
+| `npm run lint:strict` -- zero errors *and* zero warnings -- then `npm run install-browser`
+
+| `pre-integration-test`
+| `start-dev-environment.sh` -- the trimmed three-container bring-up
+
+| `integration-test`
+| `npm run test`
+
+| `post-integration-test`
+| `stop-dev-environment.sh`
+|===
+
+Three of those rows encode a decision rather than a convention:
+
+`npm ci`, not `npm install`:: `package-lock.json` is committed with a `resolved` + `integrity` entry
+for every package, and only `npm ci` treats it as authoritative -- it installs exactly the locked
+tree and *fails* when the lock and `package.json` have drifted apart. `npm install` may re-resolve
+within the manifest's caret ranges and silently rewrite the lock, which would let an unreviewed
+transitive version enter a build that still looks reproducible.
+
+`npm run test`, not `npx`:: `npm run` resolves a binary from `node_modules/.bin` only and has no
+registry fallback, so a missing binary is a hard failure. `npx` with its auto-confirm flag
+suppresses the prompt guarding its fallback path, which would let an unpinned `playwright` package
+be fetched and executed from the registry -- outside the integrity-pinned lock the previous step
+just enforced.
+
+Lint at `process-resources`, not `verify`:: `verify` runs *after* `integration-test`, so a lint
+failure used to surface only once a native image had been rebuilt, three containers were up and a
+browser had driven both projects. `process-resources` is the earliest phase that still follows the
+`initialize` install, so a lint failure now aborts before the bring-up -- and therefore cannot leak
+containers either. `npm run install-browser` sits in the same phase, declared after the lint, so a
+lint failure costs no browser download.
+
+`frontend-maven-plugin`'s `installDirectory` is pinned to `${project.build.directory}`, so the
+downloaded Node toolchain lands under the already-ignored `target/` tree rather than in a new
+top-level directory needing its own ignore rule.
+
+Base URLs, the Keycloak host URL and `PW_TEST_HTML_REPORT_OPEN=never` are passed to the test
+execution as environment, sourced from POM properties. *No port number is restated inside
+JavaScript* -- when a published port changes, it changes in one place.
+
+== Running the Suite Locally
+
+Prerequisites: Docker with Compose, and a built `api-sheriff:distroless` native image.
+
+The full run, from a clean tree:
+
+[source,bash]
+----
+python3 .plan/execute-script.py plan-marshall:build-maven:maven \
+  run --command-args "verify -Pe2e-demo -pl demo-client"
+----
+
+That single command installs the toolchain, lints, brings up the three containers, runs both
+Playwright projects, and tears the stack down again.
+
+When iterating on specs it is faster to hold the stack up and re-run only the tests:
+
+[source,bash]
+----
+demo-client/scripts/start-dev-environment.sh
+cd demo-client && npm run test
+demo-client/scripts/stop-dev-environment.sh
+----
+
+[WARNING]
+====
+*After rebuilding the native executable, the Docker image must be rebuilt too.* `docker compose up`
+alone silently reuses the stale image, so a native fix appears not to take effect. The bring-up
+script rebuilds the image for exactly this reason; when starting the stack by hand, rebuild it
+yourself.
+====
+
+The bring-up starts *exactly three* containers -- `keycloak`, `api-sheriff` and
+`api-sheriff-cookie` -- rather than the roughly one dozen the full integration stack runs. It waits
+on each service's management health endpoint in turn. No port number appears in the script: the
+management scheme, the management port and the published public port are all *derived* from the
+resolved Compose model -- the `de.cuioss.sheriff.management-scheme` label plus the host ports
+published against container ports `9000` and `8443`. Renumbering a published port in
+`integration-tests/docker-compose.yml` therefore needs no script edit, and the closing banner the
+script prints is built from the same derived rows rather than from a second copy of the addresses.
+
+[NOTE]
+====
+*A failing suite deliberately leaves the containers up locally.* `frontend-maven-plugin`'s `npm`
+goal aborts the build immediately on a non-zero exit, so Maven never reaches `post-integration-test`
+and its teardown does not run. That is the useful behaviour for a developer -- the stack you need
+for diagnosis is still there. Tear it down with `demo-client/scripts/stop-dev-environment.sh` when
+you are done, or run any `clean` build, whose `pre-clean` teardown does it for you.
+
+CI is the opposite case: an abandoned stack there holds fixed host ports for the next run, so
+`.github/workflows/demo-client-e2e.yml` carries an `if: always()` teardown step.
+====
+
+Artifacts land under `demo-client/target/`: JSON and JUnit test results under `target/test-results/`,
+and the documentation screenshots under `target/screenshots/{project}/`, one parallel set per session
+mode. There is deliberately *no* HTML reporter, so no report server is spawned and no run blocks
+waiting for a browser.
+
+== The Chromium Host-Resolver Mapping Is Load-Bearing
+
+`playwright.config.js` launches Chromium with:
+
+[source,text]
+----
+--host-resolver-rules=MAP keycloak:8443 127.0.0.1:1443
+--ignore-certificate-errors
+----
+
+Neither flag is a convenience, and neither may be removed as "cleanup".
+
+*Why the resolver mapping is required.* The `integration` realm pins
+`attributes.frontendUrl: https://keycloak:8443`. Every authorization URL Keycloak issues -- and
+every URL the gateway's login `302` sends the browser to -- therefore carries the
+*container-internal* authority `keycloak:8443`. Inside the Compose network that resolves; from the
+host, where the browser runs, it does not. The landed Java integration helper sidesteps this by
+string-rewriting each redirect location to `localhost:1443` before following it. *A real browser
+cannot do that* -- following redirects is the browser's own job, and there is no interception point.
+So the resolution is pushed one layer down, into the browser's resolver: `keycloak:8443` is mapped
+to the published host port.
+
+*Why the certificate flag is required.* The stack serves a self-signed `localhost` bundle. The
+config also sets `ignoreHTTPSErrors: true` for the API-level requests; the launch flag covers the
+browser's own navigations.
+
+[CAUTION]
+====
+Do not "fix" this by changing the realm's `frontendUrl`. That value is the issuer authority baked
+into every token the realm mints, and the gateway's `token_validation` blocks pin it. Changing it
+breaks every landed bearer-token integration test in the repository. The mapping belongs in the
+browser, not in the realm.
+====
+
+== Standing Prohibitions
+
+These are not style preferences. Each records a conclusion that was reached the expensive way, so a
+later reader does not re-derive it -- or worse, reverse it.
+
+=== PROHIBITED ASSERTION -- no `Accept`-based expectation on the info endpoint
+
+*No test may send `Accept: text/html` to the info endpoint expecting `302` -- the 401-vs-302 split
+is PATH-based.*
+
+Both reserved endpoints are `Accept`-blind. `/auth/userinfo` is an XHR probe: with no live session
+it answers `401 application/problem+json`, *never* a redirect, whatever the request's `Accept`
+header says. `/auth/login` always answers `302`. Which of the two a caller gets is determined by
+*which path it called*, not by content negotiation. No spec may assert that the info endpoint varies
+on `Accept`, and none may send an `Accept` header to it expecting a redirect.
+
+This prohibition is recorded verbatim because a superseded framing described the split as
+`Accept`-driven, and a test written against that framing would pass for the wrong reason on the
+`302` path while silently mis-documenting the contract.
+
+=== A Compose profile cannot express the trimmed bring-up
+
+*A Compose profile cannot express a trimmed bring-up, because a service with no `profiles:` key
+always starts and profiles therefore only ever ADD to the default set.*
+
+The intent -- bring up only `keycloak`, `api-sheriff` and `api-sheriff-cookie`, reusing the existing
+stack without duplicating or restructuring it -- cannot be achieved with a Compose profile.
+Subtracting the other nine services would require tagging *them* with a profile, which would have
+two consequences in `integration-tests`:
+
+* they would drop out of the unqualified `compose up -d` that
+  `integration-tests/scripts/start-integration-container.sh` relies on; and
+* they would disappear from `compose config --format json`, which that same script's
+  gateway-readiness discovery enumerates -- and which hard-exits when the resulting set is empty.
+
+The demo therefore uses *explicit service selection*
+(`compose up -d keycloak api-sheriff api-sheriff-cookie`). It delivers the identical three-container
+footprint with *zero* structural change to `docker-compose.yml`, which is strictly more minimal and
+carries no risk to the landed integration-test suite. Consequently this module adds no `profiles:`
+key to `docker-compose.yml` and touches neither of the two lines above. Do not restore the profile
+approach.
+
+=== No control is weakened to make the demo pass
+
+The suite does not disable CSRF, does not relax a cookie flag, and does not read the session cookie
+-- the cookie is `HttpOnly` and belongs to the gateway. The SPA displays, stores and logs no token
+material; the info endpoint discloses none, and the client must not invent a place to put any.
+
+If the demo can only be made to pass by weakening a control, that is a *gateway finding to report*,
+not a knob to turn. The same rule applies to production Java: no change under
+`api-sheriff/src/main/java/**` is expected from this module. If one becomes necessary, it is a
+finding about a gap in the BFF and asset plans -- report it rather than patching it here.
+
+== What This Module Deliberately Does Not Copy
+
+The module descriptor and the Playwright configuration were modelled on an existing TokenSheriff
+end-to-end module. Four of its choices are *deliberately not* reproduced here, and each divergence
+is recorded so it reads as a decision rather than an omission:
+
+[cols="2,3"]
+|===
+| Not copied | Why
+
+| A module-local Compose stack
+| `integration-tests/docker-compose.yml` already stands up everything the demo needs. A second stack
+  would be a second thing to keep in sync with the gateway configuration, and the two would drift.
+  The demo starts a *subset* of the existing stack instead.
+
+| An `@axe-core/playwright` accessibility project
+| Accessibility auditing is a separate concern from proving the BFF contract, and it would pull in a
+  dependency outside the approved set. The demo asserts the browser-facing gateway contract and
+  nothing else.
+
+| `screenshot: only-on-failure`
+| Screenshots here are *documentation artifacts*, captured deliberately on the success path at the
+  meaningful states -- anonymous, authenticated, full allowlisted view, claim denied, logged out.
+  Failure-path retention stays on for diagnostics, but the success-path set is the point.
+
+| A Quarkus Dev UI orientation
+| The reference module drives a Quarkus development console. This one drives a deployed gateway
+  through its published ports, because that is the surface an integrator actually consumes.
+|===
+
+Unconditional plugin execution is a fifth divergence, covered separately in
+<<_the_opt_in_mechanism>>.
+
+[#_the_demo_is_excluded_from_the_production_image]
+== The Demo Is Excluded from the Production Image
+
+The demo reaches a gateway solely through a read-only Compose bind mount of
+`demo-client/src/main/resources/spa` onto `/app/demo`, declared on the two demo gateway services
+only. Consequently:
+
+* no `demo-client` path appears in `api-sheriff/src/main/docker/Dockerfile.native`;
+* no demo asset is embedded in the native executable;
+* the `/assets/demo` route is `integration-tests` compose configuration, never a shipped default;
+* the four gateway instances that do not mount `/app/demo` are unaffected -- the boot validator
+  requires only that an asset route's `directory` field be *present*, performing no filesystem
+  existence check, so those instances boot unchanged and answer `404` on that path.
+
+A default `verify -Ppre-commit` or the standard pull-request Maven workflow starts no container and
+downloads no Node. The demo suite runs only from its own dedicated CI workflow --
+`.github/workflows/demo-client-e2e.yml`, triggered by `workflow_dispatch` and by pushes to `main`.
+It is deliberately not attached to any `pull_request` trigger and is not added to `maven.yml` or
+`integration-tests.yml`.
+
+== Keeping the Stack Documentation Honest
+
+The demo adds a bind mount to two services in `integration-tests/docker-compose.yml`, and one
+`de.cuioss.sheriff.management-scheme` label to `keycloak` so the bring-up derives that service's
+readiness probe from the model exactly as it derives the gateways'. The
+link:integration-test-topology.adoc[Integration-Test Topology] document draws the mounted material of
+that stack and states that a change to `docker-compose.yml` makes its diagram stale. When the demo
+mount changes shape -- a different host path, a third instance, a second mounted directory -- update
+that diagram in the same change rather than annotating it.

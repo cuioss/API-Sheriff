@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,7 +32,7 @@ import org.junit.jupiter.api.Test;
  * Without a session the fold starts a fresh auth-code flow — a {@code 302} into the IdP authorization
  * endpoint carrying the confidential {@code client_id}, {@code response_type=code}, and a PKCE
  * {@code code_challenge}. With a live session it short-circuits {@code 302} to the same-origin-validated
- * {@code return_to} target rather than re-driving the IdP, so an already-authenticated browser is not
+ * {@code returnUrl} target rather than re-driving the IdP, so an already-authenticated browser is not
  * bounced through Keycloak again.
  */
 class BffLoginInitiationIT extends BaseIntegrationTest {
@@ -65,7 +66,7 @@ class BffLoginInitiationIT extends BaseIntegrationTest {
         var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .redirects().follow(false)
                 .when()
-                .get("/auth/login?return_to=/home")
+                .get("/auth/login?returnUrl=/home")
                 .then()
                 .statusCode(302)
                 .extract();
@@ -74,5 +75,10 @@ class BffLoginInitiationIT extends BaseIntegrationTest {
         assertNotNull(location, "a live-session login initiation must still redirect");
         assertFalse(location.contains("/protocol/openid-connect/auth"),
                 "an already-authenticated session must not be re-driven through the IdP");
+        // Asserting the exact target — not merely "not the IdP" — is what keeps this test honest: a
+        // returnUrl the gateway failed to read degrades to the default "/", which would still satisfy
+        // the assertion above and leave the short-circuit's return-target propagation unexercised.
+        assertEquals("/home", location,
+                "the short-circuit must redirect to the returnUrl the browser asked for");
     }
 }

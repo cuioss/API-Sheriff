@@ -58,11 +58,16 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pins the byte ceiling the edge enforces on a gateway-terminated reserved POST body (the OIDC
- * {@code response_mode=form_post} callback and the back-channel logout receiver), driven over a live
- * Vert.x HTTP server — no Docker, no Quarkus.
+ * Pins the byte ceiling the edge enforces on a gateway-terminated reserved POST body, driven over a
+ * live Vert.x HTTP server — no Docker, no Quarkus.
  * <p>
- * Those two paths are read <em>pre-authentication</em> and <em>before</em> the pipeline's per-route
+ * <strong>The back-channel logout receiver is the one path this bounds.</strong> The gateway drives
+ * the OIDC flow with {@code response_mode=query}, so its callback is a bodyless top-level GET that
+ * consumes no request body at all and is deliberately no longer on the edge's reserved-body-read
+ * allowlist. Back-channel logout remains a genuinely body-carrying reserved POST — it carries a
+ * {@code logout_token} JWT — so it keeps the ceiling, and every assertion below drives it.
+ * <p>
+ * That path is read <em>pre-authentication</em> and <em>before</em> the pipeline's per-route
  * {@code maxBodySize} cap can apply, so without a ceiling at the read itself an unauthenticated caller
  * could buffer an arbitrarily large body straight into the gateway heap. The ceiling is enforced twice
  * — a {@code Content-Length} pre-check and a streaming cumulative counter — and both arms are pinned
@@ -79,6 +84,11 @@ import org.junit.jupiter.api.Test;
 class ReservedBodyCeilingTest {
 
     private static final String CALLBACK_PATH = "/auth/callback";
+    /**
+     * The one reserved path that still consumes a request body, and therefore the path every
+     * ceiling assertion below drives.
+     */
+    private static final String BACKCHANNEL_LOGOUT_PATH = "/auth/backchannel-logout";
     private static final String CRLF = "\r\n";
     /** Bounded wait proving the pre-check refused BEFORE buffering: far below the 20s body deadline. */
     private static final long NO_BUFFERING_TIMEOUT_SECONDS = 5L;
@@ -102,6 +112,9 @@ class ReservedBodyCeilingTest {
                 .version(1)
                 .oidc(Optional.of(OidcConfig.builder()
                         .redirectUri(Optional.of("https://localhost" + CALLBACK_PATH))
+                        .logout(Optional.of(OidcConfig.Logout.builder()
+                                .backchannelPath(Optional.of(BACKCHANNEL_LOGOUT_PATH))
+                                .build()))
                         .build()))
                 .build();
         EdgeHardeningOptions hardening = new EdgeHardeningOptions();
@@ -135,7 +148,7 @@ class ReservedBodyCeilingTest {
     void acceptsBodyExactlyAtTheCeiling() throws Exception {
         String body = formBody(ceiling);
 
-        int status = post(CALLBACK_PATH, body);
+        int status = post(BACKCHANNEL_LOGOUT_PATH, body);
 
         assertEquals(ceiling, body.length(),
                 "The arranged body must sit exactly on the boundary for this to pin the ceiling");
@@ -148,10 +161,39 @@ class ReservedBodyCeilingTest {
     void rejectsBodyOverTheCeiling() throws Exception {
         String body = formBody(ceiling + 1);
 
-        int status = post(CALLBACK_PATH, body);
+        int status = post(BACKCHANNEL_LOGOUT_PATH, body);
 
         assertEquals(413, status,
                 "A body beyond the ceiling is refused 413 — the honest status for an over-large payload");
+    }
+
+    /**
+     * The counterpart assertion to every test in this class: the OIDC callback is NOT bounded here,
+     * because it no longer reads a body at all.
+     * <p>
+     * The gateway drives {@code response_mode=query}, so the live callback is a top-level GET
+     * carrying {@code code}/{@code state} in the query string. {@code ReservedEndpoint.CALLBACK} was
+     * therefore removed from {@code GatewayEdgeRoute.needsReservedBodyRead}'s allowlist — and that
+     * removal was not cosmetic: leaving it there would have kept granting ANY unauthenticated POST
+     * to the callback path a pre-authentication, pre-pipeline body read of up to the ceiling, a
+     * retained attack surface with no remaining purpose.
+     * <p>
+     * An over-ceiling POST to the callback path is consequently no longer refused {@code 413}. It
+     * takes the ordinary paused-stream path and reaches the reserved carve-out ({@code 404} under
+     * the inert runtime here; {@code 400} for a missing {@code state} against a live one). Asserting
+     * the {@code 413} is GONE is what pins the allowlist decision — without it, silently restoring
+     * {@code CALLBACK} to the allowlist would break no test.
+     */
+    @Test
+    @DisplayName("no longer applies the ceiling to the callback path — it reads no body under response_mode=query")
+    void doesNotApplyTheCeilingToTheBodylessCallback() throws Exception {
+        String body = formBody(ceiling + 1);
+
+        int status = post(CALLBACK_PATH, body);
+
+        assertEquals(404, status,
+                "The callback is not on the reserved-body-read allowlist, so no ceiling applies and the "
+                        + "request reaches the reserved carve-out instead of being refused 413");
     }
 
     @Test
@@ -160,7 +202,7 @@ class ReservedBodyCeilingTest {
         // A raw request head declaring far more than the ceiling, with ZERO body bytes ever sent. A
         // gateway that buffered first would still be blocked on its 20-second body deadline; only a
         // gateway that refuses on the declared length alone can answer inside the bounded wait below.
-        String head = "POST " + CALLBACK_PATH + " HTTP/1.1" + CRLF
+        String head = "POST " + BACKCHANNEL_LOGOUT_PATH + " HTTP/1.1" + CRLF
                 + "Host: localhost:" + frontPort + CRLF
                 + "Content-Length: " + (ceiling * 64) + CRLF
                 + "Connection: close" + CRLF + CRLF;
@@ -188,7 +230,7 @@ class ReservedBodyCeilingTest {
         // altogether. That is what is exercised here.
         int chunkSize = 1024;
         long chunks = ceiling / chunkSize + 2;
-        StringBuilder raw = new StringBuilder("POST " + CALLBACK_PATH + " HTTP/1.1" + CRLF
+        StringBuilder raw = new StringBuilder("POST " + BACKCHANNEL_LOGOUT_PATH + " HTTP/1.1" + CRLF
                 + "Host: localhost:" + frontPort + CRLF
                 + "Transfer-Encoding: chunked" + CRLF
                 + "Connection: close" + CRLF + CRLF);
@@ -214,7 +256,7 @@ class ReservedBodyCeilingTest {
         // NOT hand the connection back for reuse: the request body was never consumed, so pending bytes
         // would desync the next request framed on it — or an attacker could pin connections by
         // repeatedly tripping the 413, which is exactly the DoS this ceiling exists to bound.
-        String head = "POST " + CALLBACK_PATH + " HTTP/1.1" + CRLF
+        String head = "POST " + BACKCHANNEL_LOGOUT_PATH + " HTTP/1.1" + CRLF
                 + "Host: localhost:" + frontPort + CRLF
                 + "Content-Length: " + (ceiling * 64) + CRLF + CRLF;
 
@@ -234,7 +276,7 @@ class ReservedBodyCeilingTest {
         // same retirement applies — this path left the most unread bytes of the two.
         int chunkSize = 1024;
         long chunks = ceiling / chunkSize + 2;
-        StringBuilder raw = new StringBuilder("POST " + CALLBACK_PATH + " HTTP/1.1" + CRLF
+        StringBuilder raw = new StringBuilder("POST " + BACKCHANNEL_LOGOUT_PATH + " HTTP/1.1" + CRLF
                 + "Host: localhost:" + frontPort + CRLF
                 + "Transfer-Encoding: chunked" + CRLF + CRLF);
         String chunk = "x".repeat(chunkSize);
@@ -282,11 +324,11 @@ class ReservedBodyCeilingTest {
 
     /**
      * Builds a urlencoded form body of exactly {@code length} characters, shaped like the
-     * {@code state=…} a real form_post callback carries so the payload is representative rather than
-     * arbitrary filler.
+     * {@code logout_token=…} a real back-channel logout carries so the payload is representative
+     * rather than arbitrary filler.
      */
     private static String formBody(long length) {
-        String prefix = "state=" + Generators.letterStrings(8, 16).next() + "&code=";
+        String prefix = "sid=" + Generators.letterStrings(8, 16).next() + "&logout_token=";
         return prefix + "a".repeat((int) length - prefix.length());
     }
 

@@ -9,6 +9,8 @@
     "api-sheriff": {},
     "api-sheriff-parent": {},
     "benchmarks": {},
+    "demo-client-maven": {},
+    "demo-client-npm": {},
     "documentation": {},
     "integration-tests": {}
   },

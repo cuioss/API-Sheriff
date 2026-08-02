@@ -1,0 +1,116 @@
+# The demo SPA's browser end-to-end suite (demo-client), run against the real Keycloak stack.
+#
+# DEDICATED AND OPT-IN BY DESIGN. This workflow is triggered by workflow_dispatch and by pushes to
+# main — deliberately NOT by any pull_request trigger, and deliberately NOT folded into maven.yml or
+# integration-tests.yml. The suite builds a native image, starts containers and downloads a browser
+# toolchain; putting that on the default pull-request path would slow every PR for a signal that is
+# about the demo client, not about the gateway. Keep it that way: if this ever needs to gate a PR,
+# that is a decision to take explicitly, not by adding a trigger here in passing.
+name: Demo Client E2E
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One demo run at a time — the suite drives a shared container stack on fixed host ports, so two
+# concurrent runs on the same runner class would collide.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  demo-client-e2e:
+    name: Demo SPA browser suite (both session modes)
+    runs-on: ubuntu-latest
+    # The native compile is the dominant and most variable term; the container bring-up and the two
+    # Playwright projects together are minutes, not tens of minutes.
+    timeout-minutes: 60
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      # Build the native executable explicitly rather than letting the bring-up script's
+      # build-native-if-needed.sh do it implicitly. Both produce the same artifact, but doing it as
+      # its own step means a native compilation failure is reported as a native compilation failure
+      # instead of surfacing as a container that never became ready.
+      - name: Build the native executable
+        run: |
+          ./mvnw --no-transfer-progress clean package -Pnative -pl api-sheriff -am -DskipTests
+
+      # The e2e-demo profile owns the whole lifecycle: it installs the pinned Node toolchain and the
+      # pinned browser, lints, runs start-dev-environment.sh (which rebuilds the api-sheriff image
+      # from the executable above and brings up the trimmed three-container stack), runs both
+      # Playwright projects, and tears the stack down again in post-integration-test.
+      - name: Run the demo E2E suite
+        run: |
+          ./mvnw --no-transfer-progress verify -Pe2e-demo -pl demo-client
+
+      # THE TEARDOWN SAFETY NET, and it is not redundant with the profile's own post-integration-test
+      # teardown. frontend-maven-plugin's npm goal fails the build IMMEDIATELY on a non-zero npm exit
+      # — unlike maven-failsafe-plugin it records nothing for a later phase and honours no
+      # testFailureIgnore — so a FAILING suite means Maven never reaches post-integration-test and
+      # keycloak, api-sheriff and api-sheriff-cookie are all left running. Nothing else here reclaims
+      # them: the job runs `verify`, not `clean verify`, so the profile's pre-clean teardown never
+      # fires either. `always()` covers the failing-suite path and a cancelled run alike.
+      #
+      # `|| true` is a deliberate guard, not sloppiness. This step runs on EVERY outcome, including
+      # after a green suite whose post-integration-test teardown already emptied the stack — so the
+      # nothing-left-to-stop path is the common one, and it must never turn a green job red.
+      # stop-dev-environment.sh is not contracted to exit 0 on that path: demo-client/pom.xml already
+      # declares successCodes 0 AND 1 on both of its teardown executions for exactly this reason.
+      # (Observed locally on docker compose v2, the nothing-to-stop path does exit 0 — the guard
+      # covers the tolerated 1, it does not assume it.)
+      - name: Tear down the demo stack
+        if: always()
+        run: |
+          ./demo-client/scripts/stop-dev-environment.sh || true
+
+      # Diagnostics, best-effort: the JUnit XML plus Playwright's failure-path traces, screenshots
+      # and videos all land under target/test-results. `always()` because a failing suite is exactly
+      # when they are worth having, and `warn` rather than `error` because an earlier step failing
+      # (a native compile that never produced an image, say) legitimately leaves nothing here — that
+      # is already reported by the step that actually failed, and re-reporting it as a missing
+      # artifact would only obscure the real cause.
+      - name: Upload JUnit results and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: demo-client-junit-results
+          path: demo-client/target/test-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # The documentation screenshot set: one parallel set per session-mode project, captured on the
+      # SUCCESS path at the meaningful states (anonymous, authenticated, full allowlisted view,
+      # claim denied, logged out). This is the artifact the demo exists to produce, so the
+      # assertion is deliberately strict — but scoped to `success()`, where it is meaningful: a
+      # suite that passed and produced no screenshots has silently stopped documenting anything,
+      # and that MUST fail. On a failed suite the set is legitimately incomplete, so the step does
+      # not run at all rather than adding a second red mark to an already-diagnosed failure.
+      - name: Upload documentation screenshots
+        if: success()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: demo-client-screenshots
+          path: demo-client/target/screenshots/
+          retention-days: 30
+          if-no-files-found: error

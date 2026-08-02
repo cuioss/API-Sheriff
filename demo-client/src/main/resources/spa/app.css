@@ -1,0 +1,159 @@
+/*
+ * Minimal styling for the API Sheriff BFF demo client and its post-logout landing page.
+ *
+ * No component library, no CSS framework, no preprocessor -- the served file is the authored file.
+ * Custom properties keep the palette in one place; everything else is plain, readable CSS.
+ */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #d6dae0;
+  --ink: #1c2430;
+  --ink-muted: #5b6773;
+  --accent: #1f5f8b;
+  --warn: #8b2f1f;
+  --radius: 6px;
+  --gap: 1rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 2rem 1rem;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+.app,
+.landing {
+  max-width: 44rem;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+}
+
+h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  color: var(--accent);
+}
+
+code {
+  padding: 0.05em 0.3em;
+  border-radius: 3px;
+  background: #e9ecf1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.app__lede,
+.hint {
+  margin: 0 0 var(--gap);
+  color: var(--ink-muted);
+}
+
+.app__footer {
+  margin-top: 1.5rem;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.panel {
+  margin-bottom: var(--gap);
+  padding: var(--gap);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.status {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+button,
+select {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.1);
+}
+
+[hidden] {
+  display: none;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(9rem, auto) 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.kv .empty {
+  grid-column: 1 / -1;
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-style: italic;
+}
+
+.problem {
+  margin: var(--gap) 0 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--warn);
+  background: #fbf0ee;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.landing {
+  padding: 2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: center;
+}
+
+.landing a {
+  color: var(--accent);
+}

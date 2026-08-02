@@ -49,18 +49,42 @@ import org.jspecify.annotations.Nullable;
  * string and a raw {@code Cookie} header and returns a {@link CallbackOutcome} the edge renders),
  * so it carries no JAX-RS/Vert.x coupling and is unit-testable without a container.
  * <p>
- * <strong>form_post callback.</strong> The engine drives the authorization request with
- * {@code response_mode=form_post}, so after a successful login Keycloak returns a 200 auto-submit
- * form that POSTs the {@code code}/{@code state} to the {@code redirect_uri} as an
- * {@code application/x-www-form-urlencoded} body — not a 302 with the code in the query. The edge
- * therefore hands this endpoint the raw form body for a POST callback and the raw query for a GET
- * callback; both are the same urlencoded parameter shape, so a single {@code parse} handles either.
+ * <strong>Query-mode callback.</strong> The gateway drives the authorization request with
+ * {@code response_mode=query} (see
+ * {@link de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder}), so
+ * after a successful login the IdP answers a {@code 302} that navigates the browser to the
+ * {@code redirect_uri} with the {@code code}/{@code state} in the query string. That top-level GET
+ * navigation is the only callback shape on which the browser sends the {@code SameSite=Lax}
+ * browser-binding cookie the {@code 403} branch below requires; the engine's built-in
+ * {@code response_mode=form_post} produced a cross-site POST instead, on which a Lax cookie is
+ * dropped, so every real-browser login dead-ended there. The edge therefore hands this endpoint the
+ * raw query, and no body is read for the callback path at all.
  * <p>
- * <strong>Callback HPP defence (BFF-13).</strong> The endpoint parses the <em>raw</em> parameter
- * string with {@link CallbackParameters#parse(String)} — never {@link CallbackParameters#of(java.util.Map)}:
- * only the raw parse lets the engine re-detect a duplicated {@code code}/{@code state} (the
- * Keycloak CVE-2026-9689 class), which a collapsed map cannot. A form_post body is parsed by the
- * same {@code parse}, so the duplicate-parameter defence holds identically for the POST body.
+ * <strong>Callback HPP defence (BFF-13) — verified on the query path.</strong> The endpoint parses
+ * the <em>raw</em> parameter string with {@link CallbackParameters#parse(String)} — never
+ * {@link CallbackParameters#of(java.util.Map)}: only the raw parse lets the engine re-detect a
+ * duplicated {@code code}/{@code state} (the Keycloak CVE-2026-9689 class), which a collapsed map
+ * cannot. The defence was re-verified end to end for the query shape rather than assumed to carry
+ * over: the edge populates {@code ReservedHttpRequest.rawQuery} from the genuinely raw Vert.x
+ * {@code HttpServerRequest.query()} — the untouched request-target query string, not a
+ * first-value-wins projection of the parsed parameter map — and
+ * {@code BffRuntime.callbackParameters} feeds exactly that string to the same {@code parse}. No
+ * stage between the edge and this endpoint collapses, reorders or de-duplicates the query, so a
+ * duplicated {@code code} or {@code state} still reaches {@code parse} and is still rejected
+ * {@code 400}.
+ * <p>
+ * <strong>Accepted tradeoff — the code travels in the URL.</strong> {@code response_mode=query}
+ * places the authorization code in the callback URL, exposing it to the {@code Referer} header, to
+ * proxy / CDN and server access logs, and to browser history. That exposure is the standard reason
+ * {@code form_post} is preferred; it is accepted here <em>deliberately, by operator decision</em>,
+ * because it is what makes the browser-facing flow work at all. It is bounded — not removed — by
+ * PKCE (the engine always emits {@code code_challenge}/{@code code_challenge_method} and refuses a
+ * provider that does not advertise {@code S256}, so a leaked code is not redeemable without the
+ * gateway-held verifier), by the single-use, short-lived nature of the code at the token endpoint,
+ * and by the binding-cookie + {@code state} double-check this endpoint performs below, which
+ * rejects {@code 403} a code replayed from a different browser even while it is still live. The
+ * full statement of the tradeoff and of how each mitigation was verified lives on
+ * {@link de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder}.
  * <p>
  * <strong>Browser binding (D2b).</strong> The pending-authorization record is resolved by the
  * unguessable id carried in the {@link BindingCookieCodec browser-binding cookie}, not by the
@@ -125,9 +149,8 @@ public final class CallbackEndpoint {
      * Handles one OIDC callback: validates the binding, drives the engine exchange, creates the
      * session, and returns the browser response.
      *
-     * @param rawParameters the raw callback parameter string — the query for a GET callback or the
-     *                      {@code application/x-www-form-urlencoded} body for a {@code response_mode=form_post}
-     *                      POST callback (never map-collapsed — BFF-13)
+     * @param rawParameters the raw callback parameter string — the untouched query string of the
+     *                      {@code response_mode=query} GET callback, never map-collapsed (BFF-13)
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now         the reference instant (TTL anchor for pending resolution and session expiry)
      * @return the redirect outcome on success, a {@code 400}/{@code 403} error outcome when the
@@ -275,7 +298,7 @@ public final class CallbackEndpoint {
          * {@code state}/{@code nonce}/{@code iss} + token validation, fail-closed.
          *
          * @param context the pending record's engine transaction context (owns state/nonce/PKCE)
-         * @param params  the parsed callback parameters (from the raw query — BFF-13)
+         * @param params  the parsed callback parameters (from the raw, never map-collapsed query — BFF-13)
          * @return the validated access + ID token result
          * @throws de.cuioss.sheriff.token.commons.error.TokenSheriffException when the exchange or
          *         token validation fails (invalid state/nonce, IdP error, signature/claim failure)

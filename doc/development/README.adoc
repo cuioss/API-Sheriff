@@ -73,6 +73,13 @@ This tree is seeded here and grows as contributor-facing material lands.
   certificate and configuration material, and the two trust boundaries -- drawn from
   `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
 
+| link:demo-client.adoc[Demo Client and the Playwright End-to-End Suite]
+| The `demo-client` module -- why the demo SPA is served by the gateway rather than a side-car
+  static server, the opt-in `skipPlaywrightTests` / `e2e-demo` build mechanism that keeps it out of
+  the default lane, how to run the suite locally, the Chromium host-resolver mapping the pinned
+  realm `frontendUrl` forces, and the standing prohibitions the module carries (the `Accept`-based
+  info-endpoint assertion, and why a Compose profile cannot express the trimmed bring-up).
+
 | link:diagram-type-deployment.md[Deployment Diagram Type -- Authoring Standard]
 | How a deployment/topology SVG is drawn -- containment nesting with its depth limit and insets,
   protocol-and-port edge labels, the trust-boundary visual that stays inside the theme-neutral
@@ -84,8 +91,8 @@ This tree is seeded here and grows as contributor-facing material lands.
 
 Documents in `doc/development/` cover:
 
-* *Build* -- the Maven module structure (`api-sheriff`, `integration-tests`, `benchmarks`) and
-  the canonical build commands.
+* *Build* -- the Maven module structure (`api-sheriff`, `integration-tests`, `benchmarks`,
+  `demo-client`) and the canonical build commands.
 * *Test* -- the unit, module, and integration test layers, the CUI test generator, and the
   coverage floor.
 * *Module layout* -- package structure, the framework-agnostic seam

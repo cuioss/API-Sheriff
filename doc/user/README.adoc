@@ -55,6 +55,14 @@ layer.
   do in this variant, the login-leg session affinity, and the forced re-login on a sealed-cookie
   format bump. Links to the Configuration Reference for the `oidc` key contract.
 
+| link:demo-client.adoc[Demo Client -- the BFF Integration Sample]
+| The copy-this sample for putting a browser application behind a BFF gateway: the browser-facing
+  contract of the reserved `/auth` paths, the four identity-disclosure states the `claims` parameter
+  selects (including the `403` an operator-disallowed claim earns), the same-origin `returnUrl` rule
+  and its silent-fallback behaviour, the `Cache-Control: no-store` guarantee, the asset-anchor
+  configuration that lets the gateway serve the bundle itself, and why `oidc.logout.final_redirect`
+  must name a concrete file rather than `/`.
+
 | link:environment-variable-overrides.adoc[Environment-Variable Overrides]
 | Which knobs the deployment owns and which `gateway.yaml` owns: the three-way classification
   (policy / deployment-bound / build-time), the precedence rule and why it has no exceptions, the

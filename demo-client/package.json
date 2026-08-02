@@ -1,0 +1,27 @@
+{
+  "name": "api-sheriff-demo-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dependency-free demo SPA for the API Sheriff BFF and the Playwright end-to-end suite that drives it.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint:strict": "eslint --max-warnings 0 --report-unused-disable-directives '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",
+    "format": "prettier --write '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",
+    "format:check": "prettier --check '{tests,utils,fixtures,src/main/resources/spa}/**/*.js'",
+    "install-browser": "playwright install chromium",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@playwright/test": "^1.49.0",
+    "eslint": "^10.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-security": "^4.0.1",
+    "globals": "^15.0.0",
+    "prettier": "^3.0.3"
+  }
+}

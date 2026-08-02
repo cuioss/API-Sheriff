@@ -355,6 +355,71 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   `SessionBinding` is assembled. Provider-metadata
   discovery is resolved lazily on first engine use, so a BFF gateway boots without a live IdP.
 
+[[_oidc_callback_response_mode]]
+==== OIDC callback response mode: `query`, and the tradeoff that buys
+
+The gateway drives the authorization request with *`response_mode=query`*, so after a successful
+login the IdP answers a `302` that navigates the browser to `oidc.redirect_uri` with the
+`code` and `state` in the *query string*. The callback is therefore a *top-level GET navigation*,
+and it carries no request body at all.
+
+This is not the engine default. `token-sheriff-client`'s `AuthorizationRequestBuilder` emits
+`response_mode=form_post`; the gateway overrides it with its own
+`QueryResponseModeAuthorizationRequestBuilder`, wired into *both* engine seams that build an
+authorization URL -- the auth-code login leg and the RFC 9470 step-up re-drive. The override
+rewrites only the `response_mode` parameter and preserves every other authorization parameter
+verbatim.
+
+*Why the mode is load-bearing, not cosmetic.* The short-lived browser-binding cookie
+(`__Host-sheriff-binding`) that ties an in-flight login to one browser is `SameSite=Lax`, and *a
+Lax cookie is not sent on a cross-site POST* -- only on a top-level GET navigation. Under
+`form_post` the IdP's auto-submit form performs exactly that cross-site POST, so a real browser
+dropped the binding cookie on the callback leg and every login dead-ended on the callback's
+"no browser-binding cookie" `403` branch. Driving the request with `response_mode=query` makes the
+callback the one request shape on which the cookie *is* sent. *The response mode and the cookie's
+`SameSite` attribute are one design; do not change either in isolation.*
+
+[IMPORTANT]
+.`SameSite=None` was considered and rejected
+====
+The alternative remedy was to keep `form_post` and relax the binding cookie to `SameSite=None`.
+That was *rejected*: `None` would have to permit precisely the cross-site sends the cookie exists
+to block, weakening the browser-binding control itself. No cookie attribute is weakened by the
+mode switch -- the binding cookie keeps its `__Host-` prefix, `Secure`, `HttpOnly`, `Path=/` and
+`SameSite=Lax`, and a regression test asserts `SameSite=None` is never emitted.
+====
+
+[WARNING]
+.Accepted tradeoff -- the authorization code travels in the URL
+====
+`response_mode=query` places the authorization `code` in the callback URL rather than in a POST
+body, which exposes it to the `Referer` header, to proxy / CDN and server access logs, and to
+browser history. *That exposure is the standard reason `form_post` is normally preferred, and it
+is accepted here deliberately, by operator decision*, because it is what makes the browser-facing
+flow work at all.
+
+It is *bounded -- not removed* -- by three mitigations, each verified in this codebase rather than
+assumed:
+
+* *PKCE is in force.* The engine always emits `code_challenge` / `code_challenge_method` and
+  refuses to start the flow against a provider that does not advertise `S256`. A leaked code is
+  not redeemable without the verifier, which never leaves the gateway.
+* *The code is single-use and short-lived.* It is redeemed once at the token endpoint and a replay
+  of the same code fails there. The gateway does not widen the IdP's own code lifetime.
+* *The binding cookie plus the `state` double-check.* The callback resolves the pending record by
+  the unguessable id in the binding cookie *and* constant-time-compares the returned `state`, so a
+  code replayed from a different browser is rejected `403` even while the code is still live.
+====
+
+*Consequence for the reserved-POST surface.* Because the callback consumes no body,
+`ReservedEndpoint.CALLBACK` was removed from the edge's reserved-body-read allowlist. That removal
+is a hardening, not bookkeeping: leaving it there would keep granting *any unauthenticated* POST to
+the callback path a pre-authentication, pre-pipeline body read, a retained surface with no
+remaining purpose. A stray POST to the callback path now takes the ordinary paused-stream path and
+is rejected `400` for a missing `state` -- an honest rejection, never a `500`. *The back-channel
+logout receiver remains a genuinely body-carrying reserved POST*: it stays in the allowlist and the
+<<_threading_model,reserved-body byte ceiling>> continues to bound it, unchanged.
+
 === Forward Policy (Zero-Trust)
 
 Nothing crosses to the upstream unless it is explicitly allowed. The forward policy defines
@@ -658,6 +723,7 @@ behaviour where it differs (WebSocket upgrade, gRPC streaming). Connections whos
 listed in `tls.passthrough_sni` are relayed at L4 and never reach the route table, so no L7
 behaviour applies to them.
 
+[[_threading_model]]
 == Threading Model
 
 The gateway targets a virtual-thread-per-request model:
@@ -689,10 +755,11 @@ event loop, never inline on the per-request virtual thread.
 * *Writing the response* from the pipeline: marshal it with
   `ctx.vertx().runOnContext(v -> ...)` (every renderer in `GatewayEdgeRoute` does this; the sole
   exception, `reject(...)`, is called only from the event loop and so needs no hop).
-* *Reading a body the gateway itself consumes* (the `response_mode=form_post` callback and
-  back-channel logout): read it on the event loop *before* the virtual-thread hop, then dispatch
-  with the buffered bytes -- see `GatewayEdgeRoute#readReservedBodyThenDispatch`. A proxied body
-  is never buffered; it streams on the client's event loop (ADR-0008).
+* *Reading a body the gateway itself consumes* (the back-channel logout receiver -- the one
+  reserved path that still carries a request body): read it on the event loop *before* the
+  virtual-thread hop, then dispatch with the buffered bytes -- see
+  `GatewayEdgeRoute#readReservedBodyThenDispatch`. A proxied body is never buffered; it streams on
+  the client's event loop (ADR-0008).
 
 The anti-pattern that this rule forbids: pausing the inbound stream, hopping to the virtual
 thread, then draining the paused body from that virtual thread -- e.g. blocking on
@@ -700,10 +767,15 @@ thread, then draining the paused body from that virtual thread -- e.g. blocking 
 `runOnContext`. It *appears* to work on a multi-core dev box but hits its read deadline under
 CPU contention (a 1--2-core CI runner, or a 1--2 CPU cgroup limit), because the paused read is
 re-armed across the event-loop/virtual-thread boundary instead of on the connection's own event
-loop. The failure signature is a body-read timeout surfacing as a downstream 400 (a
-form_post callback rejected "missing state"). This is a threading defect, not a test flake:
-reproduce it locally by pinning the app container's CPU (`docker update --cpus 1 <container>`)
-and running the integration suite against the running stack.
+loop. The failure signature is a body-read timeout surfacing as a downstream 400 -- a reserved
+receiver rejecting the request because the body it needed never arrived. The OIDC callback used to
+be the surface where this was first observed ("missing state"); it no longer carries a body at all
+(see <<_oidc_callback_response_mode>>), so today the reachable instance of this defect is the
+back-channel logout receiver rejecting an absent `logout_token`. *The rule is unchanged and the
+lesson is not historical*: it applies to every reserved body the gateway consumes, and to the next
+one added. This is a threading defect, not a test flake: reproduce it locally by pinning the app
+container's CPU (`docker update --cpus 1 <container>`) and running the integration suite against
+the running stack.
 ====
 
 [[_performance_object_reuse]]

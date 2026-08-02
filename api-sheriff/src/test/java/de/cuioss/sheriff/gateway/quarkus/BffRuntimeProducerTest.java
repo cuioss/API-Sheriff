@@ -15,26 +15,39 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
+import java.lang.reflect.Modifier;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -44,6 +57,7 @@ import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * Covers {@link BffRuntimeProducer}: the runtime is active (and its reserved handlers and session
@@ -103,6 +117,92 @@ class BffRuntimeProducerTest {
                     Instant.parse("2026-07-25T10:00:00Z"));
             assertEquals(401, response.status());
         }
+
+        /**
+         * The wiring-level half of the response-mode assertion — the seam's own behaviour is pinned by
+         * {@code QueryResponseModeAuthorizationRequestBuilderTest}.
+         * <p>
+         * This exists because the failure mode it guards is an <em>omission</em>, and an omission is
+         * invisible to a behavioural test of the seam. The engine's
+         * {@link AuthorizationRequestBuilder} emits {@code response_mode=form_post} unconditionally,
+         * and its shorter constructors silently install that default: a future refactor that rebuilt
+         * {@code AuthorizationCodeFlow} through the 4-argument constructor, or {@code StepUpHandler}
+         * through its no-argument one, would compile, pass every seam test, and quietly reintroduce
+         * the cross-site POST callback on which the {@code SameSite=Lax} binding cookie is dropped.
+         * <p>
+         * The assertion is therefore made against the object graph the producer actually built, and
+         * it is <strong>type-directed rather than name-directed</strong>: it finds every
+         * {@code AuthorizationRequestBuilder} reachable from the assembled runtime and requires each
+         * one to be the gateway's query-mode subclass. Renaming an engine field does not break it;
+         * reverting a seam to the engine default does — which is exactly the intended sensitivity.
+         */
+        @Test
+        @DisplayName("Should wire the query-mode response builder into every engine authorization seam")
+        void shouldWireQueryResponseModeIntoEveryAuthorizationSeam() {
+            List<AuthorizationRequestBuilder> wired = reachableAuthorizationRequestBuilders(runtime);
+
+            assertFalse(wired.isEmpty(),
+                    "no AuthorizationRequestBuilder was reachable from the assembled runtime — this test "
+                            + "must never pass vacuously; if the producer's wiring moved, retarget the walk");
+            assertAll("every engine seam that builds an authorization URL carries the query-mode builder",
+                    wired.stream().map(builder -> (Executable) () ->
+                            assertInstanceOf(QueryResponseModeAuthorizationRequestBuilder.class, builder,
+                                    "an engine seam is still on the default builder, which emits "
+                                            + "response_mode=form_post")));
+        }
+    }
+
+    /**
+     * Collects every {@link AuthorizationRequestBuilder} reachable from {@code root} by walking
+     * instance fields, following lambda captures so a seam held only inside a closure is still seen.
+     * <p>
+     * The walk is bounded to the gateway's and the engine's own packages: it never descends into JDK
+     * or container types, which keeps it away from the strongly-encapsulated {@code java.*} modules
+     * and stops it wandering through collections and class loaders. A field the JVM refuses to open
+     * is skipped rather than failing the walk — the caller's non-empty assertion is what guarantees
+     * the result is still meaningful.
+     */
+    private static List<AuthorizationRequestBuilder> reachableAuthorizationRequestBuilders(Object root) {
+        List<AuthorizationRequestBuilder> found = new ArrayList<>();
+        Set<Object> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Object> pending = new ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            Object current = pending.pop();
+            if (current == null || !seen.add(current)) {
+                continue;
+            }
+            if (current instanceof AuthorizationRequestBuilder builder) {
+                found.add(builder);
+                continue;
+            }
+            for (Class<?> type = current.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive()) {
+                        continue;
+                    }
+                    try {
+                        field.setAccessible(true);
+                        Object value = field.get(current);
+                        if (value != null && isWalkable(value.getClass())) {
+                            pending.push(value);
+                        }
+                    } catch (ReflectiveOperationException | InaccessibleObjectException _) {
+                        // A field the JVM will not open tells us nothing; the non-empty assertion above
+                        // is what keeps an over-skipped walk from passing vacuously. Only the two
+                        // exceptions setAccessible/get can actually raise here are caught: a broader
+                        // catch would swallow a genuine defect in the walk itself.
+                    }
+                }
+            }
+        }
+        return found;
+    }
+
+    /** Restricts the walk to gateway and engine types — never JDK, container or collection internals. */
+    private static boolean isWalkable(Class<?> type) {
+        String name = type.getName();
+        return name.startsWith("de.cuioss.sheriff.gateway.") || name.startsWith("de.cuioss.sheriff.token.client.");
     }
 
     @Nested

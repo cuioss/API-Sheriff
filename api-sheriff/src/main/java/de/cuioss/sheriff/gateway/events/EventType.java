@@ -70,9 +70,10 @@ public enum EventType {
     /** The request method is outside the route's effective {@code allowed_methods}. */
     METHOD_NOT_ALLOWED(EventCategory.INPUT_VALIDATION, 405),
     /**
-     * A gateway-terminated reserved POST path (the OIDC {@code response_mode=form_post} callback or
-     * the back-channel logout receiver) declared or streamed a body beyond the edge's
-     * {@code reserved_body_max_bytes} ceiling. These paths are read before the pipeline's per-route
+     * A gateway-terminated reserved POST path — the back-channel logout receiver, the one such path
+     * that still consumes a request body now that the gateway drives {@code response_mode=query} and
+     * its OIDC callback is a bodyless top-level GET — declared or streamed a body beyond the edge's
+     * {@code reserved_body_max_bytes} ceiling. That path is read before the pipeline's per-route
      * body cap can apply, so the ceiling is enforced at the read itself and the request is rejected
      * {@code 413} without the oversized body ever being buffered.
      * <p>

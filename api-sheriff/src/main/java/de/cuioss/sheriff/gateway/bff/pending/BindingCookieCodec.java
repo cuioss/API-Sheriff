@@ -33,9 +33,19 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The cookie is hardened by construction: the {@code __Host-} prefix (which the browser only
  * honours with {@code Secure} + {@code Path=/} + no {@code Domain}), plus {@code HttpOnly} (no
- * script access) and {@code SameSite=Lax} (survives the top-level IdP redirect while blocking
- * cross-site sends). The codec is framework-agnostic: it produces and parses raw header values,
- * so it carries no JAX-RS/Vert.x coupling and is unit-testable without a container.
+ * script access) and {@code SameSite=Lax}. The codec is framework-agnostic: it produces and parses
+ * raw header values, so it carries no JAX-RS/Vert.x coupling and is unit-testable without a
+ * container.
+ * <p>
+ * <strong>Why {@code SameSite=Lax} is both correct and sufficient here.</strong> The gateway drives
+ * the authorization request with {@code response_mode=query} (see
+ * {@link de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder}), so the
+ * callback the IdP sends the browser to <em>is</em> a top-level GET navigation — precisely the
+ * request shape a Lax cookie is sent on, while every cross-site send is still blocked. That is
+ * exactly why the gateway does <strong>not</strong> need {@code SameSite=None} on this cookie:
+ * {@code None} would have to be paired with the cross-site sends this cookie exists to prevent, so
+ * it would weaken the browser-binding control itself. It was considered and rejected. The mode
+ * choice and this attribute are one design — do not change either in isolation.
  *
  * @author API Sheriff Team
  * @since 1.0

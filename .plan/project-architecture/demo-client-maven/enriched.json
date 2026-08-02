@@ -1,0 +1,104 @@
+{
+  "best_practices": [],
+  "insights": [],
+  "internal_dependencies": [],
+  "key_dependencies": [],
+  "key_dependencies_reasoning": "",
+  "key_packages": {},
+  "purpose": "e2e-tests",
+  "purpose_reasoning": "packaging=pom with maven.compiler.skip and skipTests true and zero Java sources; the only executions are Playwright browser tests bound to integration-test behind -Pe2e-demo",
+  "responsibility": "Reactor-visible shell for the demo client: a Java-free pom-packaging module that owns the dependency-free demo SPA sources and the Playwright end-to-end suite, and wires the pinned Node/npm toolchain plus the stack bring-up and teardown scripts behind the opt-in e2e-demo profile. A default reactor build of this module is a deliberate no-op - no Node download, no npm install, no container, no artifact - and nothing here ever reaches the production image or the native build.",
+  "responsibility_reasoning": "demo-client/pom.xml description and comments, the e2e-demo profile executions (frontend-maven-plugin install-node-and-npm, npm ci, npm run lint:strict, npm run install-browser, npm run test) and the exec-maven-plugin start/stop-dev-environment bindings",
+  "skills_by_profile": {
+    "implementation": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight)",
+          "skill": "plan-marshall:build-server-client"
+        },
+        {
+          "description": "Core JavaScript standards: ES modules, modern patterns, DOM trust boundaries and XSS prevention, code quality",
+          "skill": "pm-dev-frontend:javascript"
+        },
+        {
+          "description": "ESLint flat config, Prettier and Stylelint configuration and enforcement",
+          "skill": "pm-dev-frontend:lint-config"
+        },
+        {
+          "description": "Modern CSS standards covering responsive design, quality practices and tooling",
+          "skill": "pm-dev-frontend:css"
+        }
+      ]
+    },
+    "module_testing": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Language-agnostic testing methodology (AAA, coverage, reliability, determinism)",
+          "skill": "plan-marshall:persona-module-tester"
+        },
+        {
+          "description": "Integration-testing persona for the cross-component browser suite (Playwright)",
+          "skill": "plan-marshall:persona-integration-tester"
+        },
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight)",
+          "skill": "plan-marshall:build-server-client"
+        },
+        {
+          "description": "Core JavaScript standards: ES modules, modern patterns, DOM trust boundaries and XSS prevention, code quality",
+          "skill": "pm-dev-frontend:javascript"
+        }
+      ]
+    },
+    "quality": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Core JavaScript standards: ES modules, modern patterns, DOM trust boundaries and XSS prevention, code quality",
+          "skill": "pm-dev-frontend:javascript"
+        },
+        {
+          "description": "ESLint flat config, Prettier and Stylelint configuration and enforcement",
+          "skill": "pm-dev-frontend:lint-config"
+        }
+      ]
+    },
+    "security": {
+      "defaults": [
+        {
+          "description": "JavaScript security: DOM trust boundaries, XSS sinks, sanitization and Trusted Types",
+          "skill": "pm-dev-frontend:javascript-security"
+        },
+        {
+          "description": "Core JavaScript standards: ES modules, modern patterns, DOM trust boundaries and XSS prevention, code quality",
+          "skill": "pm-dev-frontend:javascript"
+        }
+      ]
+    }
+  },
+  "skills_by_profile_reasoning": "Composed by hand rather than by add-domain because the domain detector keys off build_systems=maven and therefore offers only java, java-cui and general-dev for this module, while every file it owns (SPA app.js, Playwright specs, fixtures, utils, playwright.config.js, eslint.config.js) is JavaScript and it carries no Java at all. general-dev supplies the cross-cutting defaults; the pm-dev-frontend skills supply the surface that actually applies; persona-integration-tester is included under module_testing because the tests here are browser end-to-end specs, not unit tests, so jest-testing does not apply.",
+  "tips": []
+}
