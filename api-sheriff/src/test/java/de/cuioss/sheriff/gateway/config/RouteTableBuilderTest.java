@@ -668,7 +668,7 @@ class RouteTableBuilderTest {
         void shouldLogResolvedProfileForRouteOmittingTheKnob() {
             // Arrange — no security_filter anywhere, so the route inherits the gateway-wide profile
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig("lenient", null))
+                    .securityDefaults(new SecurityDefaultsConfig("lenient", null, null))
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
@@ -700,7 +700,7 @@ class RouteTableBuilderTest {
         void shouldLogDeclaredRouteProfile() {
             // Arrange
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig("strict", null))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", null, null))
                     .build();
             RouteConfig declared = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
                     .securityFilter(filter("minimal")).build();
@@ -1120,7 +1120,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should resolve a declared security_defaults profile")
         void shouldResolveDeclaredGlobalProfile() {
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig("lenient", null))
+                    .securityDefaults(new SecurityDefaultsConfig("lenient", null, null))
                     .build();
 
             assertEquals(SecurityProfile.LENIENT, RouteTableBuilder.globalProfile(config));
@@ -1136,7 +1136,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should resolve a security_defaults block without a profile to the fail-closed default")
         void shouldResolveBlockWithoutProfileToDefault() {
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig(null, null))
+                    .securityDefaults(new SecurityDefaultsConfig(null, null, null))
                     .build();
 
             assertEquals(SecurityProfile.DEFAULT_PROFILE, RouteTableBuilder.globalProfile(config));

@@ -317,6 +317,25 @@ body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and ne
 two upstream requests; a smuggling test corpus (CL.TE/TE.CL/TE.TE/CL.0) run through the
 gateway produces zero desyncs.
 
+*Operator-relaxable leg (bounded).* The gateway-wide
+`security_defaults.allow_get_with_content_length_body` opt-in (default `false`) admits a
+`Content-Length`-framed body on `GET`, for upstreams whose API takes one (Elasticsearch `_search`).
+It narrows the "GET with a body" clause of the assertion above *only* for that shape, and only when
+explicitly enabled. The boundary is drawn where the smuggling risk is, not where the convenience is:
+
+* `Transfer-Encoding` on a bodyless method stays rejected *unconditionally* -- chunked framing on an
+  otherwise-bodyless method is the desync primer this control exists to constrain, and the motivating
+  clients send `Content-Length`-framed bodies, so excluding it costs the use case nothing. No
+  configuration can relax it.
+* The CL+TE coexistence rule, the duplicate/comma-listed `Content-Length` rule and the
+  `Connection`-list framing-strip rule are independent checks unaffected by the opt-in; the CL+TE
+  check runs *before* the body-on-bodyless-method check, so a `GET` carrying both is still rejected.
+* `HEAD` with a body remains rejected on every leg.
+
+The residual exposure is therefore a well-framed, unambiguously-delimited `GET` body -- a shape both
+front-end and back-end agree on, which is what makes it not a desync vector. With the key omitted or
+`false`, every rejection above is preserved bit-for-bit.
+
 [#gw-03]
 === GW-03 -- Header injection (CRLF) and hop-by-hop header abuse
 

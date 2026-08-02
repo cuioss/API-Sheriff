@@ -161,6 +161,10 @@
           "type": "integer",
           "minimum": 1,
           "description": "Budget for the pre-route 'Authorization' header-value carve-out (ADR-0019). A bearer token plus the 'Bearer ' prefix routinely exceeds the resolved profile's header-value cap (~1028 characters against strict's 1024), which the non-skippable pre-route floor would otherwise reject 400 before route selection. Defaults to 8192 when omitted. Boot-refused when declared below the resolved baseline max_header_value_length, since that would make the carve-out a tightening in disguise."
+        },
+        "allow_get_with_content_length_body": {
+          "type": "boolean",
+          "description": "Admits a Content-Length-framed request body on GET. Defaults to false (omitted = rejected, as before this key existed). PARTIAL relaxation, scoped to two rejection legs on GET only: the body-present leg and the declared Content-Length > 0 leg. Transfer-Encoding on GET stays rejected UNCONDITIONALLY — chunked framing on an otherwise-bodyless method is the shape the request-smuggling defences exist to constrain, and the motivating case (Elasticsearch _search) sends Content-Length-framed bodies, so excluding it costs nothing. HEAD is unaffected on every leg, and the CL+TE and Connection-header framing-strip rules are independent checks that still apply. Gateway-wide because the framing gate runs at stage 1, before route selection."
         }
       }
     },

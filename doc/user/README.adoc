@@ -206,6 +206,52 @@ that table first. Two remedies, in order of preference:
 Declaring the value you want -- rather than relying on the omitted-block default -- is the durable
 fix either way.
 
+== Admitting a Body on `GET` (`security_defaults.allow_get_with_content_length_body`)
+
+Some upstream APIs genuinely take a request body on `GET` -- Elasticsearch's `_search` is the
+common one. By default API Sheriff rejects that request `400` at the anti-smuggling framing gate,
+because a body on an otherwise-bodyless method is a request-smuggling shape. This knob admits the
+legitimate case without disabling the defence. Field-level contract lives in
+link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
+section is the operator's decision guide.
+
+=== Symptom and fix
+
+*Symptom:* a `GET` that carries a JSON body is rejected `400` with a framing violation, and the
+upstream never sees it.
+
+*Fix:* enable the opt-in gateway-wide:
+
+[source,yaml]
+----
+security_defaults:
+  profile: strict
+  allow_get_with_content_length_body: true
+----
+
+The key is gateway-wide, not per-route, because the framing gate runs before route selection --
+there is no route resolved yet to scope it to. Omit the key (or set `false`) and every framing
+rejection behaves exactly as it did before the key existed.
+
+=== What it does *not* turn off
+
+Enabling it relaxes two rejection legs, both only for `GET`: the body-present leg and the
+declared-`Content-Length` leg. Everything else the framing gate enforces still applies. In
+particular, a `GET` is **still** rejected `400` when it carries:
+
+* `Transfer-Encoding` -- *unconditionally, and no configuration relaxes it.* Chunked framing on an
+  otherwise-bodyless method is the exact shape the smuggling defences exist to constrain. This costs
+  the use case nothing: an Elasticsearch client sends a `Content-Length`-framed body, never a chunked
+  one, so the relaxation is drawn where the security value is rather than where the convenience is.
+* both `Content-Length` and `Transfer-Encoding` -- the CL+TE desync primer, checked before this leg.
+* more than one `Content-Length` header, or a comma-separated `Content-Length` value.
+* a `Connection` header naming a framing or trust header (the hop-by-hop strip vector).
+
+And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whatever this key says.
+
+If you set this expecting `GET` framing checks to stop applying generally, that is the misreading to
+correct: it admits one specific, well-framed shape and nothing else.
+
 == Asset Content Types (`asset_defaults.content_types`)
 
 The gateway -- never the backing directory or upstream -- decides the `Content-Type` of every asset

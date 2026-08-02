@@ -89,7 +89,7 @@ class ConfigModelContractTest {
                 .tls(tlsConfig())
                 .management(managementConfig())
                 .securityHeaders(securityHeadersConfig())
-                .securityDefaults(new SecurityDefaultsConfig("strict", 8192))
+                .securityDefaults(new SecurityDefaultsConfig("strict", 8192, null))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
@@ -298,13 +298,13 @@ class ConfigModelContractTest {
                     // an unequal instance differing only in 'profile' would leave the newer
                     // max_authorization_header_value_length component silently out of equals().
                     voCase("SecurityDefaultsConfig (profile)",
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("lenient", 8192)),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("lenient", 8192, null)),
                     voCase("SecurityDefaultsConfig (max_authorization_header_value_length)",
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("strict", 4096)),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("strict", 4096, null)),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),

@@ -199,6 +199,11 @@ security_defaults:                 # baseline inbound filter mode; overridable p
   profile: strict                  # strict | lenient | minimal   (omitted block => strict)
                                    # 'minimal' is a PARTIAL disable, not an off switch:
                                    # see "The `minimal` mode" below for the closed definition
+  allow_get_with_content_length_body: false   # OPTIONAL, default false. Admits a Content-Length-
+                                   #   framed body on GET (for upstreams like Elasticsearch
+                                   #   _search). PARTIAL: Transfer-Encoding on GET stays REJECTED
+                                   #   unconditionally, and HEAD is unaffected on every leg.
+                                   #   See "The `GET`-body opt-in" below.
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
                                    #   (global default). An anchor or endpoint may REPLACE this
@@ -1980,11 +1985,19 @@ set has exactly three members:
 fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly. The
 concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
 
-The block carries one further key:
+The block carries two further keys:
 
 [cols="1,4"]
 |===
 | Key | Meaning
+
+| `allow_get_with_content_length_body`
+| *Boolean, default `false`.* Admits a `Content-Length`-framed request body on `GET`. It exists for
+  upstreams whose API genuinely takes a body on `GET` -- Elasticsearch's `_search` is the motivating
+  case. It is a *partial* relaxation of the framing gate, scoped to exactly two rejection legs and
+  only for `GET`: the body-present leg and the declared-`Content-Length` leg. See
+  link:#_the_get_body_opt_in[The `GET`-body opt-in] below for the closed definition of what stays
+  enforced.
 
 | `max_authorization_header_value_length`
 | *Integer, minimum `1`, default `8192`.* The budget for the `Authorization` header-value carve-out
@@ -1997,6 +2010,32 @@ The block carries one further key:
   post-route re-run, so the raised cap reaches `Authorization` values on every route, including one
   declaring its own `security_filter`.
 |===
+
+[[_the_get_body_opt_in]]
+==== The `GET`-body opt-in
+
+`allow_get_with_content_length_body: true` relaxes the anti-smuggling framing gate by exactly two
+legs, and only for `GET`. Everything else the gate enforces is untouched. What *stays rejected* is
+the closed list:
+
+* *`Transfer-Encoding` on `GET` -- rejected unconditionally.* No configuration relaxes it. Chunked
+  framing on an otherwise-bodyless method is precisely the shape the request-smuggling defences exist
+  to constrain, and excluding it costs the motivating use case nothing: an Elasticsearch `_search`
+  client sends a `Content-Length`-framed body, never a chunked one. The relaxation is therefore
+  drawn at the boundary where the security value is, not where the convenience is.
+* *Any body on `HEAD` -- rejected on every leg.* The opt-in never applies to `HEAD`.
+* *`Content-Length` and `Transfer-Encoding` both present -- rejected.* The CL+TE coexistence rule is
+  a separate check that runs *before* the body-on-bodyless-method check, so a `GET` carrying both is
+  refused regardless of this key.
+* *Multiple `Content-Length` headers, or a comma-separated `Content-Length` value -- rejected.*
+* *A `Connection` header naming a framing or trust header -- rejected.* The framing-header-strip
+  defence is independent of this key.
+
+The key is *gateway-wide* rather than per-route by necessity, not convenience: the framing gate runs
+at stage 1, before route selection, so no route is resolved yet to scope it to.
+
+An omitted key resolves to `false`, which is bit-for-bit the behaviour of a gateway that never had
+this key: every framing rejection is preserved.
 
 [IMPORTANT]
 ====

@@ -337,7 +337,11 @@ public class GatewayEdgeRoute {
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
                 cookieHeaderConfiguration, authorizationHeaderConfiguration);
         this.canonicalPathGuard = new CanonicalPathGuard();
-        this.framingGate = new FramingGate();
+        // The GET-body opt-in is gateway-wide by necessity, not by convenience: the framing gate runs
+        // at stage 1, before route selection, so there is no resolved route to scope it to.
+        SecurityDefaultsConfig securityDefaultsConfig = gatewayConfig.securityDefaults();
+        this.framingGate = new FramingGate(securityDefaultsConfig != null
+                && securityDefaultsConfig.effectiveAllowGetWithContentLengthBody());
         TlsConfig tlsConfig = gatewayConfig.tls();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
                 tlsConfig == null ? Set.of() : tlsConfig.passthroughSni().keySet());

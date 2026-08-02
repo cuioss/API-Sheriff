@@ -36,9 +36,18 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Declared EXPLICITLY here, per the same convention as `profile` above, so the IT and benchmark
 # suites measure a pinned value rather than the omitted-key default. A declared value below the
 # resolved baseline cap is refused at boot.
+#
+# `allow_get_with_content_length_body` admits a Content-Length-framed body on GET. Declared true here
+# so the shipped descriptor actually ACTIVATES the opt-in rather than leaving it proven by unit tests
+# alone (GetWithBodyActivationWiringTest asserts this declaration). It is a PARTIAL relaxation: only
+# the body-present and declared-Content-Length legs are skipped, and only for GET. Transfer-Encoding
+# on GET remains REJECTED unconditionally — chunked framing on an otherwise-bodyless method is the
+# request-smuggling shape the framing gate exists to constrain — and a body on HEAD stays rejected on
+# every leg. The CL+TE and Connection-header framing-strip defences are untouched.
 security_defaults:
   profile: strict
   max_authorization_header_value_length: 8192
+  allow_get_with_content_length_body: true
 tls:
   # TLS POLICY for the terminated listener, single-sourced from this document and bound onto the
   # listener by tls/TlsServerCustomizer (ADR-0025). Declared here rather than left implicit so the
