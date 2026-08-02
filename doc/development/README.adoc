@@ -68,7 +68,7 @@ This tree is seeded here and grows as contributor-facing material lands.
   entry points.
 
 | link:integration-test-topology.adoc[Integration-Test Topology]
-| The shape of the stack `integration-tests` brings up -- the five gateway instances and their
+| The shape of the stack `integration-tests` brings up -- the gateway instances and their
   published ports, the SNI front listener's L4 relay to the passthrough backend, the mounted
   certificate and configuration material, and the two trust boundaries -- drawn from
   `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
@@ -182,3 +182,82 @@ reason: they implement the ADR-0007 resolution chain, and re-deriving the postur
 fields would reintroduce the divergence the shared seam exists to prevent. `effectiveAccessLevel` and
 `globalProfile` are `public static` on `RouteTableBuilder` solely to serve as those shared seams,
 following the existing `normalizePrefix` precedent -- they are not general-purpose API.
+
+== Artifact Purity: No Test-Shaped Configuration in the Shipped File
+
+=== The invariant
+
+*The shipped artifact declares nothing test-shaped; the deployment supplies what it names.*
+
+"No `%`-profile keys in `application.properties`" is the mechanical half of that rule, not the rule
+itself. The full form has two clauses, and the second is the one a contributor is more likely to
+breach by accident:
+
+* Nothing in `api-sheriff/src/main/resources/application.properties` may exist only to make a test,
+  a benchmark or a dev run work -- whether it is written as a `%it.`/`%dev.` branch or as a plain
+  unprefixed key that happens to carry a test-only value.
+* Where the product's configuration *names* something, the shipped file names it neutrally and the
+  deployment binds it. `gateway.yaml` says `tls_profile: corporate-idp`; the deployment supplies the
+  trust store behind that name. The name is policy, the material is deployment.
+
+=== Why it matters
+
+A profile branch is not a harmless convenience:
+
+* *It ships test material inside the production artifact.* The `%it` trust bucket this repository
+  used to carry put an integration-test truststore path *and its password literal* into the file
+  every production deployment receives. Secrets and test fixtures do not become invisible by being
+  behind a profile prefix -- they are in the image either way.
+* *It can mask a defect that only the unbranched production profile would expose.* A branch means
+  the configuration the tests exercise is not the configuration production runs. Every green test is
+  then evidence about the branch, not about the artifact. The `%dev` file-logging exemption was
+  exactly this: it existed to hide a shipped default (`quarkus.log.file.enable=true` with a path
+  resolving to the filesystem root) that was wrong for any run which did not override it.
+
+=== The guard, and what it does not cover
+
+`ShippedApplicationPropertiesTest` (in `api-sheriff`) reads the *packaged*
+`target/classes/application.properties` and fails when any *key* starts with `%`. Two details in it
+are load-bearing and must survive any refactoring:
+
+* It resolves the file by path, deliberately *not* through `getResourceAsStream`. On the Surefire
+  classpath `target/test-classes` precedes `target/classes`, so the resource call returns the *test*
+  properties file -- and the guard would pass green while the shipped artifact regressed.
+* It keys on the *key*, not on "the line contains `%`". `quarkus.log.file.format` legitimately
+  contains `%d`, `%-5p` and `%s%e%n` in its *value*; a contains-check would false-positive forever.
+
+The guard is *necessary but not sufficient*, and this plan is its own worked example of the gap:
+
+* It sees `%`-prefixed keys only. An *unprefixed* but test-shaped key passes it -- a
+  `quarkus.tls.benchmark-idp.*` bucket carrying a benchmark-specific profile name violates the
+  invariant while satisfying the guard. That is why that bucket was *relocated to the deployment*
+  rather than merely un-prefixed.
+* It sees one file. A stale `%it.` citation living in another file's *comment* is structurally
+  outside its reach -- and one did survive in `integration-tests/docker-compose.yml` until it was
+  found by reading, not by the guard.
+
+A green guard therefore means "no `%`-prefixed key in the packaged properties file", never "the
+artifact is clean". The second clause of the invariant is still enforced by review.
+
+=== The three shapes a removal takes
+
+When you find a test-shaped entry, the fix is one of three -- pick by asking what the product does
+with the property, not by which is least work:
+
+. *Plain deletion*, when the product never reads that surface at all. The `%it` token-issuer keys
+  fed the token-sheriff extension's own `sheriff.token.issuers.*` namespace; the request path runs
+  off `gateway.yaml`, so the keys were deleted outright and the issuer the integration stack needs
+  was declared in the mounted `gateway.yaml` where it belongs.
+. *Full relocation to the deployment that names it*, when the material is genuinely needed but is
+  deployment-scoped. The `%it` `benchmark-idp` truststore path and password moved into
+  `integration-tests/src/main/docker/certificates/benchmark-idp-trust.properties`, which the compose
+  services load through `QUARKUS_CONFIG_LOCATIONS`. The shipped file now binds no trust profile in
+  any profile.
+. *A shipped-default flip*, when the branch existed only to correct a default that was wrong for the
+  unconfigured case. `%dev.quarkus.log.file.enable=false` disappeared by shipping
+  `quarkus.log.file.enable=false` and having deployments that want a log file set
+  `QUARKUS_LOG_FILE_ENABLE=true` beside their `LOG_FILE_PATH`.
+
+The trap to avoid is a fourth, non-shape: deleting the branch and leaving the default it was
+correcting. That is a regression wearing the invariant's clothes -- deleting the `%dev` line alone
+would have left `quarkus:dev` writing a log file at `/`.
