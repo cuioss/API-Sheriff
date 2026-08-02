@@ -195,6 +195,12 @@ services:
       # against the Docker Keycloak "integration" realm — the extension requires an
       # enabled issuer to become ready.
       - QUARKUS_PROFILE=it
+      # Deployment-supplied trust material for the `benchmark-idp` TLS profile. gateway.yaml names
+      # only the logical profile (jwks.tls_profile: benchmark-idp); this mounted file binds it to a
+      # concrete store, so the shipped artifact carries no benchmark-idp key and no trust password in
+      # any profile. Loaded from the already-mounted certificates/ volume — no new volume is added.
+      # Every QUARKUS_PROFILE=it gateway instance sets this; the value is identical across all six.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       # File logging to mounted target directory
       - LOG_FILE_PATH=/logs/quarkus.log
       # Accept-time SNI passthrough split: gateway.yaml declares tls.passthrough_sni, so the Vert.x
@@ -335,6 +341,9 @@ services:
       - "19001:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
     environment:
       - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       - LOG_FILE_PATH=/logs/quarkus-mtls.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -427,6 +436,9 @@ services:
       - "19002:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
     environment:
       - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       - LOG_FILE_PATH=/logs/quarkus-cookie.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -520,6 +532,9 @@ services:
       - "19003:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
     environment:
       - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       - LOG_FILE_PATH=/logs/quarkus-cookie-2.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -601,6 +616,9 @@ services:
       - "19004:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
     environment:
       - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       - LOG_FILE_PATH=/logs/quarkus-ws-admission.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -695,6 +713,9 @@ services:
       - "19005:9000"  # Management interface — PLAIN HTTP on this instance only, deliberately
     environment:
       - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       - LOG_FILE_PATH=/logs/quarkus-plain-mgmt.log
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
