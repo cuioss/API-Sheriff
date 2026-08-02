@@ -1,12 +1,21 @@
 # Production Dockerfile for API Sheriff native executable
 # Distroless: no shell, no package manager — minimal attack surface
 # No baked-in certificates — mount TLS certs at runtime via volumes or secrets
-# Health probes via management interface (port 9000, plain HTTP)
+# Health probes via the management interface on port 9000 — that interface has exactly ONE port
+# (no ssl-port, no insecure-requests), and its scheme is deployment-bound: HTTPS by default once the
+# deployment supplies QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES / _KEY_FILES (ADR-0025), with plain
+# HTTP reachable only through the named opt-out
+# quarkus.management.tls-configuration-name=plain-management.
 FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:0278fd70d9627df836295570da0fd22034ea664efc12a834a0532cea7556a87b
+
+# Supplied by the build (docker compose build.args.APP_VERSION). The `dev` default is deliberate and
+# honest: a locally or PR-built image is never published, and a version-shaped default would lie the
+# moment the project version moved. The release lane exports the released version into this arg.
+ARG APP_VERSION=dev
 
 LABEL org.opencontainers.image.title="API Sheriff"
 LABEL org.opencontainers.image.description="Security-focused API Gateway — Quarkus native executable"
-LABEL org.opencontainers.image.version="0.1.0-SNAPSHOT"
+LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.vendor="CUIoss"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"

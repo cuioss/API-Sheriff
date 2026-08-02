@@ -1,0 +1,19 @@
+# Build-context allowlist for api-sheriff/ — the ONE build context this project uses.
+#
+# Docker reads .dockerignore from the build-context ROOT, and the context is api-sheriff/:
+# integration-tests/docker-compose.yml declares `context: ../api-sheriff`, and the production build
+# is `docker build -f api-sheriff/src/main/docker/Dockerfile.native ... api-sheriff/`. A root-level
+# .dockerignore would be inert for every build this project performs.
+#
+# This is an ALLOWLIST, not a denylist: everything is excluded, then exactly the one artifact the
+# Dockerfile consumes (COPY --chmod=0755 target/*-runner /app/application) is re-included. Nothing
+# that is not the native runner binary can reach the daemon by accident, now or after a future file
+# lands under api-sheriff/. Re-including a path inside an excluded DIRECTORY requires the stepwise
+# form below — `!target` alone would not let `target/*-runner` through.
+#
+# The Dockerfile itself is transferred independently of the context, so excluding src/ does not make
+# src/main/docker/Dockerfile.native unreadable.
+**
+!target
+target/*
+!target/*-runner
