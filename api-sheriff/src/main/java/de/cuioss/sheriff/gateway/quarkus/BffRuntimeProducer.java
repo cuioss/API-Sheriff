@@ -352,11 +352,7 @@ public class BffRuntimeProducer {
      */
     private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
             Duration sessionTtl) {
-        // CookieKeyMaterial lives outside this conversion's footprint and still takes Optional key
-        // references, so the two @Nullable reads are lifted at the call boundary rather than inside it.
-        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(
-                Optional.ofNullable(session.encryptionKey()),
-                Optional.ofNullable(session.previousKey()));
+        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey(), session.previousKey());
         int maxCookieSize = Objects.requireNonNullElse(session.maxCookieSize(),
                 SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
         LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s, maxCookieSize=%s",

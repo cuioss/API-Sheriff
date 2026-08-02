@@ -72,7 +72,7 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should resolve a supplied key into the passed mode without a rotation key")
         void shouldResolvePassedKey() {
-            CookieKeyMaterial material = CookieKeyMaterial.resolve(Optional.of(CURRENT_KEY_B64), Optional.empty());
+            CookieKeyMaterial material = CookieKeyMaterial.resolve(CURRENT_KEY_B64, null);
 
             assertEquals(CookieKeyMaterial.Mode.PASSED, material.mode());
             assertFalse(material.hasPreviousKey(), "no rotation is in progress");
@@ -83,11 +83,11 @@ class CookieKeyMaterialTest {
         void shouldAcceptPreviousKey() throws Exception {
             // Before the rotation the retired key was THE key, so it sealed under its own id.
             CookieKeyMaterial beforeRotation =
-                    CookieKeyMaterial.resolve(Optional.of(PREVIOUS_KEY_B64), Optional.empty());
+                    CookieKeyMaterial.resolve(PREVIOUS_KEY_B64, null);
             String sealedBeforeRotation = beforeRotation.codec(COOKIE_NAME, TTL, BUDGET).seal(payload());
 
             CookieKeyMaterial rotating =
-                    CookieKeyMaterial.resolve(Optional.of(CURRENT_KEY_B64), Optional.of(PREVIOUS_KEY_B64));
+                    CookieKeyMaterial.resolve(CURRENT_KEY_B64, PREVIOUS_KEY_B64);
             SealedSessionCookieCodec rotatingCodec = rotating.codec(COOKIE_NAME, TTL, BUDGET);
 
             assertTrue(rotating.hasPreviousKey());
@@ -106,7 +106,7 @@ class CookieKeyMaterialTest {
         @DisplayName("Should survive a round trip through the codec it builds")
         void shouldRoundTripThroughItsCodec() throws Exception {
             SealedSessionCookieCodec codec = CookieKeyMaterial
-                    .resolve(Optional.of(CURRENT_KEY_B64), Optional.empty())
+                    .resolve(CURRENT_KEY_B64, null)
                     .codec(COOKIE_NAME, TTL, BUDGET);
 
             assertEquals(Optional.of(payload()), codec.unseal(codec.seal(payload()))
@@ -116,8 +116,8 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should derive a salt bound to the key, so two different keys salt differently")
         void shouldDeriveKeyBoundIdentitySalt() {
-            byte[] first = CookieKeyMaterial.resolve(Optional.of(CURRENT_KEY_B64), Optional.empty()).identitySalt();
-            byte[] second = CookieKeyMaterial.resolve(Optional.of(PREVIOUS_KEY_B64), Optional.empty()).identitySalt();
+            byte[] first = CookieKeyMaterial.resolve(CURRENT_KEY_B64, null).identitySalt();
+            byte[] second = CookieKeyMaterial.resolve(PREVIOUS_KEY_B64, null).identitySalt();
 
             assertEquals(32, first.length, "the salt is a full SHA-256 digest");
             assertFalse(Arrays.equals(first, second), "the salt is bound to the sealing key");
@@ -132,11 +132,9 @@ class CookieKeyMaterialTest {
         @DisplayName("Should reject a key that is not base64, naming the field but never the value")
         void shouldRejectNonBase64Key() {
             String offending = "not base64 ~~~";
-            Optional<String> encryptionKey = Optional.of(offending);
-            Optional<String> noPreviousKey = Optional.empty();
 
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(encryptionKey, noPreviousKey));
+                    () -> CookieKeyMaterial.resolve(offending, null));
 
             assertTrue(thrown.getMessage().contains("session.encryption_key"), thrown.getMessage());
             assertFalse(thrown.getMessage().contains(offending), "the offending value is never echoed");
@@ -146,11 +144,9 @@ class CookieKeyMaterialTest {
         @DisplayName("Should reject a key of the wrong length with a message naming the expected size")
         void shouldRejectWrongLengthKey() {
             String tooShort = Base64.getEncoder().encodeToString(new byte[16]);
-            Optional<String> encryptionKey = Optional.of(tooShort);
-            Optional<String> noPreviousKey = Optional.empty();
 
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(encryptionKey, noPreviousKey));
+                    () -> CookieKeyMaterial.resolve(tooShort, null));
 
             assertTrue(thrown.getMessage().contains("32"), thrown.getMessage());
             assertTrue(thrown.getMessage().contains("AES-256"), thrown.getMessage());
@@ -160,11 +156,10 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should reject a malformed previous key naming the previous-key field")
         void shouldRejectMalformedPreviousKey() {
-            Optional<String> encryptionKey = Optional.of(CURRENT_KEY_B64);
-            Optional<String> malformedPreviousKey = Optional.of(Base64.getEncoder().encodeToString(new byte[8]));
+            String malformedPreviousKey = Base64.getEncoder().encodeToString(new byte[8]);
 
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(encryptionKey, malformedPreviousKey));
+                    () -> CookieKeyMaterial.resolve(CURRENT_KEY_B64, malformedPreviousKey));
 
             assertTrue(thrown.getMessage().contains("session.previous_key"), thrown.getMessage());
         }
@@ -172,11 +167,8 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should refuse a previous key that derives the same wire id as the current key")
         void shouldRefuseCollidingKeyIds() {
-            Optional<String> encryptionKey = Optional.of(CURRENT_KEY_B64);
-            Optional<String> collidingPreviousKey = Optional.of(CURRENT_KEY_B64);
-
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(encryptionKey, collidingPreviousKey));
+                    () -> CookieKeyMaterial.resolve(CURRENT_KEY_B64, CURRENT_KEY_B64));
 
             assertTrue(thrown.getMessage().contains("same key id"), thrown.getMessage());
         }
@@ -184,11 +176,8 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should refuse a previous key without an encryption key rather than ignore it")
         void shouldRefusePreviousKeyAlone() {
-            Optional<String> noEncryptionKey = Optional.empty();
-            Optional<String> previousKey = Optional.of(PREVIOUS_KEY_B64);
-
             IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                    () -> CookieKeyMaterial.resolve(noEncryptionKey, previousKey));
+                    () -> CookieKeyMaterial.resolve(null, PREVIOUS_KEY_B64));
 
             assertTrue(thrown.getMessage().contains("session.previous_key"), thrown.getMessage());
             assertTrue(thrown.getMessage().contains("session.encryption_key"), thrown.getMessage());
@@ -202,7 +191,7 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should select the generated mode when no encryption key is configured")
         void shouldSelectGeneratedMode() {
-            CookieKeyMaterial material = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty());
+            CookieKeyMaterial material = CookieKeyMaterial.resolve(null, null);
 
             assertEquals(CookieKeyMaterial.Mode.GENERATED, material.mode());
             assertFalse(material.hasPreviousKey(), "the generated mode has no previous key by construction");
@@ -212,9 +201,9 @@ class CookieKeyMaterialTest {
         @DisplayName("Should generate a distinct key per boot, so a restart drops every session")
         void shouldGenerateADistinctKeyPerBoot() throws Exception {
             SealedSessionCookieCodec firstBoot =
-                    CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL, BUDGET);
+                    CookieKeyMaterial.resolve(null, null).codec(COOKIE_NAME, TTL, BUDGET);
             SealedSessionCookieCodec secondBoot =
-                    CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).codec(COOKIE_NAME, TTL, BUDGET);
+                    CookieKeyMaterial.resolve(null, null).codec(COOKIE_NAME, TTL, BUDGET);
 
             String sealedBeforeRestart = firstBoot.seal(payload());
 
@@ -226,7 +215,7 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should generate a 256-bit key, so the codec it builds is AES-256-GCM")
         void shouldGenerateA256BitKey() {
-            CookieKeyMaterial generated = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty());
+            CookieKeyMaterial generated = CookieKeyMaterial.resolve(null, null);
 
             assertEquals(32, generated.currentKeyLengthBytes(),
                     "the generated key must be 256-bit — asserting the derived salt's length instead would "
@@ -236,8 +225,8 @@ class CookieKeyMaterialTest {
         @Test
         @DisplayName("Should derive a distinct identity salt per boot, following the generated key")
         void shouldDeriveADistinctSaltPerBoot() {
-            byte[] salt = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).identitySalt();
-            byte[] otherSalt = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).identitySalt();
+            byte[] salt = CookieKeyMaterial.resolve(null, null).identitySalt();
+            byte[] otherSalt = CookieKeyMaterial.resolve(null, null).identitySalt();
 
             assertEquals(32, salt.length, "the salt is a full SHA-256 digest");
             assertFalse(Arrays.equals(salt, otherSalt), "each boot's salt follows its own generated key");
@@ -252,8 +241,8 @@ class CookieKeyMaterialTest {
         @DisplayName("Should keep key material out of toString in both modes")
         void shouldNotLeakKeyMaterialIntoToString() {
             String passed = CookieKeyMaterial
-                    .resolve(Optional.of(CURRENT_KEY_B64), Optional.of(PREVIOUS_KEY_B64)).toString();
-            String generated = CookieKeyMaterial.resolve(Optional.empty(), Optional.empty()).toString();
+                    .resolve(CURRENT_KEY_B64, PREVIOUS_KEY_B64).toString();
+            String generated = CookieKeyMaterial.resolve(null, null).toString();
 
             assertFalse(passed.contains(CURRENT_KEY_B64), "the current key never appears in toString()");
             assertFalse(passed.contains(PREVIOUS_KEY_B64), "the previous key never appears in toString()");
