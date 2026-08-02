@@ -2039,8 +2039,15 @@ this key: every framing rejection is preserved.
 The former `default` value is *removed* from the mode set: it named the `cui-http` builder's
 incidental defaults rather than a policy. A configuration still declaring `profile: default` *fails
 to boot*. Migration is one line: replace `default` with `strict` (or with `lenient` to keep looser
-caps). The value range is enforced by the bundled JSON Schema, not by the configuration validator, so
-an out-of-range value is rejected when the document is bound.
+caps).
+
+The former `none` value is *renamed* to `minimal` -- the behaviour is unchanged, the name now states
+the residual posture instead of denying it. A configuration still declaring `profile: none` *fails to
+boot*. Migration is one line: replace `none` with `minimal`. The unrelated `auth.require: none` is a
+different key in a different value space and is untouched by the rename.
+
+The value range is enforced by the bundled JSON Schema, not by the configuration validator, so an
+out-of-range value is rejected when the document is bound.
 ====
 
 *The mode is resolved per route*, by wholesale replacement down the chain

@@ -104,9 +104,12 @@ deployment needs no key management at all.
 
 The trade-off is made explicit rather than hidden: a generated key cannot be shared with another
 replica and does not survive a restart, so sessions are dropped on restart and cannot be served by a
-peer. A decrypt-only previous key supports rotation and requires a current key to roll onto;
-declaring it alone is rejected at boot, because a rotation key with nothing to roll onto is
-meaningless.
+peer. There is exactly *one* sealing key in force: the gateway holds no decrypt-only companion key,
+so there is no rotation window to stage and nothing to roll onto. Replacing the key is a clean
+break — every cookie sealed under the withdrawn key carries a key id the gateway no longer holds, is
+refused as "no session", and those users log in again. The operator-facing consequence, and the
+migration for a configuration that still declares the removed `previous_key`, are in
+link:../user/bff-cookie.adoc[Operator setup — cookie-based BFF].
 
 === (v) Cookie-mode session identity is a keyed digest including a per-session nonce
 

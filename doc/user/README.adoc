@@ -159,7 +159,8 @@ specific public route that needs it.
 === An unrecognized `profile` value is a hard boot failure
 
 The mode set is exactly `strict`, `lenient`, `minimal`. Any other value -- including the *removed*
-`default` -- makes the gateway *refuse to start*. There is no fallback and no warning-and-continue.
+`default` and the former `none`, now spelled `minimal` -- makes the gateway *refuse to start*. There
+is no fallback and no warning-and-continue.
 
 [IMPORTANT]
 ====
@@ -172,6 +173,24 @@ security_defaults:
 ----
 
 Choose `lenient` instead if you need to keep the looser caps `default` happened to provide.
+====
+
+[IMPORTANT]
+====
+*Migration from `none`.* The mode formerly spelled `none` is now spelled `minimal`. The behaviour is
+unchanged -- only the name is -- but the old spelling is *not* accepted: a `gateway.yaml` still
+declaring `profile: none` *fails to boot* with a value-range violation, at every site the key appears
+(`security_defaults`, an anchor's `security_filter`, a route's `security_filter`).
+
+*Remedy: rename the value.* One line per declaration site:
+
+[source,yaml]
+----
+security_defaults:
+  profile: minimal    # was: none
+----
+
+`auth.require: none` is a *different* key in a different value space and is *not* affected.
 ====
 
 === An omitted `security_defaults` block now means `strict`
