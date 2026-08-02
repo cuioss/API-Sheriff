@@ -67,10 +67,12 @@ class BindingCookieCodecTest {
          * prevent, weakening the browser-binding control itself, so it was rejected.
          * <p>
          * This test asserts the rejection is still in force. It is deliberately expressed as an
-         * explicit absence check rather than left implicit in the positive assertion above: a
+         * explicit absence check rather than left implicit in the positive assertions: a
          * future edit that appended {@code SameSite=None} without removing {@code SameSite=Lax}
          * would still satisfy a `contains("SameSite=Lax")` assertion while shipping the weaker
-         * attribute to the browser.
+         * attribute to the browser. The two directions are complementary and BOTH header forms carry
+         * both: an absence check cannot see a dropped attribute, and a positive check cannot see an
+         * appended one.
          */
         @Test
         @DisplayName("Should never emit SameSite=None — the rejected alternative to response_mode=query")
@@ -85,7 +87,13 @@ class BindingCookieCodecTest {
                     () -> assertFalse(clearing.contains("SameSite=None"),
                             "the clearing form must not weaken the attribute either: " + clearing),
                     () -> assertTrue(setCookie.contains("; SameSite=Lax"),
-                            "Lax is correct AND sufficient because the callback is a top-level GET: " + setCookie));
+                            "Lax is correct AND sufficient because the callback is a top-level GET: " + setCookie),
+                    // The absence checks above cannot see an attribute that was DROPPED, and absent is
+                    // not None: a change that removed SameSite entirely from the clearing header would
+                    // satisfy every other assertion here. The set form is fenced positively, so the
+                    // clearing form must be too.
+                    () -> assertTrue(clearing.contains("; SameSite=Lax"),
+                            "the clearing form must carry Lax positively, not merely lack None: " + clearing));
         }
 
         @Test

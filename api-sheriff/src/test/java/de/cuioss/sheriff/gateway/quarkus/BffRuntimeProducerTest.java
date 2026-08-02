@@ -187,7 +187,7 @@ class BffRuntimeProducerTest {
                         if (value != null && isWalkable(value.getClass())) {
                             pending.push(value);
                         }
-                    } catch (ReflectiveOperationException | InaccessibleObjectException skipped) {
+                    } catch (ReflectiveOperationException | InaccessibleObjectException _) {
                         // A field the JVM will not open tells us nothing; the non-empty assertion above
                         // is what keeps an over-skipped walk from passing vacuously. Only the two
                         // exceptions setAccessible/get can actually raise here are caught: a broader
