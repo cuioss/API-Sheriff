@@ -31,7 +31,7 @@ import jakarta.inject.Qualifier;
  * CDI qualifier distinguishing the gateway's own {@code TokenValidator} — the single shared
  * validator {@link TokenValidatorProducer} builds from the {@code token_validation} block of
  * {@code gateway.yaml} — from the unqualified validator the {@code token-sheriff-validation-quarkus}
- * extension produces from its {@code cui.jwt.*} property surface.
+ * extension produces from its {@code sheriff.token.*} property surface.
  * <p>
  * The gateway configures issuers through its own YAML model, not the extension's MicroProfile
  * properties, so the two producers must coexist without an ambiguous-dependency clash. The gateway

@@ -47,13 +47,13 @@ activating TLS converted 9000 itself — there is no plain-HTTP fallback. **`-k`
 stack serves the self-signed localhost bundle); omitting it makes every probe below fail
 certificate validation and look like a dead container:
 - `curl -skf https://localhost:19000/q/health/live` — liveness (the startup wait uses this)
-- `curl -sk  https://localhost:19000/q/health/ready` — readiness; **this is the diagnostic goldmine** — the token-sheriff JWKS check attaches a per-issuer `withData` block naming the exact failure
+- `curl -sk  https://localhost:19000/q/health/ready` — readiness; **this is the diagnostic goldmine** — the gateway's own `GatewayReadinessCheck` attaches the config and per-issuer `jwks` state naming the exact failure
 - `curl -sk  https://localhost:19000/q/health` — aggregate (503 if any check is DOWN). This is also the `gatewayHealth` benchmark's target
 - Keycloak: `curl -k https://localhost:1090/health/ready`
 
 ## Reading logs
 
-- **File logging in the container is broken** (`/quarkus.log` permission-denied on the read-only FS). Do **not** rely on `integration-tests/target/quarkus.log`.
+- **File logging is deployment-supplied, and the shipped default is OFF.** The artifact ships `quarkus.log.file.enable=false`; each gateway service switches it on with `QUARKUS_LOG_FILE_ENABLE=true` plus `LOG_FILE_PATH=/logs/<name>.log`, and `/logs` is bind-mounted to `${LOG_TARGET_DIR:-integration-tests/target/quarkus-logs}` (a dedicated subdirectory, writable by the container's uid 1001 — the container can NOT write `/quarkus.log` on the read-only root FS). A service missing the enable flag silently produces no file; `ItProfileConfigBindingWiringTest` guards that pairing, and `ManagementPlainHttpOptOutIT` reads one of those files.
 - Use `docker compose -f integration-tests/docker-compose.yml logs api-sheriff` for the app's real stdout (stack traces, config resolution).
 - On a **CI** startup failure, `start-integration-container.sh` now dumps `docker compose logs api-sheriff` + `/q/health` into `integration-tests/target/failsafe-reports/` (`api-sheriff-app.log`, `api-sheriff-health.json`), which the workflow uploads as an artifact. Download with `gh run download <run-id> --repo cuioss/API-Sheriff` — the GitHub job log itself does NOT contain the app container stdout.
 
@@ -70,7 +70,8 @@ Don't run parallel heavy builds. If the machine stays contended, prefer letting 
 
 ## token-sheriff extension gotchas (why the app may not go healthy)
 
-- `token-sheriff-validation-quarkus` **requires** ≥1 enabled issuer or `TokenValidatorProducer` fails startup; its `JwksEndpointHealthCheck` (@Readiness) is DOWN until each issuer's loader reaches `LoaderStatus.OK`.
-- An **HTTP** JWKS loader stays `UNDEFINED` until its first fetch completes; a **file** loader reaches `OK` synchronously.
-- `jwks.file-path` is a **plain filesystem path** (`Files.readAllBytes(Path.of(path))`) — **no `classpath:` support**. Mount the JWKS file and reference its absolute path (the IT uses `/app/certificates/test-jwks.json`).
-- The IT issuer config lives under a Quarkus `%it` profile in `api-sheriff/src/main/resources/application.properties`, activated by `QUARKUS_PROFILE=it` in `integration-tests/docker-compose.yml`.
+- **Issuers come from the mounted `gateway.yaml` only.** `application.properties` configures no issuer in any profile — it carries no `%`-profile entry at all — so `QUARKUS_PROFILE=it` switches nothing on in the shipped artifact; it only marks the instance. The request-path validator is built from `gateway.yaml`'s `token_validation` block by `TokenValidatorProducer`.
+- **The extension's parallel probes are not in the payload.** `JwksEndpointHealthCheck` and `TokenValidatorHealthCheck` report on the token-sheriff extension's own unqualified validator, fed by its `sheriff.token.issuers.*` namespace, which this gateway never populates. Both are removed from the bean set by `quarkus.arc.exclude-types`, so do not go looking for their `withData` blocks in `/q/health/ready`.
+- An **HTTP** JWKS loader stays `UNDEFINED` until its first fetch completes; a **file** loader reaches `OK` synchronously. An unreachable IdP therefore shows up as a readiness stall, not as a boot failure.
+- A JWKS file source is a **plain filesystem path** (`Files.readAllBytes(Path.of(path))`) — **no `classpath:` support**. Mount the JWKS file and reference its absolute path.
+- **A named `jwks.tls_profile` must be bound by the deployment.** The compose services load `/app/certificates/benchmark-idp-trust.properties` through `QUARKUS_CONFIG_LOCATIONS`; drop that and boot aborts in `JwksTrustProfileResolver.resolve()` rather than falling back to default trust. A profile bound to a bucket that carries no trust material is refused the same way.

@@ -296,14 +296,17 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 
 [NOTE]
 ====
-*Inconclusive -- the parallel `sheriff.token.issuers.*` property surface.* The gateway builds its own
-validator from `gateway.yaml` and qualifies it, so it coexists with the unqualified validator the
-token-validation extension builds from its own `sheriff.token.issuers.*` property surface. The
-integration profile configures the latter, and its documented purpose there is the extension's *JWKS
-readiness check*. What this audit could *not* establish by reading alone is what that readiness check
-reports in a shipped deployment that configures no issuer on the property surface at all. Treat the
-interaction between the two surfaces as unverified rather than assuming either that it is fine or
-that it is broken; it wants an experiment, not a doc claim.
+*The parallel `sheriff.token.issuers.*` property surface -- settled.* The gateway builds its own
+validator from `gateway.yaml` and qualifies it with `@GatewayValidator`, so it coexists with the
+unqualified validator the token-validation extension builds from its own `sheriff.token.issuers.*`
+property surface. This gateway never uses that second validator and configures no issuer on that
+surface in *any* profile. The question this note once left open -- what the extension's readiness
+check reports when nothing configures it -- no longer arises: both extension probes
+(`JwksEndpointHealthCheck` and `TokenValidatorHealthCheck`) are removed from the bean set by
+`quarkus.arc.exclude-types`, so they contribute nothing to `/q/health/ready`. JWKS readiness is
+reported by the gateway's own `GatewayReadinessCheck`, against the validator that is actually on the
+request path. The comment block above `quarkus.arc.exclude-types` in `application.properties` carries
+the full reasoning, including why the extension *dependency* itself stays.
 ====
 
 === Inbound filter modes

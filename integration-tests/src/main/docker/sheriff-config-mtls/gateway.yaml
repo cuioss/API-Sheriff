@@ -105,9 +105,10 @@ token_validation:
         tls_profile: benchmark-idp
     # The server-mode BFF (oidc block below) validates the id/access tokens the
     # 'integration' realm mints for the browser session. The gateway's shared
-    # @GatewayValidator TokenValidator is built from THIS token_validation block (not
-    # the Quarkus %it issuer surface), so the integration issuer MUST be declared here
-    # or every mediated session token is rejected. Same container-internal iss the
+    # @GatewayValidator TokenValidator is built from THIS token_validation block — not
+    # from the token-sheriff extension's own sheriff.token.issuers.* property surface,
+    # which this gateway leaves unconfigured and whose health probes it excludes — so the
+    # integration issuer MUST be declared here or every mediated session token is rejected. Same container-internal iss the
     # integration realm pins via frontendUrl https://keycloak:8443, reached over the
     # shared api-sheriff network where 'keycloak' resolves by service name; the same
     # narrow SSRF egress widening and self-signed trust profile the benchmark issuer uses.
