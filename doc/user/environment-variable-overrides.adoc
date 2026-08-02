@@ -303,10 +303,18 @@ property surface. This gateway never uses that second validator and configures n
 surface in *any* profile. The question this note once left open -- what the extension's readiness
 check reports when nothing configures it -- no longer arises: both extension probes
 (`JwksEndpointHealthCheck` and `TokenValidatorHealthCheck`) are removed from the bean set by
-`quarkus.arc.exclude-types`, so they contribute nothing to `/q/health/ready`. JWKS readiness is
-reported by the gateway's own `GatewayReadinessCheck`, against the validator that is actually on the
-request path. The comment block above `quarkus.arc.exclude-types` in `application.properties` carries
-the full reasoning, including why the extension *dependency* itself stays.
+`quarkus.arc.exclude-types`, so they contribute nothing to `/q/health/ready`. Excluding them costs no
+observability, because they iterated the extension's own issuer list -- empty here -- and so never
+reached this gateway's JWKS loaders. JWKS readiness is reported by the gateway's own
+`GatewayReadinessCheck`, against the validator that is actually on the request path.
+
+Read that `jwks` datum for what it is: a *boot-time* constructibility fact, not a live signal. The
+validator is forced into existence at startup and cached, so the probe reports `ready` for the
+process lifetime -- an IdP whose JWKS endpoint later goes unreachable, a stalled key rotation, or an
+expired signing key do *not* take readiness DOWN. Monitor those from the IdP side; do not infer them
+from a green `/q/health/ready`. The comment block above `quarkus.arc.exclude-types` in
+`application.properties` carries the full reasoning, including why the extension *dependency* itself
+stays.
 ====
 
 === Inbound filter modes

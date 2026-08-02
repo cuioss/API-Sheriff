@@ -31,10 +31,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 
-import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
-
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -60,6 +56,9 @@ import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
+import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import org.jspecify.annotations.Nullable;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;

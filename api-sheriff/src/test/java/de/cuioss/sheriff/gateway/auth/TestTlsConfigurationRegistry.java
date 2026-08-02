@@ -24,6 +24,7 @@ import java.util.Optional;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
+
 import io.quarkus.tls.BaseTlsConfiguration;
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
@@ -87,6 +88,21 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
      */
     static TestTlsConfigurationRegistry withoutTrustMaterial(String name) {
         return usable(name, null, null);
+    }
+
+    /**
+     * The shape a bucket has when the deployment sets {@code quarkus.tls.<name>.trust-all}. The
+     * runtime binds such a bucket to a trust-everything {@link TrustOptions}, so it carries material
+     * by the anchor-free guard's measure while verifying nothing — which is why the resolver must
+     * refuse it on its own signal rather than on the absence of anchors.
+     *
+     * @param name the logical profile name to define
+     * @return a registry where {@code name} resolves to a verification-disabled bucket
+     */
+    static TestTlsConfigurationRegistry withTrustAll(String name) {
+        TestTlsConfigurationRegistry registry = new TestTlsConfigurationRegistry();
+        registry.register(name, new TrustAllTlsConfiguration(registry.profileContext));
+        return registry;
     }
 
     /**
@@ -207,6 +223,35 @@ final class TestTlsConfigurationRegistry implements TlsConfigurationRegistry {
         @Override
         public TrustOptions getTrustStoreOptions() {
             return trustOptions;
+        }
+
+        @Override
+        public SSLContext createSSLContext() {
+            return context;
+        }
+    }
+
+    /**
+     * A profile with verification disabled. It reports trust options — the trust-everything shape
+     * the runtime installs for {@code trust-all} — precisely so a test using it proves the resolver
+     * refuses on {@link TlsConfiguration#isTrustAll()} and not merely on missing anchors.
+     */
+    private static final class TrustAllTlsConfiguration extends BaseTlsConfiguration {
+
+        private final SSLContext context;
+
+        private TrustAllTlsConfiguration(SSLContext context) {
+            this.context = context;
+        }
+
+        @Override
+        public boolean isTrustAll() {
+            return true;
+        }
+
+        @Override
+        public TrustOptions getTrustStoreOptions() {
+            return trustOptions();
         }
 
         @Override

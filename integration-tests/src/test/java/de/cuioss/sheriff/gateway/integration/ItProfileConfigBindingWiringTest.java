@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.yaml.snakeyaml.Yaml;
@@ -194,7 +195,7 @@ class ItProfileConfigBindingWiringTest {
      * instead of having to remember to restate it.
      */
     private static List<String> itProfileServices() throws IOException {
-        List<String> matches = new java.util.ArrayList<>();
+        List<String> matches = new ArrayList<>();
         for (String service : gatewayServices()) {
             if (environment(service).contains(IT_PROFILE)) {
                 matches.add(service);

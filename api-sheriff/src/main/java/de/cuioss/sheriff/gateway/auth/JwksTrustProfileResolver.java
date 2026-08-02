@@ -21,7 +21,6 @@ import javax.net.ssl.SSLContext;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -76,6 +75,14 @@ import jakarta.inject.Inject;
  * Accepting it would reintroduce the silent fallback through the back door: the operator named a
  * profile, the startup succeeded, and the JWKS fetch trusts anchors nobody chose.
  * <p>
+ * A profile that sets {@code quarkus.tls.<name>.trust-all} is refused ahead of both, because it is
+ * the same failure one step worse. Such a bucket <em>does</em> carry trust options — the runtime
+ * binds it to a trust-everything {@code TrustOptions} — so it would slip past the anchor-free check
+ * above, and the resulting {@link SSLContext} accepts <em>any</em> certificate. A machine on the
+ * path to the IdP could then serve its own JWKS, and every signing key the gateway validates bearer
+ * tokens against would be the attacker's. A named profile means <em>these anchors</em>; it never
+ * means <em>no verification at all</em>.
+ * <p>
  * An issuer that omits {@code tls_profile} never reaches this class: the caller skips resolution
  * entirely, so the JWKS client keeps the JVM default trust store with no behavioural change.
  *
@@ -104,7 +111,8 @@ public class JwksTrustProfileResolver {
      * @param tlsProfile  the logical profile name from {@code jwks.tls_profile}
      * @return the SSL context carrying the profile's trust anchors, never {@code null}
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the deployment defines
-     *                          no such profile, when the profile is defined but carries no trust
+     *                          no such profile, when the profile disables verification entirely via
+     *                          {@code trust-all}, when the profile is defined but carries no trust
      *                          material, or when its trust material cannot be turned into an
      *                          {@link SSLContext}
      */
@@ -114,6 +122,16 @@ public class JwksTrustProfileResolver {
                         "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
                                 + "' but no such trust profile is configured — define it via "
                                 + "quarkus.tls." + tlsProfile + ".trust-store.*"));
+        // Checked BEFORE the anchor-free guard below: a trust-all bucket carries trust options, so
+        // it would otherwise pass that guard and yield a context accepting any certificate.
+        if (configuration.isTrustAll()) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile
+                            + "' but that profile sets quarkus.tls." + tlsProfile + ".trust-all — the "
+                            + "JWKS client would accept any certificate, so a machine on the path to "
+                            + "the IdP could serve its own signing keys; bind the profile to real "
+                            + "anchors via quarkus.tls." + tlsProfile + ".trust-store.*");
+        }
         if (configuration.getTrustStore() == null && configuration.getTrustStoreOptions() == null) {
             throw new GatewayException(EventType.CONFIG_INVALID,
                     "Issuer '" + issuer.name() + "' names jwks.tls_profile '" + tlsProfile

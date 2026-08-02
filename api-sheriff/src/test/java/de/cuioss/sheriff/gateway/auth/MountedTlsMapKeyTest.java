@@ -27,11 +27,13 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
+
 
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
@@ -152,7 +154,7 @@ class MountedTlsMapKeyTest {
 
     @Test
     @DisplayName("the bucket's map key is discovered from the mounted file")
-    void shouldDiscoverMapKeyFromMountedFile() throws IOException {
+    void shouldDiscoverMapKeyFromMountedFile() throws Exception {
         // Arrange — the real deployed file, loaded as a config source above the shipped properties.
         SmallRyeConfig config = configFromMountedFile();
 
@@ -171,7 +173,7 @@ class MountedTlsMapKeyTest {
 
     @Test
     @DisplayName("the discovered values are the ones the deployed file declares")
-    void shouldResolveTheValuesTheDeployedFileDeclares() throws IOException {
+    void shouldResolveTheValuesTheDeployedFileDeclares() throws Exception {
         // Arrange — the expectation comes out of the deployed file itself, so this test tracks that
         // file rather than restating literals that could drift from it.
         Properties deployed = deployedProperties();
@@ -240,7 +242,7 @@ class MountedTlsMapKeyTest {
 
     /** @return every discovered configuration name under the {@code quarkus.tls.} prefix */
     private static List<String> discoveredNames(SmallRyeConfig config) {
-        List<String> names = new java.util.ArrayList<>();
+        List<String> names = new ArrayList<>();
         for (String name : config.getPropertyNames()) {
             if (name.startsWith("quarkus.tls.")) {
                 names.add(name);

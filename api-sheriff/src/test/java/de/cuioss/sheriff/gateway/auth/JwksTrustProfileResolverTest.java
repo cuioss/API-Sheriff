@@ -26,7 +26,6 @@ import javax.net.ssl.SSLContext;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -126,6 +125,30 @@ class JwksTrustProfileResolverTest {
                 () -> "the diagnostic must name the concrete key that supplies the anchors, got: " + message);
         assertTrue(message.contains("default trust store"),
                 () -> "the diagnostic must name the fallback being refused, got: " + message);
+    }
+
+    @Test
+    @DisplayName("a profile that disables verification is refused, not accepted as material")
+    void trustAllProfileFailsFast() {
+        // Arrange — quarkus.tls.<name>.trust-all binds the bucket to a trust-everything TrustOptions,
+        // so it carries "material" by the anchor-free guard's measure while verifying nothing
+        JwksTrustProfileResolver resolver =
+                new JwksTrustProfileResolver(TestTlsConfigurationRegistry.withTrustAll(PROFILE));
+
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> resolver.resolve(ISSUER, PROFILE));
+
+        // Assert — this is the anchor-free failure one step worse: the JWKS client would accept any
+        // certificate, so a machine on the path to the IdP could serve the signing keys the gateway
+        // then validates every bearer token against
+        assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+        String message = thrown.getMessage();
+        assertTrue(message.contains("trust-all"),
+                () -> "the diagnostic must name the key that disabled verification, got: " + message);
+        // And it must fail for THIS reason: a message about missing material would mean the trust-all
+        // signal was never consulted and the bucket merely happened to lack a loaded KeyStore
+        assertTrue(message.contains("accept any certificate"),
+                () -> "the diagnostic must name what trust-all actually does, got: " + message);
     }
 
     @Test

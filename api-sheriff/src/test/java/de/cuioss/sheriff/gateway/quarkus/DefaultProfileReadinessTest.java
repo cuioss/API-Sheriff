@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.List;
 
+
 import io.quarkus.test.junit.QuarkusTest;
 import io.smallrye.health.SmallRyeHealth;
 import io.smallrye.health.SmallRyeHealthReporter;
@@ -63,8 +64,12 @@ import org.junit.jupiter.api.Test;
  *
  * The exclusion is deliberately scoped to those two beans in that one package — it is <em>not</em>
  * {@code quarkus.health.extensions.enabled=false} or any other global switch, because
- * blanket-disabling a security-relevant readiness check is forbidden. Readiness coverage is not lost:
- * {@link GatewayReadinessCheck} independently reports {@code jwks: ready} for the real validator.
+ * blanket-disabling a security-relevant readiness check is forbidden. No coverage is lost: both
+ * excluded probes iterate the <em>extension's</em> issuer list, empty here, so neither ever observed
+ * this gateway's JWKS loaders, while {@link GatewayReadinessCheck} reports {@code jwks} for the real
+ * validator. That datum is a boot-time constructibility fact rather than a live JWKS signal — see the
+ * comment block above {@code quarkus.arc.exclude-types} in the shipped {@code application.properties}
+ * — which is why the assertion below pins the {@code ready} value and claims nothing beyond it.
  * <p>
  * <strong>Anti-false-negative guard.</strong> A bare "aggregate is UP" assertion is worthless on its
  * own, because a run in which the health subsystem contributed <em>nothing</em> would also fold to UP
@@ -158,8 +163,8 @@ class DefaultProfileReadinessTest {
         assertEquals(UP, gatewayCheck.getString(STATUS),
                 "gateway-readiness is UP — the gateway's own validator resolved; payload: " + payload);
         assertEquals("ready", gatewayCheck.getJsonObject("data").getString("jwks"),
-                "the boot fixture declares a token_validation issuer, so the gateway's own JWKS is "
-                        + "ready — this is the real readiness coverage; payload: " + payload);
+                "the boot fixture declares a token_validation issuer, so the gateway's own validator "
+                        + "resolved and its jwks datum reads ready; payload: " + payload);
     }
 
     /** @return the binary class names of every {@code @Readiness}-qualified {@link HealthCheck} bean */
