@@ -89,7 +89,7 @@ jobs:
       # The second pass is seconds: the action restores the Trivy DB from cache, so only the report
       # rendering is repeated.
       - name: Scan the pinned base image (report)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ steps.base.outputs.image }}
@@ -98,7 +98,7 @@ jobs:
           output: trivy-base-image.txt
 
       - name: Scan the pinned base image (SARIF)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: ${{ steps.base.outputs.image }}
@@ -107,7 +107,7 @@ jobs:
           output: trivy-base-image.sarif
 
       - name: Scan the repository filesystem (report)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -116,7 +116,7 @@ jobs:
           output: trivy-filesystem.txt
 
       - name: Scan the repository filesystem (SARIF)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
