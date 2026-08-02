@@ -208,6 +208,23 @@
           "role": "config",
           "build_class": "verify"
         }
+      ],
+      "javascript": [
+        {
+          "glob": "*.js",
+          "role": "production",
+          "build_class": "compile"
+        },
+        {
+          "glob": "*.spec.js",
+          "role": "test",
+          "build_class": "module-tests"
+        },
+        {
+          "glob": "package.json",
+          "role": "config",
+          "build_class": "verify"
+        }
       ]
     }
   },
@@ -304,9 +321,10 @@
       "temp_on_maintenance": true,
       "plugin_cache_keep_versions": 5,
       "plugin_cache_keep_days": 3,
-      "no_plan_body_days": 7
+      "no_plan_body_days": 7,
+      "build_results_days": 5
     },
-    "provisioned_version": "0.1.1275",
-    "config_seed_fingerprint": "59c217c3"
+    "provisioned_version": "0.1.1286",
+    "config_seed_fingerprint": "714f8058"
   }
 }
