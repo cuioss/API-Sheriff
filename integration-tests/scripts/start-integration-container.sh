@@ -86,6 +86,99 @@ mkdir -p "${LOG_TARGET_DIR}"
 chmod 0777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
+# Discover every host-side probe target from the resolved Compose model, BEFORE anything is started.
+#
+# The service set, each service's published management port, and the scheme its management interface
+# speaks are all DERIVED from that model — none of them is restated here. An earlier version
+# hand-maintained a "service:port" list plus a separate block for the plain-HTTP instance, under a
+# comment instructing the reader to keep the list in lockstep with docker-compose.yml. A hardcoded
+# list that must mirror a set defined elsewhere is a defect unless it is derived from that source, so
+# it is derived: adding, removing or renumbering an api-sheriff* service needs no edit here, and
+# neither does moving Keycloak's published management port.
+#
+# The scheme comes from each service's de.cuioss.sheriff.management-scheme label rather than from its
+# name, and that is what collapses the plain-management special case into a single readiness loop.
+# That instance is probed over http:// with NO -k: if it ever needs -k, the plain-management opt-out
+# has silently stopped working and THAT is the bug, not the probe.
+#
+# Keycloak carries the same label for the same reason, so its wait derives its whole probe URL here
+# too rather than restating a scheme and a port the model already owns.
+#
+# The block runs BEFORE the first `compose up` on purpose: a model this script cannot read is a
+# failure worth having in two seconds rather than after Keycloak has booted.
+echo "⏳ Discovering probe targets from the Compose model..."
+if ! DISCOVERED_TARGETS="$($COMPOSE_CMD config --format json | python3 -c '
+import json
+import sys
+
+SCHEME_LABEL = "de.cuioss.sheriff.management-scheme"
+MANAGEMENT_CONTAINER_PORT = "9000"
+IDP_SERVICE = "keycloak"
+GATEWAY_PREFIX = "api-sheriff"
+
+try:
+    model = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
+             "version supporting `config --format json`." % exc)
+
+all_services = model.get("services") or {}
+selected = {name: spec for name, spec in all_services.items() if name.startswith(GATEWAY_PREFIX)}
+if not selected:
+    sys.exit("no api-sheriff* services found in the resolved Compose model — refusing to run with a "
+             "readiness gate that would probe nothing")
+if IDP_SERVICE not in all_services:
+    sys.exit("no %s service found in the resolved Compose model — refusing to run with an IdP wait "
+             "that would probe nothing" % IDP_SERVICE)
+selected[IDP_SERVICE] = all_services[IDP_SERVICE]
+
+rows = []
+problems = []
+for name in sorted(selected):
+    spec = selected[name]
+    scheme = (spec.get("labels") or {}).get(SCHEME_LABEL)
+    published = [port.get("published") for port in (spec.get("ports") or [])
+                 if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
+    usable = True
+    if scheme not in ("http", "https"):
+        problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
+        usable = False
+    if len(published) != 1:
+        problems.append("%s: expected exactly one host port published against container port %s, "
+                        "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
+        usable = False
+    if usable:
+        rows.append("%s %s %s" % (name, scheme, published[0]))
+
+if problems:
+    sys.exit("probe-target discovery failed:\n  " + "\n  ".join(problems))
+
+sys.stdout.write("\n".join(rows) + "\n")
+')"; then
+    echo "❌ Could not derive the probe targets from docker-compose.yml (see the error above)"
+    exit 1
+fi
+
+# Split the derived rows by role, mirroring demo-client/scripts/start-dev-environment.sh's
+# IDP_TARGET / GATEWAY_TARGETS split. The IdP row drives the Keycloak wait and the Keycloak banner
+# entry; the api-sheriff* rows drive the gateway readiness loop and the Application URLs banner.
+KEYCLOAK_TARGET="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep "^keycloak ")"
+READINESS_TARGETS="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep -v "^keycloak ")"
+read -r _ KC_MGMT_SCHEME KC_MGMT_PORT <<< "$KEYCLOAK_TARGET"
+KEYCLOAK_HEALTH_URL="${KC_MGMT_SCHEME}://localhost:${KC_MGMT_PORT}/health/ready"
+
+# -f matters here exactly as it does on the gateway probe below: /health/ready answers 503 while
+# Keycloak is still starting, and without -f curl exits 0 on that 503 — so the wait would clear as
+# soon as the port ACCEPTED rather than when Keycloak was actually ready, which is the very race the
+# comment below says this gate exists to remove.
+KEYCLOAK_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
+if [[ "$KC_MGMT_SCHEME" == "https" ]]; then
+    # -k is load-bearing on an HTTPS management interface: it serves a self-signed localhost bundle,
+    # and without it curl fails certificate validation and this wait degrades into a silent
+    # 120-attempt timeout against a perfectly healthy container.
+    KEYCLOAK_PROBE_OPTS+=(-k)
+fi
+
 # Bring up Keycloak FIRST and wait until it is READY before starting the gateway. The api-sheriff
 # native app eagerly loads the Keycloak issuers' JWKS at boot; if it starts before Keycloak can
 # answer, that initial load fails (ConnectException) and — with a long background-refresh interval —
@@ -98,14 +191,14 @@ echo "🐳 Starting Keycloak first (the Quarkus $MODE gateway starts only after 
 (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d keycloak)
 
 # Wait for Keycloak to be ready first
-echo "⏳ Waiting for Keycloak to be ready..."
+echo "⏳ Waiting for Keycloak to be ready (management ${KC_MGMT_SCHEME} on ${KC_MGMT_PORT})..."
 for i in {1..120}; do
-    if curl -k -s --connect-timeout 2 --max-time 5 https://localhost:1090/health/ready > /dev/null 2>&1; then
+    if curl "${KEYCLOAK_PROBE_OPTS[@]}" "${KEYCLOAK_HEALTH_URL}" > /dev/null 2>&1; then
         echo "✅ Keycloak is ready!"
         break
     fi
     if [ "$i" -eq 120 ]; then
-        echo "❌ Keycloak failed to become ready within 120 attempts"
+        echo "❌ Keycloak did not answer ${KEYCLOAK_HEALTH_URL} within 120 attempts"
         echo "Check logs with: ${COMPOSE_BASE} logs keycloak"
         exit 1
     fi
@@ -151,72 +244,52 @@ if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
     done
 fi
 
-# Wait for every gateway instance to become ready.
+# Wait for every gateway instance to become READY — not merely live.
 #
-# The instance set, each instance's published management port, and the scheme its management
-# interface speaks are all DERIVED from the resolved Compose model — none of them is restated here.
-# An earlier version hand-maintained a "service:port" list plus a separate block for the plain-HTTP
-# instance, under a comment instructing the reader to keep the list in lockstep with
-# docker-compose.yml. A hardcoded list that must mirror a set defined elsewhere is a defect unless it
-# is derived from that source, so it is derived: adding, removing or renumbering an api-sheriff*
-# service needs no edit in this file.
-#
-# The scheme comes from each service's de.cuioss.sheriff.management-scheme label rather than from its
-# name, and that is what collapses the plain-management special case into this one loop. That
-# instance is probed over http:// with NO -k: if it ever needs -k, the plain-management opt-out has
-# silently stopped working and THAT is the bug, not the probe.
+# The probe is /q/health/ready, which on this gateway means GatewayReadinessCheck reported UP:
+# the configuration document is bound and, when a token_validation block is configured, the
+# @GatewayValidator-qualified TokenValidator resolved. /q/health/live answers as soon as the
+# process is up, which is strictly earlier than the point at which the suite can drive it — an
+# instance that is live but not ready serves the first IT request against an unbound validator.
 #
 # Every instance must be waited on, not just the primary one: the suites drive the TLS ports
 # directly — MtlsHandshakeIT, the Bff*Cookie*IT suites (BffCookieStatelessnessIT drives BOTH cookie
 # instances in one test), WebSocketProxyIT's relay-exhaustion regression against the low-admission
 # instance — so an unwaited instance is a race that surfaces as a connection refusal in the IT phase
 # rather than as a start-up failure here.
-echo "⏳ Discovering gateway readiness targets from the Compose model..."
-if ! READINESS_TARGETS="$($COMPOSE_CMD config --format json | python3 -c '
-import json
-import sys
-
-SCHEME_LABEL = "de.cuioss.sheriff.management-scheme"
-MANAGEMENT_CONTAINER_PORT = "9000"
-
-try:
-    model = json.load(sys.stdin)
-except ValueError as exc:
-    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
-             "version supporting `config --format json`." % exc)
-
-services = {name: spec for name, spec in (model.get("services") or {}).items()
-            if name.startswith("api-sheriff")}
-if not services:
-    sys.exit("no api-sheriff* services found in the resolved Compose model — refusing to run with a "
-             "readiness gate that would probe nothing")
-
-rows = []
-problems = []
-for name in sorted(services):
-    spec = services[name]
-    scheme = (spec.get("labels") or {}).get(SCHEME_LABEL)
-    published = [port.get("published") for port in (spec.get("ports") or [])
-                 if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
-    usable = True
-    if scheme not in ("http", "https"):
-        problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
-        usable = False
-    if len(published) != 1:
-        problems.append("%s: expected exactly one host port published against container port %s, "
-                        "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
-        usable = False
-    if usable:
-        rows.append("%s %s %s" % (name, scheme, published[0]))
-
-if problems:
-    sys.exit("gateway readiness discovery failed:\n  " + "\n  ".join(problems))
-
-sys.stdout.write("\n".join(rows) + "\n")
-')"; then
-    echo "❌ Could not derive the gateway readiness targets from docker-compose.yml (see the error above)"
-    exit 1
-fi
+#
+# READINESS_TARGETS is the api-sheriff*-only subset of the rows discovered before the bring-up.
+#
+# The retry budget is ONE number, declared once and read by all three of the loop bound, the
+# last-attempt comparison and the progress echo. It used to be three literal 30s that could drift
+# apart; a re-size now touches a single line.
+#
+# The value is measured, not chosen by feel. A sub-second prober (100 ms polling, started BEFORE
+# `compose up -d` so it observes the transition rather than inferring it) ran against all six gateway
+# instances brought up concurrently with Keycloak, under CPU contention (24 busy workers on 16 cores):
+#
+#   instance                  live      ready     delta
+#   api-sheriff               8.80s     8.80s     0.00s
+#   api-sheriff-cookie        9.14s     9.14s     0.00s
+#   api-sheriff-cookie-2      8.82s     8.82s     0.00s
+#   api-sheriff-mtls          8.16s     8.16s     0.00s
+#   api-sheriff-plain-mgmt    8.94s     8.94s     0.00s
+#   api-sheriff-ws-admission  8.95s     8.95s     0.00s
+#
+# The live-to-ready delta is 0.00s on every instance — below the prober's own 100 ms resolution. That
+# is not luck, it is what GatewayReadinessCheck means: its `jwks` datum is a BOOT-TIME
+# constructibility fact (ADR-0027), forced into existence by TokenValidatorProducer.onStartup and
+# cached thereafter, so readiness flips at the same moment liveness does. Switching this gate from
+# /q/health/live to /q/health/ready therefore costs no additional wait, and the budget needs no
+# increase to absorb it.
+#
+# 30 attempts is retained on that evidence: the worst observed time-to-ready was 9.14s measured from
+# the `compose up -d` call — and this loop's clock starts strictly later than that, after compose has
+# returned AND after the go-httpbin wait — so the budget carries better than 3x headroom against the
+# stricter clock and roughly 30x against its own. It is consumed only on failure, so the headroom is
+# free. Do not shrink it toward the observed times: CI runners are slower than this machine and the
+# measurement above bounds the delta, not the absolute container start.
+GATEWAY_READY_ATTEMPTS=30
 
 echo "⏳ Waiting for the discovered gateway instances to be ready..."
 START_TIME=$(date +%s)
@@ -230,20 +303,20 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
     if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
         # -k is load-bearing on the HTTPS instances: their management interface serves a self-signed
         # localhost bundle, and without it curl fails certificate validation and this wait degrades
-        # into a silent 30-attempt timeout against a perfectly healthy container.
+        # into a silent full-budget timeout against a perfectly healthy container.
         GATEWAY_PROBE_OPTS+=(-k)
         GATEWAY_DIAG_OPTS+=(-k)
     fi
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
 
     echo "⏳ Waiting for ${GATEWAY_SERVICE} (management ${GATEWAY_MGMT_SCHEME} on ${GATEWAY_MGMT_PORT})..."
-    for i in {1..30}; do
-        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/live" > /dev/null 2>&1; then
+    for ((i = 1; i <= GATEWAY_READY_ATTEMPTS; i++)); do
+        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
             echo "✅ ${GATEWAY_SERVICE} gateway instance is ready!"
             break
         fi
-        if [ "$i" -eq 30 ]; then
-            echo "❌ ${GATEWAY_SERVICE} gateway instance failed to start within 30 attempts"
+        if [ "$i" -eq "$GATEWAY_READY_ATTEMPTS" ]; then
+            echo "❌ ${GATEWAY_SERVICE} gateway instance failed to start within ${GATEWAY_READY_ATTEMPTS} attempts"
             # Capture the container log + health payload so a startup failure is diagnosable from CI
             # artifacts (uploaded via the failsafe-reports folder).
             DIAG_DIR="target/failsafe-reports"
@@ -255,7 +328,7 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
             echo ""
             exit 1
         fi
-        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/30)"
+        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/${GATEWAY_READY_ATTEMPTS})"
         sleep 1
     done
 done <<< "$READINESS_TARGETS"
@@ -292,7 +365,9 @@ done <<< "$READINESS_TARGETS"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"
 echo ""
 echo "🧪 Quick test commands (an https:// management port serves a self-signed cert — -k is required there):"
-echo "  curl -k https://localhost:1090/health/ready"
+# Printed from the SAME derived Keycloak row the wait above probed, so this cannot drift from what
+# docker-compose.yml publishes.
+echo "  curl ${KEYCLOAK_PROBE_OPTS[*]} ${KEYCLOAK_HEALTH_URL}"
 echo ""
 echo "🛑 To stop: ./scripts/stop-integration-container.sh"
 echo "📋 To view logs: ${COMPOSE_BASE} logs -f"

@@ -100,8 +100,9 @@ class ManagementPlainHttpActivationWiringTest {
     @DisplayName("the opt-out instance publishes management port 19005")
     void optOutInstancePublishesTheDedicatedManagementPort() throws Exception {
         assertTrue(publishedPorts(OPT_OUT_SERVICE).stream().anyMatch(p -> p.startsWith("19005:")),
-                "the opt-out instance must publish 19005 — it is the port the dedicated http:// "
-                        + "readiness gate and ManagementPlainHttpOptOutIT both address");
+                "the opt-out instance must publish 19005 — it is the port the Compose-derived "
+                        + "readiness gate probes over http:// and the port ManagementPlainHttpOptOutIT "
+                        + "addresses");
     }
 
     @Test

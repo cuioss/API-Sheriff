@@ -213,6 +213,15 @@ done
 echo "🐳 Starting ONLY ${DEMO_GATEWAY_SERVICES[*]} (no other stack service is touched)..."
 $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 
+# Wait for READINESS, not liveness, and keep the retry budget as ONE number rather than three
+# literals that can drift apart — the same pairing integration-tests/scripts/start-integration-container.sh
+# uses, and for the same reason: /q/health/live answers as soon as the process is up, which is
+# strictly earlier than the point at which the SPA can be driven against it. The switch costs no
+# additional wait — GatewayReadinessCheck's `jwks` datum is a boot-time constructibility fact
+# (ADR-0027), so readiness flips at the same moment liveness does; that sibling script carries the
+# measured live-to-ready delta (0.00s across all six instances under contention) behind this claim.
+GATEWAY_READY_ATTEMPTS=30
+
 echo "⏳ Waiting for the demo gateway instances to be ready..."
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
@@ -222,20 +231,20 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
     if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
         # -k is load-bearing on an HTTPS management interface: it serves a self-signed localhost
         # bundle, and without it curl fails certificate validation and this wait degrades into a
-        # silent 30-attempt timeout against a perfectly healthy container.
+        # silent full-budget timeout against a perfectly healthy container.
         GATEWAY_PROBE_OPTS+=(-k)
         GATEWAY_DIAG_OPTS+=(-k)
     fi
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
 
     echo "⏳ Waiting for ${GATEWAY_SERVICE} (management ${GATEWAY_MGMT_SCHEME} on ${GATEWAY_MGMT_PORT})..."
-    for i in {1..30}; do
-        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/live" > /dev/null 2>&1; then
+    for ((i = 1; i <= GATEWAY_READY_ATTEMPTS; i++)); do
+        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
             echo "✅ ${GATEWAY_SERVICE} is ready!"
             break
         fi
-        if [ "$i" -eq 30 ]; then
-            echo "❌ ${GATEWAY_SERVICE} failed to start within 30 attempts"
+        if [ "$i" -eq "$GATEWAY_READY_ATTEMPTS" ]; then
+            echo "❌ ${GATEWAY_SERVICE} failed to become ready within ${GATEWAY_READY_ATTEMPTS} attempts"
             # Capture the container log + health payload so a startup failure is diagnosable from
             # the CI artifacts rather than only from a lost console.
             DIAG_DIR="${MODULE_DIR}/target/test-results"
@@ -247,7 +256,7 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
             echo ""
             exit 1
         fi
-        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/30)"
+        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/${GATEWAY_READY_ATTEMPTS})"
         sleep 1
     done
 done <<< "$GATEWAY_TARGETS"
