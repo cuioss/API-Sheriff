@@ -18,10 +18,10 @@ package de.cuioss.sheriff.gateway.quarkus;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -77,7 +77,7 @@ class ShippedApplicationPropertiesTest {
 
     @Test
     @DisplayName("The packaged file declares no %-profile key")
-    void packagedFileDeclaresNoProfileKey() throws IOException {
+    void packagedFileDeclaresNoProfileKey() throws Exception {
         assertTrue(Files.isRegularFile(PACKAGED_APPLICATION_PROPERTIES),
                 () -> "expected the packaged properties file at " + PACKAGED_APPLICATION_PROPERTIES.toAbsolutePath()
                         + " (module basedir is Surefire's working directory). It is missing, so this guard would "
