@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A named, namespace-scoped policy anchor declared under {@code gateway.anchors}
@@ -64,8 +63,11 @@ import lombok.Builder;
  */
 @Builder
 public record AnchorConfig(String name, String pathPrefix, AnchorType type, AccessLevel access,
-@Nullable AuthConfig auth,
-@Nullable SecurityFilterConfig securityFilter, @Nullable SecurityHeadersConfig securityHeaders,
+@Nullable
+AuthConfig auth,
+@Nullable
+SecurityFilterConfig securityFilter, @Nullable
+        SecurityHeadersConfig securityHeaders,
 List<HttpMethod> allowedMethods) {
 
     /**

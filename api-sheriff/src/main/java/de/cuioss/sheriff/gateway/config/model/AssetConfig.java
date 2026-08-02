@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code asset} terminal-action block (decision: ADR-0014).
@@ -48,7 +47,9 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record AssetConfig(Source source, @Nullable String directory, @Nullable String upstream) {
+public record AssetConfig(Source source, @Nullable
+String directory, @Nullable
+String upstream) {
 
     /**
      * The asset content source (decision: ADR-0014).

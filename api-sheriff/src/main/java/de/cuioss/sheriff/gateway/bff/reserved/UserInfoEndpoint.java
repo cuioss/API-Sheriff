@@ -169,8 +169,14 @@ public final class UserInfoEndpoint {
     private static Map<String, Object> sessionMetadata(SessionRecord session) {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put(EXPIRES_AT, session.expiresAt().toString());
-        session.authTime().ifPresent(authTime -> metadata.put(AUTH_TIME, authTime.toString()));
-        session.acr().ifPresent(acr -> metadata.put(ACR, acr));
+        Instant authTime = session.authTime();
+        if (authTime != null) {
+            metadata.put(AUTH_TIME, authTime.toString());
+        }
+        String acr = session.acr();
+        if (acr != null) {
+            metadata.put(ACR, acr);
+        }
         return Collections.unmodifiableMap(metadata);
     }
 

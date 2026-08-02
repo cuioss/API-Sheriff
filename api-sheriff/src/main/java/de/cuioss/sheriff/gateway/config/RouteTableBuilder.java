@@ -25,7 +25,6 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
-import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
@@ -50,6 +49,8 @@ import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Assembles the immutable {@link RouteTable} from the validated configuration

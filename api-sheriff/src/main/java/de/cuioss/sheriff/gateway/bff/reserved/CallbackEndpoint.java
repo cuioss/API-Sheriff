@@ -219,7 +219,6 @@ public final class CallbackEndpoint {
         SessionRecord session = SessionRecord.builder()
                 .sessionId(SessionRecord.newSessionId())
                 .accessToken(accessToken.getRawToken())
-                .refreshToken(Optional.empty())
                 .idToken(idToken.getRawToken())
                 .sub(subject.get())
                 .sid(claim(idToken, CLAIM_SID))
@@ -247,26 +246,28 @@ public final class CallbackEndpoint {
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 
-    private static Optional<String> claim(TokenContent token, String name) {
+    private static @Nullable String claim(TokenContent token, String name) {
         ClaimValue value = token.getClaims().get(name);
         if (value == null) {
-            return Optional.empty();
+            return null;
         }
         String original = value.getOriginalString();
-        return original == null || original.isBlank() ? Optional.empty() : Optional.of(original);
+        return original == null || original.isBlank() ? null : original;
     }
 
-    private static Optional<Instant> claimEpochSeconds(TokenContent token, String name) {
-        return claim(token, name).flatMap(raw -> {
-            try {
-                return Optional.of(Instant.ofEpochSecond(Long.parseLong(raw.trim())));
-            } catch (NumberFormatException | DateTimeException _) {
-                // An IdP-supplied auth_time is external input: it may not parse as a long, and a value
-                // that does parse can still exceed Instant's range (DateTimeException is NOT a
-                // NumberFormatException). Either way the claim is simply absent, never a 500.
-                return Optional.empty();
-            }
-        });
+    private static @Nullable Instant claimEpochSeconds(TokenContent token, String name) {
+        String raw = claim(token, name);
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return Instant.ofEpochSecond(Long.parseLong(raw.trim()));
+        } catch (NumberFormatException | DateTimeException _) {
+            // An IdP-supplied auth_time is external input: it may not parse as a long, and a value
+            // that does parse can still exceed Instant's range (DateTimeException is NOT a
+            // NumberFormatException). Either way the claim is simply absent, never a 500.
+            return null;
+        }
     }
 
     private static boolean isBlank(@Nullable String value) {
@@ -313,18 +314,18 @@ public final class CallbackEndpoint {
      * same-origin return location.
      *
      * @param status         the HTTP status the edge returns
-     * @param location       the redirect target, present only for a successful login
+     * @param location       the redirect target, {@code null} for anything but a successful login
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty for an error
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record CallbackOutcome(int status, Optional<String> location, List<String> setCookieHeaders) {
+    public record CallbackOutcome(int status, @Nullable
+    String location, List<String> setCookieHeaders) {
 
         /**
-         * Canonical constructor normalizing an absent location and defensively copying the cookies.
+         * Canonical constructor defensively copying the cookies.
          */
         public CallbackOutcome {
-            location = Objects.requireNonNullElse(location, Optional.empty());
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
         }
 
@@ -337,7 +338,7 @@ public final class CallbackEndpoint {
          */
         public static CallbackOutcome redirect(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, "location");
-            return new CallbackOutcome(FOUND, Optional.of(location), setCookieHeaders);
+            return new CallbackOutcome(FOUND, location, setCookieHeaders);
         }
 
         /**
@@ -347,7 +348,7 @@ public final class CallbackEndpoint {
          * @return the error outcome
          */
         public static CallbackOutcome error(int status) {
-            return new CallbackOutcome(status, Optional.empty(), List.of());
+            return new CallbackOutcome(status, null, List.of());
         }
 
         /**

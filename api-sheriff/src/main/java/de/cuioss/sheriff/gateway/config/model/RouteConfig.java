@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A single {@code routes[]} entry of an endpoint file.
@@ -51,10 +50,19 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record RouteConfig(String id, @Nullable Protocol protocol, @Nullable String anchor, MatchConfig match,
-@Nullable AuthConfig auth, @Nullable SecurityFilterConfig securityFilter, @Nullable ForwardConfig forward,
-@Nullable UpstreamConfig upstream, @Nullable AssetConfig asset, @Nullable RateLimitConfig rateLimit,
-@Nullable WebSocketConfig websocket) {
+public record RouteConfig(String id, @Nullable
+        Protocol protocol, @Nullable
+        String anchor, MatchConfig match,
+@Nullable
+AuthConfig auth, @Nullable
+        SecurityFilterConfig securityFilter, @Nullable
+        ForwardConfig forward,
+@Nullable
+UpstreamConfig upstream, @Nullable
+        AssetConfig asset, @Nullable
+        RateLimitConfig rateLimit,
+@Nullable
+WebSocketConfig websocket) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match}.

@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code match} block. Matchers compose with AND semantics: a
@@ -34,7 +33,8 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record MatchConfig(String pathPrefix, List<HttpMethod> methods, @Nullable String host,
+public record MatchConfig(String pathPrefix, List<HttpMethod> methods, @Nullable
+        String host,
 List<HeaderMatcher> headers) {
 
     /**
@@ -57,7 +57,9 @@ List<HeaderMatcher> headers) {
      * @since 1.0
      */
     @Builder
-    public record HeaderMatcher(String name, @Nullable Boolean present, @Nullable String value) {
+    public record HeaderMatcher(String name, @Nullable
+    Boolean present, @Nullable
+    String value) {
 
         /**
          * Canonical constructor requiring {@code name}.

@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The asset terminal action of a route, materialized once at boot (decision:
@@ -55,8 +54,10 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record ResolvedAsset(AssetConfig.Source source, AccessLevel access, @Nullable String directory,
-@Nullable ResolvedUpstream upstream) {
+public record ResolvedAsset(AssetConfig.Source source, AccessLevel access, @Nullable
+        String directory,
+@Nullable
+ResolvedUpstream upstream) {
 
     /**
      * Canonical constructor requiring {@code source} and {@code access} and enforcing

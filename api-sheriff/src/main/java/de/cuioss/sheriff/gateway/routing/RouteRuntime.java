@@ -31,10 +31,9 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
 import lombok.Getter;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The immutable, boot-time-compiled runtime for one route. The request pipeline consumes

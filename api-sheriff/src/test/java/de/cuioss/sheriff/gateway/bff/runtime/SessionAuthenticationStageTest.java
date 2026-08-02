@@ -397,10 +397,10 @@ class SessionAuthenticationStageTest {
         return SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken(accessToken)
-                .refreshToken(Optional.of("refresh-token"))
+                .refreshToken("refresh-token")
                 .idToken("id-token")
                 .sub("subject")
-                .sid(Optional.of("idp-sid"))
+                .sid("idp-sid")
                 .expiresAt(expiresAt)
                 .build();
     }

@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Map;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code tls} block of {@code gateway.yaml}.
@@ -36,8 +35,10 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record TlsConfig(@Nullable String minVersion, List<String> cipherSuites, List<String> alpn,
-Map<String, String> passthroughSni, @Nullable Mtls mtls) {
+public record TlsConfig(@Nullable
+        String minVersion, List<String> cipherSuites, List<String> alpn,
+Map<String, String> passthroughSni, @Nullable
+        Mtls mtls) {
 
     /**
      * Canonical constructor defensively copying collections.
@@ -57,6 +58,7 @@ Map<String, String> passthroughSni, @Nullable Mtls mtls) {
      * @since 1.0
      */
     @Builder
-    public record Mtls(boolean enabled, @Nullable String clientCa) {
+    public record Mtls(boolean enabled, @Nullable
+    String clientCa) {
     }
 }

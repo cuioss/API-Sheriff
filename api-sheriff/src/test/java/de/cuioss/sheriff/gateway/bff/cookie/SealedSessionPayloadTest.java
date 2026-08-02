@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.bff.cookie;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,14 +52,14 @@ class SealedSessionPayloadTest {
     private static final String SESSION_NONCE = "session-nonce-SECRET-material";
 
     private static SealedSessionPayload full() {
-        return new SealedSessionPayload(ACCESS_TOKEN, Optional.of(REFRESH_TOKEN), ID_TOKEN, SUB,
-                Optional.of("idp-sid-9"), Optional.of("urn:acr:silver"),
-                Optional.of(Instant.parse("2026-07-27T09:59:00Z")), LOGIN, SESSION_NONCE);
+        return new SealedSessionPayload(ACCESS_TOKEN, REFRESH_TOKEN, ID_TOKEN, SUB,
+                "idp-sid-9", "urn:acr:silver",
+                Instant.parse("2026-07-27T09:59:00Z"), LOGIN, SESSION_NONCE);
     }
 
     private static SealedSessionPayload minimal() {
-        return new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(), ID_TOKEN, SUB,
-                Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE);
+        return new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
+                null, null, null, LOGIN, SESSION_NONCE);
     }
 
     /**
@@ -87,17 +88,17 @@ class SealedSessionPayloadTest {
         }
 
         @Test
-        @DisplayName("Should preserve absent optionals across the round trip")
-        void shouldRoundTripAbsentOptionals() {
+        @DisplayName("Should preserve absent components across the round trip")
+        void shouldRoundTripAbsentComponents() {
             SealedSessionPayload original = minimal();
 
             SealedSessionPayload decoded = SealedSessionPayload.decode(original.encode()).orElseThrow();
 
             assertEquals(original, decoded);
-            assertTrue(decoded.refreshToken().isEmpty());
-            assertTrue(decoded.sid().isEmpty());
-            assertTrue(decoded.acr().isEmpty());
-            assertTrue(decoded.authTime().isEmpty());
+            assertNull(decoded.refreshToken());
+            assertNull(decoded.sid());
+            assertNull(decoded.acr());
+            assertNull(decoded.authTime());
             assertEquals(SESSION_NONCE, decoded.sessionNonce(),
                     "the session nonce is mandatory and survives the round trip verbatim");
         }
@@ -105,8 +106,8 @@ class SealedSessionPayloadTest {
         @Test
         @DisplayName("Should round-trip values containing the field separator and other structural characters")
         void shouldRoundTripSeparatorBearingValues() {
-            SealedSessionPayload original = new SealedSessionPayload("token\nwith\nnewlines", Optional.of("a=b;c"),
-                    ID_TOKEN, "sub\nwith\nnewline", Optional.of("sid\n1"), Optional.empty(), Optional.empty(), LOGIN,
+            SealedSessionPayload original = new SealedSessionPayload("token\nwith\nnewlines", "a=b;c",
+                    ID_TOKEN, "sub\nwith\nnewline", "sid\n1", null, null, LOGIN,
                     "nonce\nwith\nnewline");
 
             assertEquals(Optional.of(original), SealedSessionPayload.decode(original.encode()),
@@ -184,8 +185,8 @@ class SealedSessionPayloadTest {
         @Test
         @DisplayName("Should anchor the deadline on the login instant, so it cannot drift")
         void shouldAnchorDeadlineOnLoginInstant() {
-            SealedSessionPayload resealed = new SealedSessionPayload("rotated-access", Optional.of("rotated-refresh"),
-                    ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE);
+            SealedSessionPayload resealed = new SealedSessionPayload("rotated-access", "rotated-refresh",
+                    ID_TOKEN, SUB, null, null, null, LOGIN, SESSION_NONCE);
 
             assertTrue(resealed.isExpired(TTL, LOGIN.plus(TTL)),
                     "re-sealing rotated material does not move the absolute deadline");
@@ -199,16 +200,16 @@ class SealedSessionPayloadTest {
         @Test
         @DisplayName("Should reject an absent mandatory component")
         void shouldRejectAbsentMandatoryComponents() {
-            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(null, Optional.empty(), ID_TOKEN,
-                    SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE));
-            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
-                    null, SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE));
-            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
-                    ID_TOKEN, null, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, SESSION_NONCE));
-            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
-                    ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), null, SESSION_NONCE));
-            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(),
-                            ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(), LOGIN, null),
+            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(null, null, ID_TOKEN,
+                    SUB, null, null, null, LOGIN, SESSION_NONCE));
+            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
+                    null, SUB, null, null, null, LOGIN, SESSION_NONCE));
+            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
+                    ID_TOKEN, null, null, null, null, LOGIN, SESSION_NONCE));
+            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
+                    ID_TOKEN, SUB, null, null, null, null, SESSION_NONCE));
+            assertThrows(NullPointerException.class, () -> new SealedSessionPayload(ACCESS_TOKEN, null,
+                            ID_TOKEN, SUB, null, null, null, LOGIN, null),
                     "the session nonce is mandatory — it keys the derived session identity");
         }
 
@@ -217,7 +218,7 @@ class SealedSessionPayloadTest {
         @DisplayName("Should reject a blank session nonce")
         void shouldRejectBlankSessionNonce(String blank) {
             assertThrows(IllegalArgumentException.class, () -> new SealedSessionPayload(ACCESS_TOKEN,
-                            Optional.empty(), ID_TOKEN, SUB, Optional.empty(), Optional.empty(), Optional.empty(),
+                            null, ID_TOKEN, SUB, null, null, null,
                             LOGIN, blank),
                     "a blank nonce would silently degrade the derived identity to the colliding pre-nonce shape");
         }
@@ -226,8 +227,8 @@ class SealedSessionPayloadTest {
         @DisplayName("Should keep the rejected nonce out of the exception message")
         void shouldNotLeakNonceIntoRejectionMessage() {
             IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
-                    () -> new SealedSessionPayload(ACCESS_TOKEN, Optional.empty(), ID_TOKEN, SUB, Optional.empty(),
-                            Optional.empty(), Optional.empty(), LOGIN, "   "));
+                    () -> new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB, null,
+                            null, null, LOGIN, "   "));
 
             assertEquals("sessionNonce must not be blank", rejection.getMessage());
         }
@@ -243,15 +244,15 @@ class SealedSessionPayloadTest {
         }
 
         @Test
-        @DisplayName("Should normalize a null optional to empty")
-        void shouldNormalizeNullOptionals() {
+        @DisplayName("Should accept an absent nullable component as null")
+        void shouldAcceptNullNullableComponents() {
             SealedSessionPayload payload = new SealedSessionPayload(ACCESS_TOKEN, null, ID_TOKEN, SUB,
                     null, null, null, LOGIN, SESSION_NONCE);
 
-            assertTrue(payload.refreshToken().isEmpty());
-            assertTrue(payload.sid().isEmpty());
-            assertTrue(payload.acr().isEmpty());
-            assertTrue(payload.authTime().isEmpty());
+            assertNull(payload.refreshToken());
+            assertNull(payload.sid());
+            assertNull(payload.acr());
+            assertNull(payload.authTime());
         }
     }
 
@@ -275,8 +276,8 @@ class SealedSessionPayloadTest {
         @Test
         @DisplayName("Should distinguish an absent refresh token from a redacted present one")
         void shouldDistinguishAbsentRefreshToken() {
-            assertTrue(minimal().toString().contains("refreshToken=Optional.empty"), minimal().toString());
-            assertTrue(full().toString().contains("refreshToken=Optional[***REDACTED***]"), full().toString());
+            assertTrue(minimal().toString().contains("refreshToken=null"), minimal().toString());
+            assertTrue(full().toString().contains("refreshToken=***REDACTED***"), full().toString());
         }
 
         @Test

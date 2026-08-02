@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code security_headers} block of {@code gateway.yaml}: response
@@ -35,8 +34,12 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record SecurityHeadersConfig(@Nullable Hsts hsts, @Nullable Boolean contentTypeNosniff,
-@Nullable Boolean frameDeny, @Nullable Cors cors) {
+public record SecurityHeadersConfig(@Nullable
+        Hsts hsts, @Nullable
+        Boolean contentTypeNosniff,
+@Nullable
+Boolean frameDeny, @Nullable
+        Cors cors) {
 
     /**
      * {@code Strict-Transport-Security} settings.
@@ -48,7 +51,9 @@ public record SecurityHeadersConfig(@Nullable Hsts hsts, @Nullable Boolean conte
      * @since 1.0
      */
     @Builder
-    public record Hsts(@Nullable Integer maxAge, @Nullable Boolean includeSubdomains) {
+    public record Hsts(@Nullable
+    Integer maxAge, @Nullable
+    Boolean includeSubdomains) {
     }
 
     /**
@@ -63,8 +68,10 @@ public record SecurityHeadersConfig(@Nullable Hsts hsts, @Nullable Boolean conte
      * @since 1.0
      */
     @Builder
-    public record Cors(@Nullable Boolean enabled, List<String> allowedOrigins, List<String> allowedMethods,
-    List<String> allowedHeaders, @Nullable Boolean allowCredentials) {
+    public record Cors(@Nullable
+            Boolean enabled, List<String> allowedOrigins, List<String> allowedMethods,
+    List<String> allowedHeaders, @Nullable
+            Boolean allowCredentials) {
 
         /**
          * Canonical constructor defensively copying collections.

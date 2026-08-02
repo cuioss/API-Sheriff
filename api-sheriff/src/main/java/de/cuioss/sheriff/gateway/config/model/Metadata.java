@@ -27,5 +27,6 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
-public record Metadata(@Nullable String configVersion) {
+public record Metadata(@Nullable
+String configVersion) {
 }

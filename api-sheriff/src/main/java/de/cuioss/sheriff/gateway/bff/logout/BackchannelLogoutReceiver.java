@@ -101,8 +101,16 @@ public final class BackchannelLogoutReceiver {
         }
 
         LogoutTokenValidator.LogoutSubject logoutSubject = subject.get();
-        int destroyed = logoutSubject.sid().map(sessionBinding::destroyBySid)
-                .orElseGet(() -> logoutSubject.sub().map(sessionBinding::destroyBySub).orElse(0));
+        String sid = logoutSubject.sid();
+        String sub = logoutSubject.sub();
+        int destroyed;
+        if (sid != null) {
+            destroyed = sessionBinding.destroyBySid(sid);
+        } else if (sub != null) {
+            destroyed = sessionBinding.destroyBySub(sub);
+        } else {
+            destroyed = 0;
+        }
         LOGGER.debug("Back-channel logout accepted — destroyed %s session(s)", destroyed);
         return BackchannelResult.accepted(destroyed);
     }

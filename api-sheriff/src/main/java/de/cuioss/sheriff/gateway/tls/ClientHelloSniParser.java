@@ -18,7 +18,8 @@ package de.cuioss.sheriff.gateway.tls;
 import java.io.ByteArrayOutputStream;
 import java.io.Serial;
 import java.nio.charset.StandardCharsets;
-import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * A framework-agnostic parser that reassembles the full TLS ClientHello (RFC 6066) across TCP
@@ -32,10 +33,10 @@ import java.util.Optional;
  * buffering. Bounded by {@link #MAX_CLIENT_HELLO_BYTES}: a client that never completes a valid
  * ClientHello within the bound is treated as complete-with-no-SNI, so buffering can never grow
  * unbounded.</li>
- * <li>{@link Result#parsed(Optional)} — a complete ClientHello was seen. The
+ * <li>{@link Result#parsed(String)} — a complete ClientHello was seen. The
  * {@link Result#serverName()} is present when a usable SNI {@code host_name} was extracted, and
- * <em>empty</em> for a ClientHello that carries no SNI, is malformed, is not a TLS handshake, or
- * exceeds the size bound. An empty result is the caller's fail-closed signal: it takes the
+ * <em>{@code null}</em> for a ClientHello that carries no SNI, is malformed, is not a TLS handshake,
+ * or exceeds the size bound. An absent result is the caller's fail-closed signal: it takes the
  * terminated-strict path, never a passthrough.</li>
  * </ul>
  * The parser is pure (no I/O, no framework types) and therefore unit-testable byte-for-byte
@@ -73,7 +74,7 @@ public final class ClientHelloSniParser {
      *
      * @param bytes the bytes received from the client so far, never {@code null}
      * @return {@link Result#needMoreData()} when the ClientHello is still incomplete (and within the
-     *         size bound), otherwise a {@link Result#parsed(Optional)} verdict whose
+     *         size bound), otherwise a {@link Result#parsed(String)} verdict whose
      *         {@link Result#serverName()} is present only when a usable SNI was extracted
      */
     public Result parse(byte[] bytes) {
@@ -81,16 +82,16 @@ public final class ClientHelloSniParser {
         int pos = 0;
         while (true) {
             if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-                return overBound(pos) ? Result.parsed(Optional.empty()) : Result.needMoreData();
+                return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
             }
             if ((bytes[pos] & UINT8_MASK) != RECORD_TYPE_HANDSHAKE) {
                 // Not a TLS handshake record — fail closed to the terminated-strict path.
-                return Result.parsed(Optional.empty());
+                return Result.parsed(null);
             }
             int recordLength = uint16(bytes, pos + 3);
             int recordEnd = pos + RECORD_HEADER_LENGTH + recordLength;
             if (recordEnd > MAX_CLIENT_HELLO_BYTES) {
-                return Result.parsed(Optional.empty());
+                return Result.parsed(null);
             }
             if (bytes.length < recordEnd) {
                 return Result.needMoreData();
@@ -101,14 +102,14 @@ public final class ClientHelloSniParser {
             byte[] handshakeBytes = handshake.toByteArray();
             HandshakeSpan span = completeHandshake(handshakeBytes);
             if (span == HandshakeSpan.MALFORMED) {
-                return Result.parsed(Optional.empty());
+                return Result.parsed(null);
             }
             if (span == HandshakeSpan.COMPLETE) {
                 return Result.parsed(extractServerName(handshakeBytes));
             }
             // span == INCOMPLETE: keep reading records if any remain, else ask for more bytes.
             if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-                return overBound(pos) ? Result.parsed(Optional.empty()) : Result.needMoreData();
+                return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
             }
         }
     }
@@ -140,9 +141,9 @@ public final class ClientHelloSniParser {
     /**
      * Walks the fully-reassembled {@code client_hello} body to the {@code server_name} extension and
      * returns the first {@code host_name}. Any structural inconsistency (a declared length that runs
-     * past the buffer) yields an empty result so the caller fails closed.
+     * past the buffer) yields {@code null} so the caller fails closed.
      */
-    private static Optional<String> extractServerName(byte[] handshake) {
+    private static @Nullable String extractServerName(byte[] handshake) {
         Cursor cursor = new Cursor(handshake, HANDSHAKE_HEADER_LENGTH);
         try {
             cursor.skip(CLIENT_HELLO_FIXED_PREFIX);
@@ -150,12 +151,12 @@ public final class ClientHelloSniParser {
             cursor.skip(cursor.readUint16());         // cipher_suites
             cursor.skip(cursor.readUint8());          // compression_methods
             if (cursor.remaining() == 0) {
-                return Optional.empty();               // no extensions block → no SNI
+                return null;                           // no extensions block → no SNI
             }
             int extensionsLength = cursor.readUint16();
             int extensionsEnd = cursor.position() + extensionsLength;
             if (extensionsEnd > handshake.length) {
-                return Optional.empty();
+                return null;
             }
             while (cursor.position() < extensionsEnd) {
                 int type = cursor.readUint16();
@@ -166,9 +167,9 @@ public final class ClientHelloSniParser {
                 }
                 cursor.seek(next);
             }
-            return Optional.empty();
+            return null;
         } catch (MalformedHelloException e) {
-            return Optional.empty();
+            return null;
         }
     }
 
@@ -176,29 +177,29 @@ public final class ClientHelloSniParser {
      * Reads the {@code server_name} extension body: a 2-byte list length, then entries each of
      * {@code name_type(1)} + {@code length(2)} + name. Returns the first {@code host_name}.
      */
-    private static Optional<String> readServerNameExtension(Cursor cursor, int extensionLength) {
+    private static @Nullable String readServerNameExtension(Cursor cursor, int extensionLength) {
         int extensionEnd = cursor.position() + extensionLength;
         if (extensionLength < 2) {
-            return Optional.empty();
+            return null;
         }
         int listLength = cursor.readUint16();
         int listEnd = cursor.position() + listLength;
         if (listEnd > extensionEnd) {
-            return Optional.empty();
+            return null;
         }
         while (cursor.position() < listEnd) {
             int nameType = cursor.readUint8();
             int nameLength = cursor.readUint16();
             if (cursor.position() + nameLength > listEnd) {
-                return Optional.empty();
+                return null;
             }
             if (nameType == NAME_TYPE_HOST_NAME) {
                 String host = cursor.readString(nameLength);
-                return host.isEmpty() ? Optional.empty() : Optional.of(host);
+                return host.isEmpty() ? null : host;
             }
             cursor.skip(nameLength);
         }
-        return Optional.empty();
+        return null;
     }
 
     private static int uint16(byte[] data, int offset) {
@@ -290,11 +291,12 @@ public final class ClientHelloSniParser {
      * @param complete   {@code true} once a full ClientHello has been observed; {@code false} means
      *                   more bytes are needed
      * @param serverName the extracted SNI {@code host_name} when {@code complete} and a usable SNI
-     *                   was present, otherwise empty
+     *                   was present, otherwise {@code null}
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record Result(boolean complete, Optional<String> serverName) {
+    public record Result(boolean complete, @Nullable
+    String serverName) {
 
         /**
          * The "keep buffering" verdict: the ClientHello is not yet complete.
@@ -302,16 +304,16 @@ public final class ClientHelloSniParser {
          * @return an incomplete result carrying no server name
          */
         public static Result needMoreData() {
-            return new Result(false, Optional.empty());
+            return new Result(false, null);
         }
 
         /**
          * The "ClientHello complete" verdict.
          *
-         * @param serverName the extracted SNI, or empty to fail closed to the terminated path
+         * @param serverName the extracted SNI, or {@code null} to fail closed to the terminated path
          * @return a complete result carrying the supplied server name
          */
-        public static Result parsed(Optional<String> serverName) {
+        public static Result parsed(@Nullable String serverName) {
             return new Result(true, serverName);
         }
     }

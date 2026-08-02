@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code forwarded} block of {@code gateway.yaml}: the
@@ -39,8 +38,10 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record ForwardedConfig(List<String> trustedProxies, @Nullable Boolean trustSchemeHost,
-@Nullable String emit) {
+public record ForwardedConfig(List<String> trustedProxies, @Nullable
+        Boolean trustSchemeHost,
+@Nullable
+String emit) {
 
     /**
      * Canonical constructor defensively copying {@code trustedProxies}.

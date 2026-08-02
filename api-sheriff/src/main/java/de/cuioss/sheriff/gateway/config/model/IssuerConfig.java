@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A single {@code token_validation.issuers[]} entry.
@@ -33,7 +32,9 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record IssuerConfig(String name, String issuer, @Nullable String audience, @Nullable Jwks jwks) {
+public record IssuerConfig(String name, String issuer, @Nullable
+String audience, @Nullable
+Jwks jwks) {
 
     /**
      * Canonical constructor requiring the mandatory fields.
@@ -70,8 +71,11 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
      * @since 1.0
      */
     @Builder
-    public record Jwks(String source, @Nullable String url, @Nullable String file,
-    List<String> allowedEgressHosts, @Nullable String tlsProfile) {
+    public record Jwks(String source, @Nullable
+            String url, @Nullable
+            String file,
+    List<String> allowedEgressHosts, @Nullable
+            String tlsProfile) {
 
         /**
          * Canonical constructor requiring {@code source} and defensively copying the

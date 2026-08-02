@@ -15,9 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code management} block of {@code gateway.yaml} — the neutral
@@ -44,7 +43,8 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record ManagementConfig(@Nullable ManagementTls tls) {
+public record ManagementConfig(@Nullable
+ManagementTls tls) {
 
     /**
      * TLS policy for the management interface.

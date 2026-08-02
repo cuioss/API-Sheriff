@@ -267,7 +267,8 @@ public class BffRuntimeProducer {
                         // pre-refresh token of a session the gateway just revoked.
                         return Optional.empty();
                     }
-                    return Optional.of(new SessionBinding.BoundSession(outcome.session().orElse(sessionRecord),
+                    return Optional.of(new SessionBinding.BoundSession(
+                            Objects.requireNonNullElse(outcome.session(), sessionRecord),
                             outcome.setCookieHeaders()));
                 },
                 (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)

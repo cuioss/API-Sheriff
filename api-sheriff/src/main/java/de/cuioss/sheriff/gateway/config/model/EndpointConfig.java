@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * One {@code endpoints/*.yaml} file's {@code endpoint} block.
@@ -55,8 +54,11 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record EndpointConfig(String id, boolean enabled, String baseUrl, @Nullable String anchor,
-@Nullable AuthConfig auth, List<HttpMethod> allowedMethods, @Nullable UpstreamDefaultsConfig upstreamDefaults,
+public record EndpointConfig(String id, boolean enabled, String baseUrl, @Nullable
+        String anchor,
+@Nullable
+AuthConfig auth, List<HttpMethod> allowedMethods, @Nullable
+        UpstreamDefaultsConfig upstreamDefaults,
 List<RouteConfig> routes) {
 
     /**

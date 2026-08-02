@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code websocket} block carried by a {@code protocol: websocket}
@@ -41,7 +40,8 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record WebSocketConfig(List<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds) {
+public record WebSocketConfig(List<String> allowedOrigins, @Nullable
+Integer idleTimeoutSeconds) {
 
     /**
      * Canonical constructor defensively copying {@code allowedOrigins} into an

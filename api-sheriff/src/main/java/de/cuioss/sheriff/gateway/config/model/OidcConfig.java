@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Locale;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The global {@code oidc} block of {@code gateway.yaml}: the confidential-client
@@ -44,9 +43,18 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record OidcConfig(@Nullable String issuer, @Nullable String clientId, @Nullable String clientSecret,
-List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nullable Session session,
-@Nullable StepUp stepUp, @Nullable UserInfo userInfo, @Nullable Login login) {
+public record OidcConfig(@Nullable
+        String issuer, @Nullable
+        String clientId, @Nullable
+        String clientSecret,
+List<String> scopes, @Nullable
+        String redirectUri, @Nullable
+        Logout logout, @Nullable
+        Session session,
+@Nullable
+StepUp stepUp, @Nullable
+        UserInfo userInfo, @Nullable
+        Login login) {
 
     /**
      * Canonical constructor defensively copying {@code scopes}.
@@ -96,8 +104,12 @@ List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nul
      * @since 1.0
      */
     @Builder
-    public record Logout(@Nullable String path, @Nullable String postLogoutRedirectUri,
-    @Nullable String finalRedirect, @Nullable String backchannelPath) {
+    public record Logout(@Nullable
+            String path, @Nullable
+            String postLogoutRedirectUri,
+    @Nullable
+    String finalRedirect, @Nullable
+            String backchannelPath) {
     }
 
     /**
@@ -141,10 +153,20 @@ List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nul
      * @since 1.0
      */
     @Builder
-    public record Session(@Nullable String mode, @Nullable String store, @Nullable String cookieName,
-    @Nullable String encryptionKey, @Nullable String previousKey, @Nullable Integer ttlSeconds,
-    @Nullable Csrf csrf, @Nullable Refresh refresh, @Nullable Integer maxSessions,
-    @Nullable Integer maxCookieSize) {
+    public record Session(@Nullable
+            String mode, @Nullable
+            String store, @Nullable
+            String cookieName,
+    @Nullable
+    String encryptionKey, @Nullable
+            String previousKey, @Nullable
+            Integer ttlSeconds,
+    @Nullable
+    Csrf csrf, @Nullable
+            Refresh refresh, @Nullable
+            Integer maxSessions,
+    @Nullable
+    Integer maxCookieSize) {
 
         /** The stateless cookie session mode, in its one canonical spelling. */
         public static final String MODE_COOKIE = "cookie";
@@ -244,8 +266,11 @@ List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nul
      * @since 1.0
      */
     @Builder
-    public record Refresh(@Nullable Boolean enabled, @Nullable Integer leewaySeconds,
-    @Nullable String onFailure) {
+    public record Refresh(@Nullable
+            Boolean enabled, @Nullable
+            Integer leewaySeconds,
+    @Nullable
+    String onFailure) {
     }
 
     /**
@@ -258,7 +283,9 @@ List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nul
      * @since 1.0
      */
     @Builder
-    public record StepUp(@Nullable Boolean enabled, @Nullable Boolean honorUpstreamChallenge) {
+    public record StepUp(@Nullable
+    Boolean enabled, @Nullable
+    Boolean honorUpstreamChallenge) {
     }
 
     /**
@@ -278,7 +305,8 @@ List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nul
      * @since 1.0
      */
     @Builder
-    public record UserInfo(@Nullable String path, List<String> allowedClaims, List<String> defaultView) {
+    public record UserInfo(@Nullable
+    String path, List<String> allowedClaims, List<String> defaultView) {
 
         /**
          * Canonical constructor defensively copying the claim lists.
@@ -298,6 +326,7 @@ List<String> scopes, @Nullable String redirectUri, @Nullable Logout logout, @Nul
      * @since 1.0
      */
     @Builder
-    public record Login(@Nullable String path) {
+    public record Login(@Nullable
+    String path) {
     }
 }

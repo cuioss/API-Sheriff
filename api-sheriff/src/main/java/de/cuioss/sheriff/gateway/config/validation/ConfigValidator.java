@@ -28,7 +28,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-import org.jspecify.annotations.Nullable;
 
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
@@ -60,6 +59,8 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * Runs the cross-cutting configuration rules (pipeline step 7) that cannot be
@@ -749,7 +750,7 @@ public final class ConfigValidator {
                     String context = anchor == null
                             ? "the route is unanchored"
                             : "its anchor '%s' is type '%s'".formatted(anchor.name(),
-                                    anchor.type().name().toLowerCase(Locale.ROOT));
+                            anchor.type().name().toLowerCase(Locale.ROOT));
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' declares an asset terminal action but %s; an asset action requires an asset-type anchor"
                                     .formatted(route.id(), context)));

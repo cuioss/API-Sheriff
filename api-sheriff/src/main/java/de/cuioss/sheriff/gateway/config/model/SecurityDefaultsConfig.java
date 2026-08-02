@@ -52,8 +52,10 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
-public record SecurityDefaultsConfig(@Nullable String profile,
-@Nullable Integer maxAuthorizationHeaderValueLength) {
+public record SecurityDefaultsConfig(@Nullable
+        String profile,
+@Nullable
+Integer maxAuthorizationHeaderValueLength) {
 
     /**
      * The {@code Authorization} header-value cap an omitted

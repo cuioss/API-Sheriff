@@ -299,7 +299,7 @@ class CallbackEndpointTest {
 
             assertTrue(outcome.isRedirect(), "a successful login is a 302 redirect");
             assertEquals(302, outcome.status());
-            assertEquals(Optional.of(RETURN_URL), outcome.location());
+            assertEquals(RETURN_URL, outcome.location());
             assertEquals(2, outcome.setCookieHeaders().size(), "one session cookie + one binding-clearing cookie");
 
             String sessionSetCookie = outcome.setCookieHeaders().getFirst();
@@ -322,7 +322,7 @@ class CallbackEndpointTest {
             assertEquals(RAW_ACCESS_TOKEN, sessionRecord.accessToken());
             assertEquals(RAW_ID_TOKEN, sessionRecord.idToken());
             assertEquals(SUBJECT, sessionRecord.sub());
-            assertEquals(Optional.of(IDP_SID), sessionRecord.sid());
+            assertEquals(IDP_SID, sessionRecord.sid());
             assertEquals(T0.plus(SESSION_TTL), sessionRecord.expiresAt(), "the session TTL is absolute from login");
         }
 

@@ -240,12 +240,12 @@ public final class BffRuntime {
     }
 
     private static ReservedHttpResponse render(CallbackEndpoint.CallbackOutcome outcome) {
-        return new ReservedHttpResponse(outcome.status(), outcome.location().orElse(null), null, Map.of(),
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, Map.of(),
                 outcome.setCookieHeaders());
     }
 
     private static ReservedHttpResponse render(LogoutEndpoint.LogoutOutcome outcome) {
-        return new ReservedHttpResponse(outcome.status(), outcome.location().orElse(null), null, Map.of(),
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, Map.of(),
                 outcome.setCookieHeaders());
     }
 

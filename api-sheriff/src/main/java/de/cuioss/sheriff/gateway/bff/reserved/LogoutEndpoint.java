@@ -138,7 +138,8 @@ public final class LogoutEndpoint {
         if (!result.isRedirect()) {
             return LogoutOutcome.error(result.status());
         }
-        return LogoutOutcome.redirect(result.location().orElseThrow(), result.setCookieHeaders());
+        return LogoutOutcome.redirect(Objects.requireNonNull(result.location(), "location"),
+                result.setCookieHeaders());
     }
 
     /**
@@ -148,20 +149,20 @@ public final class LogoutEndpoint {
      * Token material never appears here — only the opaque cookie headers and the redirect location.
      *
      * @param status           the HTTP status the edge returns
-     * @param location         the redirect target, present only on a redirect outcome
+     * @param location         the redirect target, {@code null} on anything but a redirect outcome
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty on an error
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record LogoutOutcome(int status, Optional<String> location, List<String> setCookieHeaders) {
+    public record LogoutOutcome(int status, @Nullable
+    String location, List<String> setCookieHeaders) {
 
         private static final int FOUND = 302;
 
         /**
-         * Canonical constructor normalizing an absent location and defensively copying the cookies.
+         * Canonical constructor defensively copying the cookies.
          */
         public LogoutOutcome {
-            location = Objects.requireNonNullElse(location, Optional.empty());
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
         }
 
@@ -174,7 +175,7 @@ public final class LogoutEndpoint {
          */
         public static LogoutOutcome redirect(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, "location");
-            return new LogoutOutcome(FOUND, Optional.of(location), setCookieHeaders);
+            return new LogoutOutcome(FOUND, location, setCookieHeaders);
         }
 
         /**
@@ -184,7 +185,7 @@ public final class LogoutEndpoint {
          * @return the error outcome
          */
         public static LogoutOutcome error(int status) {
-            return new LogoutOutcome(status, Optional.empty(), List.of());
+            return new LogoutOutcome(status, null, List.of());
         }
 
         /**

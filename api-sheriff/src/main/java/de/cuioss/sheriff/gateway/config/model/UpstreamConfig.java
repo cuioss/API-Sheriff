@@ -15,9 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code upstream} block.
@@ -38,9 +37,15 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record UpstreamConfig(@Nullable String path, @Nullable Integer connectTimeoutMs,
-@Nullable Integer readTimeoutMs,
-@Nullable Retry retry, @Nullable NotModified notModified, @Nullable CircuitBreaker circuitBreaker) {
+public record UpstreamConfig(@Nullable
+        String path, @Nullable
+        Integer connectTimeoutMs,
+@Nullable
+Integer readTimeoutMs,
+@Nullable
+Retry retry, @Nullable
+        NotModified notModified, @Nullable
+        CircuitBreaker circuitBreaker) {
 
     /**
      * Per-route retry settings.
@@ -54,8 +59,11 @@ public record UpstreamConfig(@Nullable String path, @Nullable Integer connectTim
      * @since 1.0
      */
     @Builder
-    public record Retry(@Nullable Boolean enabled, @Nullable Integer maxAttempts,
-    @Nullable Boolean idempotentOnly) {
+    public record Retry(@Nullable
+            Boolean enabled, @Nullable
+            Integer maxAttempts,
+    @Nullable
+    Boolean idempotentOnly) {
     }
 
     /**
@@ -66,7 +74,8 @@ public record UpstreamConfig(@Nullable String path, @Nullable Integer connectTim
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record NotModified(@Nullable Boolean enabled) {
+    public record NotModified(@Nullable
+    Boolean enabled) {
     }
 
     /**
@@ -78,6 +87,8 @@ public record UpstreamConfig(@Nullable String path, @Nullable Integer connectTim
      * @since 1.0
      */
     @Builder
-    public record CircuitBreaker(@Nullable Integer failures, @Nullable Integer resetMs) {
+    public record CircuitBreaker(@Nullable
+    Integer failures, @Nullable
+    Integer resetMs) {
     }
 }

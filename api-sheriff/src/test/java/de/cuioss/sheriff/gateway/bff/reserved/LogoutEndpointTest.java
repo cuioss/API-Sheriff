@@ -95,7 +95,7 @@ class LogoutEndpointTest {
         LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
 
         assertTrue(outcome.isRedirect(), "local logout must still land the browser on a safe redirect");
-        assertEquals(FINAL_REDIRECT, outcome.location().orElseThrow(),
+        assertEquals(FINAL_REDIRECT, outcome.location(),
                 "a failed IdP redirect falls back to final_redirect");
         assertTrue(store.resolve(sessionId, NOW).isEmpty(),
                 "the server-side session is destroyed even when the IdP redirect could not be built");
@@ -111,7 +111,7 @@ class LogoutEndpointTest {
         LogoutOutcome outcome = endpoint.logout(cookieHeader, NOW);
 
         assertTrue(outcome.isRedirect());
-        assertTrue(outcome.location().orElseThrow().startsWith(END_SESSION),
+        assertTrue(outcome.location().startsWith(END_SESSION),
                 "a registered return URI yields the IdP end-session redirect");
         assertTrue(store.resolve(sessionId, NOW).isEmpty(), "the server-side session is destroyed");
     }
@@ -124,7 +124,7 @@ class LogoutEndpointTest {
         LogoutOutcome outcome = endpoint.logout(null, NOW);
 
         assertTrue(outcome.isRedirect());
-        assertEquals(FINAL_REDIRECT, outcome.location().orElseThrow());
+        assertEquals(FINAL_REDIRECT, outcome.location());
         assertTrue(outcome.setCookieHeaders().stream().anyMatch(header -> header.contains("Max-Age=0")));
     }
 }

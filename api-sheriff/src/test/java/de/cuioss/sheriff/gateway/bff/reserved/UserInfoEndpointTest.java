@@ -26,7 +26,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.ClaimSource;
@@ -86,8 +85,8 @@ class UserInfoEndpointTest {
                 .idToken(RAW_ID_TOKEN)
                 .sub(SUBJECT)
                 .expiresAt(T0.plus(TTL))
-                .acr(Optional.of(ACR))
-                .authTime(Optional.of(AUTH_TIME))
+                .acr(ACR)
+                .authTime(AUTH_TIME)
                 .build();
         sessionStore.create(session);
         cookieHeader = sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];

@@ -104,8 +104,8 @@ class LoginInitiationEndpointTest {
                 .idToken("raw-id-token")
                 .sub(SUBJECT)
                 .expiresAt(T0.plus(SESSION_TTL))
-                .acr(Optional.empty())
-                .authTime(Optional.empty())
+                .acr(null)
+                .authTime(null)
                 .build();
         sessionStore.create(session);
         return sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];

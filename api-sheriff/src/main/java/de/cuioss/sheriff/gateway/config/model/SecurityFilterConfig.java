@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The per-route {@code security_filter} block: allowlists and limits (explicitly
@@ -52,10 +51,16 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record SecurityFilterConfig(@Nullable String profile, List<String> allowedPaths,
-@Nullable Integer maxHeaderCount,
-@Nullable Integer maxHeaderValueLength, @Nullable Integer maxQueryParams, @Nullable Integer maxParamValueLength,
-@Nullable Integer maxBodyBytes, List<String> allowedHeaderNames, List<String> blockedHeaderNames,
+public record SecurityFilterConfig(@Nullable
+        String profile, List<String> allowedPaths,
+@Nullable
+Integer maxHeaderCount,
+@Nullable
+Integer maxHeaderValueLength, @Nullable
+        Integer maxQueryParams, @Nullable
+        Integer maxParamValueLength,
+@Nullable
+Integer maxBodyBytes, List<String> allowedHeaderNames, List<String> blockedHeaderNames,
 List<String> allowedContentTypes) {
 
     /**

@@ -71,7 +71,10 @@ public final class InMemorySessionStore implements SessionStore {
         }
         byId.put(session.sessionId(), session);
         index(bySub, session.sub(), session.sessionId());
-        session.sid().ifPresent(sid -> index(bySid, sid, session.sessionId()));
+        String sid = session.sid();
+        if (sid != null) {
+            index(bySid, sid, session.sessionId());
+        }
     }
 
     @Override
@@ -145,7 +148,10 @@ public final class InMemorySessionStore implements SessionStore {
             return;
         }
         deindex(bySub, session.sub(), sessionId);
-        session.sid().ifPresent(sid -> deindex(bySid, sid, sessionId));
+        String sid = session.sid();
+        if (sid != null) {
+            deindex(bySid, sid, sessionId);
+        }
     }
 
     private static void index(Map<String, Set<String>> map, String key, String sessionId) {

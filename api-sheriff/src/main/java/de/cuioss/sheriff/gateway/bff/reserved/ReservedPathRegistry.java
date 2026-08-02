@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 
 

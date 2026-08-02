@@ -19,9 +19,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * One route with every inherited setting materialized once, at boot, into its
@@ -77,12 +76,18 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record ResolvedRoute(String id, Protocol protocol, @Nullable String anchor, MatchConfig match,
+public record ResolvedRoute(String id, Protocol protocol, @Nullable
+        String anchor, MatchConfig match,
 AuthConfig effectiveAuth, List<HttpMethod> effectiveAllowedMethods,
-@Nullable SecurityFilterConfig effectiveSecurityFilter, @Nullable SecurityHeadersConfig effectiveSecurityHeaders,
-boolean retryEnabled, boolean notModifiedEnabled, @Nullable ResolvedUpstream upstream, @Nullable ResolvedAsset asset,
+@Nullable
+SecurityFilterConfig effectiveSecurityFilter, @Nullable
+        SecurityHeadersConfig effectiveSecurityHeaders,
+boolean retryEnabled, boolean notModifiedEnabled, @Nullable
+        ResolvedUpstream upstream, @Nullable
+        ResolvedAsset asset,
 ForwardConfig effectiveForward, Set<String> effectiveAllowedOrigins,
-@Nullable Integer effectiveWebSocketIdleTimeoutSeconds) {
+@Nullable
+Integer effectiveWebSocketIdleTimeoutSeconds) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying

@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.bff.refresh;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,7 +29,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -99,13 +100,13 @@ class TokenRefreshCoordinatorTest {
         return SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken("access-current")
-                .refreshToken(Optional.ofNullable(refreshToken))
+                .refreshToken(refreshToken)
                 .idToken("id-current")
                 .sub("sub-1")
-                .sid(Optional.empty())
+                .sid(null)
                 .expiresAt(NOW.plus(SESSION_TTL))
-                .acr(Optional.empty())
-                .authTime(Optional.empty())
+                .acr(null)
+                .authTime(null)
                 .build();
     }
 
@@ -138,7 +139,7 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(RefreshOutcome.Kind.CURRENT, outcome.kind());
-            assertSame(live, outcome.session().orElseThrow(), "the same session is returned unchanged");
+            assertSame(live, outcome.session(), "the same session is returned unchanged");
             assertEquals(0, calls.get(), "no engine refresh is attempted when the token is not near expiry");
         }
 
@@ -174,9 +175,9 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
-            SessionRecord rotated = outcome.session().orElseThrow();
+            SessionRecord rotated = outcome.session();
             assertEquals(ROTATED_ACCESS, rotated.accessToken());
-            assertEquals(Optional.of(ROTATED_REFRESH), rotated.refreshToken());
+            assertEquals(ROTATED_REFRESH, rotated.refreshToken());
             assertEquals(ROTATED_ID, rotated.idToken());
             assertEquals(live.expiresAt(), rotated.expiresAt(), "the absolute session cap is unchanged by a refresh");
         }
@@ -218,7 +219,7 @@ class TokenRefreshCoordinatorTest {
 
             assertTrue(outcome.isFailure());
             assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind());
-            assertTrue(outcome.session().isEmpty(), "a failed outcome carries no session");
+            assertNull(outcome.session(), "a failed outcome carries no session");
             assertTrue(store.resolve(SESSION_ID, NOW).isEmpty(), "the session is destroyed on refresh failure");
         }
 
@@ -342,7 +343,7 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
             assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind());
-            assertEquals(ROTATED_ACCESS, outcome.session().orElseThrow().accessToken());
+            assertEquals(ROTATED_ACCESS, outcome.session().accessToken());
             assertEquals(1, outcome.setCookieHeaders().size(),
                     "a stateless refresh persists by emitting exactly one re-sealed cookie");
             String reSealed = outcome.setCookieHeaders().getFirst();
@@ -362,7 +363,7 @@ class TokenRefreshCoordinatorTest {
             String nextRequestCookie = reSealed.substring(0, reSealed.indexOf(';'));
             SessionRecord nextRequest = cookieBinding.resolve(nextRequestCookie, NOW).orElseThrow();
             assertEquals(ROTATED_ACCESS, nextRequest.accessToken());
-            assertEquals(Optional.of(ROTATED_REFRESH), nextRequest.refreshToken());
+            assertEquals(ROTATED_REFRESH, nextRequest.refreshToken());
             assertEquals(cookieSession.expiresAt(), nextRequest.expiresAt(),
                     "the re-seal preserves the original absolute deadline — a refresh never extends the session");
         }
@@ -373,22 +374,22 @@ class TokenRefreshCoordinatorTest {
             // rotate() rebuilds the record component-by-component, so an uncopied component is
             // silently dropped. Dropping the nonce would make persist() refuse the re-seal outright —
             // this asserts the copy directly rather than inferring it from identity stability.
-            assertTrue(cookieSession.sessionNonce().isPresent(),
+            assertNotNull(cookieSession.sessionNonce(),
                     "a resolved cookie-mode record always carries the nonce sealed at login");
             TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
-            assertEquals(cookieSession.sessionNonce(), outcome.session().orElseThrow().sessionNonce(),
+            assertEquals(cookieSession.sessionNonce(), outcome.session().sessionNonce(),
                     "the rotated record carries the previous record's nonce verbatim — never a fresh one");
         }
 
         @Test
-        @DisplayName("Should leave a server-mode record's session nonce empty")
-        void shouldLeaveServerModeNonceEmpty() {
+        @DisplayName("Should leave a server-mode record's session nonce absent")
+        void shouldLeaveServerModeNonceAbsent() {
             SessionRecord serverModeRecord = session(CURRENT_REFRESH);
 
-            assertTrue(serverModeRecord.sessionNonce().isEmpty(),
+            assertNull(serverModeRecord.sessionNonce(),
                     "the nonce is cookie-mode-only; server mode's minted opaque id is already unique");
         }
 
@@ -399,7 +400,7 @@ class TokenRefreshCoordinatorTest {
 
             RefreshOutcome outcome = coordinator.refresh(cookieSession, sealedCookieHeader, NOW);
 
-            assertEquals(cookieSession.sessionId(), outcome.session().orElseThrow().sessionId(),
+            assertEquals(cookieSession.sessionId(), outcome.session().sessionId(),
                     "the single-flight key expression is unchanged in cookie mode");
         }
 
@@ -482,7 +483,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should reject constructing a non-failed outcome without a session")
         void shouldRejectPresentContractViolation() {
             assertThrows(IllegalArgumentException.class,
-                    () -> new RefreshOutcome(RefreshOutcome.Kind.CURRENT, Optional.empty(), List.of()));
+                    () -> new RefreshOutcome(RefreshOutcome.Kind.CURRENT, null, List.of()));
         }
 
         @Test
@@ -491,7 +492,7 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome failed = RefreshOutcome.failed();
 
             assertTrue(failed.isFailure());
-            assertTrue(failed.session().isEmpty());
+            assertNull(failed.session());
             assertTrue(failed.setCookieHeaders().isEmpty());
         }
     }

@@ -125,7 +125,7 @@ public final class TokenRefreshCoordinator {
     public RefreshOutcome refresh(SessionRecord session, @Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(now, "now");
-        if (session.refreshToken().isEmpty() || !nearExpiry(session, now)) {
+        if (session.refreshToken() == null || !nearExpiry(session, now)) {
             return RefreshOutcome.current(session);
         }
         String sessionId = session.sessionId();
@@ -155,12 +155,11 @@ public final class TokenRefreshCoordinator {
             return RefreshOutcome.failed();
         }
         SessionRecord latest = resolved.get();
-        Optional<String> refreshToken = latest.refreshToken();
-        if (refreshToken.isEmpty() || !nearExpiry(latest, now)) {
+        String presentedRefreshToken = latest.refreshToken();
+        if (presentedRefreshToken == null || !nearExpiry(latest, now)) {
             // A coalesced leader already rotated this session — share the current token, no engine call.
             return RefreshOutcome.current(latest);
         }
-        String presentedRefreshToken = refreshToken.get();
         try {
             RotationResult rotation = refreshExchange.exchange(presentedRefreshToken);
             SessionRecord rotated = rotate(latest, rotation);
@@ -201,7 +200,7 @@ public final class TokenRefreshCoordinator {
         return SessionRecord.builder()
                 .sessionId(previous.sessionId())
                 .accessToken(rotation.accessToken().getRawToken())
-                .refreshToken(Optional.of(rotation.refreshToken()))
+                .refreshToken(rotation.refreshToken())
                 .idToken(rotatedIdToken == null || rotatedIdToken.isBlank() ? previous.idToken() : rotatedIdToken)
                 .sub(previous.sub())
                 .sid(previous.sid())
@@ -263,13 +262,14 @@ public final class TokenRefreshCoordinator {
      *
      * @param kind             which of the three refresh outcomes occurred
      * @param session          the session to mediate from, present for {@link Kind#CURRENT} and
-     *                         {@link Kind#REFRESHED}, empty for {@link Kind#FAILED}
+     *                         {@link Kind#REFRESHED}, {@code null} for {@link Kind#FAILED}
      * @param setCookieHeaders the {@code Set-Cookie} header values the re-bind produced, empty when
      *                         the binding needs no new cookie
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record RefreshOutcome(Kind kind, Optional<SessionRecord> session, List<String> setCookieHeaders) {
+    public record RefreshOutcome(Kind kind, @Nullable
+    SessionRecord session, List<String> setCookieHeaders) {
 
         /**
          * The three terminal states of a refresh attempt.
@@ -287,13 +287,12 @@ public final class TokenRefreshCoordinator {
         }
 
         /**
-         * Canonical constructor normalizing an absent optional and enforcing the presence contract.
+         * Canonical constructor enforcing the presence contract.
          */
         public RefreshOutcome {
             Objects.requireNonNull(kind, "kind");
-            session = Objects.requireNonNullElse(session, Optional.empty());
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
-            if (kind != Kind.FAILED && session.isEmpty()) {
+            if (kind != Kind.FAILED && session == null) {
                 throw new IllegalArgumentException("a " + kind + " outcome must carry a session");
             }
         }
@@ -305,7 +304,7 @@ public final class TokenRefreshCoordinator {
          * @return the current outcome
          */
         public static RefreshOutcome current(SessionRecord session) {
-            return new RefreshOutcome(Kind.CURRENT, Optional.of(session), List.of());
+            return new RefreshOutcome(Kind.CURRENT, session, List.of());
         }
 
         /**
@@ -316,7 +315,7 @@ public final class TokenRefreshCoordinator {
          * @return the refreshed outcome
          */
         public static RefreshOutcome refreshed(SessionRecord session, List<String> setCookieHeaders) {
-            return new RefreshOutcome(Kind.REFRESHED, Optional.of(session), setCookieHeaders);
+            return new RefreshOutcome(Kind.REFRESHED, session, setCookieHeaders);
         }
 
         /**
@@ -327,7 +326,7 @@ public final class TokenRefreshCoordinator {
          * @return the failed outcome
          */
         public static RefreshOutcome failed() {
-            return new RefreshOutcome(Kind.FAILED, Optional.empty(), List.of());
+            return new RefreshOutcome(Kind.FAILED, null, List.of());
         }
 
         /**

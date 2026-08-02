@@ -17,9 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.Objects;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The operator-facing {@code edge_hardening} block: the gateway's admission budget.
@@ -49,7 +48,9 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record EdgeHardeningConfig(@Nullable Integer admissionCap, @Nullable Integer websocketRelayCap) {
+public record EdgeHardeningConfig(@Nullable
+Integer admissionCap, @Nullable
+Integer websocketRelayCap) {
 
     /** The admission cap applied when the operator declares none — the gateway's historical bound. */
     public static final int DEFAULT_ADMISSION_CAP = 2048;

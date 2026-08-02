@@ -18,9 +18,8 @@ package de.cuioss.sheriff.gateway.config.model;
 import java.util.List;
 import java.util.Map;
 
-import org.jspecify.annotations.Nullable;
-
 import lombok.Builder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The root {@code gateway.yaml} configuration document: the global settings the
@@ -57,13 +56,23 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record GatewayConfig(int version, @Nullable Metadata metadata, @Nullable TlsConfig tls,
-@Nullable ManagementConfig management,
-@Nullable SecurityHeadersConfig securityHeaders, @Nullable SecurityDefaultsConfig securityDefaults,
+public record GatewayConfig(int version, @Nullable
+        Metadata metadata, @Nullable
+        TlsConfig tls,
+@Nullable
+ManagementConfig management,
+@Nullable
+SecurityHeadersConfig securityHeaders, @Nullable
+        SecurityDefaultsConfig securityDefaults,
 List<HttpMethod> allowedMethods, Map<String, AnchorConfig> anchors,
-@Nullable UpstreamDefaultsConfig upstreamDefaults,
-@Nullable ForwardedConfig forwarded, @Nullable TokenValidationConfig tokenValidation, @Nullable OidcConfig oidc,
-@Nullable EdgeHardeningConfig edgeHardening) {
+@Nullable
+UpstreamDefaultsConfig upstreamDefaults,
+@Nullable
+ForwardedConfig forwarded, @Nullable
+        TokenValidationConfig tokenValidation, @Nullable
+        OidcConfig oidc,
+@Nullable
+EdgeHardeningConfig edgeHardening) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and
