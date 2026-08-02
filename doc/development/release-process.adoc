@@ -39,6 +39,8 @@ A Helm chart and a Compose deployment sample are *explicitly out of scope* until
 artifacts change (PLAN-27) lands. They are named here so their absence reads as a known gap rather
 than an oversight.
 
+image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one dispatch drives the Maven release and a single image build whose output is scanned, pushed, smoked and signed, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
+
 === The image version is the Maven version
 
 The image is a packaging of the same released source tree, not a separately versioned product, so
