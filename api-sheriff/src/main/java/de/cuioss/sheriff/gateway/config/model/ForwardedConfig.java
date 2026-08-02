@@ -37,11 +37,9 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record ForwardedConfig(List<String> trustedProxies, @Nullable
-        Boolean trustSchemeHost,
-@Nullable
-String emit) {
+public record ForwardedConfig(List<String> trustedProxies, @Nullable Boolean trustSchemeHost, @Nullable String emit) {
 
     /**
      * Canonical constructor defensively copying {@code trustedProxies}.

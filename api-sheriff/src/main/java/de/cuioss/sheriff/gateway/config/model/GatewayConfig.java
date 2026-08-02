@@ -55,24 +55,22 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record GatewayConfig(int version, @Nullable
-        Metadata metadata, @Nullable
-        TlsConfig tls,
-@Nullable
-ManagementConfig management,
-@Nullable
-SecurityHeadersConfig securityHeaders, @Nullable
-        SecurityDefaultsConfig securityDefaults,
-List<HttpMethod> allowedMethods, Map<String, AnchorConfig> anchors,
-@Nullable
-UpstreamDefaultsConfig upstreamDefaults,
-@Nullable
-ForwardedConfig forwarded, @Nullable
-        TokenValidationConfig tokenValidation, @Nullable
-        OidcConfig oidc,
-@Nullable
-EdgeHardeningConfig edgeHardening) {
+public record GatewayConfig(
+int version,
+@Nullable Metadata metadata,
+@Nullable TlsConfig tls,
+@Nullable ManagementConfig management,
+@Nullable SecurityHeadersConfig securityHeaders,
+@Nullable SecurityDefaultsConfig securityDefaults,
+List<HttpMethod> allowedMethods,
+Map<String, AnchorConfig> anchors,
+@Nullable UpstreamDefaultsConfig upstreamDefaults,
+@Nullable ForwardedConfig forwarded,
+@Nullable TokenValidationConfig tokenValidation,
+@Nullable OidcConfig oidc,
+@Nullable EdgeHardeningConfig edgeHardening) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and

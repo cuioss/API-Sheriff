@@ -29,8 +29,7 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record RateLimitConfig(@Nullable
-Integer requestsPerSecond, @Nullable
-Integer burst) {
+public record RateLimitConfig(@Nullable Integer requestsPerSecond, @Nullable Integer burst) {
 }

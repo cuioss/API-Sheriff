@@ -53,12 +53,16 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record EndpointConfig(String id, boolean enabled, String baseUrl, @Nullable
-        String anchor,
-@Nullable
-AuthConfig auth, List<HttpMethod> allowedMethods, @Nullable
-        UpstreamDefaultsConfig upstreamDefaults,
+public record EndpointConfig(
+String id,
+boolean enabled,
+String baseUrl,
+@Nullable String anchor,
+@Nullable AuthConfig auth,
+List<HttpMethod> allowedMethods,
+@Nullable UpstreamDefaultsConfig upstreamDefaults,
 List<RouteConfig> routes) {
 
     /**

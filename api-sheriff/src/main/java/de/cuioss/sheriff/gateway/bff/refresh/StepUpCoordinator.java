@@ -213,9 +213,11 @@ public final class StepUpCoordinator {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record StepUpOutcome(Kind kind, @Nullable
-            SessionRecord session, @Nullable
-            String location,
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record StepUpOutcome(
+    Kind kind,
+    @Nullable SessionRecord session,
+    @Nullable String location,
     List<String> setCookieHeaders) {
 
         /**

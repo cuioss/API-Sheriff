@@ -268,8 +268,8 @@ public final class TokenRefreshCoordinator {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record RefreshOutcome(Kind kind, @Nullable
-    SessionRecord session, List<String> setCookieHeaders) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record RefreshOutcome(Kind kind, @Nullable SessionRecord session, List<String> setCookieHeaders) {
 
         /**
          * The three terminal states of a refresh attempt.

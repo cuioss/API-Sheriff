@@ -46,10 +46,9 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record AssetConfig(Source source, @Nullable
-String directory, @Nullable
-String upstream) {
+public record AssetConfig(Source source, @Nullable String directory, @Nullable String upstream) {
 
     /**
      * The asset content source (decision: ADR-0014).

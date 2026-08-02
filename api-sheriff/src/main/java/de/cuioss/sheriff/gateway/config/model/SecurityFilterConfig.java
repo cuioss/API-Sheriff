@@ -50,17 +50,18 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record SecurityFilterConfig(@Nullable
-        String profile, List<String> allowedPaths,
-@Nullable
-Integer maxHeaderCount,
-@Nullable
-Integer maxHeaderValueLength, @Nullable
-        Integer maxQueryParams, @Nullable
-        Integer maxParamValueLength,
-@Nullable
-Integer maxBodyBytes, List<String> allowedHeaderNames, List<String> blockedHeaderNames,
+public record SecurityFilterConfig(
+@Nullable String profile,
+List<String> allowedPaths,
+@Nullable Integer maxHeaderCount,
+@Nullable Integer maxHeaderValueLength,
+@Nullable Integer maxQueryParams,
+@Nullable Integer maxParamValueLength,
+@Nullable Integer maxBodyBytes,
+List<String> allowedHeaderNames,
+List<String> blockedHeaderNames,
 List<String> allowedContentTypes) {
 
     /**

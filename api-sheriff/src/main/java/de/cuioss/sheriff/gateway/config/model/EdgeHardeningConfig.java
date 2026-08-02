@@ -47,10 +47,9 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record EdgeHardeningConfig(@Nullable
-Integer admissionCap, @Nullable
-Integer websocketRelayCap) {
+public record EdgeHardeningConfig(@Nullable Integer admissionCap, @Nullable Integer websocketRelayCap) {
 
     /** The admission cap applied when the operator declares none — the gateway's historical bound. */
     public static final int DEFAULT_ADMISSION_CAP = 2048;

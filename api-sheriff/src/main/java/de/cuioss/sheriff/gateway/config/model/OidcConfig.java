@@ -42,19 +42,19 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record OidcConfig(@Nullable
-        String issuer, @Nullable
-        String clientId, @Nullable
-        String clientSecret,
-List<String> scopes, @Nullable
-        String redirectUri, @Nullable
-        Logout logout, @Nullable
-        Session session,
-@Nullable
-StepUp stepUp, @Nullable
-        UserInfo userInfo, @Nullable
-        Login login) {
+public record OidcConfig(
+@Nullable String issuer,
+@Nullable String clientId,
+@Nullable String clientSecret,
+List<String> scopes,
+@Nullable String redirectUri,
+@Nullable Logout logout,
+@Nullable Session session,
+@Nullable StepUp stepUp,
+@Nullable UserInfo userInfo,
+@Nullable Login login) {
 
     /**
      * Canonical constructor defensively copying {@code scopes}.
@@ -103,13 +103,13 @@ StepUp stepUp, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Logout(@Nullable
-            String path, @Nullable
-            String postLogoutRedirectUri,
-    @Nullable
-    String finalRedirect, @Nullable
-            String backchannelPath) {
+    public record Logout(
+    @Nullable String path,
+    @Nullable String postLogoutRedirectUri,
+    @Nullable String finalRedirect,
+    @Nullable String backchannelPath) {
     }
 
     /**
@@ -152,21 +152,19 @@ StepUp stepUp, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Session(@Nullable
-            String mode, @Nullable
-            String store, @Nullable
-            String cookieName,
-    @Nullable
-    String encryptionKey, @Nullable
-            String previousKey, @Nullable
-            Integer ttlSeconds,
-    @Nullable
-    Csrf csrf, @Nullable
-            Refresh refresh, @Nullable
-            Integer maxSessions,
-    @Nullable
-    Integer maxCookieSize) {
+    public record Session(
+    @Nullable String mode,
+    @Nullable String store,
+    @Nullable String cookieName,
+    @Nullable String encryptionKey,
+    @Nullable String previousKey,
+    @Nullable Integer ttlSeconds,
+    @Nullable Csrf csrf,
+    @Nullable Refresh refresh,
+    @Nullable Integer maxSessions,
+    @Nullable Integer maxCookieSize) {
 
         /** The stateless cookie session mode, in its one canonical spelling. */
         public static final String MODE_COOKIE = "cookie";
@@ -265,12 +263,9 @@ StepUp stepUp, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Refresh(@Nullable
-            Boolean enabled, @Nullable
-            Integer leewaySeconds,
-    @Nullable
-    String onFailure) {
+    public record Refresh(@Nullable Boolean enabled, @Nullable Integer leewaySeconds, @Nullable String onFailure) {
     }
 
     /**
@@ -282,10 +277,9 @@ StepUp stepUp, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record StepUp(@Nullable
-    Boolean enabled, @Nullable
-    Boolean honorUpstreamChallenge) {
+    public record StepUp(@Nullable Boolean enabled, @Nullable Boolean honorUpstreamChallenge) {
     }
 
     /**
@@ -304,9 +298,9 @@ StepUp stepUp, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record UserInfo(@Nullable
-    String path, List<String> allowedClaims, List<String> defaultView) {
+    public record UserInfo(@Nullable String path, List<String> allowedClaims, List<String> defaultView) {
 
         /**
          * Canonical constructor defensively copying the claim lists.
@@ -325,8 +319,8 @@ StepUp stepUp, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Login(@Nullable
-    String path) {
+    public record Login(@Nullable String path) {
     }
 }

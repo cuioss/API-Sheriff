@@ -76,15 +76,19 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record SessionRecord(String sessionId, String accessToken, @Nullable
-        String refreshToken, String idToken,
-String sub, @Nullable
-        String sid, Instant expiresAt, @Nullable
-        String acr, @Nullable
-        Instant authTime,
-@Nullable
-String sessionNonce) {
+public record SessionRecord(
+String sessionId,
+String accessToken,
+@Nullable String refreshToken,
+String idToken,
+String sub,
+@Nullable String sid,
+Instant expiresAt,
+@Nullable String acr,
+@Nullable Instant authTime,
+@Nullable String sessionNonce) {
 
     private static final String REDACTED = "***REDACTED***";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();

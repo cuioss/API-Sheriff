@@ -49,20 +49,20 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record RouteConfig(String id, @Nullable
-        Protocol protocol, @Nullable
-        String anchor, MatchConfig match,
-@Nullable
-AuthConfig auth, @Nullable
-        SecurityFilterConfig securityFilter, @Nullable
-        ForwardConfig forward,
-@Nullable
-UpstreamConfig upstream, @Nullable
-        AssetConfig asset, @Nullable
-        RateLimitConfig rateLimit,
-@Nullable
-WebSocketConfig websocket) {
+public record RouteConfig(
+String id,
+@Nullable Protocol protocol,
+@Nullable String anchor,
+MatchConfig match,
+@Nullable AuthConfig auth,
+@Nullable SecurityFilterConfig securityFilter,
+@Nullable ForwardConfig forward,
+@Nullable UpstreamConfig upstream,
+@Nullable AssetConfig asset,
+@Nullable RateLimitConfig rateLimit,
+@Nullable WebSocketConfig websocket) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match}.

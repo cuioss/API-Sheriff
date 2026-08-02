@@ -200,8 +200,7 @@ public final class LogoutTokenValidator {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record LogoutSubject(@Nullable
-    String sub, @Nullable
-    String sid) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record LogoutSubject(@Nullable String sub, @Nullable String sid) {
     }
 }

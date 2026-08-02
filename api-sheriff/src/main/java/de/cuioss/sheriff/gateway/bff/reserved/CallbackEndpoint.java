@@ -319,8 +319,8 @@ public final class CallbackEndpoint {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record CallbackOutcome(int status, @Nullable
-    String location, List<String> setCookieHeaders) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record CallbackOutcome(int status, @Nullable String location, List<String> setCookieHeaders) {
 
         /**
          * Canonical constructor defensively copying the cookies.

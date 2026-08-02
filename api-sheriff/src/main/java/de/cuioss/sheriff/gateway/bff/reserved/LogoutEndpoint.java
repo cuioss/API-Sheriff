@@ -154,8 +154,8 @@ public final class LogoutEndpoint {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record LogoutOutcome(int status, @Nullable
-    String location, List<String> setCookieHeaders) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record LogoutOutcome(int status, @Nullable String location, List<String> setCookieHeaders) {
 
         private static final int FOUND = 302;
 

@@ -32,9 +32,12 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record MatchConfig(String pathPrefix, List<HttpMethod> methods, @Nullable
-        String host,
+public record MatchConfig(
+String pathPrefix,
+List<HttpMethod> methods,
+@Nullable String host,
 List<HeaderMatcher> headers) {
 
     /**
@@ -56,10 +59,9 @@ List<HeaderMatcher> headers) {
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record HeaderMatcher(String name, @Nullable
-    Boolean present, @Nullable
-    String value) {
+    public record HeaderMatcher(String name, @Nullable Boolean present, @Nullable String value) {
 
         /**
          * Canonical constructor requiring {@code name}.

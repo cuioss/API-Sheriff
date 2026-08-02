@@ -295,8 +295,8 @@ public final class ClientHelloSniParser {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record Result(boolean complete, @Nullable
-    String serverName) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record Result(boolean complete, @Nullable String serverName) {
 
         /**
          * The "keep buffering" verdict: the ClientHello is not yet complete.

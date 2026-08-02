@@ -36,16 +36,15 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record UpstreamConfig(@Nullable
-        String path, @Nullable
-        Integer connectTimeoutMs,
-@Nullable
-Integer readTimeoutMs,
-@Nullable
-Retry retry, @Nullable
-        NotModified notModified, @Nullable
-        CircuitBreaker circuitBreaker) {
+public record UpstreamConfig(
+@Nullable String path,
+@Nullable Integer connectTimeoutMs,
+@Nullable Integer readTimeoutMs,
+@Nullable Retry retry,
+@Nullable NotModified notModified,
+@Nullable CircuitBreaker circuitBreaker) {
 
     /**
      * Per-route retry settings.
@@ -58,12 +57,9 @@ Retry retry, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Retry(@Nullable
-            Boolean enabled, @Nullable
-            Integer maxAttempts,
-    @Nullable
-    Boolean idempotentOnly) {
+    public record Retry(@Nullable Boolean enabled, @Nullable Integer maxAttempts, @Nullable Boolean idempotentOnly) {
     }
 
     /**
@@ -74,8 +70,8 @@ Retry retry, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record NotModified(@Nullable
-    Boolean enabled) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record NotModified(@Nullable Boolean enabled) {
     }
 
     /**
@@ -86,9 +82,8 @@ Retry retry, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record CircuitBreaker(@Nullable
-    Integer failures, @Nullable
-    Integer resetMs) {
+    public record CircuitBreaker(@Nullable Integer failures, @Nullable Integer resetMs) {
     }
 }

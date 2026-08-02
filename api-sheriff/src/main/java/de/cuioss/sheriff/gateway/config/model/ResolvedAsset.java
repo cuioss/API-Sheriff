@@ -53,11 +53,13 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record ResolvedAsset(AssetConfig.Source source, AccessLevel access, @Nullable
-        String directory,
-@Nullable
-ResolvedUpstream upstream) {
+public record ResolvedAsset(
+AssetConfig.Source source,
+AccessLevel access,
+@Nullable String directory,
+@Nullable ResolvedUpstream upstream) {
 
     /**
      * Canonical constructor requiring {@code source} and {@code access} and enforcing

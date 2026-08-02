@@ -239,8 +239,8 @@ public final class RpInitiatedLogout {
      * @author API Sheriff Team
      * @since 1.0
      */
-    public record LogoutReturn(int status, @Nullable
-    String location, List<String> setCookieHeaders) {
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record LogoutReturn(int status, @Nullable String location, List<String> setCookieHeaders) {
 
         /**
          * Canonical constructor defensively copying the cookies.

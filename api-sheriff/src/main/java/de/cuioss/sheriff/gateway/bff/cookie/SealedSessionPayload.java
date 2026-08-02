@@ -60,12 +60,16 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
-public record SealedSessionPayload(String accessToken, @Nullable
-        String refreshToken, String idToken,
-String sub, @Nullable
-        String sid, @Nullable
-        String acr, @Nullable
-        Instant authTime, Instant loginInstant,
+// cui-rewrite:disable AnnotationNewlineFormat
+public record SealedSessionPayload(
+String accessToken,
+@Nullable String refreshToken,
+String idToken,
+String sub,
+@Nullable String sid,
+@Nullable String acr,
+@Nullable Instant authTime,
+Instant loginInstant,
 String sessionNonce) {
 
     private static final String REDACTED = "***REDACTED***";

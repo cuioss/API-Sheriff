@@ -34,11 +34,14 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record TlsConfig(@Nullable
-        String minVersion, List<String> cipherSuites, List<String> alpn,
-Map<String, String> passthroughSni, @Nullable
-        Mtls mtls) {
+public record TlsConfig(
+@Nullable String minVersion,
+List<String> cipherSuites,
+List<String> alpn,
+Map<String, String> passthroughSni,
+@Nullable Mtls mtls) {
 
     /**
      * Canonical constructor defensively copying collections.
@@ -57,8 +60,8 @@ Map<String, String> passthroughSni, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Mtls(boolean enabled, @Nullable
-    String clientCa) {
+    public record Mtls(boolean enabled, @Nullable String clientCa) {
     }
 }

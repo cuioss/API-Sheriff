@@ -31,10 +31,9 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record IssuerConfig(String name, String issuer, @Nullable
-String audience, @Nullable
-Jwks jwks) {
+public record IssuerConfig(String name, String issuer, @Nullable String audience, @Nullable Jwks jwks) {
 
     /**
      * Canonical constructor requiring the mandatory fields.
@@ -70,12 +69,14 @@ Jwks jwks) {
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Jwks(String source, @Nullable
-            String url, @Nullable
-            String file,
-    List<String> allowedEgressHosts, @Nullable
-            String tlsProfile) {
+    public record Jwks(
+    String source,
+    @Nullable String url,
+    @Nullable String file,
+    List<String> allowedEgressHosts,
+    @Nullable String tlsProfile) {
 
         /**
          * Canonical constructor requiring {@code source} and defensively copying the

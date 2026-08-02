@@ -39,9 +39,9 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record WebSocketConfig(List<String> allowedOrigins, @Nullable
-Integer idleTimeoutSeconds) {
+public record WebSocketConfig(List<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds) {
 
     /**
      * Canonical constructor defensively copying {@code allowedOrigins} into an

@@ -33,13 +33,13 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record SecurityHeadersConfig(@Nullable
-        Hsts hsts, @Nullable
-        Boolean contentTypeNosniff,
-@Nullable
-Boolean frameDeny, @Nullable
-        Cors cors) {
+public record SecurityHeadersConfig(
+@Nullable Hsts hsts,
+@Nullable Boolean contentTypeNosniff,
+@Nullable Boolean frameDeny,
+@Nullable Cors cors) {
 
     /**
      * {@code Strict-Transport-Security} settings.
@@ -50,10 +50,9 @@ Boolean frameDeny, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Hsts(@Nullable
-    Integer maxAge, @Nullable
-    Boolean includeSubdomains) {
+    public record Hsts(@Nullable Integer maxAge, @Nullable Boolean includeSubdomains) {
     }
 
     /**
@@ -67,11 +66,14 @@ Boolean frameDeny, @Nullable
      * @author API Sheriff Team
      * @since 1.0
      */
+    // cui-rewrite:disable AnnotationNewlineFormat
     @Builder
-    public record Cors(@Nullable
-            Boolean enabled, List<String> allowedOrigins, List<String> allowedMethods,
-    List<String> allowedHeaders, @Nullable
-            Boolean allowCredentials) {
+    public record Cors(
+    @Nullable Boolean enabled,
+    List<String> allowedOrigins,
+    List<String> allowedMethods,
+    List<String> allowedHeaders,
+    @Nullable Boolean allowCredentials) {
 
         /**
          * Canonical constructor defensively copying collections.

@@ -42,9 +42,9 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record ManagementConfig(@Nullable
-ManagementTls tls) {
+public record ManagementConfig(@Nullable ManagementTls tls) {
 
     /**
      * TLS policy for the management interface.

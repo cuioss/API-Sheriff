@@ -75,19 +75,24 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// cui-rewrite:disable AnnotationNewlineFormat
 @Builder
-public record ResolvedRoute(String id, Protocol protocol, @Nullable
-        String anchor, MatchConfig match,
-AuthConfig effectiveAuth, List<HttpMethod> effectiveAllowedMethods,
-@Nullable
-SecurityFilterConfig effectiveSecurityFilter, @Nullable
-        SecurityHeadersConfig effectiveSecurityHeaders,
-boolean retryEnabled, boolean notModifiedEnabled, @Nullable
-        ResolvedUpstream upstream, @Nullable
-        ResolvedAsset asset,
-ForwardConfig effectiveForward, Set<String> effectiveAllowedOrigins,
-@Nullable
-Integer effectiveWebSocketIdleTimeoutSeconds) {
+public record ResolvedRoute(
+String id,
+Protocol protocol,
+@Nullable String anchor,
+MatchConfig match,
+AuthConfig effectiveAuth,
+List<HttpMethod> effectiveAllowedMethods,
+@Nullable SecurityFilterConfig effectiveSecurityFilter,
+@Nullable SecurityHeadersConfig effectiveSecurityHeaders,
+boolean retryEnabled,
+boolean notModifiedEnabled,
+@Nullable ResolvedUpstream upstream,
+@Nullable ResolvedAsset asset,
+ForwardConfig effectiveForward,
+Set<String> effectiveAllowedOrigins,
+@Nullable Integer effectiveWebSocketIdleTimeoutSeconds) {
 
     /**
      * Canonical constructor requiring the mandatory components, defensively copying
