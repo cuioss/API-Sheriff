@@ -112,11 +112,12 @@ public class ManagementPlainHttpAudit {
      * @return {@code true} when the management interface resolved to plain HTTP
      */
     public boolean auditManagementTls() {
-        // TlsConfiguration.from is a Quarkus API that takes an Optional, so the nullable field is
-        // re-wrapped at this single call site rather than stored as an Optional.
+        // TlsConfiguration.from is a Quarkus API that both takes and returns an Optional, so the
+        // nullable field is re-wrapped and the result unwrapped at this single call site rather
+        // than either being stored or propagated as an Optional.
         Optional<TlsConfiguration> resolved = TlsConfiguration.from(registry,
                 Optional.ofNullable(tlsConfigurationName));
-        boolean plain = resolvesToPlainHttp(resolved, managementCertificateConfigured);
+        boolean plain = resolvesToPlainHttp(resolved.orElse(null), managementCertificateConfigured);
         if (plain) {
             LOGGER.warn(ConfigLogMessages.WARN.MANAGEMENT_PLAIN_HTTP, managementPort);
         } else {
@@ -131,15 +132,15 @@ public class ManagementPlainHttpAudit {
      * deployment's certificate rather than adding to it, so the listener ends up with no key/cert and
      * the recorder swaps in the plain options.
      *
-     * @param resolved               the TLS configuration the management interface resolved to, empty
-     *                               when none applies
+     * @param resolved               the TLS configuration the management interface resolved to,
+     *                               {@code null} when none applies
      * @param certificateConfigured  whether {@code quarkus.management.ssl.certificate.files} supplies
      *                               a chain
      * @return {@code true} when no key material reaches the management listener
      */
-    static boolean resolvesToPlainHttp(Optional<TlsConfiguration> resolved, boolean certificateConfigured) {
-        if (resolved.isPresent()) {
-            return resolved.get().getKeyStoreOptions() == null;
+    static boolean resolvesToPlainHttp(@Nullable TlsConfiguration resolved, boolean certificateConfigured) {
+        if (resolved != null) {
+            return resolved.getKeyStoreOptions() == null;
         }
         return !certificateConfigured;
     }
