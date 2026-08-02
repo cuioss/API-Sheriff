@@ -78,6 +78,9 @@ class ItProfileConfigBindingWiringTest {
 
     private static final String BUCKET_PREFIX = "quarkus.tls.benchmark-idp.trust-store.p12.";
 
+    /** The deployment switch for file logging, now that the shipped artifact defaults it to off. */
+    private static final String LOG_FILE_ENABLED = "QUARKUS_LOG_FILE_ENABLE=true";
+
     @Test
     @DisplayName("every it-profile gateway instance binds the mounted trust file")
     void everyItProfileInstanceBindsTheMountedTrustFile() throws Exception {
@@ -96,6 +99,29 @@ class ItProfileConfigBindingWiringTest {
                     () -> service + " sets " + IT_PROFILE + " but must also set " + LOCATIONS_BINDING
                             + " — gateway.yaml names jwks.tls_profile: benchmark-idp, and an "
                             + "unresolved bucket aborts boot in JwksTrustProfileResolver.resolve()");
+        }
+    }
+
+    @Test
+    @DisplayName("every it-profile gateway instance switches file logging on")
+    void everyItProfileInstanceEnablesFileLogging() throws Exception {
+        // Arrange — same derived set, same reason: a seventh instance is covered without an edit here.
+        List<String> itServices = itProfileServices();
+
+        assertFalse(itServices.isEmpty(),
+                "the derived it-profile gateway-instance set must not be empty — an empty set turns "
+                        + "this guard into a vacuous pass");
+
+        // Act + Assert — the shipped artifact now defaults quarkus.log.file.enable to false, so a
+        // LOG_FILE_PATH on its own produces no file at all. The IT suite reads those files
+        // (ManagementPlainHttpOptOutIT asserts on the ApiSheriff-115 downgrade warning inside the
+        // plain-management container's log), and a missing switch would surface as a puzzling
+        // assertion failure rather than as the wiring gap it is.
+        for (String service : itServices) {
+            assertTrue(environment(service).contains(LOG_FILE_ENABLED),
+                    () -> service + " sets " + IT_PROFILE + " but must also set " + LOG_FILE_ENABLED
+                            + " — file logging ships off by default, so LOG_FILE_PATH alone writes "
+                            + "nothing and the log-reading ITs lose their evidence");
         }
     }
 
