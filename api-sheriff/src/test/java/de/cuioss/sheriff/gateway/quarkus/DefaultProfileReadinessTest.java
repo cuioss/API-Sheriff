@@ -31,6 +31,7 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.AnnotationLiteral;
 import jakarta.inject.Inject;
 import jakarta.json.JsonObject;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.Readiness;
 import org.junit.jupiter.api.DisplayName;
@@ -79,6 +80,17 @@ import org.junit.jupiter.api.Test;
  * <em>present</em> (proving the readiness machinery genuinely ran and contributed). Only both
  * together make a green UP distinguishable from a vacuous one.
  * <p>
+ * <strong>The zero-issuer premise is asserted, not assumed.</strong> The paired guard above proves the
+ * readiness machinery ran; it says nothing about the scenario that machinery ran <em>in</em>. Because
+ * {@code quarkus.arc.exclude-types} is unconditional, it removes both extension probes whether or not
+ * any {@code sheriff.token.issuers.*} property exists — so all three tests below would stay green
+ * against a reintroduced issuer key while no longer exercising the issuer-less scenario this class is
+ * named for. That is not a hypothetical: the defect this class pins was originally <em>masked</em> by
+ * exactly such an issuer block. {@code shouldReportAggregateReadinessUpWithZeroIssuers} therefore
+ * inspects the merged effective configuration ({@code ConfigProvider}) and fails when any property
+ * name starts with {@code sheriff.token.issuers.}, so the premise is a guarded precondition rather
+ * than a claim in the class name.
+ * <p>
  * Aggregation goes through SmallRye's own composition via {@link SmallRyeHealthReporter} — the same
  * code path {@code /q/health/ready} serves — so neither HTTP nor the management port is needed (the
  * test profile sets {@code quarkus.management.enabled=false}).
@@ -96,6 +108,14 @@ class DefaultProfileReadinessTest {
      * health qualifier each carries.
      */
     private static final String EXTENSION_HEALTH_PACKAGE = "de.cuioss.sheriff.token.quarkus.health.";
+
+    /**
+     * Configuration prefix of the token-sheriff-validation extension's own issuer namespace — the
+     * namespace whose <em>emptiness</em> is the scenario this class is named for. Every issuer key the
+     * extension reads lives under it, so a prefix match over the effective property names is the whole
+     * precondition check.
+     */
+    private static final String EXTENSION_ISSUER_PREFIX = "sheriff.token.issuers.";
 
     /** The gateway's own probe, named by {@code GatewayReadinessCheck.CHECK_NAME}. */
     private static final String GATEWAY_READINESS_CHECK = "gateway-readiness";
@@ -139,6 +159,16 @@ class DefaultProfileReadinessTest {
     @Test
     @DisplayName("Should report aggregate readiness UP with zero sheriff.token.issuers.* configured")
     void shouldReportAggregateReadinessUpWithZeroIssuers() {
+        // Arrange — the premise guard runs first: the exclusion is unconditional, so every other
+        // assertion in this class survives a reintroduced issuer key and would keep this test green
+        // while the zero-issuer scenario it exists to pin had silently evaporated.
+        List<String> issuerProperties = extensionIssuerPropertyNames();
+        assertTrue(issuerProperties.isEmpty(),
+                "guard: the effective configuration declares " + issuerProperties + " — this class pins "
+                        + "the ZERO-issuer scenario, and " + EXTENSION_ISSUER_PREFIX + "* keys make every "
+                        + "assertion below describe a different one. Either drop those keys or retire "
+                        + "this test; do not relax the guard");
+
         // Arrange — the paired guard runs before the fold, so neither a silently-unregistered
         // extension bean nor a silently-absent gateway probe can masquerade as a genuine UP.
         List<String> contributors = readinessContributorNames();
@@ -165,6 +195,23 @@ class DefaultProfileReadinessTest {
         assertEquals("ready", gatewayCheck.getJsonObject("data").getString("jwks"),
                 "the boot fixture declares a token_validation issuer, so the gateway's own validator "
                         + "resolved and its jwks datum reads ready; payload: " + payload);
+    }
+
+    /**
+     * Reads the <em>merged effective</em> configuration rather than one properties file, so a key
+     * reintroduced through any source — a profile-scoped entry, an environment variable, a system
+     * property — is caught just as a shipped one would be.
+     *
+     * @return every effective configuration property name under {@link #EXTENSION_ISSUER_PREFIX}
+     */
+    private static List<String> extensionIssuerPropertyNames() {
+        List<String> names = new ArrayList<>();
+        for (String name : ConfigProvider.getConfig().getPropertyNames()) {
+            if (name.startsWith(EXTENSION_ISSUER_PREFIX)) {
+                names.add(name);
+            }
+        }
+        return names;
     }
 
     /** @return the binary class names of every {@code @Readiness}-qualified {@link HealthCheck} bean */
