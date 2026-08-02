@@ -218,8 +218,8 @@ $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 # uses, and for the same reason: /q/health/live answers as soon as the process is up, which is
 # strictly earlier than the point at which the SPA can be driven against it. The switch costs no
 # additional wait — GatewayReadinessCheck's `jwks` datum is a boot-time constructibility fact
-# (ADR-0027), so readiness flips at the same moment liveness does; that sibling script carries the
-# measured live-to-ready delta (0.00s across all six instances under contention) behind this claim.
+# (ADR-0027), so readiness flips at the same moment liveness does. The measured live-to-ready delta
+# behind that claim is in doc/development/integration-test-topology.adoc, "The Readiness Contract".
 GATEWAY_READY_ATTEMPTS=30
 
 echo "⏳ Waiting for the demo gateway instances to be ready..."

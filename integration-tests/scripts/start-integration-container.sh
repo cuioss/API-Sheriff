@@ -264,31 +264,19 @@ fi
 # last-attempt comparison and the progress echo. It used to be three literal 30s that could drift
 # apart; a re-size now touches a single line.
 #
-# The value is measured, not chosen by feel. A sub-second prober (100 ms polling, started BEFORE
-# `compose up -d` so it observes the transition rather than inferring it) ran against all six gateway
-# instances brought up concurrently with Keycloak, under CPU contention (24 busy workers on 16 cores):
+# The value is measured, not chosen by feel. A sub-second prober run against all six instances under
+# CPU contention put the live-to-ready delta at 0.00s on every one of them — which is not luck but
+# what GatewayReadinessCheck means: its `jwks` datum is a BOOT-TIME constructibility fact (ADR-0027),
+# forced into existence by TokenValidatorProducer.onStartup and cached thereafter, so readiness flips
+# at the same moment liveness does and this gate costs no additional wait over the liveness probe it
+# replaced.
 #
-#   instance                  live      ready     delta
-#   api-sheriff               8.80s     8.80s     0.00s
-#   api-sheriff-cookie        9.14s     9.14s     0.00s
-#   api-sheriff-cookie-2      8.82s     8.82s     0.00s
-#   api-sheriff-mtls          8.16s     8.16s     0.00s
-#   api-sheriff-plain-mgmt    8.94s     8.94s     0.00s
-#   api-sheriff-ws-admission  8.95s     8.95s     0.00s
+# The per-instance figures and the headroom argument have a single home —
+# doc/development/integration-test-topology.adoc, "Where the retry budget came from". Read the
+# numbers there rather than restating them here, where they would drift.
 #
-# The live-to-ready delta is 0.00s on every instance — below the prober's own 100 ms resolution. That
-# is not luck, it is what GatewayReadinessCheck means: its `jwks` datum is a BOOT-TIME
-# constructibility fact (ADR-0027), forced into existence by TokenValidatorProducer.onStartup and
-# cached thereafter, so readiness flips at the same moment liveness does. Switching this gate from
-# /q/health/live to /q/health/ready therefore costs no additional wait, and the budget needs no
-# increase to absorb it.
-#
-# 30 attempts is retained on that evidence: the worst observed time-to-ready was 9.14s measured from
-# the `compose up -d` call — and this loop's clock starts strictly later than that, after compose has
-# returned AND after the go-httpbin wait — so the budget carries better than 3x headroom against the
-# stricter clock and roughly 30x against its own. It is consumed only on failure, so the headroom is
-# free. Do not shrink it toward the observed times: CI runners are slower than this machine and the
-# measurement above bounds the delta, not the absolute container start.
+# 30 attempts is retained on that evidence, and is consumed only on failure, so the headroom is free.
+# Do not shrink it toward the observed times: CI runners are slower than the machine measured there.
 GATEWAY_READY_ATTEMPTS=30
 
 echo "⏳ Waiting for the discovered gateway instances to be ready..."
