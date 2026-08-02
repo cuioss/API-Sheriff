@@ -146,6 +146,49 @@ jobs:
           echo "id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
           echo "Tested image ID: ${IMAGE_ID}"
 
+      # SBOM for the TESTED image, so it describes exactly what ships.
+      - name: Generate the SPDX SBOM for the tested image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ steps.image.outputs.id }}
+          format: spdx-json
+          artifact-name: api-sheriff-${{ steps.config.outputs.current-version }}-sbom.spdx.json
+          upload-artifact: true
+          # The job holds `contents: read`; it must not attempt to attach assets to a GitHub release.
+          upload-release-assets: false
+
+      # THE GATE. A finding at HIGH **or** CRITICAL fails the job, and because this step sits ABOVE
+      # the `docker login` below, nothing has been pushed when it fires.
+      #
+      # The HIGH+CRITICAL threshold is deliberate, not a default: API Sheriff is a security-focused
+      # gateway, so the stricter posture is the point. Do not relax it to CRITICAL-only without an
+      # explicit, recorded decision.
+      #
+      # SCOPE HONESTY — what this scan can and cannot see. The image is the pinned distroless base
+      # plus exactly ONE layer: a statically linked GraalVM native executable
+      # (`COPY --chmod=0755 target/*-runner /app/application`). There are NO JARS IN THE IMAGE, so
+      # Trivy's Java analyzer finds nothing and this is in substance a scan of the pinned base
+      # image's OS packages. Java dependency CVEs are covered by the PR-lane filesystem scan in
+      # maven.yml and by the Sonar and Dependabot lanes — NOT here. A clean result here is not
+      # evidence of a clean dependency tree.
+      #
+      # ATTESTATION POSTURE, PINNED. This lane builds into the local image store (via the harness
+      # `docker compose build`) and then `docker tag` + `docker push`. It must NOT switch to
+      # `docker buildx build --push`: with buildx's default attestations a registry push produces a
+      # manifest LIST wrapping the image alongside provenance/SBOM attestations, and the top-level
+      # digest then addresses that list rather than the plain image manifest — which changes what the
+      # pull-by-digest smoke pulls and what Cosign signs. The current shape sidesteps the problem
+      # entirely rather than managing it.
+      - name: Scan the tested image (gating, HIGH and CRITICAL)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.image.outputs.id }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: 'false'
+          format: table
+
       # The registry path is HARDCODED LOWERCASE on purpose: ${{ github.repository }} yields
       # cuioss/API-Sheriff and GHCR rejects the uppercase, so deriving it from the context would fail
       # at push time.
