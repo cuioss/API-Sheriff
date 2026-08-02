@@ -167,8 +167,9 @@ public final class RouteTableBuilder {
                             .formatted(route.id()));
         }
         List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint, anchor);
-        SecurityFilterConfig securityFilter = route.securityFilter() != null
-                ? route.securityFilter()
+        SecurityFilterConfig routeFilter = route.securityFilter();
+        SecurityFilterConfig securityFilter = routeFilter != null
+                ? routeFilter
                 : (anchor == null ? null : anchor.securityFilter());
         SecurityHeadersConfig anchorHeaders = anchor == null ? null : anchor.securityHeaders();
         SecurityHeadersConfig securityHeaders = anchorHeaders != null ? anchorHeaders : gateway.securityHeaders();
@@ -182,10 +183,9 @@ public final class RouteTableBuilder {
         boolean notModifiedEnabled = notModified != null && notModified.enabled() != null
                 ? notModified.enabled()
                 : defaults.notModifiedEnabled();
-        ForwardConfig effectiveForward = route.forward() != null
-                ? route.forward()
-                : ForwardConfig.builder().build();
-        Protocol protocol = route.protocol() != null ? route.protocol() : Protocol.HTTP;
+        ForwardConfig effectiveForward = Objects.requireNonNullElseGet(route.forward(),
+                () -> ForwardConfig.builder().build());
+        Protocol protocol = Objects.requireNonNullElse(route.protocol(), Protocol.HTTP);
         Set<String> allowedOrigins = effectiveAllowedOrigins(route);
         Integer idleTimeout = null;
         if (protocol == Protocol.WEBSOCKET) {
@@ -326,9 +326,9 @@ public final class RouteTableBuilder {
     private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
         String anchorName = route.anchor() != null ? route.anchor() : NONE;
         SecurityFilterConfig securityFilter = route.effectiveSecurityFilter();
-        SecurityProfile effectiveProfile = securityFilter == null
-                ? globalProfile
-                : SecurityProfile.parse(securityFilter.profile()).orElse(globalProfile);
+        SecurityProfile effectiveProfile = SecurityProfile
+                .parse(securityFilter == null ? null : securityFilter.profile())
+                .orElse(globalProfile);
         LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, route.effectiveAuth().require(),
                 effectiveProfile.name().toLowerCase(Locale.ROOT));
     }
@@ -345,10 +345,8 @@ public final class RouteTableBuilder {
      */
     public static SecurityProfile globalProfile(GatewayConfig gateway) {
         SecurityDefaultsConfig securityDefaults = gateway.securityDefaults();
-        if (securityDefaults == null) {
-            return SecurityProfile.DEFAULT_PROFILE;
-        }
-        return SecurityProfile.parse(securityDefaults.profile()).orElse(SecurityProfile.DEFAULT_PROFILE);
+        return SecurityProfile.parse(securityDefaults == null ? null : securityDefaults.profile())
+                .orElse(SecurityProfile.DEFAULT_PROFILE);
     }
 
     private static void warnOnWeakeningOverride(RouteConfig route, EndpointConfig endpoint,
@@ -367,11 +365,11 @@ public final class RouteTableBuilder {
     }
 
     private static UpstreamDefaultsConfig resolveDefaults(GatewayConfig gateway, EndpointConfig endpoint) {
-        if (endpoint.upstreamDefaults() != null) {
-            return endpoint.upstreamDefaults();
+        UpstreamDefaultsConfig endpointDefaults = endpoint.upstreamDefaults();
+        if (endpointDefaults != null) {
+            return endpointDefaults;
         }
-        UpstreamDefaultsConfig global = gateway.upstreamDefaults();
-        return global != null ? global : UpstreamDefaultsConfig.defaults();
+        return Objects.requireNonNullElseGet(gateway.upstreamDefaults(), UpstreamDefaultsConfig::defaults);
     }
 
     private static List<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,

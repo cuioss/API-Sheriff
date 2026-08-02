@@ -719,10 +719,8 @@ public final class ConfigValidator {
         if (securityFilter == null && anchor != null) {
             securityFilter = anchor.securityFilter();
         }
-        if (securityFilter == null) {
-            return RouteTableBuilder.globalProfile(gateway);
-        }
-        return SecurityProfile.parse(securityFilter.profile())
+        String declaredProfile = securityFilter == null ? null : securityFilter.profile();
+        return SecurityProfile.parse(declaredProfile)
                 .orElseGet(() -> RouteTableBuilder.globalProfile(gateway));
     }
 

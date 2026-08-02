@@ -174,8 +174,8 @@ public class BffRuntimeProducer {
      */
     private static boolean isBffMode(OidcConfig oidc) {
         OidcConfig.Session session = oidc.session();
-        // The SHARED predicate on the config model, identical to the one boot validation and the
-        // edge's pre-route Cookie header-value cap read — never a locally-declared constant.
+        // isRecognisedMode() is the SHARED mode predicate on the config model — the mode spelling is
+        // never compared against a locally-declared constant here.
         return session != null && session.isRecognisedMode() && oidc.redirectUri() != null;
     }
 
