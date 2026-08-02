@@ -1,0 +1,278 @@
+= ADR-0026: The shipped artifact declares nothing test-shaped; the deployment supplies what it names
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The deployable artifact's own configuration carries nothing keyed to a test, benchmark, or development context -- neither profile-prefixed nor unprefixed-but-context-named -- and a deployment that names a logical binding supplies the material for it; removal takes one of three shapes (delete outright, relocate to the deployment, or flip the shipped default), and the packaged-config guard that enforces the profile-prefix shape is deliberately necessary but not sufficient.
+// tags: configuration-surface, artifact-purity, deployment-binding, profile-branches, secrets-handling, layering, test-isolation, packaged-artifact
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+`api-sheriff/src/main/resources/application.properties` is packaged into the deployable artifact.
+Every key in it ships to every deployment, including production.
+
+Framework profile mechanisms make it cheap to put context-specific configuration in that same file.
+Quarkus resolves a `%profile.key=value` entry only when the named profile is active, so an
+integration-test value can be parked next to the product's own configuration and will simply lie
+dormant elsewhere. The convenience is real: the value sits beside the key it overrides, and the test
+harness needs no separate configuration source. That cheapness is precisely why the practice
+accumulates, and why the question of whether to allow it is worth settling once rather than
+per-key.
+
+Three costs make the practice structurally wrong for this artifact, and each is a failure mode the
+architecture has to handle rather than a matter of taste:
+
+* *Test material and test credentials ship inside the production artifact.* A truststore path and
+  its password, scoped to an integration-test profile, are still bytes in the released file. Nothing
+  about a profile prefix makes a secret not present; it only makes it not read. An artifact that
+  carries credentials it never uses is a supply-chain and disclosure liability with no compensating
+  benefit.
+
+* *A profile branch can mask a defect in the un-branched profile.* This is the subtle cost and the
+  expensive one. The branched profile is the one the test suite exercises; the production profile
+  takes the other path and nothing exercises it. A readiness probe that is green in every
+  integration run because the test profile configures a namespace production never configures is
+  reporting on the harness, not on the product. The defect is not merely undetected -- the branch
+  actively manufactures the evidence that hides it, so the more thorough the test suite, the more
+  confident the false negative.
+
+* *The configuration stops describing the product.* A reader of the shipped file cannot tell which
+  keys are product contract and which are harness scaffolding. Configuration that must be read
+  together with a knowledge of which profiles exist is no longer a self-describing surface.
+
+The structural choice point is not *whether* to remove such entries but *what the rule is*, and the
+rule cannot be stated at the level of syntax. "No `%`-profile entries" describes a *shape*, not the
+defect. A key can be test-shaped while carrying no profile prefix at all: an unprefixed
+`quarkus.tls.<name>.*` bucket whose *name* is benchmark-specific is exactly as much a test binding
+baked into product configuration as its profile-prefixed equivalent, and it satisfies the
+syntactic rule completely. A rule stated at the shape level is therefore satisfiable by relocating
+the defect rather than removing it -- which is worse than no rule, because it produces a green
+check over an unchanged problem.
+
+== Decision
+
+*The shipped artifact declares nothing test-shaped; the deployment supplies what it names.*
+
+The rule is stated over *intent*, not over syntax. No key in the packaged configuration is scoped
+to, or named for, a test, benchmark, or development context -- whether or not it carries a profile
+prefix. Correspondingly, when the shipped configuration names a logical binding, the deployment that
+uses that binding supplies its material.
+
+=== 1. Removal takes one of exactly three shapes
+
+Which shape applies is settled by a single question: *does the product read this key?*
+
+[cols="1,2,2", options="header"]
+|===
+| Shape | Applies when | Result
+
+| *Delete outright*
+| Nothing in the product reads the key. It is a redundant parallel declaration -- configuration for
+  machinery the product does not use.
+| The key is removed and re-supplied nowhere. No mount, no environment variable, no replacement
+  file. Relocating it would preserve the redundancy in a new location.
+
+| *Relocate to the deployment that names it*
+| Something does read the key, but the value is deployment-specific.
+| The shipped file carries no trace of it -- no anchor, no placeholder. The deployment that names
+  the binding supplies the whole of it from its own configuration source.
+
+| *Flip the shipped default*
+| Both contexts need a value and they differ.
+| The artifact ships the value that is safe when nothing is configured; the deployment that wants
+  the other value supplies it. The branch disappears because there is no longer a second value to
+  branch to.
+|===
+
+The third shape carries a trap worth naming: deleting a profile branch without flipping the default
+it was overriding is a regression, not a removal. The branch existed because the default was wrong
+for the un-branched context, so removing only the branch exposes that wrongness rather than fixing
+it. The default and the branch are settled together or not at all.
+
+=== 2. A binding the deployment must supply is one that fails loudly when absent
+
+The relocation shape is only safe because an unsupplied binding is a hard startup failure rather
+than a silent fallback. That property is owned by
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+for the JWKS trust surface and is a precondition of this decision, not a consequence of it: without
+it, relocating a binding out of the artifact would convert a visible test dependency into an
+invisible production misconfiguration.
+
+=== 3. Map-key-bearing configuration comes from a file source, never bare environment variables
+
+Where the relocation shape applies to configuration whose *name* is itself discovered -- a
+`quarkus.tls.<name>.*` bucket, an issuer namespace segment -- the deployment supplies it through a
+mounted configuration file, not through environment variables. Environment sources expose property
+names in mangled form, which does not satisfy the prefix scan that discovers the name, so the
+binding resolves as absent. Fixed-name properties, including the one that *selects* the mounted
+file, are safely supplied by environment variable; it is only the name-bearing properties that
+require a file source.
+
+=== 4. The guard enforces the prefix shape over the packaged file
+
+A test asserts that the packaged configuration carries no profile-prefixed key. Three properties of
+its construction are load-bearing:
+
+* It reads the *packaged* copy under the build output directory, not the source tree and not the
+  test-classpath shadow. Test resources precede main resources on the test classpath, so resolving
+  the file as a classpath resource would assert against the wrong file and pass green while the
+  shipped artifact regressed.
+* It asserts the file exists as a regular file before scanning it, so a change in build layout fails
+  loudly instead of vacuously passing over nothing.
+* It keys on the *key* -- the text before the first unescaped separator -- not on whether the line
+  contains a prefix character. Log-format values legitimately contain `%d`, `%-5p` and `%s%e%n`, and
+  a line-level check would false-positive on them permanently.
+
+=== 5. An unconditional declaration made to satisfy this rule is not a violation of it
+
+A key declared unconditionally *because* a profile-scoped declaration would be a branch is the rule
+working, not an exception to it. The gateway ships exactly such a declaration: the key-less TLS
+bucket that marks the plain-HTTP management opt-out
+(`quarkus.tls.plain-management.reload-period`) is declared in no profile, and the bean-exclusion key
+that removes the unused extension health probes (`quarkus.arc.exclude-types`, see
+link:0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027])
+likewise. Both carry a comment citing this rule as the reason they are unconditional. Neither is
+test-shaped: both are product configuration that happens to be inert until a deployment selects the
+behaviour it enables.
+
+== Consequences
+
+=== Positive
+
+* The released artifact carries no credentials, no test paths, and no harness scaffolding. What
+  ships is what the product is.
+* Production and every test context resolve the *same* configuration surface. A defect in the
+  product's own configuration cannot hide behind a branch that only the test suite takes, because
+  there is no such branch -- the integration stack now runs on the identical footing production
+  runs on.
+* Name discovery behaves identically in JVM and native, because whatever must be discoverable is
+  declared unconditionally in a file source rather than conjured from a profile or an environment
+  variable.
+* The shipped file is self-describing: every key in it is product contract, so a reader needs no
+  knowledge of which profiles exist to understand what the product is configured to do.
+
+=== Negative
+
+* Configuring a deployment that uses a named binding requires editing two places -- the name in the
+  product's configuration and the material in the deployment's. This is the same indirection cost
+  ADR-0011 accepts for portability and secret separation, applied to a second surface.
+* A deployment that names a binding and forgets to supply it does not start. That is the intended
+  behaviour, but it moves a class of failure from "silently wrong at runtime" to "loudly absent at
+  boot", which is a real operational change for anyone accustomed to the former.
+* Test and benchmark harnesses carry configuration the artifact used to carry for them. The
+  configuration did not disappear; the ownership moved, and the harness is now responsible for
+  keeping it correct.
+
+=== Risks
+
+* *The guard is necessary but not sufficient, and a green result will be over-read.* This is the
+  principal residual risk and it is deliberately accepted rather than engineered away. The guard
+  enforces the profile-prefix *shape*; the decision is stated over *intent*. An unprefixed but
+  test-shaped key -- a benchmark-specific TLS profile name, an integration-only issuer, a
+  development-only path -- passes the guard while violating the rule it exists to serve. *A green
+  guard is not proof of a clean artifact.* The compensating mechanisms are that the guard's own
+  documentation states what it does not cover, that the contributor guide states the rule in its
+  full form rather than as "no `%` keys", and that this record exists to be cited. No automated
+  check is proposed for the intent-level rule, because "is this name test-shaped?" is a judgement
+  a reviewer makes and a regular expression cannot.
+
+* *The three shapes can be misapplied by choosing the convenient one.* Relocation is always
+  available and always looks like compliance, so a key that should be deleted outright can be
+  relocated instead and the artifact still passes every check. The discriminating question --
+  does the product actually read this? -- has to be answered by tracing consumers, and answering it
+  wrongly produces a defect that is invisible precisely because the artifact is clean.
+
+== Alternatives Considered
+
+=== Relocate every context-specific key to deployment configuration, uniformly
+
+Apply the relocation shape to all of them: whatever the artifact carried for a test context, the
+test deployment now supplies. This is the most mechanical rule, needs no per-key judgement, and
+would have satisfied the artifact-purity goal completely.
+
+Rejected because it preserves redundancy under a new name. Where nothing in the product reads a
+key, supplying it from the deployment means the deployment now maintains configuration that has no
+consumer -- a parallel declaration that will drift, will be cargo-culted into the next deployment,
+and will eventually be read as evidence that the product needs it. Relocation is the right answer
+only when something reads the key; when nothing does, the honest change is deletion, and the two
+cases must be distinguished rather than smoothed over by a uniform rule.
+
+=== Retain a material-free unprefixed anchor for the relocated map key
+
+Keep the name in the shipped file with no path and no password, so the configuration map key is
+declared by the artifact and only the material comes from the deployment. This would guarantee name
+discovery in every runtime without relying on the deployment's configuration source, and it
+satisfies the profile-prefix guard completely.
+
+Rejected because it bakes a context-specific *name* into product configuration -- the exact defect
+in different clothing, and one that evades the guard precisely by carrying no prefix. It meets the
+letter of the rule while violating what the rule is for.
+
+The tempting precedent is the key-less TLS bucket the plain-HTTP management opt-out selects, which
+is material-free and unconditional and looks like the same construction. It does not transfer,
+because the two have opposite intent. That bucket is a *product feature* whose emptiness *is* the
+mechanism: selecting it leaves the key-certificate options null, and that is what performs the
+plain-HTTP downgrade. It must stay empty forever. A relocated trust anchor is the reverse -- a
+bucket whose entire purpose is to be populated with real material, and whose name is specific to
+one non-production context. Declaring it empty in the artifact does not make it inert; it makes it
+an unfulfilled promise that the artifact has no way to keep.
+
+=== Supply the relocated name-bearing configuration as environment variables
+
+Avoid a mounted file entirely and pass the values as environment variables, which every deployment
+mechanism already supports and which needs no volume.
+
+Rejected on mechanism, not on principle. Environment sources expose property names in mangled form,
+which does not satisfy the literal prefix scan that discovers a configuration map key. The name
+would never be discovered, the binding would resolve as absent, and boot would abort -- reproducing
+the failure the relocation was chosen to avoid. Environment variables remain correct for
+fixed-name properties, including the one that selects the mounted file.
+
+=== Enforce the rule with a source-tree check instead of a packaged-config test
+
+Scan `src/main/resources` at build time, or in a linting step, rather than asserting over the build
+output.
+
+Rejected because it does not test the delivered artifact. The source tree is the input to packaging,
+not its result; a change in resource filtering, profile handling, or build layout could make the two
+disagree, and the check would keep passing over a source file while the shipped file regressed.
+Asserting over the packaged copy also costs nothing extra -- it needs no new plugin, no new
+dependency, and no new script, and it runs in the existing verification gate.
+
+The unifying principle: each rejected option optimises for the *check* rather than for the
+*property the check exists to protect*. Uniform relocation, an unprefixed anchor, and a source-tree
+scan all produce a green result over an artifact that still carries what this decision removes. The
+rule is stated over intent, and the guard is understood as a partial mechanical proxy for it, so
+that a passing check is never mistaken for the property itself.
+
+== References
+
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- `gateway.yaml` names logical bindings and the deployment supplies material; its refuse-to-start
+  posture for an unresolvable binding is the precondition that makes the relocation shape safe
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
+  -- the policy / deployment-bound / build-time classification of the server-TLS surface, and the
+  boundary rule that keeps ports and trust material deployment-supplied
+* link:0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027]
+  -- a bean exclusion declared unconditionally under this rule, and a worked instance of the
+  masked-defect failure mode described above
+* link:../development/README.adoc[Development guide] -- the contributor-layer statement of this
+  rule, where the guard lives, and what it does not cover
+* link:../configuration.adoc[Configuration reference] -- the trust-profile binding contract and its
+  failure mode
