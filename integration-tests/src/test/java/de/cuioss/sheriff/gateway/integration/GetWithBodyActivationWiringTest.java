@@ -28,10 +28,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.yaml.snakeyaml.Yaml;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.yaml.snakeyaml.Yaml;
 
 /**
  * Fast, no-Docker <em>surefire</em> guard that the committed base descriptor actually

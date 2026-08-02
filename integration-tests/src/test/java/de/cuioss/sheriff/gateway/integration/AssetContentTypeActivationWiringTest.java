@@ -32,12 +32,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.yaml.snakeyaml.Yaml;
 
 /**
  * Fast, no-Docker <em>surefire</em> guard that the committed deployment descriptors actually
