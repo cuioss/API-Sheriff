@@ -77,6 +77,20 @@ tls:
   passthrough_sni:
     passthrough.test.example: PASSTHROUGH_BACKEND
     fault.test.example: PASSTHROUGH_FAULT
+# Add-only extension of the gateway's built-in asset content-type map, serving the asset anchors
+# declared below. Declared here so the shipped descriptor ACTIVATES the feature rather than leaving
+# it proven by unit tests alone: `webmanifest` is an extension the gateway does not map, so without
+# this block a served .webmanifest would fall back to application/octet-stream.
+#
+# The block is add-only and the gateway enforces that at BOOT: an entry naming one of the built-in
+# extensions (html, css, js, svg, png, ... — 21 in total) is refused with a message naming it, not
+# silently ignored. That bound is a security property, not an ergonomic one — remapping `svg` away
+# from image/svg+xml, or pointing any built-in at text/html, would make a served asset a stored-XSS
+# lever on a security gateway. AssetContentTypeActivationWiringTest asserts both halves against this
+# committed descriptor: the block is declared, and no declared key collides with a built-in.
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
 anchors:
   api:
     path_prefix: /proxy

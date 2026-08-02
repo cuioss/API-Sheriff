@@ -81,7 +81,7 @@ class RouteRuntimeAssemblerTest {
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(
-                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access());
+                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), Map.of());
     }
 
     @AfterEach

@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 
@@ -47,28 +48,59 @@ import org.junit.jupiter.params.provider.MethodSource;
 class AssetResponseEnvelopeTest {
 
     @Nested
-    @DisplayName("The fixed content-type map")
+    @DisplayName("The built-in content-type map, with no operator additions configured")
     class ContentTypeMap {
 
+        /**
+         * Every one of the built-in extensions with the content type it must resolve to. The list is
+         * exhaustive on purpose: the add-only ruling makes the built-in map an immutable contract, so
+         * this is the regression fence proving an absent {@code asset_defaults} block resolves each
+         * one exactly as it did before the block existed.
+         */
         static Stream<Arguments> knownExtensions() {
             return Stream.of(
                     Arguments.of("index.html", "text/html; charset=utf-8"),
+                    Arguments.of("index.htm", "text/html; charset=utf-8"),
                     Arguments.of("app.css", "text/css; charset=utf-8"),
                     Arguments.of("bundle.js", "text/javascript; charset=utf-8"),
+                    Arguments.of("module.mjs", "text/javascript; charset=utf-8"),
                     Arguments.of("data.json", "application/json"),
+                    Arguments.of("bundle.map", "application/json"),
+                    Arguments.of("feed.xml", "application/xml"),
+                    Arguments.of("notes.txt", "text/plain; charset=utf-8"),
                     Arguments.of("logo.svg", "image/svg+xml"),
                     Arguments.of("photo.png", "image/png"),
-                    Arguments.of("photo.JPG", "image/jpeg"),
+                    Arguments.of("photo.jpg", "image/jpeg"),
+                    Arguments.of("photo.jpeg", "image/jpeg"),
+                    Arguments.of("anim.gif", "image/gif"),
+                    Arguments.of("photo.webp", "image/webp"),
+                    Arguments.of("favicon.ico", "image/x-icon"),
+                    Arguments.of("font.woff", "font/woff"),
                     Arguments.of("font.woff2", "font/woff2"),
-                    Arguments.of("module.wasm", "application/wasm"));
+                    Arguments.of("font.ttf", "font/ttf"),
+                    Arguments.of("manual.pdf", "application/pdf"),
+                    Arguments.of("module.wasm", "application/wasm"),
+                    Arguments.of("photo.JPG", "image/jpeg"));
         }
 
         @ParameterizedTest
         @MethodSource("knownExtensions")
         @DisplayName("Should resolve the gateway content type from the extension, case-insensitively")
         void shouldResolveKnownExtension(String filename, String expected) {
-            assertEquals(expected, AssetResponseEnvelope.contentTypeFor(filename),
+            assertEquals(expected, AssetResponseEnvelope.contentTypeFor(filename, Map.of()),
                     () -> "unexpected content type for " + filename);
+        }
+
+        @Test
+        @DisplayName("Should expose exactly the 21 built-in extensions as the immutable set")
+        void shouldExposeBuiltInExtensions() {
+            Set<String> builtIn = AssetResponseEnvelope.builtInExtensions();
+
+            assertEquals(Set.of("html", "htm", "css", "js", "mjs", "json", "map", "xml", "txt", "svg",
+                    "png", "jpg", "jpeg", "gif", "webp", "ico", "woff", "woff2", "ttf", "pdf", "wasm"),
+                    builtIn,
+                    "the built-in extension set is the boot validator's source of truth for the "
+                            + "add-only refusal and must not drift from the map itself");
         }
 
         @Test
@@ -76,18 +108,69 @@ class AssetResponseEnvelopeTest {
         void shouldFallBackForUnknownExtension() {
             assertAll(
                     () -> assertEquals(AssetResponseEnvelope.DEFAULT_CONTENT_TYPE,
-                            AssetResponseEnvelope.contentTypeFor("archive.xyz")),
+                            AssetResponseEnvelope.contentTypeFor("archive.xyz", Map.of())),
                     () -> assertEquals(AssetResponseEnvelope.DEFAULT_CONTENT_TYPE,
-                            AssetResponseEnvelope.contentTypeFor("README")),
+                            AssetResponseEnvelope.contentTypeFor("README", Map.of())),
                     () -> assertEquals(AssetResponseEnvelope.DEFAULT_CONTENT_TYPE,
-                            AssetResponseEnvelope.contentTypeFor("trailingdot.")));
+                            AssetResponseEnvelope.contentTypeFor("trailingdot.", Map.of())));
         }
 
         @Test
         @DisplayName("Should resolve the extension from the last path segment, ignoring dots in directories")
         void shouldResolveFromLastSegment() {
             assertEquals("text/css; charset=utf-8",
-                    AssetResponseEnvelope.contentTypeFor("v1.2/assets/app.css"));
+                    AssetResponseEnvelope.contentTypeFor("v1.2/assets/app.css", Map.of()));
+        }
+    }
+
+    @Nested
+    @DisplayName("The add-only operator content-type additions")
+    class OperatorContentTypes {
+
+        @Test
+        @DisplayName("Should resolve an operator entry for an extension the gateway does not map")
+        void shouldResolveOperatorAddition() {
+            Map<String, String> operatorTypes = Map.of("webmanifest", "application/manifest+json");
+
+            assertEquals("application/manifest+json",
+                    AssetResponseEnvelope.contentTypeFor("site.webmanifest", operatorTypes),
+                    "an unmapped extension is exactly what the operator block exists to teach");
+        }
+
+        @Test
+        @DisplayName("Should still fall back for an extension neither the built-in nor the operator map carries")
+        void shouldFallBackForExtensionInNeitherMap() {
+            Map<String, String> operatorTypes = Map.of("webmanifest", "application/manifest+json");
+
+            assertEquals(AssetResponseEnvelope.DEFAULT_CONTENT_TYPE,
+                    AssetResponseEnvelope.contentTypeFor("archive.xyz", operatorTypes),
+                    "an undeclared, unmapped extension keeps the terminal fallback");
+        }
+
+        @ParameterizedTest
+        @MethodSource("de.cuioss.sheriff.gateway.asset.AssetResponseEnvelopeTest$ContentTypeMap#knownExtensions")
+        @DisplayName("Should resolve every built-in identically whether or not an operator block is configured")
+        void shouldResolveBuiltInsIdenticallyWithOperatorBlock(String filename, String expected) {
+            Map<String, String> operatorTypes = Map.of("webmanifest", "application/manifest+json");
+
+            assertEquals(expected, AssetResponseEnvelope.contentTypeFor(filename, operatorTypes),
+                    () -> "a configured operator block must not perturb the built-in resolution of "
+                            + filename);
+        }
+
+        @Test
+        @DisplayName("Should let the built-in map win over an operator entry naming a built-in extension")
+        void shouldRefuseOperatorOverrideOfBuiltIn() {
+            Map<String, String> hostile = Map.of("svg", "text/html; charset=utf-8");
+
+            assertAll(
+                    () -> assertEquals("image/svg+xml",
+                            AssetResponseEnvelope.contentTypeFor("logo.svg", hostile),
+                            "remapping svg to text/html is the stored-XSS lever the add-only ruling "
+                                    + "removes: the built-in mapping must win at runtime"),
+                    () -> assertTrue(AssetResponseEnvelope.builtInExtensions().contains("svg"),
+                            "and the boot validator refuses such an entry outright — see "
+                                    + "ConfigValidatorTest"));
         }
     }
 
@@ -102,7 +185,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("Content-Type", "text/plain");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "index.html", AccessLevel.PUBLIC, sourceHeaders);
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of());
 
             assertAll(
                     () -> assertEquals(AssetResponseEnvelope.NOSNIFF,
@@ -113,13 +196,27 @@ class AssetResponseEnvelopeTest {
         }
 
         @Test
+        @DisplayName("Should forward the operator additions into the resolved Content-Type")
+        void shouldForwardOperatorTypesIntoContentType() {
+            Map<String, String> sourceHeaders = new LinkedHashMap<>();
+            sourceHeaders.put("Content-Type", "text/plain");
+            Map<String, String> operatorTypes = Map.of("webmanifest", "application/manifest+json");
+
+            Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
+                    "site.webmanifest", AccessLevel.PUBLIC, sourceHeaders, operatorTypes);
+
+            assertEquals("application/manifest+json", governed.get(AssetResponseEnvelope.CONTENT_TYPE),
+                    "the operator addition must reach the governed header, still overriding the source");
+        }
+
+        @Test
         @DisplayName("Should force Cache-Control: no-store for authenticated access regardless of source")
         void shouldForceNoStoreForAuthenticatedAccess() {
             Map<String, String> sourceHeaders = new LinkedHashMap<>();
             sourceHeaders.put("Cache-Control", "public, max-age=31536000");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "secret.json", AccessLevel.AUTHENTICATED, sourceHeaders);
+                    "secret.json", AccessLevel.AUTHENTICATED, sourceHeaders, Map.of());
 
             assertEquals(AssetResponseEnvelope.NO_STORE, governed.get(AssetResponseEnvelope.CACHE_CONTROL),
                     "an authenticated asset must never be cacheable, overriding the source's Cache-Control");
@@ -132,7 +229,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("Cache-Control", "public, max-age=600");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "logo.png", AccessLevel.PUBLIC, sourceHeaders);
+                    "logo.png", AccessLevel.PUBLIC, sourceHeaders, Map.of());
 
             assertEquals("public, max-age=600", governed.get(AssetResponseEnvelope.CACHE_CONTROL),
                     "a public asset keeps the source's caching");
@@ -146,7 +243,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("X-Custom", "kept");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "app.js", AccessLevel.PUBLIC, sourceHeaders);
+                    "app.js", AccessLevel.PUBLIC, sourceHeaders, Map.of());
 
             assertAll(
                     () -> assertFalse(governed.keySet().stream().anyMatch("Set-Cookie"::equalsIgnoreCase),

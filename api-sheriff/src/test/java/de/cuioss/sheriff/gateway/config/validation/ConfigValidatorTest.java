@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -1926,6 +1928,103 @@ class ConfigValidatorTest {
                     () -> assertTrue(refusal.message().contains("declare profile 'strict' or 'lenient'"),
                             "names the remedy"),
                     () -> assertFalse(refusal.message().contains("https://idp.example"), "echoes no configured scalar value"));
+        }
+    }
+
+    @Nested
+    @DisplayName("The add-only 'asset_defaults.content_types' boot refusal")
+    class AssetContentTypesAddOnlyRefusal {
+
+        private static final String POINTER = "/asset_defaults/content_types";
+        private static final String REFUSAL_MESSAGE = "the built-in content-type mappings are immutable";
+
+        private static GatewayConfig gatewayWithContentTypes(Map<String, String> contentTypes) {
+            return validGateway()
+                    .assetDefaults(new AssetDefaultsConfig(contentTypes))
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should accept an entry for an extension the gateway does not map")
+        void shouldAcceptUnmappedExtension() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("webmanifest", "application/manifest+json"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains(POINTER)),
+                    () -> "an unmapped extension is exactly what the block exists for, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an absent asset_defaults block")
+        void shouldAcceptAbsentBlock() {
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains(POINTER)),
+                    () -> "an omitted block is never refused, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an empty content_types map")
+        void shouldAcceptEmptyMap() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains(POINTER)),
+                    () -> "an empty block is the add-only no-op, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse an entry naming a built-in extension, naming that extension")
+        void shouldRefuseBuiltInExtension() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("png", "image/jpeg"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertHasError(errors, POINTER, REFUSAL_MESSAGE),
+                    () -> assertHasError(errors, POINTER, "png"));
+        }
+
+        @Test
+        @DisplayName("Should refuse the stored-XSS lever 'svg: text/html' the add-only ruling exists to remove")
+        void shouldRefuseSvgRemappedToHtml() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("svg", "text/html; charset=utf-8"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertHasError(errors, POINTER, REFUSAL_MESSAGE),
+                    () -> assertHasError(errors, POINTER, "svg"));
+        }
+
+        @Test
+        @DisplayName("Should refuse a built-in extension declared in upper case")
+        void shouldRefuseBuiltInExtensionRegardlessOfCase() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("SVG", "text/html; charset=utf-8"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, POINTER, "svg");
+        }
+
+        @Test
+        @DisplayName("Should collect every offending entry in one pass rather than failing on the first")
+        void shouldCollectEveryOffendingEntry() {
+            Map<String, String> contentTypes = new LinkedHashMap<>();
+            contentTypes.put("svg", "text/html; charset=utf-8");
+            contentTypes.put("png", "image/jpeg");
+            contentTypes.put("webmanifest", "application/manifest+json");
+            GatewayConfig gateway = gatewayWithContentTypes(contentTypes);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertEquals(2, errors.stream().filter(e -> e.pointer().contains(POINTER)).count(),
+                            "both built-in collisions are reported, the legal addition is not"),
+                    () -> assertHasError(errors, POINTER, "svg"),
+                    () -> assertHasError(errors, POINTER, "png"));
         }
     }
 }

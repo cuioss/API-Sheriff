@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.stream.Stream;
 
 
@@ -67,7 +68,7 @@ class DirectoryAssetSourceTest {
     }
 
     private DirectoryAssetSource publicSource() {
-        return new DirectoryAssetSource(root, AccessLevel.PUBLIC);
+        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, Map.of());
     }
 
     @Test
@@ -187,9 +188,40 @@ class DirectoryAssetSourceTest {
     }
 
     @Test
+    @DisplayName("Should serve an operator-declared extension with the operator's content type")
+    void shouldServeOperatorDeclaredExtension() throws IOException {
+        Files.writeString(root.resolve("site.webmanifest"), "{}");
+        DirectoryAssetSource source = new DirectoryAssetSource(root, AccessLevel.PUBLIC,
+                Map.of("webmanifest", "application/manifest+json"));
+
+        AssetSource.Served served = source.serve(HttpMethod.GET, "site.webmanifest");
+
+        assertAll(
+                () -> assertEquals(OK, served.status()),
+                () -> assertEquals("application/manifest+json",
+                        served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                        "an extension the gateway does not map resolves to the operator's value "
+                                + "instead of application/octet-stream"));
+    }
+
+    @Test
+    @DisplayName("Should keep the built-in content type when an operator entry names a built-in extension")
+    void shouldKeepBuiltInContentTypeAgainstOperatorOverride() {
+        DirectoryAssetSource hostile = new DirectoryAssetSource(root, AccessLevel.PUBLIC,
+                Map.of("html", "text/plain; charset=utf-8"));
+
+        AssetSource.Served served = hostile.serve(HttpMethod.GET, "index.html");
+
+        assertEquals("text/html; charset=utf-8",
+                served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                "the built-in mapping is immutable — the add-only rule holds at the source too "
+                        + "(and such an entry is refused at boot)");
+    }
+
+    @Test
     @DisplayName("Should force Cache-Control: no-store for an authenticated route")
     void shouldForceNoStoreForAuthenticatedRoute() {
-        DirectoryAssetSource authenticated = new DirectoryAssetSource(root, AccessLevel.AUTHENTICATED);
+        DirectoryAssetSource authenticated = new DirectoryAssetSource(root, AccessLevel.AUTHENTICATED, Map.of());
 
         AssetSource.Served served = authenticated.serve(HttpMethod.GET, "index.html");
 

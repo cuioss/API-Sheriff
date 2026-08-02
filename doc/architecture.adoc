@@ -512,6 +512,20 @@ Three properties define the action:
   forced to `Cache-Control: no-store`. Only `GET`/`HEAD` are served. The untrusted request
   sub-path is canonicalized and confined under the configured root before the source is touched,
   closing the path-traversal class for the whole asset surface.
+* *The extension map is operator-extensible, add-only.* The global `asset_defaults.content_types`
+  block lets an operator map an extension the gateway does not know (otherwise served as
+  `application/octet-stream`), but can never restate one it does: the built-in map is consulted
+  first and always wins, and an entry naming a built-in extension is *refused at boot* rather than
+  silently ignored. The asymmetry is the architectural point. Gateway-governed `Content-Type` is
+  the property the whole envelope exists to establish, so a configurable override would hand back
+  precisely what the envelope takes away -- remapping `svg` off `image/svg+xml`, or any built-in
+  onto `text/html`, makes a file served from a directory mount or a secondary origin a
+  script-executing document on the gateway's own origin, i.e. a *stored-XSS lever*. Add-only keeps
+  the governance bound intact while still solving the unmapped-extension problem. Mechanically the
+  operator map is resolved *once at boot* and passed explicitly into each asset source's
+  constructor; the envelope stays a stateless utility with no mutable static field, which is also
+  what keeps it native-image safe (nothing is assigned after class initialisation, so GraalVM has
+  no build-time snapshot to reason about).
 * *The upstream source reuses the existing data plane.* A `source: upstream` asset resolves its
   target through the same fixed-topology upstream model the proxy action uses (resolved
   `base_url` + remainder) and rides the same SSRF controls -- a scheme allowlist,

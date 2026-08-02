@@ -126,7 +126,8 @@ file-and-JSON-pointer error before any immutable value object is built:
 | `schema/gateway.schema.json`
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
   `management`, `security_headers`, `security_defaults`, `allowed_methods`, `anchors`,
-  `upstream_defaults`, `forwarded`, `edge_hardening`, `token_validation` and `oidc`.
+  `upstream_defaults`, `asset_defaults`, `forwarded`, `edge_hardening`, `token_validation` and
+  `oidc`.
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
@@ -227,6 +228,18 @@ anchors:                           # OPTIONAL namespace-scoped policy (see "Anch
     type: asset
     access: public                 # a public anchor declares NO auth block (public is the
                                    #   absence of auth); an auth block here fails the boot
+
+asset_defaults:                    # OPTIONAL. ADD-ONLY extension of the gateway's built-in asset
+                                   #   content-type map. Omit the block to let the built-in map
+                                   #   govern alone.
+  content_types:                   # extension (lowercase, no dot) -> Content-Type
+    webmanifest: application/manifest+json   # an extension the gateway does NOT map
+                                   #   An entry naming a BUILT-IN extension (html, css, js, svg,
+                                   #   png, ... -- 21 in total) is REFUSED AT BOOT, naming the
+                                   #   offending extension. The built-ins are immutable because
+                                   #   remapping one -- svg away from image/svg+xml, or any
+                                   #   built-in to text/html -- is a stored-XSS lever on a
+                                   #   security gateway.
 
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
@@ -532,6 +545,10 @@ the gateway's own extension map (overriding whatever the source claimed), `X-Con
 nosniff` is always added, any source `Set-Cookie` is stripped, and an `access: authenticated`
 asset is forced to `Cache-Control: no-store` even when the source sent `Cache-Control: public`.
 Only `GET` and `HEAD` are served; any other verb is rejected `405`.
+
+An operator may *teach* the gateway an extension it does not already map -- but never *restate* one
+it does. See link:#_asset_defaults[`asset_defaults`] for the add-only block and the security
+rationale behind that asymmetry.
 
 === Route ordering
 
@@ -1814,6 +1831,51 @@ upstream_defaults:
   not_modified: { enabled: false }
 ----
 
+[[_asset_defaults]]
+=== `asset_defaults`
+
+The operator's *add-only* extension of the gateway's built-in asset content-type map, declarable
+only at the global scope (`gateway.yaml`). It solves one problem: an asset whose extension the
+gateway does not know is served as `application/octet-stream`, which browsers download rather than
+render. Declaring the extension here gives it the right `Content-Type`.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `content_types`
+| A map of *lowercase extension* (without the dot) to the `Content-Type` served for it. Keys are
+  constrained to lowercase alphanumerics by the schema and lowercased on binding, so a key's case
+  can never decide whether a mapping applies. Omitted (or an empty map) means the built-in map
+  governs alone.
+|===
+
+[source,yaml]
+----
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
+    avif: image/avif
+----
+
+*Add-only -- and the built-ins are refused, not ignored.* The gateway's own 21-entry extension map
+(`html`, `htm`, `css`, `js`, `mjs`, `json`, `map`, `xml`, `txt`, `svg`, `png`, `jpg`, `jpeg`,
+`gif`, `webp`, `ico`, `woff`, `woff2`, `ttf`, `pdf`, `wasm`) is consulted *first* and always wins.
+An `asset_defaults.content_types` entry naming any of those extensions *fails the boot*, with a
+message naming the offending extension; it collects with every other violation in the same
+single-pass report rather than failing on the first. An extension *neither* map carries still falls
+back to `application/octet-stream`.
+
+The refusal is deliberate, and it is a *security* bound rather than an ergonomic one. The built-in
+map is precisely what makes an asset's `Content-Type` gateway-governed instead of source-dictated.
+Permitting an override would hand an operator (or anyone who can edit the mounted descriptor) a
+*stored-XSS lever* on a security gateway: remapping `svg` away from `image/svg+xml`, or pointing
+any built-in extension at `text/html`, turns a file served from a directory mount or a secondary
+origin into a script-executing document on the gateway's own origin. Add-only removes that lever
+while still solving the stated problem. Refusing at boot -- rather than silently ignoring the entry
+at request time -- is what makes the bound *visible*: the operator learns the mapping did not take
+effect instead of shipping a descriptor that reads as though it did.
+
 [[_edge_hardening]]
 === `edge_hardening`
 
@@ -2231,3 +2293,11 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   Both bound *general* header values instead. The comparison uses the *resolved* profile, which is
   why it is a boot rule rather than a schema range; the schema owns only the `integer` /
   `minimum: 1` range. An omitted key is never refused -- it resolves to the default `8192`.
+* `asset_defaults.content_types` is *add-only*: an entry naming one of the gateway's 21 built-in
+  asset extensions is *refused at boot*, with the message naming the offending extension. The
+  built-in mappings are immutable because permitting an override -- remapping `svg` away from
+  `image/svg+xml`, or pointing any built-in at `text/html` -- is a stored-XSS lever on a security
+  gateway. Refusing (rather than silently ignoring the entry at request time) is what makes the
+  operator aware the mapping never took effect. Entries for extensions the gateway does *not* map
+  are always accepted, and an omitted or empty block is never refused. See
+  link:#_asset_defaults[`asset_defaults`].

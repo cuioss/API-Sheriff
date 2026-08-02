@@ -193,6 +193,19 @@
       "$ref": "#/$defs/upstreamDefaults",
       "description": "Global retry / HTTP-304 not-modified defaults (both default true). An endpoint upstream_defaults block replaces this wholesale."
     },
+    "asset_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Global asset-serving defaults. Add-only: the block extends the gateway's built-in content-type map, it never replaces an entry in it.",
+      "properties": {
+        "content_types": {
+          "type": "object",
+          "description": "Extension-to-Content-Type additions for extensions the gateway does not already map. ADD-ONLY: an entry naming a built-in extension (html, htm, css, js, mjs, json, map, xml, txt, svg, png, jpg, jpeg, gif, webp, ico, woff, woff2, ttf, pdf, wasm) is REFUSED AT BOOT, not silently ignored. The built-in mappings are immutable because remapping one — svg away from image/svg+xml, or any extension to text/html — is a stored-XSS lever on a security gateway. An extension neither map carries still falls back to application/octet-stream.",
+          "propertyNames": { "pattern": "^[a-z0-9]+$" },
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
     "forwarded": {
       "type": "object",
       "additionalProperties": false,

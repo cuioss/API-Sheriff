@@ -29,6 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 
 
+import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -37,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -133,6 +135,7 @@ public final class ConfigValidator {
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String SECURITY_DEFAULTS_AUTHORIZATION_POINTER =
             "/security_defaults/max_authorization_header_value_length";
+    private static final String ASSET_DEFAULTS_CONTENT_TYPES_POINTER = "/asset_defaults/content_types";
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -161,7 +164,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors));
 
     private final List<ValidationRule> rules;
 
@@ -291,6 +295,41 @@ public final class ConfigValidator {
                             + "security_filter bound general header values rather than the "
                             + "Authorization carve-out")
                             .formatted(declared, baseline)));
+        }
+    }
+
+    /**
+     * Enforces the <strong>add-only</strong> ruling on {@code asset_defaults.content_types}: an entry
+     * whose extension is already carried by the gateway's built-in asset content-type map is refused.
+     * <p>
+     * The refusal is a security bound rather than an ergonomic one. The built-in map is what makes an
+     * asset response's {@code Content-Type} gateway-governed instead of source-dictated, and several
+     * of its entries are load-bearing for that governance — remapping {@code svg} away from
+     * {@code image/svg+xml}, or pointing any built-in extension at {@code text/html}, turns a served
+     * asset into a stored-XSS lever on a security gateway. Refusing at boot (rather than silently
+     * ignoring the entry at request time, which is what the runtime precedence in
+     * {@code AssetResponseEnvelope.contentTypeFor} would otherwise do) means the operator learns the
+     * mapping did not take effect, instead of shipping a descriptor that reads as though it did.
+     * <p>
+     * Every offending entry is collected rather than failing on the first, per ADR-0009 — the operator
+     * sees the whole list in one boot attempt. Keys arrive already lowercased by
+     * {@link AssetDefaultsConfig}, so an entry's case cannot decide whether this refusal sees it.
+     */
+    private static void validateAssetContentTypesAddOnly(GatewayConfig gateway, List<ConfigError> errors) {
+        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
+        if (assetDefaults == null) {
+            return;
+        }
+        Set<String> builtIn = AssetResponseEnvelope.builtInExtensions();
+        for (String extension : assetDefaults.contentTypes().keySet()) {
+            if (builtIn.contains(extension)) {
+                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
+                        ("asset_defaults.content_types declares '%s', which the gateway already maps; "
+                                + "the built-in content-type mappings are immutable and the block is "
+                                + "add-only — declare only extensions the gateway does not map, and "
+                                + "remove this entry")
+                                .formatted(extension)));
+            }
         }
     }
 

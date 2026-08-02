@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
+import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -303,12 +304,16 @@ public class GatewayEdgeRoute {
         ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(resolverConfig, securityEventCounter);
         TcpPeerGate peerGate = new TcpPeerGate(trustedProxies);
 
+        // The add-only asset content-type additions are resolved ONCE here, at boot, and handed to
+        // every asset source the assembler builds — so the request path performs no config lookup
+        // and the sources hold an immutable map rather than a live view of configuration.
+        Map<String, String> assetContentTypes = assetContentTypesOf(gatewayConfig);
         RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
         this.routes = assembler.assemble(routeTable,
                 filter -> securityPostureFor(filter, globalProfile),
                 target -> clientFor(vertx, target),
                 this::guardFor,
-                GatewayEdgeRoute::assetSourceFor);
+                asset -> assetSourceFor(asset, assetContentTypes));
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
@@ -1218,23 +1223,33 @@ public class GatewayEdgeRoute {
      * {@code upstream} source. Both apply the gateway's confinement and response envelope; the
      * upstream source rides its own SSRF-guarded fetch seam (ADR-0014), not the proxy data plane.
      */
-    private static AssetSource assetSourceFor(ResolvedAsset asset) {
+    private static AssetSource assetSourceFor(ResolvedAsset asset, Map<String, String> assetContentTypes) {
         return switch (asset.source()) {
             case DIRECTORY -> {
                 String directory = asset.directory();
                 if (directory == null) {
                     throw new IllegalStateException("directory asset source requires a directory root");
                 }
-                yield new DirectoryAssetSource(Path.of(directory), asset.access());
+                yield new DirectoryAssetSource(Path.of(directory), asset.access(), assetContentTypes);
             }
             case UPSTREAM -> {
                 ResolvedUpstream upstream = asset.upstream();
                 if (upstream == null) {
                     throw new IllegalStateException("upstream asset source requires a resolved upstream");
                 }
-                yield new UpstreamAssetSource(upstream, asset.access());
+                yield new UpstreamAssetSource(upstream, asset.access(), assetContentTypes);
             }
         };
+    }
+
+    /**
+     * Resolves the global {@code asset_defaults.content_types} block into the map every asset source
+     * is constructed with. An absent block yields an empty map, which is exactly the add-only no-op:
+     * the built-in extension map then governs alone, byte-for-byte as an unconfigured gateway does.
+     */
+    private static Map<String, String> assetContentTypesOf(GatewayConfig gatewayConfig) {
+        AssetDefaultsConfig assetDefaults = gatewayConfig.assetDefaults();
+        return assetDefaults == null ? Map.of() : assetDefaults.contentTypes();
     }
 
     /**

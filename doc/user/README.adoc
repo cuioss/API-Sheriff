@@ -205,3 +205,54 @@ that table first. Two remedies, in order of preference:
 
 Declaring the value you want -- rather than relying on the omitted-block default -- is the durable
 fix either way.
+
+== Asset Content Types (`asset_defaults.content_types`)
+
+The gateway -- never the backing directory or upstream -- decides the `Content-Type` of every asset
+it serves, from its own built-in extension map. An extension the map does not carry is served as
+`application/octet-stream`, which browsers download instead of rendering. `asset_defaults` is how
+you teach the gateway that extension. Field-level contract lives in
+link:../configuration.adoc#_asset_defaults[Configuration Reference -- `asset_defaults`]; this
+section is the operator's decision guide.
+
+=== Symptom and fix
+
+*Symptom:* a file served through an `type: asset` anchor downloads instead of rendering, and the
+response carries `Content-Type: application/octet-stream`.
+
+*Fix:* declare its extension, gateway-wide:
+
+[source,yaml]
+----
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
+    avif: image/avif
+----
+
+Keys are the lowercase extension without the dot. An omitted block is the same as an empty one: the
+built-in map governs alone.
+
+=== The block is add-only -- and a built-in extension is refused at boot
+
+You can *teach* the gateway an extension it does not know. You cannot *change* one it does. The 21
+built-in extensions -- `html`, `htm`, `css`, `js`, `mjs`, `json`, `map`, `xml`, `txt`, `svg`, `png`,
+`jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`, `woff2`, `ttf`, `pdf`, `wasm` -- always win, and an
+entry naming any of them makes the gateway *refuse to start*, with the error naming the offending
+extension.
+
+That refusal is a security bound, not a limitation to work around. The built-in map is exactly what
+makes an asset's `Content-Type` gateway-governed rather than source-dictated. If an entry here could
+override one, then anyone who can edit the mounted `gateway.yaml` could remap `svg` away from
+`image/svg+xml`, or point any built-in extension at `text/html` -- turning a file served from a
+directory mount or a secondary origin into a script-executing document on the *gateway's own
+origin*. That is a stored-XSS lever on a security gateway, so the map is closed to overrides while
+staying open to additions.
+
+The gateway refuses at boot rather than ignoring the entry at request time deliberately: a silently
+ignored mapping looks like a working one in the descriptor, and you would only discover otherwise
+from a served response. The boot failure tells you immediately.
+
+*If you believe you need to override a built-in*, the mapping is not the right tool -- serve the
+file under an extension the gateway does not map, or correct the file's extension to match its
+actual type.

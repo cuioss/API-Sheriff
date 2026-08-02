@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -36,9 +37,11 @@ import lombok.experimental.UtilityClass;
  * both {@link AssetSource} implementations:
  * <ul>
  *   <li><strong>Fixed content type.</strong> The {@code Content-Type} is derived
- *       from the {@linkplain #contentTypeFor(String) gateway's own extension map},
- *       overriding whatever the source claimed; an unknown extension falls back to
- *       {@value #DEFAULT_CONTENT_TYPE}.</li>
+ *       from the {@linkplain #contentTypeFor(String, Map) gateway's own extension
+ *       map}, overriding whatever the source claimed; an unknown extension falls back
+ *       to {@value #DEFAULT_CONTENT_TYPE}. An operator may <em>add</em> mappings for
+ *       extensions the built-in map does not carry, but can never replace one of
+ *       them — see {@link #contentTypeFor(String, Map)}.</li>
  *   <li><strong>No MIME sniffing.</strong> {@code X-Content-Type-Options: nosniff}
  *       is always set.</li>
  *   <li><strong>Governed caching.</strong> An {@link AccessLevel#AUTHENTICATED}
@@ -96,14 +99,45 @@ public class AssetResponseEnvelope {
             Map.entry("wasm", "application/wasm"));
 
     /**
-     * Resolves the gateway-governed content type for a filename by its extension.
+     * The extensions the gateway maps itself — the mappings an operator can never
+     * replace.
+     * <p>
+     * Exposed so the boot-time config validator can refuse an
+     * {@code asset_defaults.content_types} entry that names one of them, rather than
+     * letting the add-only rule be enforced only at request time (where a rejected
+     * entry would look like a silently ignored one). The returned set is immutable.
      *
-     * @param filename the served filename (may contain a path); never {@code null}
-     * @return the mapped content type, or {@value #DEFAULT_CONTENT_TYPE} for an
-     *         unknown or absent extension
+     * @return the lowercase built-in extension names
      */
-    public static String contentTypeFor(String filename) {
+    public static Set<String> builtInExtensions() {
+        return CONTENT_TYPES.keySet();
+    }
+
+    /**
+     * Resolves the gateway-governed content type for a filename by its extension.
+     * <p>
+     * The built-in map is consulted first and always wins; {@code operatorTypes} — the
+     * boot-resolved {@code asset_defaults.content_types} block — is consulted only for
+     * an extension the built-in map does not carry. That precedence is what makes the
+     * operator block <strong>add-only</strong>: it can teach the gateway an extension
+     * it did not know, but can never restate one it did, so no configuration can turn
+     * {@code svg} into {@code text/html} and make a served asset a stored-XSS vector.
+     * An entry naming a built-in extension is additionally refused at boot, so it never
+     * reaches this method as a silently-ignored mapping.
+     * <p>
+     * The operator map is passed in explicitly rather than held in a static field: the
+     * class stays free of mutable static state, so nothing is assigned after class
+     * initialisation and GraalVM has no build-time-snapshot hazard to reason about.
+     *
+     * @param filename      the served filename (may contain a path); never {@code null}
+     * @param operatorTypes the boot-resolved operator additions keyed by lowercase
+     *                      extension; never {@code null}, empty when unconfigured
+     * @return the mapped content type, or {@value #DEFAULT_CONTENT_TYPE} for an
+     *         extension neither map carries, and for an absent extension
+     */
+    public static String contentTypeFor(String filename, Map<String, String> operatorTypes) {
         Objects.requireNonNull(filename, "filename");
+        Objects.requireNonNull(operatorTypes, "operatorTypes");
         int lastSlash = Math.max(filename.lastIndexOf('/'), filename.lastIndexOf('\\'));
         String name = filename.substring(lastSlash + 1);
         int dot = name.lastIndexOf('.');
@@ -111,7 +145,11 @@ public class AssetResponseEnvelope {
             return DEFAULT_CONTENT_TYPE;
         }
         String extension = name.substring(dot + 1).toLowerCase(Locale.ROOT);
-        return CONTENT_TYPES.getOrDefault(extension, DEFAULT_CONTENT_TYPE);
+        String builtIn = CONTENT_TYPES.get(extension);
+        if (builtIn != null) {
+            return builtIn;
+        }
+        return operatorTypes.getOrDefault(extension, DEFAULT_CONTENT_TYPE);
     }
 
     /**
@@ -139,13 +177,17 @@ public class AssetResponseEnvelope {
      * @param access        the effective access level of the serving route
      * @param sourceHeaders the raw headers the backing source proposed; never
      *                      {@code null}
+     * @param operatorTypes the boot-resolved add-only operator content-type additions,
+     *                      forwarded to {@link #contentTypeFor(String, Map)}; never
+     *                      {@code null}, empty when unconfigured
      * @return an ordered, mutable copy of the governed headers
      */
     public static Map<String, String> governedHeaders(String filename, AccessLevel access,
-            Map<String, String> sourceHeaders) {
+            Map<String, String> sourceHeaders, Map<String, String> operatorTypes) {
         Objects.requireNonNull(filename, "filename");
         Objects.requireNonNull(access, "access");
         Objects.requireNonNull(sourceHeaders, "sourceHeaders");
+        Objects.requireNonNull(operatorTypes, "operatorTypes");
         boolean authenticated = access == AccessLevel.AUTHENTICATED;
         Map<String, String> governed = new LinkedHashMap<>();
         for (Map.Entry<String, String> header : sourceHeaders.entrySet()) {
@@ -154,7 +196,7 @@ public class AssetResponseEnvelope {
             }
             governed.put(header.getKey(), header.getValue());
         }
-        governed.put(CONTENT_TYPE, contentTypeFor(filename));
+        governed.put(CONTENT_TYPE, contentTypeFor(filename, operatorTypes));
         governed.put(CONTENT_TYPE_OPTIONS, NOSNIFF);
         if (authenticated) {
             governed.put(CACHE_CONTROL, NO_STORE);

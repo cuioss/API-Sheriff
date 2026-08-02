@@ -47,6 +47,8 @@ import org.jspecify.annotations.Nullable;
  * @param anchors          the named policy anchors keyed by name, empty when none
  *                         are configured
  * @param upstreamDefaults the global retry/not-modified defaults, {@code null} when omitted
+ * @param assetDefaults    the add-only asset content-type additions, {@code null} when omitted —
+ *                         the built-in extension map then governs alone
  * @param forwarded        the forwarded-header trust policy, {@code null} when omitted
  * @param tokenValidation  the offline bearer-validation settings, {@code null} when omitted
  * @param oidc             the confidential-client settings, {@code null} when omitted
@@ -67,6 +69,7 @@ int version,
 List<HttpMethod> allowedMethods,
 Map<String, AnchorConfig> anchors,
 @Nullable UpstreamDefaultsConfig upstreamDefaults,
+@Nullable AssetDefaultsConfig assetDefaults,
 @Nullable ForwardedConfig forwarded,
 @Nullable TokenValidationConfig tokenValidation,
 @Nullable OidcConfig oidc,
