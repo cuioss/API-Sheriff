@@ -69,6 +69,14 @@ layer.
   enumerated deployment-bound variables (ports, certificate and trust material, the management TLS
   selection), and an audit of where else the codebase offers a secure default with an override
   route. Read it before assuming an environment variable can change a given behaviour.
+
+| link:container-image.adoc[Container Image -- Pulling, Running and Verifying]
+| The operator layer for the published image at `ghcr.io/cuioss/api-sheriff`: the two-tag scheme and
+  why no `:latest` exists, a `docker run` that reflects what the artifact actually requires (a
+  mounted configuration directory, deployment-supplied certificate material, and the
+  `QUARKUS_HTTP_SSL_PORT` move under `tls.passthrough_sni`), what the SBOM and the HIGH+CRITICAL
+  vulnerability scan do and do not guarantee, and the complete `cosign verify` recipe with both
+  mandatory flags. Links to the release process for the artifact policy.
 |===
 
 == Scope of This Layer
