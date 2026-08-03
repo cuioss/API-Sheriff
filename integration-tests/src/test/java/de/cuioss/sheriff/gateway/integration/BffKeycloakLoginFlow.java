@@ -45,7 +45,7 @@ import io.restassured.specification.RequestSpecification;
  * dead-ends on the {@code 403} "no browser-binding cookie" branch. That is precisely the defect a
  * green run of this suite failed to reveal. <em>Do not read a green IT suite as proof that the
  * browser flow works.</em> The browser-level proof lives in the demo-client Playwright suite, which
- * drives a real Chromium with a real cookie jar; see {@code doc/development/demo-client.adoc}.
+ * drives a real Chromium with a real cookie jar; see {@code demo-client/doc/playwright-suite.adoc}.
  * <p>
  * <strong>Container-network rewrite.</strong> The {@code integration} realm pins
  * {@code frontendUrl https://keycloak:8443}, so every authorization / login-form URL the gateway or

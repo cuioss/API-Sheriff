@@ -76,7 +76,7 @@ This tree is seeded here and grows as contributor-facing material lands.
   certificate and configuration material, and the two trust boundaries -- drawn from
   `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
 
-| link:demo-client.adoc[Demo Client and the Playwright End-to-End Suite]
+| link:../../demo-client/doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite]
 | The `demo-client` module -- why the demo SPA is served by the gateway rather than a side-car
   static server, the opt-in `skipPlaywrightTests` / `e2e-demo` build mechanism that keeps it out of
   the default lane, how to run the suite locally, the Chromium host-resolver mapping the pinned

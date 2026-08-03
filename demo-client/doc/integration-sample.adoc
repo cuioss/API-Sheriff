@@ -9,14 +9,14 @@ four identity-disclosure states an application can reach, the redirect rules the
 your behalf, and the `gateway.yaml` a deployment needs so the gateway serves the application itself.
 
 The runnable sample lives in `demo-client/` (see
-link:../../demo-client/README.adoc[`demo-client/README.adoc`] for the quickstart). How that module is
+link:../README.adoc[`demo-client/README.adoc`] for the quickstart). How that module is
 built, and why its test suite is shaped as it is, is the contributor concern documented in
-link:../development/demo-client.adoc[Demo Client and the Playwright End-to-End Suite].
+link:playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite].
 
 The field-level contract for every key named here is
-link:../configuration.adoc[Configuration Reference]; the setup guides for the two session variants are
-link:bff-session.adoc[Server-Session BFF -- Operator Setup] and
-link:bff-cookie.adoc[Cookie-Based BFF -- Operator Setup]. This document is the *sample*, not a second
+link:../../doc/configuration.adoc[Configuration Reference]; the setup guides for the two session variants are
+link:../../doc/user/bff-session.adoc[Server-Session BFF -- Operator Setup] and
+link:../../doc/user/bff-cookie.adoc[Cookie-Based BFF -- Operator Setup]. This document is the *sample*, not a second
 copy of either.
 
 == The Browser-Facing Contract
@@ -80,6 +80,7 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 Two properties of this table are worth stating explicitly, because assuming otherwise is the most
 common way to mis-integrate:
 
+[#_the_401_versus_302_split]
 * *The `401`-versus-`302` split is PATH-based, not `Accept`-based.* Both reserved endpoints are
   blind to the request's `Accept` header. `/auth/userinfo` is an XHR probe and answers
   `401 application/problem+json` without a session -- it never redirects, whatever you send. Do not
@@ -103,6 +104,13 @@ The whole leg is navigations the browser performs; your application starts it an
 
 Tokens never reach the browser at any point: the gateway holds them, and the application's only
 credential is the `HttpOnly` session cookie it cannot read.
+
+image::../../doc/resources/diagrams/demo-client-login-flow.svg[Demo-client login flow as the single-page application sees it, align=center]
+
+The diagram draws only the legs your application participates in. The identity-provider interior --
+the authorization request, the user authenticating, and the gateway's back-channel code exchange --
+is deliberately not redrawn here; it is the same handshake both BFF variants perform, drawn once in
+link:../../doc/resources/diagrams/bff-login-sequence.svg[the BFF login handshake diagram].
 
 [NOTE]
 .What you must configure at the identity provider
@@ -135,7 +143,7 @@ What this means for you as an integrator: *treat access logs and `Referer`-beari
 callback path as sensitive*, and do not add third-party analytics or error reporting that captures
 full URLs on `/auth/callback`. Nothing else in your application is affected -- the code never
 reaches your code. The full statement is in
-link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
+link:../../doc/architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
 ====
 
 == The Four Identity-Disclosure States
@@ -170,6 +178,8 @@ Against the sample's `allowed_claims: ["sub", "preferred_username", "email", "gr
 | The *allowlist cap*. `given_name` is present in the validated ID token, and is still refused,
   because the operator did not allow it.
 |===
+
+image::../../doc/resources/diagrams/demo-client-userinfo-probe.svg[Demo-client userinfo probe and the four identity-disclosure states, align=center]
 
 The last row is the one to internalise. *The operator -- never the browser -- widens disclosure.* A
 claim outside `allowed_claims` can never be disclosed even when the identity provider issued it, and
@@ -219,11 +229,12 @@ with a live session redirects straight to the validated return URL. No new login
 started and no binding cookie is set. An application may therefore link to `/auth/login`
 unconditionally without worrying about spurious re-authentication.
 
+[#_serving_your_application_from_the_gateway]
 == Serving Your Application from the Gateway
 
 The sample is served through the asset terminal action
-(link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]) under a `type: asset` /
-`access: public` anchor (link:../adr/0013-anchor-type-access-axes.adoc[ADR-0013]). The route is one
+(link:../../doc/adr/0014-asset-serving-terminal-action.adoc[ADR-0014]) under a `type: asset` /
+`access: public` anchor (link:../../doc/adr/0013-anchor-type-access-axes.adoc[ADR-0013]). The route is one
 block:
 
 [source,yaml]
@@ -249,7 +260,7 @@ Three things a deployment needs, and one it does not:
 * You do *not* need a new anchor per bundle. Reusing an existing `access: public` asset anchor keeps
   the anchor set -- which must stay pairwise prefix-disjoint -- unchanged.
 
-[IMPORTANT]
+[IMPORTANT#_no_directory_index]
 ====
 *There is no directory index.* A request for `/assets/demo/` without a filename returns `404`. Every
 entry point must name a concrete file: `/assets/demo/index.html`, not `/assets/demo/`. This applies
@@ -327,5 +338,9 @@ The sample runs unchanged against both session variants -- `session.mode: server
 
 That is the intended property. An application is written against the reserved-path contract, and the
 operator chooses the session variant on operational grounds
-(link:bff-session.adoc[server-session setup], link:bff-cookie.adoc[cookie setup]) without the
+(link:../../doc/user/bff-session.adoc[server-session setup], link:../../doc/user/bff-cookie.adoc[cookie setup]) without the
 application knowing which was chosen.
+
+You are not asked to take that on trust: the Playwright suite runs the same specs against both
+variants, which is what makes "browser-observably identical" an executable assertion rather than a
+claim. link:playwright-suite.adoc#_why_the_demo_exists[Why the Demo Exists] records the mechanism.
