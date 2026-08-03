@@ -152,7 +152,11 @@ declaration's *existence* is proven while its *boundary* is not.
   `sheriff-config/endpoints/httpbin.yaml:58`
 | `ThoroughChecksStage` (path allowlist)
 | COVERED
-| `SecurityProfileModeIT` (`allowedPathsStillRejectsPathOutsideAllowlist`)
+| `SecurityProfileModeIT` (`allowedPathsStillRejectsPathOutsideAllowlist` -- the two-segment
+  `/proxy/minimal-mode/deep/path` rejected 400 -- with the matched one-wildcard-segment control
+  `/proxy/minimal-mode/echo` admitted 200 by `bodyWithinCapIsForwarded` /
+  `minimalRouteAcceptsRejectedParameterValue`, proving the rejection follows the segment-count
+  mismatch rather than the route refusing the shape outright)
 
 | `security_defaults.profile: strict`
   `sheriff-config/gateway.yaml:49`
@@ -232,8 +236,13 @@ declaration's *existence* is proven while its *boundary* is not.
 | `oidc.session.refresh.leeway_seconds: 30`
   `gateway.yaml` ×4 -- base:293, cookie:161, mtls:154, ws:133
 | Session refresh scheduling
-| WIRED
-| `BffCookieSessionIT`, `BffSessionMediationIT` -- exercise refresh, never the leeway boundary
+| GAP
+| none -- no descriptor-parsing guard asserts the declaration is present
+  (`BffCookieActivationWiringTest` parses the `oidc.session` block but asserts only `mode`, `store`,
+  `encryption_key` and `logout.backchannel_path`; `DescriptorInventoryWiringTest` partitions files,
+  never keys), and `BffCookieSessionIT` / `BffSessionMediationIT` exercise session *continuity*
+  without forcing a refresh, let alone approaching the 30s leeway boundary. Neither half of `WIRED`
+  holds, which is why this row was corrected from `WIRED` to `GAP`.
 
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
   `sheriff-config/gateway.yaml:50`
@@ -317,8 +326,11 @@ declaration's *existence* is proven while its *boundary* is not.
 
 == The Gap Count and This Plan's Selection
 
-*Real gap count when this sweep began: 11* -- eight outright `GAP` (G2--G9) plus three `PARTIAL`
-(G1, G10, G11).
+*Real gap count when this sweep began: 12* -- eight outright `GAP` (G2--G9), three `PARTIAL`
+(G1, G10, G11), plus one row this note had itself mis-recorded:
+`oidc.session.refresh.leeway_seconds` was carried as `WIRED` while no descriptor-parsing guard
+asserted it, so neither half of the `WIRED` definition held. The PR #148 review corrected that row
+to `GAP`; it was a real gap at the sweep's start and is counted as one here.
 
 The sweep's hard ceiling is five assertions, so *the cap bound at its ceiling*: **G1--G5 each
 received one** (their rows above name the asserting test), ranked below by blast radius -- a limit
@@ -331,8 +343,8 @@ scoped to the host its own `jwks.url` names, but no runtime egress refusal is ex
 note's own vocabulary that is not `COVERED`, so G2's runtime leg is *still open* and is counted
 below rather than dropped.
 
-*Seven items remain* -- the G2 runtime egress-refusal leg plus G6--G11 -- and they are listed as
-the standing remainder so the class stays countable.
+*Eight items remain* -- the G2 runtime egress-refusal leg, G6--G11, plus the session-refresh leeway
+boundary -- and they are listed as the standing remainder so the class stays countable.
 
 [cols="1,1,1,4"]
 |===
@@ -363,8 +375,8 @@ the standing remainder so the class stays countable.
 
 === The standing remainder
 
-*The G2 runtime leg and G6--G11 are deliberately not authored*, and are recorded so the class stays
-countable rather than forgotten:
+*The G2 runtime leg, G6--G11 and the session-refresh leeway boundary are deliberately not authored*,
+and are recorded so the class stays countable rather than forgotten:
 
 * *G2* -- runtime egress-refusal leg: that a JWKS host *outside* `allowed_egress_hosts` is actually
   refused. The descriptor half is `WIRED` by `EgressAllowlistActivationWiringTest`; proving the
@@ -375,6 +387,12 @@ countable rather than forgotten:
 * *G9* -- `oidc.session.ttl_seconds`
 * *G10* -- `oidc.user_info.allowed_claims` negative leg
 * *G11* -- `tls.min_version` / `cipher_suites` runtime handshake leg
+* *Session-refresh leeway* -- `oidc.session.refresh.leeway_seconds: 30`: that a session is actually
+  refreshed the declared 30 seconds ahead of expiry. Neither leg exists -- no descriptor-parsing
+  guard asserts the declaration, and the BFF session ITs exercise continuity without forcing a
+  refresh. This row was carried as `WIRED` until the PR #148 review corrected it to `GAP`; it is
+  recorded here rather than assigned a G-number, because G1--G11 are the outline-time ranked
+  inventory that the matrix orders.
 
 Two of these are additionally *impractical to boundary-test at proportionate cost*: G9 would need a
 one-hour wait, and G11's runtime leg needs a handshake fixture matrix. A future plan should pick
