@@ -16,18 +16,19 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -92,10 +93,46 @@ class BffRuntimeProducerTest {
             assertNotNull(runtime.stepUpCoordinator());
         }
 
+        /**
+         * Assembly must not perform an OIDC discovery round-trip — that is deferred to first engine
+         * use, which is what lets the gateway boot without a live IdP. A bare
+         * {@code assertDoesNotThrow} cannot say this: a producer that <em>did</em> resolve discovery
+         * against a reachable IdP would complete just as quietly. The issuer here is therefore on
+         * {@code 192.0.2.0/24} (RFC 5737 TEST-NET-1, guaranteed unroutable), so a discovery attempt
+         * would burn the connect timeout instead of returning — which the preemptive bound catches.
+         */
         @Test
         @DisplayName("Should assemble without resolving OIDC discovery (no live IdP required)")
         void shouldAssembleWithoutDiscovery() {
-            assertDoesNotThrow(() -> producer(serverModeOidc()).bffRuntime());
+            // Arrange — a well-formed server-mode configuration whose issuer nothing can reach
+            OidcConfig unreachableIssuer = OidcConfig.builder()
+                    .issuer("https://192.0.2.1:9999/realms/nowhere")
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .userInfo(OidcConfig.UserInfo.builder()
+                            .path("/auth/userinfo")
+                            .allowedClaims(List.of("sub", "name"))
+                            .defaultView(List.of("sub"))
+                            .build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
+                    .build();
+
+            // Act
+            BffRuntime assembled = assertTimeoutPreemptively(Duration.ofSeconds(10),
+                    () -> producer(unreachableIssuer).bffRuntime(),
+                    "assembly must not reach the IdP — a discovery round-trip against an unroutable "
+                            + "issuer would exhaust the connect timeout instead of returning");
+
+            // Assert — and what came back is a fully wired runtime, not a degraded or inert one
+            assertTrue(assembled.isActive(),
+                    "an unreachable issuer still yields an active runtime, because discovery is deferred");
+            assertEquals(401, assembled.dispatch(ReservedEndpoint.USER_INFO,
+                            new BffRuntime.ReservedHttpRequest("", null, null, null, null, null, "GET"),
+                            Instant.parse("2026-07-25T10:00:00Z")).status(),
+                    "the reserved endpoints are wired although no discovery ever ran");
         }
 
         @Test

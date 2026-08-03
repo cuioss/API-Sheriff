@@ -283,13 +283,21 @@ class ConfigProducerTest {
         assertSame(first, second, "the pipeline should be assembled once and cached");
     }
 
+    /**
+     * The eager half of the startup contract: assembly happens <em>at</em> the startup event, not
+     * lazily on the first bean accessor. The distinction is load-bearing — a lazily-assembled pipeline
+     * surfaces a misconfiguration as a runtime failure on the first request instead of refusing to
+     * boot — and it is invisible to "onStartup did not throw", which a no-op body satisfies equally.
+     * The {@code CONFIG_LOADED} record is emitted by {@code buildOnce}, so observing it while no
+     * accessor has been called yet is what pins the assembly to the startup event.
+     */
     @Test
     void shouldAssembleEagerlyOnStartupForValidConfig() throws Exception {
         ConfigProducer producer = producerForValidConfig();
 
-        assertDoesNotThrow(() -> producer.onStartup(null),
-                "a valid configuration should assemble without failing startup");
-        assertNotNull(producer.gatewayConfig(), "beans should be available after startup assembly");
+        producer.onStartup(null);
+
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "Configuration loaded successfully");
     }
 
     @Test

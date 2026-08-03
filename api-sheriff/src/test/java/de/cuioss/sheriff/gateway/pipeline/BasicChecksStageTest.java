@@ -115,8 +115,11 @@ class BasicChecksStageTest {
         // Act
         defaultStage.process(request);
 
-        // Assert
-        assertNotNull(request.canonicalPath());
+        // Assert — the recorded value is what route selection matches on, so its presence is not the
+        // claim: a canonicalizer that emitted "/" or echoed a half-decoded path would satisfy a
+        // non-null check while breaking every route match downstream.
+        assertEquals("/api/v1/users", request.canonicalPath(),
+                "the floor records the canonical form of the request path for route selection");
     }
 
     @Test

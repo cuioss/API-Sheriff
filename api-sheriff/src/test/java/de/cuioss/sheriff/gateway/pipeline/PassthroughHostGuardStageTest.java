@@ -20,9 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -34,6 +36,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("PassthroughHostGuardStage — runtime Host-vs-SNI smuggle 404 guard")
@@ -111,65 +115,83 @@ class PassthroughHostGuardStageTest {
     @DisplayName("Benign pass-through (a request the guard must let flow to route selection)")
     class BenignPassThrough {
 
-        @Test
-        @DisplayName("passes a benign Host through to route selection")
-        void passesBenignHost() {
-            // Arrange
-            PipelineRequest request = requestWithHost("edge.public.example");
+        /**
+         * The five benign {@code Host} shapes, each paired with the reason it does not match the
+         * reserved SNI. Every row is driven twice: once through the guard configured with
+         * {@link #PASSTHROUGH_SNI} (it must pass, untouched), and once through a guard that reserves
+         * the row's own {@code Host} verbatim (it must be rejected).
+         * <p>
+         * The second pass is what makes the first one evidence. An {@code assertDoesNotThrow} alone
+         * cannot distinguish "the normalized Host genuinely does not match" from an inert guard, a
+         * swallowed exception, or a {@code process()} that stopped inspecting the {@code Host} at all
+         * — every one of which leaves a bare no-throw assertion green.
+         *
+         * @return one row per benign Host shape
+         */
+        static Stream<Arguments> benignHosts() {
+            return Stream.of(
+                    arguments("a benign Host", "edge.public.example"),
+                    arguments("a Host sharing only a suffix with the passthrough SNI",
+                            "evil-backend.internal.example"),
+                    arguments("a non-numeric :suffix, which is not stripped", PASSTHROUGH_SNI + ":notaport"),
+                    arguments("an empty :suffix, which is not stripped", PASSTHROUGH_SNI + ":"),
+                    arguments("a multi-colon suffix, which is not stripped", PASSTHROUGH_SNI + ":80:80"));
+        }
 
-            // Act + Assert — a benign Host is a no-op (the guard never touches it)
-            assertDoesNotThrow(() -> guardedStage.process(request));
+        @ParameterizedTest(name = "passes {0}")
+        @MethodSource("benignHosts")
+        @DisplayName("passes a benign Host through to route selection with the request untouched")
+        void passesBenignHostToRouteSelection(String shape, String host) {
+            // Arrange
+            PipelineRequest request = requestWithHost(host);
+
+            // Act
+            guardedStage.process(request);
+
+            // Assert — the guard is a pass-through pre-check: it neither rewrites the authority it
+            // inspected nor advances any routing state, so stage 2 receives the request as it arrived.
+            assertAll("benign pass-through: " + shape,
+                    () -> assertEquals(host, request.host(),
+                            "The guard must not rewrite the Host it inspected"),
+                    () -> assertNull(request.selectedRoute(),
+                            "The guard runs before route selection and must select no route"),
+                    () -> assertNull(request.canonicalPath(),
+                            "The guard must not canonicalize the request it passes through"));
+        }
+
+        @ParameterizedTest(name = "reserving {0} rejects it")
+        @MethodSource("benignHosts")
+        @DisplayName("each benign pass is attributable to the Host not matching, never to an inert guard")
+        void benignPassIsAttributableToTheHostNotMatching(String shape, String host) {
+            // Arrange — reserve the very Host under test, so it normalizes onto itself and matches
+            PassthroughHostGuardStage attracting = new PassthroughHostGuardStage(List.of(host));
+            PipelineRequest request = requestWithHost(host);
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, () -> attracting.process(request));
+
+            // Assert
+            assertEquals(EventType.PASSTHROUGH_HOST_SMUGGLED, thrown.getEventType(),
+                    "A guard reserving this exact Host must reject it — otherwise the pass above is "
+                            + "explained by the guard being inert rather than by the Host not matching");
         }
 
         @Test
-        @DisplayName("treats an absent Host header as a no-op")
+        @DisplayName("treats an absent Host header as a no-op, leaving routing state untouched")
         void passesNullHost() {
             // Arrange — the edge may build a request without a Host authority
             PipelineRequest request = requestWithHost(null);
 
-            // Act + Assert
-            assertDoesNotThrow(() -> guardedStage.process(request));
-        }
+            // Act
+            guardedStage.process(request);
 
-        @Test
-        @DisplayName("passes a Host that only shares a suffix with the passthrough SNI")
-        void passesSuffixLookalikeHost() {
-            // Arrange — "evil-backend.internal.example" must NOT match "backend.internal.example"
-            PipelineRequest request = requestWithHost("evil-backend.internal.example");
-
-            // Act + Assert
-            assertDoesNotThrow(() -> guardedStage.process(request));
-        }
-
-        @Test
-        @DisplayName("does not strip a non-numeric :suffix, so the Host no longer matches the SNI")
-        void passesHostWithNonNumericPort() {
-            // Arrange — only a purely-numeric :port is stripped; "notaport" is kept, so the normalized
-            // Host retains the colon suffix and can no longer match the reserved SNI.
-            PipelineRequest request = requestWithHost(PASSTHROUGH_SNI + ":notaport");
-
-            // Act + Assert
-            assertDoesNotThrow(() -> guardedStage.process(request));
-        }
-
-        @Test
-        @DisplayName("does not strip an empty :suffix, so the Host no longer matches the SNI")
-        void passesHostWithEmptyPort() {
-            // Arrange — a trailing colon with no port digits is not a strippable :port suffix.
-            PipelineRequest request = requestWithHost(PASSTHROUGH_SNI + ":");
-
-            // Act + Assert
-            assertDoesNotThrow(() -> guardedStage.process(request));
-        }
-
-        @Test
-        @DisplayName("does not strip a multi-colon suffix, so the Host no longer matches the SNI")
-        void passesHostWithMultipleColons() {
-            // Arrange — the :port strip only fires for a single colon; two colons leave the Host intact.
-            PipelineRequest request = requestWithHost(PASSTHROUGH_SNI + ":80:80");
-
-            // Act + Assert
-            assertDoesNotThrow(() -> guardedStage.process(request));
+            // Assert — an absent authority is nothing to match, and nothing to invent either
+            assertAll("absent Host",
+                    () -> assertNull(request.host(), "The guard must not synthesize a Host"),
+                    () -> assertNull(request.selectedRoute(),
+                            "The guard runs before route selection and must select no route"),
+                    () -> assertNull(request.canonicalPath(),
+                            "The guard must not canonicalize the request it passes through"));
         }
     }
 

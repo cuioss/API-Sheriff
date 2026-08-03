@@ -17,12 +17,14 @@ package de.cuioss.sheriff.gateway.auth;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 
@@ -35,13 +37,23 @@ import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.commons.transport.EgressPolicy;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
+import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
+import de.cuioss.sheriff.token.validation.test.InMemoryKeyMaterialHandler;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
+import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
 
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+@EnableGeneratorController
 @DisplayName("TokenValidatorProducer — builds the shared gateway validator from token_validation")
 class TokenValidatorProducerTest {
 
@@ -62,39 +74,89 @@ class TokenValidatorProducerTest {
         assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
     }
 
-    @Test
-    @DisplayName("builds a validator from an http-JWKS issuer with an explicit expected audience")
-    void buildsFromHttpIssuerWithAudience() {
-        // Arrange
-        TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
-                .name("primary")
-                .issuer(ISSUER)
-                .audience("api-sheriff")
-                .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
-                .build());
+    /**
+     * The {@code audience} posture the producer resolves, asserted <em>behaviourally</em>.
+     * <p>
+     * The gateway's {@code audience} key is optional while token-sheriff requires an explicit choice
+     * at build time, so {@code toValidationIssuer} either sets an expected audience or sets the
+     * explicit opt-out. Neither choice is visible on the built {@link TokenValidator}, which exposes
+     * no view of its issuer configs — so the posture is asserted by *validating a real token* through
+     * the produced validator. That needs key material the validator can load without an IdP, which is
+     * why these two cases use a {@code file} JWKS source seeded from the in-memory test key material
+     * rather than the {@code http} source the surrounding cases use.
+     */
+    @Nested
+    @DisplayName("audience posture — expected audience vs the explicit opt-out")
+    class AudiencePosture {
 
-        // Act
-        TokenValidator validator = producer.gatewayTokenValidator();
+        @TempDir
+        Path jwksDir;
 
-        // Assert
-        assertNotNull(validator, "an http issuer with a jwks url yields a built validator");
-    }
+        @Test
+        @DisplayName("a declared audience reaches the validator and refuses a token that does not carry it")
+        void declaredAudienceIsEnforced() throws IOException {
+            // Arrange — the declared audience is deliberately not one the generated token carries
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            TokenValidator declaringForeignAudience = fileIssuerValidator(holder, "an-audience-the-token-lacks");
+            TokenValidator declaringOwnAudience =
+                    fileIssuerValidator(holder, holder.getAudience().iterator().next());
+            AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
 
-    @Test
-    @DisplayName("builds a validator from an http-JWKS issuer that configures no audience (validation disabled)")
-    void buildsFromHttpIssuerWithoutAudience() {
-        // Arrange — no audience means audience validation is explicitly disabled at build time
-        TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
-                .name("primary")
-                .issuer(ISSUER)
-                .jwks(IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build())
-                .build());
+            // Act + Assert — the declared audience is genuinely applied ...
+            assertThrows(TokenValidationException.class,
+                    () -> declaringForeignAudience.createAccessToken(request),
+                    "a declared audience must reach the built validator and refuse a token without it");
 
-        // Act
-        TokenValidator validator = producer.gatewayTokenValidator();
+            // ... and the matched control: the same token, key material and issuer pass once the
+            // declared audience is one the token actually carries, so the refusal above is
+            // attributable to the audience decision and not to the token or the key set.
+            AccessTokenContent accepted = declaringOwnAudience.createAccessToken(request);
+            assertEquals(holder.getAudience(), accepted.getAudience(),
+                    "the accepted token carries exactly the audience the issuer declared");
+        }
 
-        // Assert
-        assertNotNull(validator, "an audience-less issuer still yields a built validator");
+        @Test
+        @DisplayName("an issuer configuring no audience disables audience validation rather than refusing the token")
+        void audienceLessIssuerDisablesAudienceValidation() throws IOException {
+            // Arrange — the same token and key material, this time with no audience declared at all
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            TokenValidator validator = fileIssuerValidator(holder, null);
+
+            // Act
+            AccessTokenContent content =
+                    validator.createAccessToken(AccessTokenRequest.of(holder.getRawToken()));
+
+            // Assert — the token validates although the producer declared no expected audience, which
+            // is only possible because the audience-less branch sets the explicit opt-out. Without it
+            // token-sheriff's IssuerConfig.build() refuses to build the issuer at all, so this is the
+            // exact contrast with declaredAudienceIsEnforced above: swap the two arrange blocks and
+            // both tests fail.
+            assertEquals(holder.getAudience(), content.getAudience(),
+                    "the token is admitted unchanged, audience claim included, with validation disabled");
+        }
+
+        /**
+         * A producer whose single issuer loads its key set from an on-disk JWKS file, so validation
+         * runs fully offline.
+         *
+         * @param holder   the generated token whose issuer identifier and key material are mirrored
+         * @param audience the {@code audience} to declare, or {@code null} to declare none at all
+         * @return the produced gateway validator
+         * @throws IOException when the JWKS fixture cannot be written
+         */
+        private TokenValidator fileIssuerValidator(TestTokenHolder holder, @Nullable String audience)
+                throws IOException {
+            Path jwks = Files.writeString(jwksDir.resolve("jwks-%s.json".formatted(audience)),
+                    InMemoryKeyMaterialHandler.createDefaultJwks());
+            IssuerConfig.IssuerConfigBuilder issuer = IssuerConfig.builder()
+                    .name("primary")
+                    .issuer(holder.getIssuer())
+                    .jwks(IssuerConfig.Jwks.builder().source("file").file(jwks.toString()).build());
+            if (audience != null) {
+                issuer.audience(audience);
+            }
+            return producerFor(issuer.build()).gatewayTokenValidator();
+        }
     }
 
     @Test
@@ -242,25 +304,61 @@ class TokenValidatorProducerTest {
                     "every entry in allowed_egress_hosts must be applied, not just the first");
         }
 
+        /**
+         * The built {@link TokenValidator} exposes no view of its issuer configs, so the last hop of
+         * the assembly is asserted at the producer's own {@code toHttpJwksLoaderConfig} seam driven
+         * with the very issuer the public entry point consumed. Driving
+         * {@link TokenValidatorProducer#gatewayTokenValidator()} first is what proves the allowlist
+         * does not abort the whole-graph assembly; the policy assertions are what prove it survived
+         * rather than being silently dropped back to the secure default.
+         */
         @Test
         @DisplayName("the allowlist is carried through the full producer path, not only the seam")
         void allowlistSurvivesTheProducerPath() {
             // Arrange — drive the public producer entry point rather than the helper
-            TokenValidatorProducer producer = producerFor(IssuerConfig.builder()
+            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(JWKS_URL)
+                    .allowedEgressHosts(List.of(BLOCKED_HOST))
+                    .build();
+            IssuerConfig issuer = IssuerConfig.builder()
                     .name("benchmark-keycloak")
                     .issuer(ISSUER)
-                    .jwks(IssuerConfig.Jwks.builder()
-                            .source("http")
-                            .url(JWKS_URL)
-                            .allowedEgressHosts(List.of(BLOCKED_HOST))
-                            .build())
-                    .build());
+                    .jwks(jwks)
+                    .build();
+            TokenValidatorProducer producer = producerFor(issuer);
 
-            // Act
-            TokenValidator validator = producer.gatewayTokenValidator();
+            // Act — the public entry point assembles the whole issuer graph
+            producer.gatewayTokenValidator();
+            EgressPolicy withAllowlist = producer.toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
 
-            // Assert
-            assertNotNull(validator, "an issuer carrying an egress allowlist still builds a validator");
+            // Arrange the matched control — an otherwise identical issuer declaring no allowlist,
+            // driven through the same public entry point
+            IssuerConfig.Jwks plainJwks = IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(JWKS_URL)
+                    .build();
+            IssuerConfig plainIssuer = IssuerConfig.builder()
+                    .name("benchmark-keycloak")
+                    .issuer(ISSUER)
+                    .jwks(plainJwks)
+                    .build();
+            TokenValidatorProducer plainProducer = producerFor(plainIssuer);
+            plainProducer.gatewayTokenValidator();
+            EgressPolicy withoutAllowlist =
+                    plainProducer.toHttpJwksLoaderConfig(plainIssuer, plainJwks).getEgressPolicy();
+
+            // Assert — the declared allowlist survived the assembly ...
+            assertDoesNotThrow(() -> withAllowlist.check(BLOCKED_JWKS_URI),
+                    "the allowlisted host must be reachable through the policy the producer path builds");
+
+            // ... and the admission is attributable to the allowlist rather than to an inert guard:
+            // the same path over the same host refuses it once the allowlist is gone. Asserting the
+            // policy is not EgressPolicy.secureDefault() would NOT do this job — EgressPolicy's
+            // equality does not carry the host allowlist, so an allowlisted policy compares equal to
+            // the secure default.
+            assertThrows(TransportException.class, () -> withoutAllowlist.check(BLOCKED_JWKS_URI),
+                    "without the declared allowlist the same producer path must still refuse the host");
         }
 
         private static EgressPolicy egressPolicyFor(IssuerConfig.Jwks jwks) {

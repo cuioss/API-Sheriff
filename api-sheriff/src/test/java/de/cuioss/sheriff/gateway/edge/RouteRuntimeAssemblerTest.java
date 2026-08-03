@@ -172,27 +172,35 @@ class RouteRuntimeAssemblerTest {
                 "the assembled route keeps its require:session posture for the stage-4 runtime to dispatch on");
 
         // A session-auth WebSocket route likewise assembles — session auth no longer gates boot, so
-        // it is treated exactly like any other WebSocket route.
+        // it is treated exactly like any other WebSocket route. Each remaining leg asserts on the
+        // runtime it produced rather than on the absence of a throw: an assemble() that quietly
+        // dropped the route would return an empty list and satisfy a bare no-throw assertion.
         RouteTable webSocketSessionTable = new RouteTable(List.of(
                 route("sw", Protocol.WEBSOCKET, "session", null, upstream("a.example"))));
-        assertDoesNotThrow(
-                () -> assembler.assemble(webSocketSessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
-                "a session-auth WebSocket route assembles — session auth no longer fails boot");
+        RouteRuntime webSocketSession = assembler.assemble(webSocketSessionTable, securityConfigFactory,
+                clientFactory, guardFactory, assetSourceFactory).getFirst();
+        assertEquals("sw", webSocketSession.getId(),
+                "the session-auth WebSocket route reaches the assembled table");
+        assertEquals("session", webSocketSession.getEffectiveAuth().require(),
+                "and keeps its require:session posture for the stage-4 runtime to dispatch on");
 
         // A gRPC route with non-session auth assembles cleanly — the forced-h2 upstream client is
         // built by the injected client factory.
         RouteTable grpcTable = new RouteTable(List.of(
                 route("g", Protocol.GRPC, "none", null, upstream("a.example"))));
-        assertDoesNotThrow(
-                () -> assembler.assemble(grpcTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
-                "a gRPC route with non-session auth assembles cleanly");
+        RouteRuntime grpc = assembler.assemble(grpcTable, securityConfigFactory, clientFactory,
+                guardFactory, assetSourceFactory).getFirst();
+        assertEquals("g", grpc.getId(), "the gRPC route reaches the assembled table");
+        assertNotNull(grpc.getHttpClient(), "a gRPC route carries the forced-h2 upstream client");
 
         // A WebSocket route with non-session auth likewise assembles cleanly.
         RouteTable webSocketNoneTable = new RouteTable(List.of(
                 route("w", Protocol.WEBSOCKET, "none", null, upstream("a.example"))));
-        assertDoesNotThrow(
-                () -> assembler.assemble(webSocketNoneTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
-                "a WebSocket route with non-session auth assembles cleanly");
+        RouteRuntime webSocketNone = assembler.assemble(webSocketNoneTable, securityConfigFactory,
+                clientFactory, guardFactory, assetSourceFactory).getFirst();
+        assertEquals("w", webSocketNone.getId(), "the WebSocket route reaches the assembled table");
+        assertEquals("none", webSocketNone.getEffectiveAuth().require(),
+                "and carries its declared require:none posture");
     }
 
     @Test

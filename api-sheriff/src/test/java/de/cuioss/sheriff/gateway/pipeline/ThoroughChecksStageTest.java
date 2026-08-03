@@ -110,23 +110,62 @@ class ThoroughChecksStageTest {
     @Test
     @DisplayName("skips the pipeline re-run when the route config equals the stage-1 default")
     void skipsReRunWhenRouteConfigEqualsDefault() {
-        // Arrange — a route whose config equals the default was already covered by stage 1
-        PipelineRequest request = requestFor("/api/orders",
-                routeWithConfig(defaultConfiguration));
+        // Arrange — a stage whose OWN baseline refuses this path, and a route carrying exactly that
+        // baseline. Only the skip-if-equal guard can admit the request: a stage that re-ran the path
+        // pipeline under the identical configuration would reject it here, one stage too late.
+        SecurityConfiguration baseline = SecurityConfiguration.strict();
+        ThoroughChecksStage baselineEqualStage = stageWith(baseline, null);
+        PipelineRequest request = requestFor("/api/../etc/passwd", routeWithConfig(baseline));
 
         // Act + Assert
-        assertDoesNotThrow(() -> stage.process(request, List.of()));
+        assertDoesNotThrow(() -> baselineEqualStage.process(request, List.of()),
+                "a baseline-equal route is not re-validated here — BasicChecksStage already did it");
+
+        // Matched control — the same path through the same stage, on a route that DIVERGES from the
+        // baseline by one dimension, IS re-run and rejected. Without it the admission above could
+        // not distinguish "the re-run was skipped" from "the re-run ran and found nothing".
+        PipelineRequest divergent = requestFor("/api/../etc/passwd", routeWithConfig(
+                SecurityConfigurations.builderSeededFrom(baseline).maxBodySize(64L * 1024 * 1024).build()));
+        GatewayException thrown = assertThrows(GatewayException.class,
+                () -> baselineEqualStage.process(divergent, List.of()));
+        assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType(),
+                "a divergent route re-runs the path pipeline and rejects the very path the "
+                        + "baseline-equal route was admitted with");
     }
 
     @Test
     @DisplayName("falls back to the stage-1 baseline when a route carries no resolved configuration")
     void fallsBackToBaselineWhenRouteDeclaresNoConfig() {
         // Arrange — the posture resolver leaves every assembler-produced route with a configuration,
-        // so this covers only a RouteRuntime built without one.
-        PipelineRequest request = requestFor("/api/orders", routeWithConfig(null));
+        // so this covers only a RouteRuntime built without one. The fallback is observable through the
+        // unconditional body cap: with no route policy, the baseline's cap is the effective one.
+        long baselineCap = defaultConfiguration.maxBodySize();
+        PipelineRequest overCap = bodyRequest(baselineCap + 1, routeWithConfig(null));
+        PipelineRequest atCap = bodyRequest(baselineCap, routeWithConfig(null));
 
-        // Act + Assert
-        assertDoesNotThrow(() -> stage.process(request, List.of()));
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class,
+                () -> stage.process(overCap, List.of()));
+
+        // Assert — the baseline's cap governs a route that declared none ...
+        assertEquals(EventType.CONTENT_TOO_LARGE, thrown.getEventType(),
+                "a config-less route falls back to the stage-1 baseline's body cap");
+
+        // ... and the boundary control: a body exactly AT that cap is admitted, so the rejection is
+        // attributable to the fallen-back cap rather than to a config-less route being refused wholesale.
+        assertDoesNotThrow(() -> stage.process(atCap, List.of()),
+                "a body at the baseline cap is within it — the fallback applies the cap, not a refusal");
+    }
+
+    private static PipelineRequest bodyRequest(long declaredContentLength, RouteRuntime route) {
+        PipelineRequest request = PipelineRequest.builder()
+                .method(HttpMethod.POST)
+                .requestPath("/api/orders")
+                .declaredContentLength(declaredContentLength)
+                .build();
+        request.canonicalPath("/api/orders");
+        request.selectedRoute(route);
+        return request;
     }
 
     @Test
