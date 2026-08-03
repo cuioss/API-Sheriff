@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.regex.Pattern;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -84,8 +85,23 @@ class GetWithBodyIT extends BaseIntegrationTest {
     /** The Elasticsearch {@code _search} shape the opt-in exists for. */
     private static final String BODY = "{\"query\":{\"match_all\":{}}}";
 
-    /** A routed proxy path whose upstream (go-httpbin {@code /get}) echoes the request. */
+    /**
+     * A token carried <em>only</em> by {@link #BODY}. Its presence in the upstream's echo is what
+     * proves the entity actually crossed to the upstream, rather than being dropped once the framing
+     * gate had admitted the request.
+     */
+    private static final String BODY_MARKER = "match_all";
+
+    /**
+     * A routed proxy path whose upstream is go-httpbin's {@code /anything/*} echo — the
+     * {@code UPSTREAM} topology alias carries the {@code /anything} base path, so {@code /proxy/get}
+     * reaches {@code /anything/get}. That endpoint reflects the received method <em>and body</em>,
+     * which is what lets this test assert the body was forwarded and not merely admitted.
+     */
     private static final String ROUTE = "/proxy/get";
+
+    /** The echoed method. go-httpbin renders indented JSON, so the spacing is matched loosely. */
+    private static final Pattern ECHOED_GET = Pattern.compile("\"method\"\\s*:\\s*\"GET\"");
 
     private static final int SOCKET_TIMEOUT_MILLIS = 20_000;
 
@@ -105,9 +121,14 @@ class GetWithBodyIT extends BaseIntegrationTest {
                         + " Response was: " + response.body());
         assertEquals(200, response.status(),
                 "the admitted GET must be forwarded to the upstream. Response was: " + response.body());
-        assertTrue(response.body().contains("\"method\""),
-                "the response must be go-httpbin's echo, proving the request reached the upstream"
-                        + " rather than being answered by the gateway. Body was: " + response.body());
+        assertTrue(ECHOED_GET.matcher(response.body()).find(),
+                "the response must be go-httpbin's echo reporting that the upstream received a GET,"
+                        + " proving the request reached the upstream rather than being answered by the"
+                        + " gateway. Body was: " + response.body());
+        assertTrue(response.body().contains(BODY_MARKER),
+                "the echo must carry the forwarded GET body: admission alone does not prove the entity"
+                        + " survived, and a regression that drops it after the framing gate passes would"
+                        + " leave every other assertion here green. Body was: " + response.body());
     }
 
     @Test
@@ -141,6 +162,9 @@ class GetWithBodyIT extends BaseIntegrationTest {
         assertTrue(request.endsWith("\r\n\r\n" + BODY),
                 "the request must actually carry the body after the header block, not an empty entity");
         assertTrue(BODY.length() > 0, "the transmitted body must be non-empty");
+        assertTrue(BODY.contains(BODY_MARKER),
+                "the marker the upstream-echo assertion looks for must occur in the transmitted body;"
+                        + " editing BODY without it would make that assertion unobservable");
     }
 
     // --- request construction --------------------------------------------------------------------

@@ -57,9 +57,12 @@ import org.junit.jupiter.api.Test;
  * <strong>Two assertion strengths, chosen per surface.</strong> A bare enumeration is asserted by
  * <em>set equality</em>, plus the count the prose states in its own sentence — so appending an
  * extension to the list while leaving "21" untouched fails just as loudly as forgetting the list.
- * The per-mode narrative sections are asserted by <em>containment</em> only: they are explanatory
- * prose rather than a list, so requiring equality there would make the guard brittle against
- * ordinary editing while adding nothing — containment already catches an added or removed mode.
+ * The mode set's per-mode documentation is asserted <em>structurally</em> instead, by requiring each
+ * mode a table row of its own: the prose around it is free-form, so equality over it would be
+ * brittle, but a row is something the document either has or has not. A bare-word containment check
+ * would not do — {@code strict}, {@code lenient} and {@code minimal} are ordinary English
+ * adjectives, so a sentence like "with minimal overhead" satisfies one while the mode it names has
+ * no entry at all.
  * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a literal sentence fragment held
  * in a named constant. When an anchor cannot be located, or locates an empty set, the test fails
@@ -72,7 +75,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("Documented sets stay bound to their authoritative source")
 class DocumentedSetsContractTest {
 
-    /** The module base directory — surefire runs with the module root as the working directory. */
+    /** The working directory the runner started in — the module root under surefire. */
     private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
     private static final Path CONFIGURATION_ADOC = repoRoot().resolve("doc/configuration.adoc");
@@ -177,12 +180,15 @@ class DocumentedSetsContractTest {
         String document = read(CONFIGURATION_ADOC);
         String modeComment = profileModeComment(document);
 
-        // Act
+        // Act — count the RAW tokens alongside the set: the set collapses duplicates, so only the
+        // raw count can observe a mode the document lists twice
         Set<String> documented = new LinkedHashSet<>();
+        int listedTokens = 0;
         for (String token : modeComment.split("\\|")) {
             String mode = token.strip();
             if (!mode.isEmpty()) {
                 documented.add(mode);
+                listedTokens++;
             }
         }
 
@@ -192,23 +198,28 @@ class DocumentedSetsContractTest {
         assertEquals(modeNames(), sorted(documented),
                 CONFIGURATION_ADOC + " enumerates the security_defaults.profile mode set, which is"
                         + " authoritatively defined by SecurityProfile, and has drifted from it");
-        assertEquals(SecurityProfile.values().length, documented.size(),
-                CONFIGURATION_ADOC + " lists a different number of modes than SecurityProfile declares");
+        assertEquals(SecurityProfile.values().length, listedTokens,
+                CONFIGURATION_ADOC + " lists a different number of modes than SecurityProfile declares."
+                        + " The count is taken over the raw '|'-separated tokens rather than over the"
+                        + " de-duplicated set, so a mode listed twice fails here even though the set"
+                        + " equality above still holds");
     }
 
     @Test
-    @DisplayName("doc/configuration.adoc mentions every SecurityProfile mode in its narrative sections")
-    void configurationAdocMentionsEverySecurityProfileMode() throws Exception {
-        // Arrange — the per-mode narrative is prose, not a list, so containment is the right bar
+    @DisplayName("doc/configuration.adoc gives every SecurityProfile mode a definition row of its own")
+    void configurationAdocDocumentsEverySecurityProfileMode() throws Exception {
+        // Arrange — the per-mode text is free-form prose, so the row that introduces it is the
+        // structural thing worth asserting
         String document = read(CONFIGURATION_ADOC);
 
         // Act + Assert
         for (SecurityProfile profile : SecurityProfile.values()) {
             String mode = profile.name().toLowerCase(Locale.ROOT);
-            assertTrue(document.contains("`" + mode + "`") || document.contains(" " + mode + " "),
-                    CONFIGURATION_ADOC + " never mentions the mode '" + mode + "' declared by"
-                            + " SecurityProfile; a newly added mode needs its narrative section, and a"
-                            + " removed one needs its section deleted");
+            assertTrue(hasModeDefinitionRow(document, mode),
+                    CONFIGURATION_ADOC + " has no definition row of its own for the mode '" + mode
+                            + "' declared by SecurityProfile. The mode-set table must carry one cell"
+                            + " holding exactly \"" + modeDefinitionRow(mode) + "\" per mode, so a newly"
+                            + " added mode gets its entry and a removed one has its entry deleted");
         }
     }
 
@@ -232,6 +243,31 @@ class DocumentedSetsContractTest {
                 document + " states a count that no longer matches"
                         + " AssetResponseEnvelope.CONTENT_TYPES; the list and the stated count must move"
                         + " together");
+    }
+
+    /**
+     * One mode's own definition row in the mode-set table — an AsciiDoc cell holding nothing but the
+     * backticked mode name.
+     *
+     * @param mode the lower-cased mode name
+     * @return the exact row text the document must carry for that mode
+     */
+    private static String modeDefinitionRow(String mode) {
+        return "| `" + mode + "`";
+    }
+
+    /**
+     * Whether the document carries {@link #modeDefinitionRow(String)} as a line of its own. The
+     * comparison is against the <em>stripped</em> line rather than against the raw document text, so
+     * incidental indentation or trailing whitespace cannot decide whether a documented mode counts.
+     *
+     * @param document the configuration document
+     * @param mode     the lower-cased mode name
+     * @return {@code true} when some line of the document is exactly that row
+     */
+    private static boolean hasModeDefinitionRow(String document, String mode) {
+        String row = modeDefinitionRow(mode);
+        return document.lines().map(String::strip).anyMatch(row::equals);
     }
 
     /**
@@ -373,14 +409,23 @@ class DocumentedSetsContractTest {
     }
 
     /**
-     * The repository root — surefire's working directory is the module, and every asserted document
-     * lives beside it under {@code doc/}.
+     * The repository root — the nearest ancestor of the working directory that actually holds the
+     * {@code doc/} tree these contracts assert against.
+     * <p>
+     * The search walks up rather than taking a fixed one-level hop because the working directory is
+     * not the same everywhere: surefire runs with the module as its working directory, but an IDE
+     * runner or an aggregator invocation may use another. Probing for {@code doc/} resolves the root
+     * from a property of the tree instead of from an assumption about the runner, and a genuinely
+     * unresolvable root then fails naming the directory it started from rather than surfacing later
+     * as a {@code NoSuchFileException} on a path nobody asked for.
      */
     private static Path repoRoot() {
-        Path parent = MODULE.getParent();
-        if (parent == null) {
-            return fail("cannot resolve the repository root from the module directory " + MODULE);
+        for (Path candidate = MODULE; candidate != null; candidate = candidate.getParent()) {
+            if (Files.isDirectory(candidate.resolve("doc"))) {
+                return candidate;
+            }
         }
-        return parent;
+        return fail("cannot resolve the repository root from the working directory " + MODULE
+                + ": no ancestor of it contains a doc/ directory");
     }
 }
