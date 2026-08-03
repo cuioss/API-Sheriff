@@ -25,7 +25,6 @@
       .arrow-fill   { fill: #6e7681; }
       .arrow-lbl    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
       .activation   { stroke: #6e7681; stroke-width: 0.8; fill: #6e7681; opacity: 0.15; }
-      .note         { font-size: 11px; fill: #6e7681; text-anchor: start; font-style: italic; }
       .caption      { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
     </style>
   </defs>
