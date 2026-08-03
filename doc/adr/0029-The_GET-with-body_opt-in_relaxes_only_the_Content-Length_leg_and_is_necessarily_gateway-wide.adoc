@@ -1,0 +1,189 @@
+= ADR-0029: The GET-with-body opt-in relaxes only the Content-Length leg and is necessarily gateway-wide
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The opt-in admitting a body on GET relaxes exactly one rejection leg — a positive declared Content-Length on GET — while Transfer-Encoding on a bodyless method, any body on HEAD, the CL+TE rule and the framing-header-strip rule stay unconditional; it is gateway-wide because the framing gate runs before route selection, and the gate re-asserts the Content-Length-framed bound itself rather than inheriting it from its caller
+// tags: security, request-smuggling, framing, http-desync, inbound-validation, pre-route, configuration-surface, partial-relaxation, secure-default, blast-radius
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The gateway re-asserts HTTP framing integrity at the edge, ahead of route selection, because framing
+is what decides where one request ends and the next begins. A gateway that disagrees with its
+upstream about that boundary is the precondition for request smuggling, so the framing gate rejects
+several independently sufficient shapes: `Content-Length` together with `Transfer-Encoding`, a body
+on a method defined as bodyless, and a `Connection` token naming a framing or trust header.
+
+The rejection of a body on a bodyless method is the one of these that meets legitimate traffic.
+`GET` is defined as bodyless, but a body on `GET` is not universally meaningless: some upstream APIs
+deliberately accept one, the search API that takes a structured query document being the widely
+deployed case. A deployment fronting such an upstream finds that a request its backend understands
+perfectly is rejected at the gateway, and the only workarounds available to it are worse than the
+problem — rewriting the client to a different method, or disabling the framing defences wholesale.
+
+The structural choice point is what the escape hatch for that traffic looks like, and the framing
+gate makes the choice unusually consequential in two ways.
+
+First, the rejection is *not one condition*. A body on a bodyless method is rejected on three
+independently sufficient signals: an observed body, a positive declared `Content-Length`, and the
+presence of `Transfer-Encoding`. Written as a single disjunction they are indistinguishable, and the
+obvious shape for an opt-in is to gate the whole disjunction. But the three signals do not carry the
+same risk. Chunked framing on a method defined as bodyless is precisely the shape the desync
+defences exist to constrain — it is the primitive that makes a front-end and a back-end disagree
+about message boundaries. A declared, positive `Content-Length` is not: it is an unambiguous,
+self-describing framing that both ends parse identically. An opt-in that gates the disjunction
+therefore buys a use case that needs one signal by admitting a different signal that the use case
+never sends.
+
+Second, the gate runs *before route selection*. That position is deliberate — framing must be settled
+before the request is parsed far enough to choose a route — and it means there is no route resolved
+at the moment the decision is taken. Any knob at this stage is gateway-wide whether or not its
+configuration surface admits it. A per-route spelling here would be a surface that cannot be
+honoured, which is worse than a gateway-wide surface that says so.
+
+The question this record settles is how narrow a security relaxation must be cut when the rejection
+it relaxes is a disjunction over signals of unequal risk, and where such a relaxation may be scoped.
+
+== Decision
+
+*The opt-in admits exactly one thing: a positive declared `Content-Length` on `GET`. Every other leg
+of the framing gate stays unconditional, and the opt-in is gateway-wide because the gate that
+implements it runs before any route exists to scope it to.*
+
+=== The disjunction is split, and only one leg consults the opt-in
+
+The three rejection signals are evaluated as ordered, separate checks rather than one disjunction.
+`Transfer-Encoding` is evaluated first and unconditionally: no configuration relaxes chunked framing
+on a bodyless method. Only the declared-`Content-Length` leg consults the opt-in, and only for `GET`.
+`HEAD` is unaffected on every leg. The residual leg — a body signalled without a positive declared
+`Content-Length` — falls through to the rejection, so the opt-in admits nothing that is not
+`Content-Length`-framed.
+
+The CL+TE coexistence rule and the framing-header-strip rule are separate checks invoked
+independently of this one, so scoping the opt-in to the bodyless-method rejection cannot weaken
+either.
+
+The split is what makes the relaxation's bound structural. As one disjunction, "only the
+`Content-Length` case is relaxed" would be a claim about the caller's inputs; as separate legs, it is
+a property of the gate.
+
+=== The gate re-asserts its own bound rather than inheriting it
+
+The residual leg matters even where the calling stage's construction happens to make it unreachable.
+A gate whose stated bound holds only because of what its caller passes has outsourced its bound, and
+the guarantee then depends on a relationship neither component describes. The gate therefore
+re-checks the body-present signal itself, so its stated bound is true of the gate under any input.
+
+=== The default is off, and the surface is gateway-wide
+
+An omitted key resolves to rejection — the behaviour of a gateway that never declared it — so the
+secure posture requires no configuration and cannot be reached by accident. The key sits in the
+gateway-wide defaults block and is documented as gateway-wide, because the stage it governs precedes
+route selection. This is the same shape as the other pre-route relaxation the gateway carries: a
+knob at a pre-route stage is honest about its blast radius or it lies about it.
+
+== Consequences
+
+=== Positive
+
+* The desync primitive the framing defences exist to constrain remains unreachable by configuration:
+  there is no gateway setting under which chunked framing on a bodyless method is admitted.
+* The motivating traffic is served exactly, at zero cost to the constraint — a client sending a
+  structured query document on `GET` sends it `Content-Length`-framed.
+* The relaxation's stated blast radius is its enforced blast radius, because each admitted and each
+  refused shape is a separate branch rather than a claim about a disjunction.
+* A deployment that does not need the capability is unaffected without acting, and a deployment that
+  enables it is told in the configuration surface that it did so gateway-wide.
+
+=== Negative
+
+* The knob is coarser than an operator would prefer: a deployment needing body-on-`GET` for one
+  upstream enables it for every route the gateway serves. That is a genuine widening, and it is
+  irreducible at this stage.
+* A single conceptual rule is now several branches, which is more code and more tests than the
+  disjunction it replaces, for a rejection surface where uniformity was previously easy to verify at
+  a glance.
+* An operator reading "allow GET with body" reasonably expects all bodies on `GET` to be admitted. The
+  key's actual boundary must be carried in its name and in every document describing it, or the
+  surface misleads.
+
+=== Risks
+
+* *Re-collapsing the legs.* The split reads as redundancy — three branches producing the same
+  rejection, one of them apparently unreachable. A later simplification that merges them back into a
+  disjunction gated by the opt-in silently restores the chunked admission, and it does so as a
+  tidy-up with no behavioural intent.
+* *Scope creep by symmetry.* `HEAD` is excluded deliberately and will read as an oversight, because
+  it is the other bodyless method and the change to include it is one token. There is no use case
+  requiring it, and admitting it widens the surface for nothing.
+* *Drift between the boundary and its description.* The boundary lives in one gate; its description
+  lives in the schema, the operator guide and the configuration reference. A narrowing applied to the
+  gate alone leaves documents promising a wider relaxation than the gateway performs — and the wider
+  promise is the one an operator plans against.
+
+== Alternatives Considered
+
+*Gate the whole disjunction with one opt-in.* The straightforward reading of "allow a body on `GET`",
+needing no split and no per-leg reasoning. Rejected because it pays for the use case in a currency
+the use case never asked for: admitting `Transfer-Encoding` on a bodyless method is admitting the
+desync primitive itself, while the traffic being served sends a declared `Content-Length`. The
+relaxation would be strictly larger than the problem with no corresponding benefit, which is the
+defining shape of an over-broad security exception.
+
+*Make the opt-in per-route.* The natural scoping: only the route fronting the upstream that needs it
+would relax, and every other route keeps the strict posture. Rejected because it cannot be honoured
+where the check lives. The framing gate runs before route selection, so at the moment the decision is
+taken there is no route to consult. Implementing it would mean either deferring framing validation
+until after routing — routing on input whose message boundaries are not yet settled, a strictly worse
+exposure — or offering a per-route key that silently behaves gateway-wide, which is a surface that
+lies about its blast radius.
+
+*Leave the rejection unconditional and require clients to use a different method.* The strictest
+option, keeping the gate free of configuration entirely. Rejected because it makes the gateway
+unusable in front of a class of upstream it otherwise serves correctly, and the workaround it forces
+is not neutral: rewriting a query-bearing `GET` as `POST` discards idempotency and cacheability, and
+the deployment that cannot rewrite its clients is pushed toward disabling protections far broader
+than this one.
+
+*Detect the shape and admit it implicitly, with no configuration.* If a `Content-Length`-framed body
+on `GET` is acceptable when an operator asks for it, the gate could simply accept it. Rejected
+because it changes the default posture for every deployment to serve the needs of a few, and it
+removes the operator's declaration of intent — which is the artefact that makes the widened surface
+reviewable. A security relaxation that nobody had to ask for is one nobody knows they have.
+
+The rejected options fall into two kinds. One kind widens the relaxation beyond the need — across
+framing shapes, or across every deployment by default. The other kind refuses the relaxation outright
+and pushes the deployment toward a broader workaround it will find on its own. The chosen position
+cuts the exception to the exact shape of the traffic, declares the scope the stage actually enforces,
+and leaves the default where an unconfigured gateway had it.
+
+== Generalisation
+
+When a rejection is a disjunction over several signals, an exception granted against it is granted
+against *all* of them unless the disjunction is split. The diagnostic question before relaxing such a
+rejection is: *which of these signals does the motivating case actually produce, and what does
+admitting each of the others cost?* Signals that share a rejection rarely share a risk profile, and
+the ones the use case never sends are exactly the ones an over-broad exception admits for free. The
+second question is where the check runs relative to the context the exception wants to be scoped to:
+a knob cannot be scoped to information the stage does not yet have, and a surface implying otherwise
+is worse than one that states its true reach.
+
+== References
+
+* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the general obligation this relaxation's self-re-assertion satisfies; the gate states its own bound rather than inheriting it from its caller.
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the header-value relaxations] -- the prior pre-route relaxation whose gateway-wide scope has the same structural cause.
+* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- the partial-disable shape this record applies to a second surface, and the stage map that places the framing gate ahead of route selection.
+* link:../architecture.adoc[Architecture] -- the inbound pipeline's stages and the framing gate's position relative to route selection.
+* link:../configuration.adoc[Configuration Reference] -- the `security_defaults.allow_get_with_content_length_body` key contract and its exact boundary.
+* link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class the framing gate closes.
