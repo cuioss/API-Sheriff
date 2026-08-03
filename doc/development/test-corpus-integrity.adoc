@@ -615,6 +615,42 @@ Count: *8 mandatory + 10 discretionary = 18 strengthened*, against a cap of 20 (
 discretionary budget was not filled to twelve because the pool yielded ten `strengthen` verdicts;
 the remaining flagged methods there earned `keep` on the matched-control test.
 
+=== The inversion audit
+
+A strengthened assertion is only worth the diff if it *fails* when the behaviour it claims is broken.
+Three transient production mutations were applied together, the affected suites were run, and the
+mutations were reverted. Each mutation targets a different strengthening technique, so the audit
+covers the argument for all three rather than only one instance of it:
+
+[cols="2,2,3",options="header"]
+|===
+| Transient mutation | Expected to break | Observed
+
+| `PassthroughHostGuardStage.normalize` strips *any* `:suffix` rather than only a purely-numeric port
+| the three colon rows of `passesBenignHostToRouteSelection`
+| rows [3], [4], [5] failed with `PASSTHROUGH_HOST_SMUGGLED`; rows [1], [2], `passesNullHost` and
+  every attribution-control row correctly stayed green
+
+| `TlsEdgeProducer.onStartup` returns before creating the front listener
+| `startsAndStopsFrontListener`
+| failed: `a resolvable passthrough SNI starts the front listener on the public port ==> expected:
+  <true> but was: <false>`
+
+| `TokenValidatorProducer.toValidationIssuer` drops the `audienceValidationDisabled(true)` opt-out
+| `audienceLessIssuerDisablesAudienceValidation`
+| failed: `expectedAudience must be non-empty for issuer 'Token-Test-testIssuer'` -- the exact
+  library refusal the opt-out branch exists to prevent
+|===
+
+Each mutation is invisible to the *pre-change* form of the same test: the six `assertDoesNotThrow`
+bodies, the three `TlsEdgeProducerTest` no-throw bodies and the two `assertNotNull(validator)` bodies
+all stay green under all three mutations. That contrast is the whole point of the sweep.
+
+The audit was run *after* the deliverable was committed rather than before, deliberately: with the
+strengthened files already in `HEAD`, reverting the transient mutations is a `git checkout` against
+committed content rather than a destructive discard of uncommitted work. The mutations touched only
+production files, which this deliverable does not modify, so the revert restored them exactly.
+
 === Post-change re-census (both annotations)
 
 Run under the same complete coverage as the baseline (300 files scanned, 0 unreadable, no elision,
