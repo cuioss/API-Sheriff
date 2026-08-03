@@ -91,7 +91,7 @@ class GetWithBodyIT extends BaseIntegrationTest {
 
     @Test
     @DisplayName("a Content-Length-framed GET body is admitted and reaches the upstream")
-    void contentLengthFramedGetBodyIsAdmitted() throws IOException, GeneralSecurityException {
+    void contentLengthFramedGetBodyIsAdmitted() throws Exception {
         // Arrange
         String request = contentLengthFramedGet();
 
@@ -112,7 +112,7 @@ class GetWithBodyIT extends BaseIntegrationTest {
 
     @Test
     @DisplayName("Transfer-Encoding on GET is STILL rejected 400 on the same instance")
-    void chunkedGetIsStillRejected() throws IOException, GeneralSecurityException {
+    void chunkedGetIsStillRejected() throws Exception {
         // Arrange — the negative control: no configuration relaxes chunked framing on a bodyless method
         String request = chunkedGet();
 
@@ -194,13 +194,13 @@ class GetWithBodyIT extends BaseIntegrationTest {
      */
     private static Response send(String rawRequest) throws IOException, GeneralSecurityException {
         SSLContext context = SSLContext.getInstance("TLS");
-        context.init(null, new TrustManager[] {relaxedTrustManager()}, new SecureRandom());
+        context.init(null, new TrustManager[]{relaxedTrustManager()}, new SecureRandom());
         try (SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket("localhost", port())) {
             socket.setSoTimeout(SOCKET_TIMEOUT_MILLIS);
             // Pin HTTP/1.1 explicitly: the assertions are about a hand-framed HTTP/1.1 message, and an
             // ALPN-negotiated HTTP/2 connection would carry different framing rules entirely.
             SSLParameters parameters = socket.getSSLParameters();
-            parameters.setApplicationProtocols(new String[] {"http/1.1"});
+            parameters.setApplicationProtocols(new String[]{"http/1.1"});
             socket.setSSLParameters(parameters);
             socket.startHandshake();
 

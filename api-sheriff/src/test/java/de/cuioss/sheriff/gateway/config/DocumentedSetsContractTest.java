@@ -109,7 +109,7 @@ class DocumentedSetsContractTest {
 
     @Test
     @DisplayName("doc/configuration.adoc enumerates exactly the built-in asset extensions, and states their count")
-    void configurationAdocEnumeratesTheBuiltInExtensions() throws IOException {
+    void configurationAdocEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
         String document = read(CONFIGURATION_ADOC);
         int anchor = anchorIndex(document, CONFIG_EXTENSION_ANCHOR, CONFIGURATION_ADOC.toString());
@@ -125,7 +125,7 @@ class DocumentedSetsContractTest {
 
     @Test
     @DisplayName("doc/user/README.adoc enumerates exactly the built-in asset extensions, and states their count")
-    void userReadmeEnumeratesTheBuiltInExtensions() throws IOException {
+    void userReadmeEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
         String document = read(USER_README_ADOC);
         int anchor = anchorIndex(document, README_EXTENSION_ANCHOR, USER_README_ADOC.toString());
@@ -147,7 +147,7 @@ class DocumentedSetsContractTest {
 
     @Test
     @DisplayName("the bundled gateway schema enumerates exactly the built-in asset extensions")
-    void gatewaySchemaEnumeratesTheBuiltInExtensions() throws IOException {
+    void gatewaySchemaEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
         String schema = readSchema();
         int anchor = anchorIndex(schema, SCHEMA_EXTENSION_ANCHOR, SCHEMA_RESOURCE);
@@ -172,7 +172,7 @@ class DocumentedSetsContractTest {
 
     @Test
     @DisplayName("doc/configuration.adoc's mode enumeration equals the SecurityProfile value set")
-    void configurationAdocEnumeratesTheSecurityProfileModes() throws IOException {
+    void configurationAdocEnumeratesTheSecurityProfileModes() throws Exception {
         // Arrange
         String document = read(CONFIGURATION_ADOC);
         String modeComment = profileModeComment(document);
@@ -198,7 +198,7 @@ class DocumentedSetsContractTest {
 
     @Test
     @DisplayName("doc/configuration.adoc mentions every SecurityProfile mode in its narrative sections")
-    void configurationAdocMentionsEverySecurityProfileMode() throws IOException {
+    void configurationAdocMentionsEverySecurityProfileMode() throws Exception {
         // Arrange — the per-mode narrative is prose, not a list, so containment is the right bar
         String document = read(CONFIGURATION_ADOC);
 
@@ -360,7 +360,7 @@ class DocumentedSetsContractTest {
     }
 
     private static String read(Path document) throws IOException {
-        return Files.readString(document, StandardCharsets.UTF_8);
+        return Files.readString(document);
     }
 
     private static String readSchema() throws IOException {
