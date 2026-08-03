@@ -6,7 +6,5 @@
 # it appears, instead of the first time someone remembers to add it here.
 *.crt
 *.key
+# Covers the script's own intermediate keystore too, including a run interrupted before cleanup.
 *.p12
-
-# The script's own intermediate keystore, in case a run is interrupted before it is cleaned up.
-temp-keystore.p12

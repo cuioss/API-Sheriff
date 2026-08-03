@@ -99,8 +99,6 @@ sys.stdout.write("\n".join(rows) + "\n")
 fi
 
 while read -r SERVICE SCHEME PORT; do
-    [[ -z "$SERVICE" ]] && continue
-
     # -f is load-bearing: the readiness endpoint answers 503 while the gateway is still starting, and
     # WITHOUT -f curl exits 0 on that 503 -- so the wait would clear the moment the port ACCEPTED a
     # connection rather than when the gateway was ready, reintroducing the very race this gate removes.

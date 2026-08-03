@@ -18,8 +18,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CERT_DIR="${SCRIPT_DIR}"
+CERT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # CN=localhost so a browser on the host addresses the gateway as https://localhost:8443. The SAN list
 # is what actually matters to a modern client, and it carries BOTH the host-facing name and the two
