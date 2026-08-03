@@ -99,11 +99,14 @@
                                     <skip>${skipComposeSample}</skip>
                                     <executable>./compose-sample/scripts/stop-sample.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
-                                    <!-- Nothing running is the normal case, not a failure. -->
-                                    <successCodes>
-                                        <successCode>0</successCode>
-                                        <successCode>1</successCode>
-                                    </successCodes>
+                                    <!-- No <successCodes> override. "Nothing running" already exits
+                                         0: `docker compose down` is idempotent on an empty project,
+                                         and stop-sample.sh returns 0 explicitly for a host with no
+                                         Compose and for a stopped daemon. So the only thing exit 1
+                                         can mean here is a teardown that genuinely failed, and
+                                         accepting it would let a leaked stack pass silently — the
+                                         exact port-conflict-looking-like-a-defect this execution
+                                         exists to prevent. -->
                                 </configuration>
                             </execution>
                             <!-- The gate itself. start-sample.sh preflights the image, brings the
@@ -140,10 +143,10 @@
                                     <skip>${skipComposeSample}</skip>
                                     <executable>./compose-sample/scripts/stop-sample.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
-                                    <successCodes>
-                                        <successCode>0</successCode>
-                                        <successCode>1</successCode>
-                                    </successCodes>
+                                    <!-- No <successCodes> override, for the same reason as the
+                                         pre-clean execution above: exit 1 here can only be a real
+                                         teardown failure, and swallowing it would report a green
+                                         build over containers and volumes that were left running. -->
                                 </configuration>
                             </execution>
                         </executions>

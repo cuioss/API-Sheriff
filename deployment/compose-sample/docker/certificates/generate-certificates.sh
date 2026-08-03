@@ -31,6 +31,13 @@ CERT_VALIDITY=365
 TEMP_KEYSTORE="${CERT_DIR}/temp-keystore.p12"
 TEMP_PASSWORD="temp-$(date +%s)"
 
+# Remove the intermediate keystore on EVERY exit path, not just the success one. Under `set -e` a
+# failing keytool or openssl aborts the script before the explicit cleanup at the end, which would
+# otherwise strand a PKCS#12 file holding the private key in a directory an operator is told to
+# treat as generated-and-disposable. The trap is armed here, immediately after the path is defined,
+# so no failure between this line and the cleanup can escape it.
+trap 'rm -f "${TEMP_KEYSTORE}"' EXIT
+
 echo "Generating SAMPLE self-signed TLS material for the API Sheriff compose sample..."
 echo "  Directory: ${CERT_DIR}"
 
@@ -87,7 +94,8 @@ openssl pkcs12 -in "${TEMP_KEYSTORE}" \
 chmod 644 "${CERT_DIR}/localhost.crt"
 chmod 644 "${CERT_DIR}/localhost.key"
 
-rm -f "${TEMP_KEYSTORE}"
+# No explicit keystore removal here — the EXIT trap armed above owns that, on this path and on every
+# failure path alike. A second copy would only be a second thing to keep in step.
 
 echo ""
 echo "Done. Generated (both git-ignored):"
