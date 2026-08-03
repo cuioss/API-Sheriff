@@ -79,8 +79,9 @@ This tree is seeded here and grows as contributor-facing material lands.
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
 | Which declared gateway limit has a boundary assertion and which does not -- the twelve-file
   descriptor surface, the strict preset's resolved caps that appear in no yaml, one row per limit
-  naming its enforcing component and its asserting test, the standing gap remainder, and the
-  report-only finding that the body-cap wiring guard's glob never reaches the `endpoints/` tree.
+  naming its enforcing component and its asserting test, the standing gap remainder, and the two
+  report-only findings -- that the body-cap wiring guard's glob never reaches the `endpoints/` tree,
+  and that the inventory guard partitions files rather than keys.
 
 | link:../../demo-client/doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite]
 | The `demo-client` module -- why the demo SPA is served by the gateway rather than a side-car

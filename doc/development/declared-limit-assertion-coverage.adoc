@@ -409,6 +409,33 @@ The same reasoning is why the bearer-protected `security_filter` route added by 
 `allowed_paths` rather than `max_body_bytes` -- adding a body cap in the endpoints tree would
 enlarge exactly the hole this note has chosen to report.
 
+== Report-Only Finding: the inventory guard partitions files, not keys
+
+`DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
+paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the nine
+paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file *boolean*
+predicate ("does this file declare at least one limit-shaped key"), not a key enumeration, so the
+assertion's granularity is the file and never the key.
+
+The consequence: adding a limit-shaped key to one of the *nine already limit-bearing* files leaves
+the computed set identical to the parsed one. The build stays green and no Coverage Matrix row is
+forced. Only a key that makes one of the remaining three --
+`sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml` or
+`sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
+Nine of twelve is the *majority* of the surface, so this is the ordinary case rather than an edge
+one: for those nine files the "add its row here in the same change" instruction that closes this
+note rests on contributor convention, not on the guard.
+
+This is *reported, not fixed*, for the same reason as the finding above. Closing it means deriving
+the Coverage Matrix's own *qualified* keys and comparing them exactly against the descriptors --
+again a change to a guard whose blast radius reaches every committed descriptor, and one carrying
+real subtlety: YAML anchors resolve a single key literal to several qualified paths, this matrix's
+key column is deliberately non-uniform (qualified-with-value, qualified-bare, bare key, two keys in
+one row), and the Layer 2 rows document caps that appear in *no* yaml at all and could never be
+derived. Key-level enforcement therefore belongs in its own plan with its own verification rather
+than riding a coverage sweep. It is recorded here so the hole is a known, countable item rather than
+a latent surprise.
+
 == Keeping This Note Honest
 
 This table is prose, and prose drifts the moment a descriptor changes. Three properties limit that:
@@ -418,9 +445,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
 . *The enumerated surface is stated explicitly* (twelve files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the nine limit-bearing paths -- and uses them as its
-  expected values instead of carrying its own copy, so a new descriptor directory, a new
-  `endpoints/*.yaml` or a new limit-shaped key fails the build until this note is updated. Updating
-  the test alone cannot make the build green: the test has no expectation of its own to update.
+  expected values instead of carrying its own copy. Both of its assertions are *file-level set
+  equalities*, and the guarantee is exactly that: a new descriptor directory or a new
+  `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
+  updated, and a limit-shaped key fails the build *only when it makes a previously
+  non-limit-bearing file limit-bearing* -- when it moves a file across the nine/three partition.
+  Adding one to a file that already declares a limit changes neither set; see the report-only
+  finding above. Updating the test alone cannot make the build green: the test has no expectation of
+  its own to update.
 . *The wiring guards are the machine-enforced half.* `BodyLimitActivationWiringTest` and
   `EgressAllowlistActivationWiringTest` both assert a `COMMITTED_DESCRIPTOR_COUNT` floor, so a
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
