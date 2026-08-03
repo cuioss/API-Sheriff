@@ -81,37 +81,84 @@ public final class ClientHelloSniParser {
         ByteArrayOutputStream handshake = new ByteArrayOutputStream();
         int pos = 0;
         while (true) {
-            if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-                return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
-            }
-            if ((bytes[pos] & UINT8_MASK) != RECORD_TYPE_HANDSHAKE) {
-                // Not a TLS handshake record — fail closed to the terminated-strict path.
-                return Result.parsed(null);
+            Result headerVerdict = recordHeaderVerdict(bytes, pos);
+            if (headerVerdict != null) {
+                return headerVerdict;
             }
             int recordLength = uint16(bytes, pos + 3);
             int recordEnd = pos + RECORD_HEADER_LENGTH + recordLength;
-            if (recordEnd > MAX_CLIENT_HELLO_BYTES) {
-                return Result.parsed(null);
-            }
-            if (bytes.length < recordEnd) {
-                return Result.needMoreData();
+            Result bodyVerdict = recordBodyVerdict(bytes, recordEnd);
+            if (bodyVerdict != null) {
+                return bodyVerdict;
             }
             handshake.write(bytes, pos + RECORD_HEADER_LENGTH, recordLength);
             pos = recordEnd;
 
-            byte[] handshakeBytes = handshake.toByteArray();
-            HandshakeSpan span = completeHandshake(handshakeBytes);
-            if (span == HandshakeSpan.MALFORMED) {
-                return Result.parsed(null);
+            Result reassembledVerdict = reassembledVerdict(handshake.toByteArray());
+            if (reassembledVerdict != null) {
+                return reassembledVerdict;
             }
-            if (span == HandshakeSpan.COMPLETE) {
-                return Result.parsed(extractServerName(handshakeBytes));
-            }
-            // span == INCOMPLETE: keep reading records if any remain, else ask for more bytes.
-            if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-                return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
-            }
+            // The handshake is still incomplete: loop back and consume the next record. The
+            // "is another record header even present?" question is the loop head's own first check,
+            // so it is asked there rather than repeated here.
         }
+    }
+
+    /**
+     * The terminal verdict, if any, implied by the record header at {@code pos}: too few bytes for a
+     * header (keep buffering, or fail closed once the bound is passed), or a record that is not a TLS
+     * handshake at all.
+     *
+     * @param bytes the accumulated connection bytes
+     * @param pos   the offset of the record header being examined
+     * @return the verdict to return from {@code parse}, or {@code null} to consume this record
+     */
+    private static @Nullable Result recordHeaderVerdict(byte[] bytes, int pos) {
+        if (bytes.length - pos < RECORD_HEADER_LENGTH) {
+            return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
+        }
+        if ((bytes[pos] & UINT8_MASK) != RECORD_TYPE_HANDSHAKE) {
+            // Not a TLS handshake record — fail closed to the terminated-strict path.
+            return Result.parsed(null);
+        }
+        return null;
+    }
+
+    /**
+     * The terminal verdict, if any, implied by the declared record body: a record running past the
+     * size bound fails closed, and a body that has not fully arrived means keep buffering.
+     *
+     * @param bytes     the accumulated connection bytes
+     * @param recordEnd the offset one past the declared end of this record
+     * @return the verdict to return from {@code parse}, or {@code null} to consume this record
+     */
+    private static @Nullable Result recordBodyVerdict(byte[] bytes, int recordEnd) {
+        if (recordEnd > MAX_CLIENT_HELLO_BYTES) {
+            return Result.parsed(null);
+        }
+        if (bytes.length < recordEnd) {
+            return Result.needMoreData();
+        }
+        return null;
+    }
+
+    /**
+     * The terminal verdict, if any, implied by the handshake bytes reassembled so far: a wrong
+     * handshake type or an over-bound body fails closed, a complete {@code client_hello} yields the
+     * extracted SNI.
+     *
+     * @param handshakeBytes the handshake bytes reassembled across the records consumed so far
+     * @return the verdict to return from {@code parse}, or {@code null} while the body is incomplete
+     */
+    private static @Nullable Result reassembledVerdict(byte[] handshakeBytes) {
+        HandshakeSpan span = completeHandshake(handshakeBytes);
+        if (span == HandshakeSpan.MALFORMED) {
+            return Result.parsed(null);
+        }
+        if (span == HandshakeSpan.COMPLETE) {
+            return Result.parsed(extractServerName(handshakeBytes));
+        }
+        return null;
     }
 
     private static boolean overBound(int pos) {
@@ -168,7 +215,7 @@ public final class ClientHelloSniParser {
                 cursor.seek(next);
             }
             return null;
-        } catch (MalformedHelloException e) {
+        } catch (MalformedHelloException _) {
             return null;
         }
     }

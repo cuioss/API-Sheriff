@@ -94,7 +94,7 @@ class TokenValidatorProducerTest {
 
         @Test
         @DisplayName("a declared audience reaches the validator and refuses a token that does not carry it")
-        void declaredAudienceIsEnforced() throws IOException {
+        void declaredAudienceIsEnforced() throws Exception {
             // Arrange — the declared audience is deliberately not one the generated token carries
             TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
             TokenValidator declaringForeignAudience = fileIssuerValidator(holder, "an-audience-the-token-lacks");
@@ -117,7 +117,7 @@ class TokenValidatorProducerTest {
 
         @Test
         @DisplayName("an issuer configuring no audience disables audience validation rather than refusing the token")
-        void audienceLessIssuerDisablesAudienceValidation() throws IOException {
+        void audienceLessIssuerDisablesAudienceValidation() throws Exception {
             // Arrange — the same token and key material, this time with no audience declared at all
             TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
             TokenValidator validator = fileIssuerValidator(holder, null);

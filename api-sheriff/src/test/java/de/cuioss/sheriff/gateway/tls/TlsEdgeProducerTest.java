@@ -77,7 +77,7 @@ class TlsEdgeProducerTest {
 
         @Test
         @DisplayName("starts the front listener and shuts it down cleanly when a passthrough SNI resolves")
-        void startsAndStopsFrontListener() throws IOException {
+        void startsAndStopsFrontListener() throws Exception {
             // Arrange — one SNI maps to a resolvable alias, one to an alias absent from the topology.
             // The resolvable entry makes the relay map non-empty (front started); the unresolved entry
             // exercises the defensive skip branch. A concrete free port is used rather than the
@@ -119,7 +119,7 @@ class TlsEdgeProducerTest {
 
         @Test
         @DisplayName("never starts the front listener when passthrough_sni is empty")
-        void noFrontListenerWhenPassthroughEmpty() throws IOException {
+        void noFrontListenerWhenPassthroughEmpty() throws Exception {
             // Arrange — no tls block at all, so the relay map is empty.
             int port = freePort();
             GatewayConfig config = GatewayConfig.builder().version(1).build();
@@ -144,7 +144,7 @@ class TlsEdgeProducerTest {
 
         @Test
         @DisplayName("skips a passthrough SNI whose alias does not resolve, leaving the map empty")
-        void skipsUnresolvedAlias() throws IOException {
+        void skipsUnresolvedAlias() throws Exception {
             // Arrange — the only passthrough SNI maps to an alias absent from the resolved topology, so
             // the defensive skip leaves the relay map empty and no front listener is started. This
             // differs from noFrontListenerWhenPassthroughEmpty in the arrange that matters: a
