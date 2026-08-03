@@ -1,4 +1,4 @@
-= ADR-0029: Host-side readiness gates derive the probe URL from the resolved Compose model and assert readiness
+= ADR-0031: Host-side readiness gates derive the probe URL from the resolved Compose model and assert readiness
 :toc: left
 :toclevels: 2
 :sectnums:

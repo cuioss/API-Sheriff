@@ -1,4 +1,4 @@
-= ADR-0028: Comment-only invariants become positively-phrased fitness functions shipped with a four-leg control set
+= ADR-0030: Comment-only invariants become positively-phrased fitness functions shipped with a four-leg control set
 :toc: left
 :toclevels: 2
 :sectnums:
