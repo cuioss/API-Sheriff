@@ -277,8 +277,9 @@ declaration's *existence* is proven while its *boundary* is not.
   envelope (not the framework's bare 413), one byte under is forwarded and echoed
 
 | *G5* `forward.headers_allow` / `query_allow` deny-by-default
-  `endpoints/httpbin.yaml:32-33,60-63,80,92,102` (5 routes);
-  `endpoints/bff-session.yaml:25` (1 route); `endpoints/grpc.yaml:48-50,67-69` (2 routes)
+  `sheriff-config/endpoints/httpbin.yaml:32-33,60-63,80,92,102` (5 routes);
+  `sheriff-config/endpoints/bff-session.yaml:25` (1 route);
+  `sheriff-config/endpoints/grpc.yaml:48-50,67-69` (2 routes)
 | Forward stage 5 (deny-by-default allow-listing)
 | COVERED
 | `DeclaredLimitBoundaryIT` -- one request carrying both an allow-listed and a non-allow-listed
@@ -458,8 +459,14 @@ a latent surprise.
 
 This table is prose, and prose drifts the moment a descriptor changes. Three properties limit that:
 
-. *Every row carries a `file:line` citation*, so a reviewer can check a row against the descriptor
-  in one step rather than re-deriving the surface.
+. *Every Layer 1 row carries a `file:line` citation*, so a reviewer can check a row against the
+  descriptor in one step rather than re-deriving the surface. The rule binds only to rows that have
+  a descriptor location. The five Layer 2 rows -- one per resolved cap enumerated in "The Two
+  Declaration Layers" -- carry the marker "Layer 2 -- resolved, in no yaml" in that slot instead,
+  because there is no descriptor line to cite. That marker is a claim rather than an excuse: it
+  asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
+  one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
+  is the drift this property exists to catch.
 . *The enumerated surface is stated explicitly* (twelve files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the nine limit-bearing paths -- and uses them as its
