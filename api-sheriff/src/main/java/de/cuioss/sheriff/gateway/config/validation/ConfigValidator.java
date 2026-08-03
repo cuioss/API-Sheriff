@@ -142,8 +142,18 @@ public final class ConfigValidator {
      * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
      * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
      * other control character.
+     * <p>
+     * The quantifier is <em>possessive</em> ({@code ++}), not greedy. Every delimiter the surrounding
+     * {@link #MEDIA_TYPE} pattern places between tokens — {@code /}, {@code ;}, {@code =}, space and
+     * tab — is outside this character class, so a token run can never productively give a character
+     * back; forbidding the give-back is therefore behaviour-neutral and removes the backtracking
+     * bookkeeping the engine would otherwise carry.
      */
-    private static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]+";
+    // java:S6418 — the RFC 9110 `token` character class MEDIA_TYPE is built from, not a credential.
+    // The rule is a name heuristic and fires only on the TOKEN substring in the constant's name;
+    // TOKEN is the correct RFC term here, so the name stays and the finding is suppressed instead.
+    @SuppressWarnings("java:S6418")
+    private static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]++";
 
     /**
      * A well-formed {@code type/subtype} media type with optional {@code ;name=value} parameters,
@@ -153,10 +163,18 @@ public final class ConfigValidator {
      * gate exists to refuse. Parameter values are tokens only; a quoted-string parameter has no
      * place in a static asset's {@code Content-Type} and admitting one would widen the character set
      * this bound narrows.
+     * <p>
+     * Every quantifier here is <em>possessive</em>, the parameter-list repetition included. A greedy
+     * {@code (?:…)*} whose body itself carries quantified runs makes the engine recurse once per
+     * iteration and retain a backtracking position for each, so a long enough input exhausts the
+     * stack ({@code StackOverflowError}) instead of simply failing to match. Possessive quantifiers
+     * turn the repetition into a flat, allocation-free scan. The change is behaviour-neutral for the
+     * same reason it is on {@link #MEDIA_TYPE_TOKEN}: the delimiters are disjoint from the token
+     * character class, so no backtrack into an already-matched run can ever succeed.
      */
     private static final Pattern MEDIA_TYPE = Pattern.compile(
             MEDIA_TYPE_TOKEN + "/" + MEDIA_TYPE_TOKEN
-                    + "(?:[ \\t]*;[ \\t]*" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*");
+                    + "(?:[ \\t]*+;[ \\t]*+" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*+");
 
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;

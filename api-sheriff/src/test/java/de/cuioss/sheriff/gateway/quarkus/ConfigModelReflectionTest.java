@@ -29,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.TreeSet;
 
+
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 
@@ -167,6 +168,6 @@ class ConfigModelReflectionTest {
     }
 
     private static boolean isModelType(Class<?> type) {
-        return type.getPackageName().equals(MODEL_PACKAGE);
+        return MODEL_PACKAGE.equals(type.getPackageName());
     }
 }

@@ -2157,6 +2157,54 @@ class ConfigValidatorTest {
         }
 
         @Test
+        @DisplayName("Should accept a media type carrying several parameters")
+        void shouldAcceptSeveralParameters() {
+            String value = "multipart/form-data; boundary=abc123; charset=utf-8";
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertTrue(valueErrors(errors).isEmpty(),
+                    () -> "a multi-parameter media type is well-formed, got: " + errors);
+        }
+
+        /**
+         * Guards the possessive quantifiers in {@code ConfigValidator.MEDIA_TYPE}. With the greedy
+         * form this pattern previously carried, the parameter-list repetition made the regex engine
+         * recurse once per iteration and retain a backtracking position for each, so an input with
+         * enough parameters exhausted the stack ({@code StackOverflowError}) instead of matching.
+         * The possessive form scans flat, so the same input is simply accepted.
+         * <p>
+         * The input is deliberately <em>well-formed</em>: the assertion is that a long value is
+         * decided normally, and any stack exhaustion surfaces as a thrown error failing this test
+         * rather than as a boot-time crash on an operator's config.
+         */
+        @Test
+        @DisplayName("Should decide a value carrying very many parameters without exhausting the stack")
+        void shouldNotRecurseOnLongParameterList() {
+            String value = "text/plain" + "; a=b".repeat(50_000);
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertTrue(valueErrors(errors).isEmpty(),
+                    () -> "a long but well-formed parameter list is accepted, got: " + errors.size() + " error(s)");
+        }
+
+        /**
+         * The malformed counterpart: a long parameter list terminated by a character outside the
+         * token set must be refused, again without the engine recursing per parameter.
+         */
+        @Test
+        @DisplayName("Should refuse a long malformed value without exhausting the stack")
+        void shouldRefuseLongMalformedValueWithoutRecursing() {
+            String value = "text/plain" + "; a=b".repeat(50_000) + "\r\nX-Injected: 1";
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertEquals(1, valueErrors(errors).size(),
+                    () -> "a long CR/LF-bearing value is refused, got: " + errors.size() + " error(s)");
+        }
+
+        @Test
         @DisplayName("Should collect every offending value in one pass rather than failing on the first")
         void shouldCollectEveryOffendingValue() {
             Map<String, String> contentTypes = new LinkedHashMap<>();
