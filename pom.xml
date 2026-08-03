@@ -29,6 +29,9 @@
              standard reactor build walks through it without downloading Node or starting a container.
              Placed last so the existing module ordering is untouched. -->
         <module>demo-client</module>
+        <!-- Production-shaped docker-compose sample. Carries no Java and contributes nothing to the
+             default lane: every inherited Java plugin is switched off, so this leg builds no artifact. -->
+        <module>deployment</module>
     </modules>
     <scm>
         <url>https://github.com/cuioss/api-sheriff/</url>
