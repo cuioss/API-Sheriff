@@ -26,26 +26,41 @@ toolchain into `target/` and installs the Chromium build Playwright drives.
 == Running It
 
 One command does everything -- toolchain install, lint, browser install, three-container bring-up,
-both Playwright projects, teardown:
+both Playwright projects, and teardown on a successful run:
 
 [source,bash]
 ----
 ./mvnw verify -Pe2e-demo -pl demo-client
 ----
 
-When iterating on specs, hold the stack up and re-run only the tests:
+A *failing* suite deliberately leaves the containers up: the npm goal aborts the build before Maven
+reaches its teardown phase, so the stack you need for diagnosis is still there. Stop it with
+`demo-client/scripts/stop-dev-environment.sh`, or run any `clean` build -- see
+link:doc/playwright-suite.adoc#_running_the_suite_locally[Running the Suite Locally].
+
+When iterating on specs, hold the stack up and re-run only the tests. `playwright.config.js` takes
+its three addresses from the environment and fails loudly when any is unset; the `e2e-demo` profile
+supplies them from `demo-client/pom.xml`, so a standalone run has to export them itself:
 
 [source,bash]
 ----
 demo-client/scripts/start-dev-environment.sh
+
+# Mirrors the demo.baseUrl.server, demo.baseUrl.cookie and demo.keycloak.url properties in
+# demo-client/pom.xml, which remain the single source of these addresses.
+export PLAYWRIGHT_BASE_URL_SERVER=https://localhost:10443
+export PLAYWRIGHT_BASE_URL_COOKIE=https://localhost:10445
+export KEYCLOAK_HOST_URL=https://localhost:1443
+
 cd demo-client && npm run test
 demo-client/scripts/stop-dev-environment.sh
 ----
 
-`npm run test`, never `npx` -- and nothing npm-touching runs outside `-Pe2e-demo` at all: a default
+`npm run test`, never `npx` -- and no Maven npm execution runs outside `-Pe2e-demo`: a default
 reactor build downloads no Node, runs no npm command, starts no container and produces no artifact.
-Both are load-bearing choices rather than style, and the reasoning is in
-link:doc/playwright-suite.adoc#_the_opt_in_mechanism[The Opt-In Mechanism].
+The direct `npm run test` above is the one npm invocation outside the profile, and it is a deliberate
+developer opt-in rather than part of any build. Both are load-bearing choices rather than style, and
+the reasoning is in link:doc/playwright-suite.adoc#_the_opt_in_mechanism[The Opt-In Mechanism].
 
 Once the stack is up, the application is at `https://localhost:10443/assets/demo/index.html`
 (server-session mode) and `https://localhost:10445/assets/demo/index.html` (cookie mode). Sign in as
