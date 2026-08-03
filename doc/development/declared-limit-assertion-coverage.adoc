@@ -51,6 +51,14 @@ over all twelve files returns hits only in the four `gateway.yaml` documents and
 `endpoints/grpc.yaml` and `endpoints/secure.yaml`. `assets.yaml`, `assets-secure.yaml` and
 `topology.properties` declare none.
 
+*Both claims above are machine-checked*, not merely asserted here in prose.
+`DescriptorInventoryWiringTest` (in `integration-tests/src/test/java/.../gateway/integration/`)
+asserts the twelve-file inventory as an *exact set* -- so an added descriptor fails as loudly as a
+removed one, unlike the *at-least* floor the sibling wiring guards use -- and runs the same key
+sweep over that inventory, asserting the set of limit-declaring files is exactly the nine named
+above. Add a descriptor or a limit-shaped key and that guard fails until this section and the
+matrix below are updated in the same change.
+
 === Citation notation
 
 Paths below are relative to `integration-tests/src/main/docker/`. Because a key declared in all
@@ -206,9 +214,11 @@ declaration's *existence* is proven while its *boundary* is not.
   `gateway.yaml` ×4 -- base:222,245; cookie:97,110; mtls:104,121; ws:102,109
 | token-sheriff SSRF egress guard (GW-05 / BFF-07)
 | WIRED
-| `EgressAllowlistActivationWiringTest` -- every http-sourced issuer declares a non-empty allowlist
-  and every file-sourced issuer declares none. Descriptor-parsing only; no runtime egress refusal is
-  exercised, which is why this is `WIRED` and not `COVERED`.
+| `EgressAllowlistActivationWiringTest` -- every http-sourced issuer's allowlist is *exactly* the
+  host its own `jwks.url` names (no extra host, every entry a `String`), every file-sourced issuer
+  declares none, and every issuer's `jwks.source` is one of the two recognised values so none is
+  silently skipped. Descriptor-parsing only; no runtime egress refusal is exercised, which is why
+  this is `WIRED` and not `COVERED`.
 
 | *G3* Strict preset header-value length cap (1024)
   Layer 2 -- resolved, in no yaml
@@ -277,10 +287,19 @@ declaration's *existence* is proven while its *boundary* is not.
 *Real gap count when this sweep began: 11* -- eight outright `GAP` (G2--G9) plus three `PARTIAL`
 (G1, G10, G11).
 
-The sweep's hard ceiling is five assertions, so *the cap bound at its ceiling*: **G1--G5 are now
-closed** (their rows above name the asserting tests), ranked below by blast radius -- a limit whose
-breach degrades the whole gateway outranks one that degrades a single request. *Six remain*, and
-they are listed as the standing remainder so the class stays countable.
+The sweep's hard ceiling is five assertions, so *the cap bound at its ceiling*: **G1--G5 each
+received one** (their rows above name the asserting test), ranked below by blast radius -- a limit
+whose breach degrades the whole gateway outranks one that degrades a single request.
+
+*They did not all reach the same status.* **G1, G3, G4 and G5 reached `COVERED`** -- each is
+asserted at its boundary with a matched positive control. **G2 reached `WIRED` only**:
+`EgressAllowlistActivationWiringTest` proves the allowlist declaration is present and exactly
+scoped to the host its own `jwks.url` names, but no runtime egress refusal is exercised. By this
+note's own vocabulary that is not `COVERED`, so G2's runtime leg is *still open* and is counted
+below rather than dropped.
+
+*Seven items remain* -- the G2 runtime egress-refusal leg plus G6--G11 -- and they are listed as
+the standing remainder so the class stays countable.
 
 [cols="1,1,1,4"]
 |===
@@ -293,7 +312,8 @@ they are listed as the standing remainder so the class stays countable.
 
 | 2 | G2 | gateway-wide
 | The SSRF egress guard on JWKS fetch (GW-05 / BFF-07). Its loss unguards outbound fetches from a
-  security gateway.
+  security gateway. *Landed `WIRED`, not `COVERED`* -- the descriptor guard fails on drift, the
+  runtime refusal is still unasserted and is carried in the standing remainder.
 
 | 3 | G3 | gateway-wide
 | The resolved header-value floor every route inherits -- and the exact cap G1 carves out of.
@@ -310,9 +330,12 @@ they are listed as the standing remainder so the class stays countable.
 
 === The standing remainder
 
-*G6--G11 are deliberately not authored*, and are recorded so the class stays countable rather
-than forgotten:
+*The G2 runtime leg and G6--G11 are deliberately not authored*, and are recorded so the class stays
+countable rather than forgotten:
 
+* *G2* -- runtime egress-refusal leg: that a JWKS host *outside* `allowed_egress_hosts` is actually
+  refused. The descriptor half is `WIRED` by `EgressAllowlistActivationWiringTest`; proving the
+  refusal needs a rogue-host fixture the sweep's assertion budget could not fund.
 * *G6* -- strict parameter-value length cap (1024)
 * *G7* -- strict path length cap (1024)
 * *G8* -- `tls.alpn`
@@ -359,8 +382,10 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
 
 . *Every row carries a `file:line` citation*, so a reviewer can check a row against the descriptor
   in one step rather than re-deriving the surface.
-. *The enumerated surface is stated explicitly* (twelve files, named), so a new descriptor
-  directory is visibly absent from this note rather than silently uncovered.
+. *The enumerated surface is stated explicitly* (twelve files, named) *and machine-checked*.
+  `DescriptorInventoryWiringTest` asserts that inventory as an exact set and re-runs the
+  limit-shaped key sweep over it, so a new descriptor directory, a new `endpoints/*.yaml` or a new
+  limit-shaped key fails the build rather than leaving this note silently stale.
 . *The wiring guards are the machine-enforced half.* `BodyLimitActivationWiringTest` and
   `EgressAllowlistActivationWiringTest` both assert a `COMMITTED_DESCRIPTOR_COUNT` floor, so a
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
