@@ -203,8 +203,8 @@ class TlsEdgeProducerTest {
         }
     }
 
-    // NOSONAR java:S2925 - Thread.sleep is load-bearing: SniFrontListener.stop() completes on the
-    // Vert.x event loop, so the unbind is a real asynchronous release with no virtual clock to advance.
+    // Thread.sleep is load-bearing: SniFrontListener.stop() completes on the Vert.x event loop, so the
+    // unbind is a real asynchronous release with no virtual clock to advance.
     @SuppressWarnings("java:S2925")
     private static void awaitNotListening(int port, String message) {
         for (int attempt = 0; attempt < 100 && isListening(port); attempt++) {

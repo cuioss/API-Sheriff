@@ -315,38 +315,21 @@ class TokenValidatorProducerTest {
         @Test
         @DisplayName("the allowlist is carried through the full producer path, not only the seam")
         void allowlistSurvivesTheProducerPath() {
-            // Arrange — drive the public producer entry point rather than the helper
-            IssuerConfig.Jwks jwks = IssuerConfig.Jwks.builder()
+            // Arrange — a declared allowlist, and the matched control that differs from it in exactly
+            // one respect: the absence of that declaration
+            IssuerConfig.Jwks declaringAllowlist = IssuerConfig.Jwks.builder()
                     .source("http")
                     .url(JWKS_URL)
                     .allowedEgressHosts(List.of(BLOCKED_HOST))
                     .build();
-            IssuerConfig issuer = IssuerConfig.builder()
-                    .name("benchmark-keycloak")
-                    .issuer(ISSUER)
-                    .jwks(jwks)
-                    .build();
-            TokenValidatorProducer producer = producerFor(issuer);
-
-            // Act — the public entry point assembles the whole issuer graph
-            producer.gatewayTokenValidator();
-            EgressPolicy withAllowlist = producer.toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
-
-            // Arrange the matched control — an otherwise identical issuer declaring no allowlist,
-            // driven through the same public entry point
-            IssuerConfig.Jwks plainJwks = IssuerConfig.Jwks.builder()
+            IssuerConfig.Jwks declaringNothing = IssuerConfig.Jwks.builder()
                     .source("http")
                     .url(JWKS_URL)
                     .build();
-            IssuerConfig plainIssuer = IssuerConfig.builder()
-                    .name("benchmark-keycloak")
-                    .issuer(ISSUER)
-                    .jwks(plainJwks)
-                    .build();
-            TokenValidatorProducer plainProducer = producerFor(plainIssuer);
-            plainProducer.gatewayTokenValidator();
-            EgressPolicy withoutAllowlist =
-                    plainProducer.toHttpJwksLoaderConfig(plainIssuer, plainJwks).getEgressPolicy();
+
+            // Act — both policies come from the public producer entry point, not from the seam alone
+            EgressPolicy withAllowlist = producerPathEgressPolicy(declaringAllowlist);
+            EgressPolicy withoutAllowlist = producerPathEgressPolicy(declaringNothing);
 
             // Assert — the declared allowlist survived the assembly ...
             assertDoesNotThrow(() -> withAllowlist.check(BLOCKED_JWKS_URI),
@@ -365,6 +348,26 @@ class TokenValidatorProducerTest {
             IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER)
                     .jwks(jwks).build();
             return producerFor(issuer).toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
+        }
+
+        /**
+         * The egress policy reached through the <em>full</em> producer path: unlike
+         * {@link #egressPolicyFor(IssuerConfig.Jwks)} this drives
+         * {@link TokenValidatorProducer#gatewayTokenValidator()} first, so a declaration that aborted
+         * the whole-graph assembly could never reach the seam the policy is read from.
+         *
+         * @param jwks the jwks block whose egress declaration is under test
+         * @return the egress policy the public producer entry point ends up with
+         */
+        private static EgressPolicy producerPathEgressPolicy(IssuerConfig.Jwks jwks) {
+            IssuerConfig issuer = IssuerConfig.builder()
+                    .name("benchmark-keycloak")
+                    .issuer(ISSUER)
+                    .jwks(jwks)
+                    .build();
+            TokenValidatorProducer producer = producerFor(issuer);
+            producer.gatewayTokenValidator();
+            return producer.toHttpJwksLoaderConfig(issuer, jwks).getEgressPolicy();
         }
     }
 
