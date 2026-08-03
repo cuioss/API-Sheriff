@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -202,12 +203,12 @@ class EgressAllowlistActivationWiringTest {
     private static Map<String, Object> jwks(Map<String, Object> issuer) {
         Object jwks = issuer.get("jwks");
         assertNotNull(jwks, "issuer '" + issuer.get("name") + "' declares no jwks block");
-        assertTrue(jwks instanceof Map, "issuer '" + issuer.get("name") + "' declares a non-map jwks block");
+        assertInstanceOf(Map.class, jwks, "issuer '" + issuer.get("name") + "' declares a non-map jwks block");
         return (Map<String, Object>) jwks;
     }
 
     private static void assertInstanceOfList(Object allowlist, Path descriptor, Map<String, Object> issuer) {
-        assertTrue(allowlist instanceof List, descriptor + " issuer '" + issuer.get("name") + "' declares "
+        assertInstanceOf(List.class, allowlist, descriptor + " issuer '" + issuer.get("name") + "' declares "
                 + ALLOWLIST_KEY + " as " + allowlist.getClass().getSimpleName() + ", expected a list");
     }
 
