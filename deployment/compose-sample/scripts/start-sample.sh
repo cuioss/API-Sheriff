@@ -18,12 +18,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLE_DIR="$(dirname "${SCRIPT_DIR}")"
 
-# The effective gateway image. This default is the SAME literal docker-compose.yml carries for
-# api-sheriff; the two are read together and must stay identical, which is why the override variable
-# is named identically too — exporting API_SHERIFF_IMAGE steers this preflight and the compose model
-# as one.
-IMAGE_REF="${API_SHERIFF_IMAGE:-ghcr.io/cuioss/api-sheriff:0.1.0}"
-
 cd "${SAMPLE_DIR}"
 
 if docker compose version >/dev/null 2>&1; then
@@ -54,6 +48,36 @@ if [[ ! -f "${SAMPLE_DIR}/docker/certificates/localhost.crt" \
 fi
 
 # ---- 1. Image preflight ------------------------------------------------------------------------
+# The effective gateway image is DERIVED from the resolved Compose model, never restated here. The
+# default lives once in .env; an exported API_SHERIFF_IMAGE overrides it. Compose has already
+# applied that precedence by the time it answers `config`, so reading the answer back is the only
+# way this preflight and the stack that actually starts cannot disagree — the same
+# derive-don't-restate rule wait-for-ready.sh follows for the readiness probe (ADR-0031).
+#
+# This must sit AFTER the COMPOSE_CMD block above: it dereferences that array.
+if ! IMAGE_REF="$("${COMPOSE_CMD[@]}" config --format json | python3 -c '
+import json, sys
+
+try:
+    model = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("could not parse the resolved Compose model as JSON (%s). This script needs a Compose "
+             "version supporting `config --format json`." % exc)
+
+image = ((model.get("services") or {}).get("api-sheriff") or {}).get("image")
+if not image:
+    # Empty means API_SHERIFF_IMAGE resolved to nothing -- .env is missing or was emptied. Failing
+    # here is the point: falling through would preflight the empty string and then hand compose a
+    # service with no image at all.
+    sys.exit("the resolved Compose model carries no image for service api-sheriff. Check that "
+             ".env sets API_SHERIFF_IMAGE, or export it explicitly.")
+
+sys.stdout.write(image)
+')"; then
+    echo "❌ Could not derive the gateway image from docker-compose.yml (see above)"
+    exit 1
+fi
+
 # Present locally is the common case for a local-build override; absent means exactly ONE pull
 # attempt. A pull that fails is terminal — falling through to `compose up` would surface the same
 # failure again, later, as a less legible error against a half-started stack.

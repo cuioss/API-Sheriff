@@ -48,8 +48,11 @@ docker compose -f integration-tests/docker-compose.yml build api-sheriff
 export API_SHERIFF_IMAGE=api-sheriff:distroless
 ----
 
-Both commands run from the repository root. `API_SHERIFF_IMAGE` is read by the compose file and by
-the bring-up script's image preflight, so exporting it steers both as one.
+Both commands run from the repository root. `API_SHERIFF_IMAGE` is the single knob: the compose file
+references it with no inline fallback, its default lives once in `deployment/compose-sample/.env`
+(which Compose auto-loads), and the bring-up script's image preflight reads the value back out of the
+resolved Compose model instead of restating it. Exporting the variable therefore steers the preflight
+and the stack that actually starts as one -- they cannot disagree.
 
 If neither route has produced the image, the bring-up fails immediately -- naming the reference it
 looked for and both routes -- rather than starting a partial stack.
@@ -180,6 +183,13 @@ For which knobs the deployment owns versus which `gateway.yaml` owns -- the thre
 deployment-bound / build-time classification and the precedence rule -- see
 link:environment-variable-overrides.adoc[Environment-Variable Overrides]. This guide does not
 restate that classification.
+
+One value comes from outside that block: `API_SHERIFF_IMAGE`, which selects the gateway image itself
+rather than configuring the gateway. Its default is written once in `deployment/compose-sample/.env`,
+the file Compose auto-loads from the sample directory. That file is the only place the published
+image reference appears -- `docker-compose.yml` references the variable with no inline fallback, and
+`scripts/start-sample.sh` derives the effective value from the resolved Compose model. An exported
+`API_SHERIFF_IMAGE` wins over the file, which is how Route B above works.
 
 One deliberate absence is worth naming, because it differs from the integration stack:
 `QUARKUS_HTTP_SSL_PORT` is *not* set here. The integration stack moves its terminated listener off

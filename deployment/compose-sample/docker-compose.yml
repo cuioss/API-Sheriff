@@ -23,7 +23,7 @@ services:
   # reproducible. Dependabot cannot update this automatically — check https://quay.io/keycloak/keycloak
   # and update the digest together with the version.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.5.4@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4
+    image: quay.io/keycloak/keycloak:26.5.7@sha256:45ae20191531eb608ddb0b775d012b40d3e4f942697f3214694887dd7c108d13
     command:
       - start-dev
       - --import-realm
@@ -135,7 +135,11 @@ services:
     # The PUBLISHED image, by tag, overridable for a local build or a newer release. This sample
     # never builds an image: it demonstrates deploying a released artifact, which is what an operator
     # actually does.
-    image: ${API_SHERIFF_IMAGE:-ghcr.io/cuioss/api-sheriff:0.1.0}
+    #
+    # No inline `:-default` here on purpose. The default lives in exactly one place, the sibling
+    # .env file, which Compose auto-loads; start-sample.sh reads the value back out of the resolved
+    # model rather than restating it. An inline fallback would be a second copy to keep in lockstep.
+    image: ${API_SHERIFF_IMAGE}
     # Declares the scheme this instance's MANAGEMENT interface speaks. scripts/wait-for-ready.sh
     # derives its entire probe URL from this label plus the host port published against container
     # port 9000 — so the readiness gate restates neither scheme nor port, and renumbering the
