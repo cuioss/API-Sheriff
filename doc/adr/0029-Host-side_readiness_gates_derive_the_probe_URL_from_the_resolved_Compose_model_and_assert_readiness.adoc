@@ -52,8 +52,12 @@ gate at port-accept time.
 resolves the service set, each service's published management port, and the scheme
 its management interface speaks, from the model -- the scheme via an explicit
 per-service label rather than by inferring it from a name or a port number. No
-host and no port number is restated in the script. Adding, removing, or renumbering
-an instance requires no script edit.
+host and no *published* host port is restated in the script. The container-side
+management port remains a fixed literal, used as the selector that picks the
+management binding out of each service's port list; that is a stable
+platform-level contract rather than a per-instance fact, so it is not a
+derivation target. Adding, removing, or renumbering an instance requires no
+script edit.
 
 Deriving the scheme structurally is what makes a *deliberate* exception free: an
 instance whose management interface serves plain HTTP by design is probed over
@@ -65,9 +69,11 @@ budget is traceable to an observed worst-case time-to-ready, measured with all
 instances brought up concurrently on a machine under load, plus a stated headroom
 factor. The measured figures and the factor are recorded in developer documentation
 alongside the gate, so a later reader can re-evaluate the budget rather than guess
-at it. A single retry-budget constant is declared once and read by every site that
-needs it -- the loop bound, the last-attempt comparison, the progress message -- so
-the number cannot drift between spellings.
+at it. Within a script, the retry budget is a single constant read by every site
+that needs it -- the loop bound, the last-attempt comparison, the progress
+message -- so the number cannot drift between spellings. The constant is
+per-script: two bring-up scripts that gate independently each declare their own,
+and that duplication is stated as a consequence below rather than claimed away.
 
 One nuance belongs to the rationale rather than the rule. When a readiness check
 reports a *boot-time constructibility* fact read from a cached instance, the
@@ -102,10 +108,11 @@ the wrong rationale over-predicts probe cost and invites an inflated budget.
 * The recorded measurement ages. It bounds the live-to-ready delta on the machine
   measured, not absolute container start on slower hosts, so the budget must carry
   headroom rather than track the observed figures.
-* Where two bring-up scripts derive from the same model independently, the
-  derivation logic is duplicated. Duplicated derivation is materially safer than a
-  duplicated literal -- both stay correct when the model changes -- but it remains
-  duplication and should be consolidated when a shared library exists.
+* Where two bring-up scripts derive from the same model independently, both the
+  derivation logic and the retry-budget constant are duplicated. Duplicated
+  derivation is materially safer than a duplicated literal -- both stay correct
+  when the model changes -- but the budget constant is a genuine duplicate: the
+  two can be re-tuned apart, and only a shared library would make them one.
 
 == Alternatives Considered
 
