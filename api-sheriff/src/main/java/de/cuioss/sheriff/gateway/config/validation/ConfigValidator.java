@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
@@ -137,6 +138,29 @@ public final class ConfigValidator {
             "/security_defaults/max_authorization_header_value_length";
     private static final String ASSET_DEFAULTS_CONTENT_TYPES_POINTER = "/asset_defaults/content_types";
 
+    /**
+     * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
+     * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
+     * other control character.
+     */
+    private static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]+";
+
+    /**
+     * A well-formed {@code type/subtype} media type with optional {@code ;name=value} parameters,
+     * matched against the WHOLE value ({@link java.util.regex.Matcher#matches()}). The whole-input
+     * match is load-bearing: an {@code ^…$}-anchored {@code find()} would admit a trailing newline,
+     * since Java's {@code $} also matches before a final line terminator — exactly the CR/LF this
+     * gate exists to refuse. Parameter values are tokens only; a quoted-string parameter has no
+     * place in a static asset's {@code Content-Type} and admitting one would widen the character set
+     * this bound narrows.
+     */
+    private static final Pattern MEDIA_TYPE = Pattern.compile(
+            MEDIA_TYPE_TOKEN + "/" + MEDIA_TYPE_TOKEN
+                    + "(?:[ \\t]*;[ \\t]*" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*");
+
+    /** The cap on the offending value a refusal message echoes back to the operator. */
+    private static final int ECHOED_VALUE_MAX_LENGTH = 60;
+
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
@@ -165,7 +189,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors));
 
     private final List<ValidationRule> rules;
 
@@ -331,6 +356,75 @@ public final class ConfigValidator {
                                 .formatted(extension)));
             }
         }
+    }
+
+    /**
+     * Enforces that every {@code asset_defaults.content_types} <em>value</em> is a well-formed
+     * {@code type/subtype} media type, refusing the entry at boot otherwise.
+     * <p>
+     * The value half needs its own bound because it reaches further than the key half does: the
+     * declared value is what {@code AssetResponseEnvelope.governedHeaders} puts under
+     * {@code Content-Type} and {@code GatewayEdgeRoute} then applies verbatim as a response-header
+     * value. Without this rule a value carrying CR/LF — or any non-media-type text at all — is
+     * accepted at boot and only misbehaves per request, deep inside the response write where the
+     * transport's own header-value validation throws after the status code is already set. That is
+     * the exact inversion of the fail-fast startup-validation posture the rest of this class holds,
+     * and it is asymmetric with the key half, which IS boot-refused.
+     * <p>
+     * This is a <strong>well-formedness</strong> gate, not a policy gate: it does not rank media
+     * types by safety and carries no allow-list of "safe" ones. The policy bound already exists one
+     * rule up — {@link #validateAssetContentTypesAddOnly} fences off every built-in,
+     * script-executable extension, so the stored-XSS lever cannot be reached through a built-in key
+     * whatever this rule permits.
+     * <p>
+     * The refusal names the offending extension and value, because an operator cannot fix a typo
+     * they cannot see. The value is rendered through {@link #renderForMessage} rather than echoed
+     * raw: a {@link ConfigError} is emitted into the boot ERROR log, so echoing an unescaped CR/LF
+     * would forge log lines (CWE-117) through the very key this rule constrains.
+     * <p>
+     * Every offending entry is collected rather than failing on the first, per ADR-0009.
+     */
+    private static void validateAssetContentTypeValues(GatewayConfig gateway, List<ConfigError> errors) {
+        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
+        if (assetDefaults == null) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : assetDefaults.contentTypes().entrySet()) {
+            // A null value is structurally impossible: AssetDefaultsConfig hands back a Map.copyOf,
+            // which refuses null values at binding time.
+            String value = entry.getValue();
+            if (!MEDIA_TYPE.matcher(value).matches()) {
+                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
+                        ("asset_defaults.content_types maps '%s' to '%s', which is not a well-formed media type; "
+                                + "the value is served verbatim as the asset's Content-Type response header, so it "
+                                + "must be a 'type/subtype' (optionally followed by ';name=value' parameters) and "
+                                + "must carry no control characters")
+                                .formatted(entry.getKey(), renderForMessage(value))));
+            }
+        }
+    }
+
+    /**
+     * Renders an offending configuration value for a refusal message: every character outside
+     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and the result is
+     * capped at {@link #ECHOED_VALUE_MAX_LENGTH}. The operator still sees what they typed; the boot
+     * ERROR log cannot be line-forged by it.
+     */
+    private static String renderForMessage(String value) {
+        StringBuilder rendered = new StringBuilder();
+        int limit = Math.min(value.length(), ECHOED_VALUE_MAX_LENGTH);
+        for (int index = 0; index < limit; index++) {
+            char current = value.charAt(index);
+            if (current >= 0x20 && current < 0x7F) {
+                rendered.append(current);
+            } else {
+                rendered.append("\\u%04X".formatted((int) current));
+            }
+        }
+        if (value.length() > limit) {
+            rendered.append("...");
+        }
+        return rendered.toString();
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {

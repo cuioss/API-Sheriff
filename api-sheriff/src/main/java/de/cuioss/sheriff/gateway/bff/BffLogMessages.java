@@ -162,11 +162,17 @@ public final class BffLogMessages {
          * non-sensitive rejection disposition ({@code malformed} / {@code unknown-version} /
          * {@code unknown-key-id} / {@code authentication-tag} / {@code payload-format}) only —
          * never the offending cookie value or any key material.
+         * <p>
+         * <strong>Latched per disposition.</strong> The emitting path is reached per request and
+         * pre-authentication, so the record is emitted only on the FIRST occurrence of each
+         * disposition in a process and every repeat drops to {@code DEBUG} — see
+         * {@code SealedSessionCookieCodec.reject}. Absence of a repeated {@code WARN} therefore
+         * says nothing about the rejection <em>rate</em>; read the DEBUG channel for that.
          */
         public static final LogRecord COOKIE_UNSEAL_REJECTED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(113)
-                .template("Sealed session cookie rejected: %s")
+                .template("Sealed session cookie rejected: %s — further rejections with this disposition stay at DEBUG")
                 .build();
 
         /**

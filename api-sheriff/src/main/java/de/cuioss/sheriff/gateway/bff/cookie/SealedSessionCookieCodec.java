@@ -24,6 +24,8 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
@@ -54,7 +56,9 @@ import org.jspecify.annotations.Nullable;
  * {@code key-id} and selects the key <em>deterministically</em> — never a try-every-key decrypt.
  * Any authentication-tag failure, malformed length, unknown version, or unknown key id returns
  * {@link Optional#empty()}: a tampered cookie is "no session", never a {@code 500}. The rejection
- * is logged with its non-sensitive disposition only.
+ * is logged with its non-sensitive disposition only, and the catalogued {@code WARN} is
+ * <em>latched per disposition</em> — see {@link #reject} for why an unlatched record on this path
+ * is a remotely-reachable log-amplification lever.
  * <p>
  * <strong>Exactly one key.</strong> The codec holds a single sealing key and stamps its key id into
  * every value; there is no decrypt-only companion key and no in-flight rotation state. Changing the
@@ -139,6 +143,16 @@ public final class SealedSessionCookieCodec {
     private static final String DISPOSITION_UNKNOWN_KEY_ID = "unknown-key-id";
     private static final String DISPOSITION_TAG = "authentication-tag";
     private static final String DISPOSITION_PAYLOAD = "payload-format";
+
+    /**
+     * Latches the catalogued rejection {@code WARN} to the FIRST occurrence of each disposition in
+     * this codec's lifetime; every later occurrence of that same disposition is a {@code DEBUG}
+     * diagnostic. Set membership is drawn exclusively from the five private
+     * {@code DISPOSITION_*} constants — {@link #reject} is private and no call site passes a
+     * computed value — so the set is bounded by construction and the latch holds no session state,
+     * preserving the codec's statelessness and thread-safety.
+     */
+    private final Set<String> warnedDispositions = ConcurrentHashMap.newKeySet();
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final String cookieName;
@@ -325,8 +339,41 @@ public final class SealedSessionCookieCodec {
         return ByteBuffer.allocate(name.length + 2).put(name).put(version).put(keyId).array();
     }
 
-    private static Optional<Unsealed> reject(String disposition) {
-        LOGGER.warn(BffLogMessages.WARN.COOKIE_UNSEAL_REJECTED, disposition);
+    /**
+     * Records the rejection and returns "no session".
+     * <p>
+     * <strong>This runs on EVERY failed unseal, and a failed unseal is remotely reachable.</strong>
+     * {@link #unseal} is called per request from the session-authentication stage and from every
+     * reserved BFF endpoint, and it is reached <em>before</em> anything about the caller is
+     * authenticated — any client sending a junk {@code Cookie} header takes the
+     * {@code malformed} or {@code authentication-tag} branch. An unconditional {@code WARN} here
+     * is therefore an unauthenticated log-amplification lever (CWE-779) on a security gateway,
+     * degrading the very channel a genuine tamper signal has to surface in.
+     * <p>
+     * The same shape floods without any attacker: with one sealing key there is no rollover, so
+     * after a key change every still-live cookie takes the {@code unknown-key-id} branch once per
+     * request per session for the entire re-authentication window. That is precisely the condition
+     * the retired {@code previous_key} rollover path carried an {@link java.util.concurrent.atomic.AtomicBoolean}
+     * latch for; collapsing to one key removed the latch while making its triggering condition more
+     * frequent, so the bound is restored here, at the surface that actually emits the record.
+     * <p>
+     * The bound is one catalogued {@code WARN} per disposition per process: the operator still sees
+     * every distinct rejection class the first time it occurs — the signal an alert fires on — while
+     * the record count stays at most five regardless of request rate. Every repeat is a {@code DEBUG}
+     * diagnostic, which carries no {@link de.cuioss.tools.logging.LogRecord} by the CUI logging
+     * contract. No sensitive data is involved either way: the disposition is a fixed constant, never
+     * the offending cookie value.
+     *
+     * @param disposition the bounded, non-sensitive rejection disposition
+     * @return always {@link Optional#empty()} — a rejection is "no session", never an error
+     */
+    private Optional<Unsealed> reject(String disposition) {
+        if (warnedDispositions.add(disposition)) {
+            LOGGER.warn(BffLogMessages.WARN.COOKIE_UNSEAL_REJECTED, disposition);
+        } else {
+            LOGGER.debug("Sealed session cookie rejected: %s — already recorded at WARN for this "
+                    + "disposition, so the repeat stays at DEBUG", disposition);
+        }
         return Optional.empty();
     }
 

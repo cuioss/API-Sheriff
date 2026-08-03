@@ -252,6 +252,14 @@ The key is gateway-wide, not per-route, because the framing gate runs before rou
 there is no route resolved yet to scope it to. Omit the key (or set `false`) and every framing
 rejection behaves exactly as it did before the key existed.
 
+*Decide it as a gateway-wide posture change, not an upstream-local one.* Since it cannot be scoped,
+enabling it for the one upstream that needs a `GET` body also admits a `Content-Length`-framed `GET`
+body on every other route -- your `require: bearer` routes and every route under a `type: bff`
+anchor included. Content on `GET` has no defined semantics (RFC 9110 section 9.3.1), so the risk on
+those routes is a cache that keys on the URL and ignores the body, or a component that authorizes on
+the URL while the application reads the body. Leave the key `false` unless every route on the
+gateway can tolerate a `GET` body.
+
 === What it does *not* turn off
 
 Enabling it relaxes two rejection legs, both only for `GET`: the body-present leg and the

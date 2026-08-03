@@ -2031,6 +2031,14 @@ the closed list:
 The key is *gateway-wide* rather than per-route by necessity, not convenience: the framing gate runs
 at stage 1, before route selection, so no route is resolved yet to scope it to.
 
+*The blast radius is therefore the whole gateway, not the one upstream that needed it.* Because the
+key cannot be scoped, enabling it for a single Elasticsearch-shaped upstream simultaneously admits a
+`Content-Length`-framed `GET` body on *every* other route -- including `require: bearer` routes and
+every route under a `type: bff` anchor. RFC 9110 section 9.3.1 notes that content on `GET` has no
+defined semantics, and the practical consequences on those other routes are caches that key on the
+URL while ignoring the body, and any component that authorizes on the URL while the application
+reads the body. Keep the key `false` unless every route on the gateway can tolerate a `GET` body.
+
 An omitted key resolves to `false`, which is bit-for-bit the behaviour of a gateway that never had
 this key: every framing rejection is preserved.
 

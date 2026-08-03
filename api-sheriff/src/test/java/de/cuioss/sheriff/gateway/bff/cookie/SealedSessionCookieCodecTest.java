@@ -31,8 +31,12 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.Unsealed;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,7 +58,12 @@ import org.junit.jupiter.api.Test;
  * key-id gate before a cipher is constructed — there is no decrypt-only companion key and no
  * try-every-key fallback. That makes withdrawing a key a fail-closed clean break rather than a
  * staged rollover.
+ * <p>
+ * {@link BoundedRejectionLogging} additionally pins that the rejection WARN is latched per
+ * disposition: the unseal path is per-request and pre-authentication, so an unbounded record there
+ * would be a remotely-reachable log-amplification lever.
  */
+@EnableTestLogger
 class SealedSessionCookieCodecTest {
 
     private static final String COOKIE_NAME = "__Host-sheriff-session";
@@ -375,6 +384,68 @@ class SealedSessionCookieCodecTest {
 
             assertFalse(thrown.getMessage().contains(huge), "the offending payload is never echoed");
             assertFalse(thrown.getMessage().contains(ID_TOKEN), "no token material appears in the message");
+        }
+    }
+
+    /**
+     * The rejection WARN is bounded: one catalogued record per disposition per codec, every repeat
+     * at DEBUG.
+     * <p>
+     * {@code unseal} runs per request and is reached before the caller is authenticated, so an
+     * unconditional WARN is a log-amplification lever any client can pull with a junk cookie — and
+     * one that fires without any attacker for a whole re-authentication window after a key change,
+     * because with a single sealing key every still-live cookie takes the {@code unknown-key-id}
+     * branch on every one of its requests.
+     */
+    @Nested
+    @DisplayName("Bounded rejection logging")
+    class BoundedRejectionLogging {
+
+        /** Far more repeats than any bound under test, so an unlatched record could not pass. */
+        private static final int REPEATS = 50;
+
+        private static final String MALFORMED = "malformed";
+        private static final String UNKNOWN_KEY_ID = "unknown-key-id";
+        private static final String AUTHENTICATION_TAG = "authentication-tag";
+
+        @Test
+        @DisplayName("Should record ONE WARN for a whole re-authentication window of withdrawn-key cookies")
+        void shouldLatchTheUnknownKeyIdWarn() throws Exception {
+            SealedSessionCookieCodec beforeTheKeyChange =
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x33), WITHDRAWN_KEY_ID);
+            String sealedUnderWithdrawnKey = beforeTheKeyChange.seal(payload());
+
+            for (int request = 0; request < REPEATS; request++) {
+                assertTrue(codec.unseal(sealedUnderWithdrawnKey).isEmpty(), "every attempt is still 'no session'");
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, UNKNOWN_KEY_ID);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    BffLogMessages.WARN.COOKIE_UNSEAL_REJECTED.resolveIdentifierString());
+        }
+
+        @Test
+        @DisplayName("Should record ONE WARN however many junk cookies an unauthenticated client sends")
+        void shouldLatchTheMalformedWarnAgainstAnUnauthenticatedClient() {
+            for (int request = 0; request < REPEATS; request++) {
+                assertTrue(codec.unseal("not base64 ~~~").isEmpty(), "a junk cookie is 'no session'");
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, MALFORMED);
+        }
+
+        @Test
+        @DisplayName("Should still record each distinct disposition once, so no rejection class is silenced")
+        void shouldRecordEachDispositionOnce() throws Exception {
+            String tampered = flipByteAt(codec.seal(payload()), 14);
+
+            for (int request = 0; request < REPEATS; request++) {
+                codec.unseal("not base64 ~~~");
+                codec.unseal(tampered);
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, MALFORMED);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, AUTHENTICATION_TAG);
         }
     }
 }
