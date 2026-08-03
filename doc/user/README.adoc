@@ -77,6 +77,14 @@ layer.
   `QUARKUS_HTTP_SSL_PORT` move under `tls.passthrough_sni`), what the SBOM and the HIGH+CRITICAL
   vulnerability scan do and do not guarantee, and the complete `cosign verify` recipe with both
   mandatory flags. Links to the release process for the artifact policy.
+
+| link:compose-sample.adoc[Compose Sample -- a Production-Shaped Deployment You Can Run]
+| The runnable sample under `deployment/compose-sample`: three containers on one network, brought up
+  with generated sample certificates and gated on a real readiness probe. Covers both routes to the
+  gateway image (the pinned GHCR default and the `API_SHERIFF_IMAGE` local-build override), the
+  request that proves the stack works, and -- explicitly -- every sample-only value that must change
+  before the stack is reachable by anything you care about. Links to the Container Image guide for
+  pulling and verifying, and to Environment-Variable Overrides for the deployment-owned knobs.
 |===
 
 == Scope of This Layer

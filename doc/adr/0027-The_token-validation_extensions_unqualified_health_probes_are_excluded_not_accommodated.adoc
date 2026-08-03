@@ -66,7 +66,7 @@ not configured into a green state.*
 The two extension probes are excluded at the CDI level by type pattern, scoped to exactly those two
 beans in that one package. The exclusion is declared unconditionally and in no profile, because a
 profile-scoped exclusion would itself be a branch in the shipped configuration surface, which
-link:0026-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0026]
+link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
 forbids.
 
 === 1. The scope is the two beans, never a global switch
@@ -121,7 +121,7 @@ exclusion removed, and restoring the excluded probes would not close it.
   something this product does, rather than because a dependency happened to contribute it.
 * No configuration is maintained for machinery with no consumer. The alternative -- populating the
   extension's issuer namespace to satisfy its probes -- would have created exactly the redundant
-  parallel declaration ADR-0026 removes.
+  parallel declaration ADR-0032 removes.
 * The native image is unaffected: the reflection registration the gateway relies on is a
   deployment-time concern and is untouched by a runtime bean exclusion.
 
@@ -159,7 +159,7 @@ health surface.
 Rejected because it maintains configuration for machinery with no consumer, purely to satisfy a
 check. The probes would then report on a validator the request path never touches, so a green
 result would carry no information about the gateway while looking exactly like one that did. It also
-recreates the parallel declaration ADR-0026 removes, in the same file, for the same non-reason.
+recreates the parallel declaration ADR-0032 removes, in the same file, for the same non-reason.
 
 === Disable extension-contributed health checks globally
 
@@ -203,7 +203,7 @@ does, and a probe that observes nothing is removed rather than satisfied.
 
 == References
 
-* link:0026-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0026]
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
   -- the rule under which this exclusion is declared unconditionally rather than profile-scoped, and
   the masked-defect failure mode a profile-scoped health branch would have reproduced
 * link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]

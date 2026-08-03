@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>deployment</artifactId>
+    <packaging>pom</packaging>
+    <name>API Sheriff Deployment</name>
+    <description>Deployment material for API Sheriff — a production-shaped docker-compose sample that shows how the
+        gateway is configured, fronted and bound to an identity provider. Sample and documentation material only —
+        never a shipped default, never part of the production image or the native build.
+    </description>
+
+    <!-- This module carries NO Java. It owns exactly ONE subtree, compose-sample/, holding the compose
+         file, the configuration it mounts, the certificate tooling and the bring-up scripts. Nothing here
+         is built, tested or published: a default reactor build of this module is a deliberate no-op, so the
+         sample costs the standard build nothing. See doc/user/compose-sample.adoc for the operator guide and
+         doc/development/compose-sample.adoc for the rationale. -->
+
+    <dependencies />
+
+    <properties>
+        <!-- ==== Java plugin suppression =================================================== -->
+        <!-- There is no Java here, so every inherited Java-oriented plugin is switched off. Without
+             these the module would still run compilation, javadoc, static analysis and coverage over
+             an empty source tree, costing time in every build for no signal. -->
+        <maven.compiler.skip>true</maven.compiler.skip>
+        <skipTests>true</skipTests>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <checkstyle.skip>true</checkstyle.skip>
+        <spotbugs.skip>true</spotbugs.skip>
+        <pmd.skip>true</pmd.skip>
+        <cpd.skip>true</cpd.skip>
+        <enforcer.skip>true</enforcer.skip>
+        <jacoco.skip>true</jacoco.skip>
+        <license.skip>true</license.skip>
+        <dependency-check.skip>true</dependency-check.skip>
+        <skip.openrewrite>true</skip.openrewrite>
+
+        <!-- Never publish this module to Maven Central: it is deployment sample material, not a
+             consumable artifact. The effective switch is skipPublishing, NOT maven.deploy.skip —
+             cui-java-parent publishes through central-publishing-maven-plugin, whose own user property
+             this is. The same reasoning is recorded at integration-tests/pom.xml, where it was
+             established, and at demo-client/pom.xml. -->
+        <skipPublishing>true</skipPublishing>
+
+        <!-- ==== The opt-in switch ========================================================= -->
+        <!-- Defaults to SKIP. Every execution in the compose-sample profile carries this as its
+             <skip>, and the profile itself flips it to false. Two layers on purpose, exactly as
+             demo-client/pom.xml establishes for its e2e-demo profile: the profile means a default
+             build has no executions to skip at all, and the property means an accidentally
+             activated profile still needs a deliberate override to start containers. -->
+        <skipComposeSample>true</skipComposeSample>
+    </properties>
+
+    <profiles>
+        <!-- The ONLY place the sample stack is brought up. Activated explicitly with
+             -Pcompose-sample; the standard pull-request build and 'verify -Ppre-commit' never enter
+             it, so neither pulls an image nor starts a container. A default reactor build of this
+             module stays the genuine no-op the header above promises.
+
+             Note there is no <skipTests>false</skipTests> here, and none is needed. demo-client's
+             e2e-demo profile requires that flip because frontend-maven-plugin's test execution is
+             bound to a TESTING phase and therefore honours the inherited skipTests. exec-maven-
+             plugin's exec goal honours only its own <skip>, so the module-level skipTests=true that
+             keeps inherited surefire off this Java-free module cannot silently hollow this profile
+             out into a vacuous green. -->
+        <profile>
+            <id>compose-sample</id>
+            <properties>
+                <skipComposeSample>false</skipComposeSample>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <!-- Tear down anything an aborted previous run left behind, before
+                                 clean. The sample publishes fixed host ports, so a leaked stack
+                                 from a previous run would fail the bring-up below with a port
+                                 conflict that looks like a defect in the sample. -->
+                            <execution>
+                                <id>stop-sample-pre-clean</id>
+                                <phase>pre-clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipComposeSample}</skip>
+                                    <executable>./compose-sample/scripts/stop-sample.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <!-- No <successCodes> override. "Nothing running" already exits
+                                         0: `docker compose down` is idempotent on an empty project,
+                                         and stop-sample.sh returns 0 explicitly for a host with no
+                                         Compose and for a stopped daemon. So the only thing exit 1
+                                         can mean here is a teardown that genuinely failed, and
+                                         accepting it would let a leaked stack pass silently — the
+                                         exact port-conflict-looking-like-a-defect this execution
+                                         exists to prevent. -->
+                                </configuration>
+                            </execution>
+                            <!-- The gate itself. start-sample.sh preflights the image, brings the
+                                 three services up and then delegates to wait-for-ready.sh — so the
+                                 ADR-0031 readiness derivation lives in exactly one place and this
+                                 POM restates neither a port nor a scheme. A non-zero exit here
+                                 fails the build, which is what makes -Pcompose-sample a real gate
+                                 rather than a bring-up convenience. -->
+                            <execution>
+                                <id>start-sample</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipComposeSample}</skip>
+                                    <executable>./compose-sample/scripts/start-sample.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- The SUCCESS-path teardown, and deliberately only that — the same
+                                 decision demo-client/pom.xml records: Maven offers no always-runs
+                                 hook, so a FAILING gate never reaches this phase and leaves the
+                                 stack up. That is wanted: the containers hold the logs explaining
+                                 the failure being diagnosed. The pre-clean teardown above is the
+                                 remedy, and it fires on any subsequent 'clean' build. -->
+                            <execution>
+                                <id>stop-sample-post-integration-test</id>
+                                <phase>post-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipComposeSample}</skip>
+                                    <executable>./compose-sample/scripts/stop-sample.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <!-- No <successCodes> override, for the same reason as the
+                                         pre-clean execution above: exit 1 here can only be a real
+                                         teardown failure, and swallowing it would report a green
+                                         build over containers and volumes that were left running. -->
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

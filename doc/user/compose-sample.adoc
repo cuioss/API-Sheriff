@@ -1,0 +1,215 @@
+= Compose Sample -- a Production-Shaped Deployment You Can Run
+:toc:
+:toclevels: 3
+:sectnums:
+
+A runnable Docker Compose stack that shows how API Sheriff is actually deployed: the published image
+pulled by tag, all configuration supplied through read-only mounts, and every runtime-hardening
+directive a production deployment should set, set explicitly rather than left to a default.
+
+It lives at `deployment/compose-sample/` and is a *sample*, not a test harness. It carries three
+services and nothing else -- the gateway, an identity provider whose realm mints the tokens the
+gateway validates, and a stand-in upstream that the gateway proxies to. The
+link:../development/compose-sample.adoc[contributor guide] explains why it is a separate stack from
+the one `integration-tests` brings up, and draws the topology.
+
+WARNING: Every credential and every piece of key material in this sample is a placeholder. Read
+<<_what_must_change_before_this_is_real>> before this stack is reachable by anything you care about.
+
+== Before you start
+
+You need Docker with Compose v2 (`docker compose version` must succeed), and a gateway image. There
+are two routes to the image; pick one.
+
+=== Route A -- the published image (the default)
+
+The sample defaults to the pinned published image and needs nothing from you but the ability to
+reach `ghcr.io`:
+
+[source,bash]
+----
+docker pull ghcr.io/cuioss/api-sheriff:0.1.0
+----
+
+The bring-up script pulls it for you if it is missing, so this step is optional. For what the
+published image contains, how it is tagged, and how to verify its signature and SBOM, see
+link:container-image.adoc[Container Image -- Pulling, Running and Verifying]; this guide does not
+restate any of it.
+
+=== Route B -- a locally built image
+
+To run the sample against your own build, produce the image and point the sample at it:
+
+[source,bash]
+----
+python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
+  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests"
+docker compose -f integration-tests/docker-compose.yml build api-sheriff
+export API_SHERIFF_IMAGE=api-sheriff:distroless
+----
+
+Both commands run from the repository root. `API_SHERIFF_IMAGE` is the single knob: the compose file
+references it with no inline fallback, its default lives once in `deployment/compose-sample/.env`
+(which Compose auto-loads), and the bring-up script's image preflight reads the value back out of the
+resolved Compose model instead of restating it. Exporting the variable therefore steers the preflight
+and the stack that actually starts as one -- they cannot disagree.
+
+If neither route has produced the image, the bring-up fails immediately -- naming the reference it
+looked for and both routes -- rather than starting a partial stack.
+
+== Bringing the stack up
+
+=== 1. Generate the sample certificates
+
+The stack serves TLS everywhere, and *no key material is committed*. Generate it once:
+
+[source,bash]
+----
+./deployment/compose-sample/docker/certificates/generate-certificates.sh
+----
+
+This writes a self-signed `localhost.crt` and `localhost.key` next to the script. Both are
+git-ignored. The certificate names `localhost`, `keycloak`, `api-sheriff` and `demo-api` in its SAN
+list, because the gateway reaches the identity provider by its compose service name and a
+certificate without that name would fail hostname verification on the token-key fetch.
+
+=== 2. Start it
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/start-sample.sh
+----
+
+The script preflights the image, brings the three services up, and then blocks on a readiness gate
+until the gateway reports itself ready -- so when it returns, the stack is genuinely usable rather
+than merely started. It exits non-zero if readiness is not reached, printing the container log and
+the full health payload.
+
+Alternatively, run it through the build as an opt-in Maven profile, which brings the stack up, gates
+on readiness, and tears it down again:
+
+[source,bash]
+----
+python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
+  --command-args "verify -Pcompose-sample -pl deployment -am"
+----
+
+Without `-Pcompose-sample` the `deployment` module is a no-op: the default build starts no container
+and costs no measurable time.
+
+=== 3. Drive a request through the gateway
+
+[source,bash]
+----
+curl -k https://localhost:8443/api
+----
+
+[source,json]
+----
+{"service":"demo-api","message":"Reached the upstream through API Sheriff."}
+----
+
+That response came from the `demo-api` container, which publishes no host port at all -- the gateway
+is the only way to reach it. `-k` is required because the certificate is self-signed; that is the
+point of a sample, not a defect.
+
+Two other endpoints are published:
+
+[cols="1,3"]
+|===
+| Address | What it is
+
+| `https://localhost:9000/q/health/ready`
+| The gateway's management interface -- HTTPS, because the sample supplies management certificates.
+  This is what the readiness gate probes.
+
+| `https://localhost:1443`
+| The Keycloak admin console, for inspecting the realm or minting a token by hand.
+|===
+
+=== 4. Stop it
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/stop-sample.sh
+----
+
+This removes the containers, the network and the volumes, so the next bring-up starts from a known
+state and re-imports the realm.
+
+== What must change before this is real
+
+The sample is deliberately loud about being a sample. Every item below is a placeholder that is
+*wrong* for any deployment reachable by something you care about.
+
+[cols="1,2"]
+|===
+| Sample-only value | What a real deployment does instead
+
+| *The generated certificate and key* -- self-signed, with no CA behind it, and written
+  world-readable so the gateway's and Keycloak's differing non-root uids can both read it.
+| Supplies certificate and key from its own PKI, with ownership matched to the runtime uid, mounted
+  at the same two paths. The gateway does not care where they came from.
+
+| *The Keycloak realm client secret* -- `CHANGE-ME-BEFORE-PRODUCTION` in
+  `docker/keycloak/sample-realm.json`.
+| Registers its own confidential client and supplies the secret from the deployment, never from a
+  file in a repository.
+
+| *The Keycloak bootstrap admin credentials* -- `admin` / `admin` in `docker-compose.yml`.
+| Sets real credentials, and does not publish the admin console at all unless it means to.
+
+| *The sample realm user* -- `sample-user` with a placeholder password.
+| Deletes it. It exists only so you can mint a token while trying the stack out.
+
+| *`start-dev`* -- Keycloak runs in development mode.
+| Runs Keycloak in production mode against a real database. The sample's realm lives in a volume and
+  is discarded on teardown.
+|===
+
+The gateway's own configuration under `docker/sheriff-config/` is closer to production-ready: it
+declares the `strict` inbound filter profile explicitly, a TLS floor of 1.2, one public proxy
+namespace, and a token issuer with a host-exact egress allowlist. The one endpoint is
+`auth: require: none`, which is the first thing to change when adapting the sample -- switch it to
+`require: bearer` and the route is gated on a token from the declared issuer.
+
+== Where configuration comes from
+
+The shipped artifact declares nothing about where its configuration or key material lives; the
+deployment supplies both. In this sample that happens entirely through the `environment:` block of
+the `api-sheriff` service, which is the same door the release smoke test drives.
+
+For which knobs the deployment owns versus which `gateway.yaml` owns -- the three-way policy /
+deployment-bound / build-time classification and the precedence rule -- see
+link:environment-variable-overrides.adoc[Environment-Variable Overrides]. This guide does not
+restate that classification.
+
+One value comes from outside that block: `API_SHERIFF_IMAGE`, which selects the gateway image itself
+rather than configuring the gateway. Its default is written once in `deployment/compose-sample/.env`,
+the file Compose auto-loads from the sample directory. That file is the only place the published
+image reference appears -- `docker-compose.yml` references the variable with no inline fallback, and
+`scripts/start-sample.sh` derives the effective value from the resolved Compose model. An exported
+`API_SHERIFF_IMAGE` wins over the file, which is how Route B above works.
+
+One deliberate absence is worth naming, because it differs from the integration stack:
+`QUARKUS_HTTP_SSL_PORT` is *not* set here. The integration stack moves its terminated listener off
+8443 because its configuration claims that port for an SNI front listener. This sample declares no
+passthrough SNI, so the gateway terminates directly on 8443 and an override would only mis-address
+it.
+
+== Adapting it
+
+The sample is meant to be copied. The `deployment/compose-sample/` directory is self-contained --
+nothing in it reaches into `integration-tests/` or into the `api-sheriff` module -- so copying the
+directory gives you a working starting point. From there the usual first three changes are:
+
+. Point the `UPSTREAM` alias in `docker/sheriff-config/topology.properties` at your real backend, or
+  override `TOPOLOGY_UPSTREAM` in the environment. It is the one place a backend address is written
+  down.
+. Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`, and add the
+  exact request headers and query parameters your backend needs to its deny-by-default `forward`
+  allowlists.
+. Replace the identity provider with your own, updating the issuer URL, the JWKS URL and the
+  `allowed_egress_hosts` entry in `docker/sheriff-config/gateway.yaml` together -- the issuer value
+  must match the `iss` your tokens actually carry, or every request fails with a 401 that looks like
+  a signature problem and is not.

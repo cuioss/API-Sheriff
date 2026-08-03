@@ -424,6 +424,14 @@ the `integration-tests` module brings up — and demonstrates:
 Its `<title>` and `<desc>` name it as the integration-test topology explicitly, so no reader mistakes
 the test upstreams or the fault-injection proxy for a recommended production deployment.
 
-**Production and Kubernetes topologies are deliberately not drawn here.** They arrive with PLAN-27,
-which defines them; drawing them before they are defined would document an intention as though it
-were a fact.
+`doc/resources/diagrams/compose-sample-topology.svg` is the second reference implementation. It
+depicts the **compose sample** topology — the three-container stack under
+`deployment/compose-sample` — and is named as such in its `<title>` and `<desc>`, so no reader
+mistakes it for the integration-test stack or for a recommended Kubernetes deployment. It exercises
+a smaller subset of the type deliberately: the containment ladder, one trust boundary whose crossings
+are both marked, protocol-and-port edge labels, mounted material as pills, and a single first-party
+component carrying the `own-bar` accent among external ones. It uses no collapsed group, and the
+skeleton's collapsed-group placeholder is deleted rather than left in place.
+
+**The Kubernetes topology is deliberately not drawn here.** It arrives with PLAN-41, which defines
+it; drawing it before it is defined would document an intention as though it were a fact.

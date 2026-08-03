@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Compose sample topology — deployment/compose-sample/docker-compose.yml.
+  theme-handling: A (theme-neutral)
+  see  doc/development/diagram-type-deployment.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">API Sheriff compose sample topology — the deployment/compose-sample stack, not the integration-test stack and not a Kubernetes recommendation</title>
+  <desc id="desc">The topology of the production-shaped Docker Compose sample under deployment/compose-sample. One Docker host contains one bridge network, compose-sample_api-sheriff, holding exactly three containers. api-sheriff is the first-party gateway, running the published image by tag; it terminates TLS on 8443, serves its management interface on 9000, and mounts its configuration and certificate material read-only. keycloak is the external identity provider that issues the tokens the gateway validates; its admin console is published on host port 1443. demo-api is an external stand-in upstream serving a canned JSON document on 8080 and publishes no host port at all. A trust boundary separates the gateway from the two services reachable only inside the network: the gateway is the only container an operator on the host can reach for traffic. Two edges cross that boundary and carry crossing glyphs — the gateway's JWKS fetch to Keycloak over HTTPS 8443, and the proxied upstream request to demo-api over HTTP 8080.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .stroke      { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .encl        { font-size: 13px; font-weight: 600; fill: #6e7681; }
+      .encl-sub    { font-size: 11px; fill: #6e7681; font-style: italic; }
+      .item        { font-size: 12px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .own-bar     { stroke: #6e7681; stroke-width: 3; }
+      .trust       { stroke: #6e7681; stroke-width: 2; stroke-dasharray: 8 4; fill: none; }
+      .trust-lbl   { font-size: 11px; font-weight: 600; fill: #6e7681; }
+      .trust-cross { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .arrow       { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-fill  { fill: #6e7681; }
+      .edge-lbl    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .mount-stem  { stroke: #6e7681; stroke-width: 1; stroke-dasharray: 2 2; fill: none; }
+      .mount       { font-size: 10px; fill: #6e7681; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+      .caption     { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+    </style>
+  </defs>
+
+  <!-- ============================================================
+       depth 1 — the Docker host
+       ============================================================ -->
+  <rect class="stroke" x="24" y="64" width="952" height="480" rx="8"/>
+  <text x="36" y="88"  class="encl">docker host</text>
+  <text x="36" y="104" class="encl-sub">published to the host: gateway 8443 and 9000, Keycloak admin 1443 — demo-api publishes nothing</text>
+
+  <!-- ============================================================
+       depth 2 — the one bridge network
+       ============================================================ -->
+  <rect class="stroke" x="40" y="116" width="920" height="412" rx="6"/>
+  <text x="52" y="140" class="encl">compose-sample_api-sheriff (bridge)</text>
+
+  <!-- ============================================================
+       trust boundary
+       ============================================================ -->
+  <line class="trust" x1="470" y1="160" x2="470" y2="500"/>
+  <text x="482" y="152" class="trust-lbl">trust boundary — only the gateway is reachable from the host</text>
+
+  <!-- ============================================================
+       ingress from the host into the gateway
+       ============================================================ -->
+  <line class="arrow" x1="300" y1="116" x2="300" y2="192" marker-end="url(#arrow)"/>
+  <text x="364" y="160" class="edge-lbl">HTTPS :8443</text>
+
+  <!-- ============================================================
+       depth 3 — the first-party gateway, with mounted material
+       ============================================================ -->
+  <rect class="stroke" x="64" y="192" width="280" height="140" rx="4"/>
+  <line class="own-bar" x1="64" y1="200" x2="64" y2="324"/>
+  <text x="76" y="216" class="encl">api-sheriff</text>
+  <text x="76" y="232" class="encl-sub">the gateway — published image, by tag</text>
+  <text x="76" y="260" class="item">listener :8443</text>
+  <text x="76" y="280" class="item">management :9000</text>
+
+  <!-- mounted material — dashed stem, no arrowhead: material, not traffic -->
+  <line class="mount-stem" x1="116" y1="332" x2="116" y2="344"/>
+  <rect class="stroke" x="64" y="344" width="104" height="18" rx="4"/>
+  <text x="72" y="357" class="mount">certificates/</text>
+
+  <line class="mount-stem" x1="242" y1="332" x2="242" y2="344"/>
+  <rect class="stroke" x="184" y="344" width="116" height="18" rx="4"/>
+  <text x="192" y="357" class="mount">sheriff-config/</text>
+
+  <!-- ============================================================
+       depth 3 — external identity provider
+       ============================================================ -->
+  <rect class="stroke" x="496" y="192" width="220" height="124" rx="4"/>
+  <text x="508" y="216" class="encl">keycloak</text>
+  <text x="508" y="232" class="encl-sub">identity provider — token issuer</text>
+  <text x="508" y="260" class="item">https :8443</text>
+  <text x="508" y="280" class="item">published 1443:8443</text>
+
+  <!-- ============================================================
+       depth 3 — external stand-in upstream
+       ============================================================ -->
+  <rect class="stroke" x="744" y="380" width="200" height="104" rx="4"/>
+  <text x="756" y="404" class="encl">demo-api</text>
+  <text x="756" y="420" class="encl-sub">stand-in upstream</text>
+  <text x="756" y="448" class="item">:8080 internal only</text>
+
+  <!-- ============================================================
+       edges — protocol + port labels in monospace, upright
+       ============================================================ -->
+
+  <!-- JWKS fetch: crosses the trust boundary -->
+  <line class="arrow" x1="344" y1="252" x2="496" y2="252" marker-end="url(#arrow)"/>
+  <text x="420" y="244" class="edge-lbl">HTTPS :8443</text>
+  <circle class="trust-cross" cx="470" cy="252" r="3.5"/>
+
+  <!-- proxied upstream request: orthogonal cross-container edge, label on the longest
+       segment, crossing the trust boundary on that segment -->
+  <polyline class="arrow" points="344,300 404,300 404,432 744,432" marker-end="url(#arrow)"/>
+  <text x="574" y="424" class="edge-lbl">HTTP :8080</text>
+  <circle class="trust-cross" cx="470" cy="432" r="3.5"/>
+
+  <!-- ============================================================
+       footer caption
+       ============================================================ -->
+  <text x="500" y="580" class="caption">The compose sample: three containers on one bridge network, reached only through the gateway.</text>
+</svg>

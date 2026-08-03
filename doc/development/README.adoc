@@ -88,6 +88,15 @@ This tree is seeded here and grows as contributor-facing material lands.
   protocol-and-port edge labels, the trust-boundary visual that stays inside the theme-neutral
   palette, first-party vs external components, mounted material, and the container-run render
   check. Written in Markdown, deliberately, so it can graduate upstream unchanged.
+
+| link:compose-sample.adoc[Compose Sample -- Contributor Guide]
+| The `deployment` module's compose sample -- how it relates to the integration-test stack and why
+  it is a separate, smaller stack rather than a trimmed bring-up of that one; why the gateway carries
+  no `healthcheck:` key and Keycloak's probe is TCP-accept-level only; how `wait-for-ready.sh`
+  derives its entire probe target from the resolved Compose model under
+  link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031],
+  and where its retry budget comes from; and the opt-in `skipComposeSample` / `compose-sample` build
+  mechanism that keeps the whole thing out of the default lane.
 |===
 
 == Scope of This Layer
