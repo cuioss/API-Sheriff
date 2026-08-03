@@ -83,8 +83,8 @@ fi
 #
 # Mode 1777, not 0777: the sticky bit is what keeps that world write from also being a
 # world DELETE. Without it any local account on a shared CI runner or developer host can
-# remove or replace quarkus.log — the file this script uploads as a failure-diagnosis
-# artifact — so the evidence read after a failed run is locally tamperable. The sticky bit
+# remove or replace quarkus.log — the gateway's own log for the run, and the first thing
+# read to diagnose a failure — so that evidence is locally tamperable. The sticky bit
 # restricts unlink and rename to the file's owner and the directory's owner, costing the
 # container nothing: it still creates and rotates the files it owns, and 'mvn clean' runs
 # as the build user that OWNS this directory.

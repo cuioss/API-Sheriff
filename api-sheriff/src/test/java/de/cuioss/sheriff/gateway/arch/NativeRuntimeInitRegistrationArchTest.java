@@ -123,11 +123,10 @@ class NativeRuntimeInitRegistrationArchTest {
      * generator into the image heap. Every holder happens to live under {@code bff} today, so the wider
      * radius costs nothing now and closes the gap ahead of the first non-BFF holder.
      * <p>
-     * It is deliberately <em>one</em> constant. {@link #PRODUCTION_CLASSES}, the ArchUnit rule and the
-     * {@link #selectedOwnerNames()} non-vacuity helper all reach the scope through {@link #GATED_CLASS},
-     * which is derived from this value — so a single edit moves the rule and the guard that proves the
-     * rule non-vacuous together. Two independent literals would agree right up until the day one of
-     * them was edited, silently desynchronizing the guard from the rule it protects.
+     * It is deliberately <em>one</em> constant: the import in {@link #PRODUCTION_CLASSES} and — through
+     * {@link #GATED_CLASS} — both the rule and the guard that proves the rule non-vacuous derive from
+     * this single value, so one edit moves them together. See {@link #GATED_CLASS} for why that
+     * selector is one shared object rather than two literals.
      */
     private static final String GATED_PACKAGE = "de.cuioss.sheriff.gateway";
 
@@ -185,7 +184,8 @@ class NativeRuntimeInitRegistrationArchTest {
             new DescribedPredicate<>("classes under " + GATED_PACKAGE + " outside " + SPECIMEN_PACKAGE) {
                 @Override
                 public boolean test(JavaClass javaClass) {
-                    return residesIn(javaClass, GATED_PACKAGE) && !residesIn(javaClass, SPECIMEN_PACKAGE);
+                    String packageName = javaClass.getPackageName();
+                    return isWithin(packageName, GATED_PACKAGE) && !isWithin(packageName, SPECIMEN_PACKAGE);
                 }
             };
 
@@ -388,13 +388,9 @@ class NativeRuntimeInitRegistrationArchTest {
      * Answers coverage class → list: a class is registered when an entry names it exactly, or names a
      * package that contains it. GraalVM reads a bare package name as a prefix over that package and
      * its classes, which is how the one package-prefix entry in the list covers a whole flow package.
-     * <p>
-     * The prefix test appends the dot deliberately: a bare {@code startsWith(entry)} would let an
-     * entry for {@code …bff.cookie} also cover an unrelated {@code …bff.cookiejar} package.
      */
     private static boolean isRegistered(String className, Set<String> registrations) {
-        return registrations.stream()
-                .anyMatch(entry -> className.equals(entry) || className.startsWith(entry + "."));
+        return registrations.stream().anyMatch(entry -> isWithin(className, entry));
     }
 
     /**
@@ -476,12 +472,16 @@ class NativeRuntimeInitRegistrationArchTest {
     }
 
     /**
-     * Prefix containment: the class sits in exactly this package, or in a sub-package of it. The dot is
-     * appended deliberately — a bare {@code startsWith} would let {@code …gateway} also swallow an
-     * unrelated sibling package such as {@code …gatewayadmin}.
+     * Self-or-descendant containment over a dotted namespace: {@code candidate} <em>is</em>
+     * {@code prefix}, or sits beneath it. Serves both halves of this gate — the package selection in
+     * {@link #GATED_CLASS} and the registration lookup in {@link #isRegistered} — so the two cannot
+     * drift into disagreeing about what "inside" means.
+     * <p>
+     * The dot is appended deliberately: a bare {@code startsWith} would let {@code …gateway} swallow
+     * an unrelated sibling package such as {@code …gatewayadmin}, and a registration entry for
+     * {@code …bff.cookie} cover an unrelated {@code …bff.cookiejar}.
      */
-    private static boolean residesIn(JavaClass javaClass, String packageName) {
-        String candidate = javaClass.getPackageName();
-        return candidate.equals(packageName) || candidate.startsWith(packageName + ".");
+    private static boolean isWithin(String candidate, String prefix) {
+        return candidate.equals(prefix) || candidate.startsWith(prefix + ".");
     }
 }
