@@ -1,0 +1,232 @@
+= API Sheriff -- Container Image: Pulling, Running and Verifying
+:toc:
+:toclevels: 2
+:sectnums:
+
+An operator guide to the published container image: *which tag to use*, *how to run it* with the
+configuration the artifact genuinely requires, *what the SBOM and the vulnerability scan do and do
+not guarantee*, and *how to cryptographically verify the image before deploying it*.
+
+The image lives at `ghcr.io/cuioss/api-sheriff`. Its version is always identical to the Maven
+version -- the image is a packaging of the same released source tree, not a separately versioned
+product, and the release lane asserts the identity rather than assuming it. The policy behind that
+guarantee is recorded in link:../development/release-process.adoc[the release process].
+
+== Which tag to use
+
+Every release publishes exactly two tags, both resolving to the same tested digest.
+
+`ghcr.io/cuioss/api-sheriff:<version>`::
+The human-facing release reference -- use it when you want the reference to read like the release
+notes.
+
+`ghcr.io/cuioss/api-sheriff:sha-<commit>`::
+*Provenance, not immutability.* `<commit>` is the full 40-character SHA of the commit the release
+tag points at, so this tag answers "which source produced this image?" unambiguously. It is still an
+ordinary registry tag: nothing at the registry prevents it from being repointed, and it is not the
+image digest. Use it to trace an image back to its source -- not as a deployment pin.
+
+*There is no `:latest` tag, and that is deliberate -- the registry is not broken.* Pin by version,
+or by digest for production. The decision and the reasoning behind it are recorded once, in
+link:../development/release-process.adoc#_container_image_tags[the release-artifact policy].
+
+[IMPORTANT]
+====
+*Only `ghcr.io/cuioss/api-sheriff@sha256:...` is immutable.* Both tags above are mutable by
+construction; a digest is the content address and cannot be repointed. For production, resolve the
+digest once and deploy that:
+
+[source,bash]
+----
+docker pull ghcr.io/cuioss/api-sheriff:<version>
+
+# Filter for THIS repository and require exactly one match. `docker image inspect` reports
+# RepoDigests as a list whose order is not defined, and an image pulled from, or pushed to, more
+# than one repository has more than one entry -- so `{{index .RepoDigests 0}}` can silently hand you
+# a digest belonging to a different repository. The release workflow applies the same filter-and-
+# assert-one rule when it resolves the digest it signs.
+DIGEST="$(docker image inspect \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
+  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
+[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
+----
+
+Then deploy `"${DIGEST}"` verbatim.
+====
+
+[NOTE]
+====
+*If `docker pull` fails with a not-found or authentication error immediately after a release*, the
+GHCR package is most likely still private: a package created by a `GITHUB_TOKEN` push is private by
+default, and the in-workflow smoke test pulls with its own credentials so it cannot detect this. The
+fix is a one-time maintainer action recorded on the release checklist -- set the `api-sheriff`
+package to public in the organisation's package settings.
+====
+
+== Pull and run
+
+The image is distroless: it carries no shell and no package manager, and it runs as `nonroot`. It
+ships one ahead-of-time-compiled native executable and nothing else.
+
+[source,bash]
+----
+docker pull ghcr.io/cuioss/api-sheriff:<version>
+----
+
+Running it takes more than a bare `docker run`, because the artifact has real prerequisites:
+
+* *A mounted configuration directory is mandatory.* `sheriff.config.dir` is a relative path that
+  resolves inside the image, so a container started without a mounted `gateway.yaml` tree *fails
+  fast* rather than serving on a partial configuration. Mount your configuration and point
+  `SHERIFF_CONFIG_DIR` at the mount.
+* *Certificate material is deployment-supplied*, for the terminated listener and, separately, for
+  the management interface. The image bakes in no certificates by design.
+* *Two ports are published*: `8443` for application traffic and `9000` for the management interface
+  (health and metrics).
+* *`QUARKUS_HTTP_SSL_PORT` must be moved when your `gateway.yaml` declares `tls.passthrough_sni`.*
+  With passthrough enabled, the SNI front listener owns the public TLS port, so the terminated
+  Quarkus listener has to move off it -- set `QUARKUS_HTTP_SSL_PORT=8444` or the two collide on
+  8443 at start-up.
+
+[source,bash]
+----
+docker run -d --name api-sheriff \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  -p 8443:8443 -p 9000:9000 \
+  -v /etc/api-sheriff/config:/app/sheriff-config:ro \
+  -v /etc/api-sheriff/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  ghcr.io/cuioss/api-sheriff:<version>
+----
+
+The recipe above is the *terminating* deployment -- Quarkus itself terminates TLS on 8443. If your
+`gateway.yaml` declares `tls.passthrough_sni`, the SNI front listener takes 8443 and the terminated
+listener must move, or the two collide on the same port at start-up. Add one variable:
+
+[source,bash]
+----
+docker run -d --name api-sheriff \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  -p 8443:8443 -p 9000:9000 \
+  -v /etc/api-sheriff/config:/app/sheriff-config:ro \
+  -v /etc/api-sheriff/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_SSL_PORT=8444 \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  ghcr.io/cuioss/api-sheriff:<version>
+----
+
+`QUARKUS_HTTP_SSL_PORT=8444` is deliberately *absent* from the terminating recipe rather than set in
+both: on a terminating deployment it would move the listener off the port `-p 8443:8443` publishes,
+and the container would come up serving nothing on 8443.
+
+`--cap-drop=ALL` and `--security-opt=no-new-privileges` are in both recipes rather than in a footnote
+because the artifact needs neither: it runs as `nonroot`, binds only the unprivileged ports 8443 and
+9000, and, being distroless, contains no setuid binary that a privilege escalation could reach.
+Dropping both is free here, so there is no reason to run without them.
+
+Two further controls are worth adding once validated against your deployment, and are left out of
+the recipe above only because their correct values are deployment-specific: a read-only root
+filesystem (`--read-only` plus a writable `--tmpfs /tmp`) and explicit memory and CPU limits
+(`--memory`, `--cpus`). Both belong in any production orchestration manifest.
+
+The full deployment-bound knob set -- which values the deployment owns and which `gateway.yaml`
+owns -- is enumerated in link:environment-variable-overrides.adoc[Environment-variable overrides].
+The management interface's scheme, its single-port constraint and the plain-HTTP opt-out are
+covered in link:tls-edge.adoc[TLS Edge]; supplying the management certificate pair above makes
+port 9000 speak HTTPS, so health probes against it must speak TLS.
+
+== What the SBOM and the scan guarantee -- and what they do not
+
+Each release produces an SPDX SBOM for the exact published image -- retained as an artifact of the
+release workflow run, not attached to the registry or to a GitHub release -- and the release fails
+before anything is pushed if Trivy reports a finding at *HIGH or CRITICAL* on that same image.
+
+*Read the scope honestly.* The image is the pinned distroless base plus exactly one layer: a native
+executable that carries no package metadata. There are no jars in the image, so an image scan is in
+substance a scan of the base image's OS packages -- and *the SBOM has exactly that scope too*,
+because it catalogues that same image. Neither artifact is an inventory of, or a statement about,
+the application's Java dependency tree.
+
+Do not read either one as if it were. Java dependency findings come from the project's
+per-pull-request supply-chain scan -- a Trivy filesystem scan of the repository -- and from its
+Sonar and Dependabot lanes.
+
+== Verify the signature before deploying
+
+Every published digest is signed keylessly with Cosign, using the release workflow's GitHub OIDC
+identity. The signature is stored in the registry alongside the image; there is no key to
+distribute.
+
+*Verify the digest, and deploy that same digest.* The signature is made over the digest, never over
+a tag. Verifying `:<version>` makes `cosign` resolve the tag itself, so what was verified and what
+is later deployed are two independent tag resolutions -- and a tag can be repointed between them.
+Resolve the digest once, verify it, and deploy it:
+
+[source,bash]
+----
+docker pull ghcr.io/cuioss/api-sheriff:<version>
+
+# Same filter-and-assert-one rule as the digest-pinning recipe above -- RepoDigests is unordered and
+# may carry entries for other repositories, so never take element 0 on faith.
+DIGEST="$(docker image inspect \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
+  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
+[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
+
+cosign verify \
+  --certificate-identity https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "${DIGEST}"
+----
+
+`RepoDigests` entries are fully-qualified `ghcr.io/cuioss/api-sheriff@sha256:...` references, so the
+resolved value is passed to `cosign` and to your deployment manifest unchanged -- verify and deploy
+the same string.
+
+Both flags are mandatory, and each pins a different half of the claim:
+
+`--certificate-identity`::
+*Who* signed it -- the exact workflow, in the exact repository, on the exact ref. It is what binds
+the check to this project's release lane rather than to any workflow anywhere.
+
+`--certificate-oidc-issuer`::
+*Which identity provider* vouched for that identity. It is what stops the same identity string,
+asserted by some other issuer, from satisfying the check.
+
+`cosign` refuses to run a keyless verification without both, and that refusal is the point: a check
+that constrained neither the signer nor the issuer would prove only that *somebody* signed the
+artifact.
+
+On success, `cosign` prints the verification checks it applied and the signature payload, and exits
+zero:
+
+[source,text]
+----
+Verification for ghcr.io/cuioss/api-sheriff@sha256:... --
+The following checks were performed on each of these signatures:
+  - The cosign claims were validated
+  - Existence of the claims in the transparency log was verified offline
+  - The code-signing certificate was verified using trusted certificate authority certificates
+----
+
+*A non-zero exit means the artifact must not be deployed.* Treat it as a supply-chain failure, not
+as a tooling problem to work around.
+
+== See also
+
+* link:../development/release-process.adoc[Release process] -- the release-artifact policy, the
+  two-tag scheme, and why the image version equals the Maven version.
+* link:environment-variable-overrides.adoc[Environment-variable overrides] -- the deployment-bound
+  knob set referenced above.
+* link:tls-edge.adoc[TLS Edge] -- TLS policy, passthrough SNI, mTLS, and the management interface.
+* link:README.adoc[Operator Guide] -- the index for this documentation layer.

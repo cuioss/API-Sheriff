@@ -23,3 +23,136 @@ jobs:
       OSS_SONATYPE_PASSWORD: ${{ secrets.OSS_SONATYPE_PASSWORD }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
+  # EARLY-WARNING SUPPLY-CHAIN SIGNAL — deliberately NON-GATING, and deliberately NOT redundant with
+  # the release lane's scan.
+  #
+  # This lane and the authoritative gate in release.yml are two distinct guarantees and neither is a
+  # simplification of the other: this one is an early signal on EVERY change, the release lane is the
+  # authoritative gate on the exact tested artifact before it is published. Do not fold them together.
+  #
+  # No `needs:` — the job neither delays nor is delayed by `build`, and no trigger changed.
+  #
+  # SCOPE: the pinned base image (by digest, read out of the Dockerfile rather than restated here)
+  # plus a filesystem scan of the repository. It deliberately does NOT build the application image:
+  # that would put a GraalVM native compile on every pull request, which is exactly the cost this
+  # arrangement avoids. The proxy is not as weak as it looks — the release image is the same pinned
+  # base plus one native executable carrying no package metadata and no jars, so a full app-image
+  # scan would report the same package findings, and the `fs` scan is what actually surfaces Java
+  # dependency CVEs.
+  supply-chain-scan:
+    name: Supply-chain scan (non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Read the pinned base image out of the Dockerfile rather than restating the digest here, so
+      # this lane cannot silently drift from what the production image is actually built on.
+      - name: Resolve the pinned base image
+        id: base
+        run: |
+          BASE="$(awk '/^FROM /{print $2; exit}' api-sheriff/src/main/docker/Dockerfile.native)"
+          case "$BASE" in
+            *@sha256:*) ;;
+            *) echo "::error::Base image in Dockerfile.native is not digest-pinned: '${BASE}'"; exit 1 ;;
+          esac
+          echo "image=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "Scanning pinned base image: ${BASE}"
+
+      - name: Generate the SPDX SBOM for the pinned base image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ steps.base.outputs.image }}
+          format: spdx-json
+          artifact-name: base-image-sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      # `exit-code: 0` on EVERY Trivy step below is what makes this lane non-gating.
+      # `continue-on-error` is deliberately NOT used: it would also mask a genuine tool or network
+      # failure, whereas `exit-code: 0` suppresses only the vulnerability verdict. A broken scan step
+      # must still turn the check red.
+      #
+      # Each target is scanned twice, once for the human summary and once for the SARIF artifact.
+      # The second pass is seconds: the action restores the Trivy DB from cache, so only the report
+      # rendering is repeated.
+      - name: Scan the pinned base image (report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.base.outputs.image }}
+          exit-code: '0'
+          format: table
+          output: trivy-base-image.txt
+
+      - name: Scan the pinned base image (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.base.outputs.image }}
+          exit-code: '0'
+          format: sarif
+          output: trivy-base-image.sarif
+
+      - name: Scan the repository filesystem (report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          exit-code: '0'
+          format: table
+          output: trivy-filesystem.txt
+
+      - name: Scan the repository filesystem (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          exit-code: '0'
+          format: sarif
+          output: trivy-filesystem.sarif
+
+      # The base image reaches the shell through the environment, never through `${{ }}` expansion
+      # inside the script body — expression interpolation into a run block is a script-injection sink.
+      - name: Publish the scan reports to the job summary
+        env:
+          BASE_IMAGE: ${{ steps.base.outputs.image }}
+        run: |
+          {
+            echo "## Supply-chain scan (non-gating)"
+            echo
+            echo "Findings below never fail this check. The authoritative gate runs in the release"
+            echo "lane against the exact tested image, at HIGH and CRITICAL."
+            echo
+            echo "### Pinned base image — \`${BASE_IMAGE}\`"
+            echo '```'
+            cat trivy-base-image.txt
+            echo '```'
+            echo
+            echo "### Repository filesystem"
+            echo '```'
+            cat trivy-filesystem.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the SARIF reports
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: trivy-sarif
+          path: |
+            trivy-base-image.sarif
+            trivy-filesystem.sarif
+          retention-days: 30
+          if-no-files-found: error

@@ -25,6 +25,161 @@ link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] delega
 cuioss-organization reusable Maven release workflow, pinned to a specific commit SHA. Neither the
 pin nor the `secrets:` block is part of the release decision -- they are build wiring.
 
+== What a release contains
+
+One dispatch produces one coherent set of artifacts, all carrying the same version:
+
+* *Maven coordinates on Maven Central* -- `de.cuioss.sheriff.gateway:api-sheriff` and its reactor
+  siblings, published by the reusable release workflow.
+* *A container image on GHCR* -- `ghcr.io/cuioss/api-sheriff`, built from the released source tree.
+* *An SPDX SBOM* for that image, retained as an artifact of the release run.
+* *A Cosign signature* over that image's digest, stored in the registry next to the image.
+
+A Helm chart and a Compose deployment sample are *explicitly out of scope* until the deployment
+artifacts change (PLAN-27) lands. They are named here so their absence reads as a known gap rather
+than an oversight.
+
+image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one dispatch drives the Maven release and a single image build whose output is scanned, pushed, smoked and signed, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
+
+=== The image version is the Maven version
+
+The image is a packaging of the same released source tree, not a separately versioned product, so
+`ghcr.io/cuioss/api-sheriff:<version>` carries the Maven version verbatim. An operator who knows the
+Maven version must be able to derive the image reference without consulting a mapping table, and a
+divergence would make "which image contains fix X" unanswerable from the release notes alone.
+
+This is a checked fact rather than a convention. The publish job checks out the release tag the
+Maven release pushed, reads `current-version` from link:../../.github/project.yml[`.github/project.yml`]
+with the same pinned action the release job used, and asserts that the checked-out `project.version`
+equals it. A mismatch fails the release before the image is built or pushed to GHCR.
+
+[#release-not-atomic]
+=== The release is NOT atomic
+
+The `publish-image` job declares `needs: [release]`, so *the Maven Central publication has already
+happened* by the time any image step runs. This is not an oversight and cannot be reordered away:
+the released version does not exist until the release job has cut it, so nothing about the image can
+be validated beforehand.
+
+The consequence is worth stating plainly rather than discovering during an incident. A failure in
+the integration-test suite, the SBOM step, the Trivy gate, the registry push, the smoke test or the
+Cosign signature leaves a *partial release*: the jars are on Maven Central and are irrevocable,
+while no image, or an unsigned image, exists in GHCR. Everywhere this document or the workflow says
+a step runs "before anything is pushed", read it as *before anything is pushed to GHCR*.
+
+==== If the image lane fails after the Maven release
+
+. *Do not re-run the whole workflow.* A second dispatch would attempt another Maven release of a
+  version that is already published.
+. Fix the cause on `main` and merge it.
+. Re-run the failed `publish-image` job alone from the Actions UI (*Re-run failed jobs*). It reads
+  its version from `.github/project.yml` at the dispatch SHA and checks out the release tag, so it
+  reproduces the same inputs without touching Maven Central.
+. If the failure was the Trivy gate on an unfixable base-image CVE, see
+  <<unfixable-base-image-cve>> before re-running.
+. If the version has to be abandoned, follow the relocation-stub precedent set on 2026-07-12: cut a
+  patch version and publish relocation stubs. Maven Central artifacts are never deleted.
+
+=== One build, and why the step order is inverted
+
+link:../../integration-tests/pom.xml[`integration-tests/pom.xml`] binds
+`docker compose build api-sheriff` to `pre-integration-test`, so the integration-test harness always
+builds the image. The publish lane is therefore ordered *test-which-builds, then
+push-that-digest* rather than the more obvious build, test, push: the harness build is the one and
+only image build in the lane, and the image it produced is the one that gets tagged, pushed and
+signed.
+
+The inversion exists so that "push exactly what was tested" holds *by construction*. There is only
+one build, so there is nothing that can drift between the tested artifact and the published one.
+
+[IMPORTANT]
+====
+Do not "correct" this back. Adding a second `docker build` to the publish lane, or adding a
+skip-guard to `integration-tests/pom.xml` so the harness stops building, reintroduces exactly the
+drift the inversion removes -- and the drift is silent, because both builds succeed.
+====
+
+=== Scan and signature guarantees
+
+* *Trivy gates the release at HIGH and CRITICAL.* A finding at either severity fails the job, and
+  the gate runs before the registry login, so nothing has been pushed to GHCR when it fires (the
+  Maven artifacts are already out -- see <<release-not-atomic>>). The threshold is
+  deliberately stricter than a CRITICAL-only gate: API Sheriff is a security-focused gateway.
+* *A Syft SBOM is produced for the same image* the gate scanned, and retained as an artifact of the
+  release run.
+* *The image is Cosign-signed keylessly, by digest*, under the workflow's GitHub OIDC identity. No
+  key material and no new secret is involved. A tag is a mutable pointer, so signing one would sign
+  nothing durable.
+
+The image scan is narrower than it looks. The image is the pinned distroless base plus one native
+executable and contains no jars, so it is in substance a scan of the base image's OS packages -- and
+the SBOM, cataloguing that same image, carries exactly the same scope. Java dependency findings come
+from the pull-request supply-chain scan and from the Sonar and Dependabot lanes, not from here.
+
+[#unfixable-base-image-cve]
+=== If the scan blocks on an unfixable base-image CVE
+
+The gate runs with `ignore-unfixed: 'false'`, so it fails on HIGH and CRITICAL findings *including
+those with no upstream fix available*. Combined with a digest-pinned base image, that means a
+release can become blocked by a CVE in a layer this repository does not control and cannot patch.
+
+That is the intended default -- an unfixable CVE in the shipped base is a fact an operator deserves
+to know about, not something to route around silently. But it must have a sanctioned escape hatch,
+or the first occurrence turns into an ad-hoc threshold relaxation under release pressure.
+
+In order of preference:
+
+. *Re-pin the base image* to a newer digest that carries the fix. This resolves the finding rather
+  than hiding it, and is almost always available for a distroless base.
+. *If, and only if, no fixed base exists*, add a `.trivyignore` at the repository root with one
+  entry per CVE, each carrying a comment recording the CVE id, why it is not exploitable in this
+  image, who accepted it and the date. Trivy picks the file up automatically. There is deliberately
+  no `.trivyignore` in the tree today: an empty suppression file is an invitation to append to it
+  without the accompanying justification.
+
+Never relax `severity` or flip `exit-code` to `'0'` to get a release out. Those change the gate for
+every future release; a `.trivyignore` entry is scoped to the specific finding and is visible in
+review.
+
+=== One-time action after the first release
+
+A GHCR package created by a `GITHUB_TOKEN` push is *private by default*, and the in-workflow smoke
+step pulls with the job's own credentials, so it cannot detect this. The release checklist therefore
+carries one manual step:
+
+. After the *first* release, open the organisation's package settings and set the `api-sheriff`
+  package to *public*.
+
+Until that is done every check stays green while `docker pull` fails for everyone outside the
+organisation.
+
+== Container image tags
+
+Every release publishes exactly *two* tags, both resolving to the same tested digest.
+
+`ghcr.io/cuioss/api-sheriff:<version>`::
+The human-facing release reference. `<version>` is the Maven version, verbatim.
+
+`ghcr.io/cuioss/api-sheriff:sha-<commit>`::
+*Provenance, not immutability.* `<commit>` is the *full 40-character SHA of the commit the release
+tag points at* -- the `release:prepare` commit whose poms carry the released version -- and *not* the
+`main` HEAD the release was dispatched from. That is the commit whose source produced the image;
+naming the dispatch commit would point at a tree that never built it. The tag answers "which source
+produced this?" unambiguously, but it remains an ordinary mutable registry tag and is not the image
+digest -- which is exactly why Cosign signs the digest rather than either tag.
+
+*Neither tag is a deployment pin.* Only `ghcr.io/cuioss/api-sheriff@sha256:...` is immutable; both
+tags above can be repointed at the registry. Operator guidance for resolving and deploying the
+digest is in link:../user/container-image.adoc[the container image guide].
+
+*No floating `:latest` tag is published at pre-1.0*, and that is a decision rather than an omission.
+A floating tag invites an unpinned production pull whose contents change under the operator, which
+is precisely the posture a security-focused gateway should not encourage. Operators pin by version,
+or by digest for production.
+
+link:../user/container-image.adoc[The container image guide] covers pulling, running and
+cryptographically verifying the published image.
+
 == Why the pull_request trigger was removed
 
 The workflow previously also carried a `pull_request` trigger scoped to `types: [closed]` and
@@ -77,4 +232,5 @@ is gone from `main` before relying on it being gone.
 * link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] -- the dispatch-only
   release workflow.
 * link:../../.github/project.yml[`.github/project.yml`] -- where the released version is declared.
+* link:../user/container-image.adoc[Container Image] -- the operator layer for the published image.
 * link:README.adoc[Contributor Guide] -- the index for this documentation layer.
