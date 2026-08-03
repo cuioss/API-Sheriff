@@ -34,7 +34,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 
-
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;

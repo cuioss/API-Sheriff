@@ -39,7 +39,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>always dispatched</strong>: there is no profile condition at the {@code GatewayEdgeRoute}
  * call site, because two of its four enforcements must survive every mode.
  * <p>
- * <strong>Unconditional half</strong> — runs for every route, {@code profile: none} included:
+ * <strong>Unconditional half</strong> — runs for every route, {@code profile: minimal} included:
  * <ul>
  *   <li><strong>{@code max_body_bytes} fast-reject.</strong> A declared {@code Content-Length}
  *       already exceeding the route config's {@code maxBodySize} — the effective cap derived for the
@@ -54,11 +54,11 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Skippable half</strong> — gated on
  * {@link de.cuioss.sheriff.gateway.config.model.SecurityProfile#skippableValidationEnabled()}, so it
- * runs for {@code strict} and {@code lenient} and is skipped only under {@code none}:
+ * runs for {@code strict} and {@code lenient} and is skipped only under {@code minimal}:
  * <ul>
  *   <li><strong>url-parameter name + value validation.</strong> Relocated here from the pre-route
  *       {@code BasicChecksStage} so it runs under the ROUTE's configuration; it validates the
- *       parameter name as well as each value. It runs unconditionally for a non-{@code none} route
+ *       parameter name as well as each value. It runs unconditionally for a non-{@code minimal} route
  *       because it is now the only run, not a re-run.</li>
  *   <li><strong>Divergent pipeline re-run.</strong> When the route carries a
  *       {@link SecurityConfiguration} that differs from the stage-1 default, the path and header
@@ -90,7 +90,7 @@ import org.jspecify.annotations.Nullable;
  * headers, exactly as for every other header. The direction of change is admit-more-length-only, for
  * exactly two header names.
  * <p>
- * <strong>The closed list of what {@code none} turns off is exactly those two items</strong> — the
+ * <strong>The closed list of what {@code minimal} turns off is exactly those two items</strong> — the
  * relocated url-parameter name/value validation and the pipeline re-run. Everything else keeps
  * running: the whole non-skippable pre-route floor (collection caps, the URL path pipeline that
  * produces the canonical path, {@code CanonicalPathGuard}, {@code FramingGate}, the passthrough host
@@ -166,7 +166,7 @@ public final class ThoroughChecksStage {
         enforceBodyCap(request, routeConfig);
         enforceAllowedPaths(canonicalPath, allowedPaths);
 
-        // Skippable half — the closed list of what 'none' turns off, and nothing more.
+        // Skippable half — the closed list of what 'minimal' turns off, and nothing more.
         if (!route.getSecurityProfile().skippableValidationEnabled()) {
             return;
         }

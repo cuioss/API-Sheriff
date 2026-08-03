@@ -81,7 +81,7 @@ class RouteRuntimeAssemblerTest {
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
         assetSourceFactory = asset -> new DirectoryAssetSource(
-                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access());
+                Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), Map.of());
     }
 
     @AfterEach
@@ -286,7 +286,7 @@ class RouteRuntimeAssemblerTest {
         List<@Nullable SecurityFilterConfig> seen = new ArrayList<>();
         securityConfigFactory = filter -> {
             seen.add(filter);
-            return new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.NONE,
+            return new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.MINIMAL,
                     SecurityProfile.STRICT.preset());
         };
         RouteTable table = new RouteTable(List.of(
@@ -300,7 +300,7 @@ class RouteRuntimeAssemblerTest {
         assertEquals(Collections.singletonList(null), seen,
                 "the resolver runs for a block-less route, receiving a null filter block");
         RouteRuntime runtime = runtimes.getFirst();
-        assertEquals(SecurityProfile.NONE, runtime.getSecurityProfile(),
+        assertEquals(SecurityProfile.MINIMAL, runtime.getSecurityProfile(),
                 "the resolved profile reaches a route that declares no security_filter block");
         assertNotNull(runtime.getSecurityConfiguration(),
                 "every route carries a concrete limits policy, so the body cap is always enforceable");

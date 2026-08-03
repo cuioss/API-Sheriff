@@ -70,9 +70,9 @@ and the gateway holds no per-user state.
 | A single server-side symmetric key. `session.encryption_key` is *optional*: declared as an
   environment indirection (`${SHERIFF_SESSION_KEY}`) it is shared across all gateway instances and
   survives a restart; omitted, the gateway mints a key at boot, so sessions are dropped on every
-  restart and the key cannot be shared with another replica. Key rotation is supported by
-  the optional, decrypt-only `session.previous_key`: during the grace window cookies sealed with
-  the old key are still accepted and re-sealed with the new key on the next write.
+  restart and the key cannot be shared with another replica. There is no decrypt-only companion
+  key and no rotation window: replacing the key is a clean break, and every cookie sealed under
+  the withdrawn key is refused as "no session" so its owner logs in again.
 
 | Size
 | The cookie must stay within browser limits (~4 KB), enforced as a seal-time budget: an
@@ -159,7 +159,6 @@ oidc:
     mode: cookie                 # encrypted cookie, no store (this variant)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # AES-256-GCM key; optional -- omit to generate on startup
-    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only (key rotation)
     ttl_seconds: 3600
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
 ----
@@ -186,8 +185,8 @@ The only material difference from the link:02-bff-session.adoc[session-based] co
 `session.encryption_key` is *optional*. Declare it when sessions must be shared across replicas
 and survive a restart -- that is the only thing it buys. Omitting it selects the
 generate-on-startup key mode: the gateway mints a key at boot, so sessions are dropped on every
-restart and the key cannot be shared with another replica. `previous_key` is optional and
-decrypt-only, and requires an `encryption_key` to roll onto. See
+restart and the key cannot be shared with another replica. There is no second, decrypt-only key --
+replacing `encryption_key` invalidates every outstanding cookie. See
 link:../configuration.adoc[the configuration reference] for the authoritative validation rules.
 
 == Properties

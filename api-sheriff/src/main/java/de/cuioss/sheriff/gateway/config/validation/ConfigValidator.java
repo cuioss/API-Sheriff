@@ -27,8 +27,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 
+import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -37,6 +39,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -91,7 +94,7 @@ import org.jspecify.annotations.Nullable;
  * auth block. These collect into the same shared list and never fail fast.
  * <p>
  * The fail-closed inbound-filter mode refusal (ADR-0024) adds one more: a route whose effective
- * {@code profile} resolves to {@code none} must be neither effectively authenticated nor anchored
+ * {@code profile} resolves to {@code minimal} must be neither effectively authenticated nor anchored
  * under a {@code type: bff} anchor. The {@code profile} <em>value range</em> is owned by the bundled
  * JSON Schema, so no post-binding range rule exists here — only this posture refusal.
  * <p>
@@ -133,6 +136,48 @@ public final class ConfigValidator {
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String SECURITY_DEFAULTS_AUTHORIZATION_POINTER =
             "/security_defaults/max_authorization_header_value_length";
+    private static final String ASSET_DEFAULTS_CONTENT_TYPES_POINTER = "/asset_defaults/content_types";
+
+    /**
+     * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
+     * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
+     * other control character.
+     * <p>
+     * The quantifier is <em>possessive</em> ({@code ++}), not greedy. Every delimiter the surrounding
+     * {@link #MEDIA_TYPE} pattern places between tokens — {@code /}, {@code ;}, {@code =}, space and
+     * tab — is outside this character class, so a token run can never productively give a character
+     * back; forbidding the give-back is therefore behaviour-neutral and removes the backtracking
+     * bookkeeping the engine would otherwise carry.
+     */
+    // java:S6418 — the RFC 9110 `token` character class MEDIA_TYPE is built from, not a credential.
+    // The rule is a name heuristic and fires only on the TOKEN substring in the constant's name;
+    // TOKEN is the correct RFC term here, so the name stays and the finding is suppressed instead.
+    @SuppressWarnings("java:S6418")
+    private static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]++";
+
+    /**
+     * A well-formed {@code type/subtype} media type with optional {@code ;name=value} parameters,
+     * matched against the WHOLE value ({@link java.util.regex.Matcher#matches()}). The whole-input
+     * match is load-bearing: an {@code ^…$}-anchored {@code find()} would admit a trailing newline,
+     * since Java's {@code $} also matches before a final line terminator — exactly the CR/LF this
+     * gate exists to refuse. Parameter values are tokens only; a quoted-string parameter has no
+     * place in a static asset's {@code Content-Type} and admitting one would widen the character set
+     * this bound narrows.
+     * <p>
+     * Every quantifier here is <em>possessive</em>, the parameter-list repetition included. A greedy
+     * {@code (?:…)*} whose body itself carries quantified runs makes the engine recurse once per
+     * iteration and retain a backtracking position for each, so a long enough input exhausts the
+     * stack ({@code StackOverflowError}) instead of simply failing to match. Possessive quantifiers
+     * turn the repetition into a flat, allocation-free scan. The change is behaviour-neutral for the
+     * same reason it is on {@link #MEDIA_TYPE_TOKEN}: the delimiters are disjoint from the token
+     * character class, so no backtrack into an already-matched run can ever succeed.
+     */
+    private static final Pattern MEDIA_TYPE = Pattern.compile(
+            MEDIA_TYPE_TOKEN + "/" + MEDIA_TYPE_TOKEN
+                    + "(?:[ \\t]*+;[ \\t]*+" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*+");
+
+    /** The cap on the offending value a refusal message echoes back to the operator. */
+    private static final int ECHOED_VALUE_MAX_LENGTH = 60;
 
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
@@ -147,7 +192,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSecurityProfileNone(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> validateSecurityProfileMinimal(gateway, endpoints, errors),
             ConfigValidator::validateTerminalAction,
             (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
@@ -161,7 +206,9 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors));
 
     private final List<ValidationRule> rules;
 
@@ -292,6 +339,110 @@ public final class ConfigValidator {
                             + "Authorization carve-out")
                             .formatted(declared, baseline)));
         }
+    }
+
+    /**
+     * Enforces the <strong>add-only</strong> ruling on {@code asset_defaults.content_types}: an entry
+     * whose extension is already carried by the gateway's built-in asset content-type map is refused.
+     * <p>
+     * The refusal is a security bound rather than an ergonomic one. The built-in map is what makes an
+     * asset response's {@code Content-Type} gateway-governed instead of source-dictated, and several
+     * of its entries are load-bearing for that governance — remapping {@code svg} away from
+     * {@code image/svg+xml}, or pointing any built-in extension at {@code text/html}, turns a served
+     * asset into a stored-XSS lever on a security gateway. Refusing at boot (rather than silently
+     * ignoring the entry at request time, which is what the runtime precedence in
+     * {@code AssetResponseEnvelope.contentTypeFor} would otherwise do) means the operator learns the
+     * mapping did not take effect, instead of shipping a descriptor that reads as though it did.
+     * <p>
+     * Every offending entry is collected rather than failing on the first, per ADR-0009 — the operator
+     * sees the whole list in one boot attempt. Keys arrive already lowercased by
+     * {@link AssetDefaultsConfig}, so an entry's case cannot decide whether this refusal sees it.
+     */
+    private static void validateAssetContentTypesAddOnly(GatewayConfig gateway, List<ConfigError> errors) {
+        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
+        if (assetDefaults == null) {
+            return;
+        }
+        Set<String> builtIn = AssetResponseEnvelope.builtInExtensions();
+        for (String extension : assetDefaults.contentTypes().keySet()) {
+            if (builtIn.contains(extension)) {
+                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
+                        ("asset_defaults.content_types declares '%s', which the gateway already maps; "
+                                + "the built-in content-type mappings are immutable and the block is "
+                                + "add-only — declare only extensions the gateway does not map, and "
+                                + "remove this entry")
+                                .formatted(extension)));
+            }
+        }
+    }
+
+    /**
+     * Enforces that every {@code asset_defaults.content_types} <em>value</em> is a well-formed
+     * {@code type/subtype} media type, refusing the entry at boot otherwise.
+     * <p>
+     * The value half needs its own bound because it reaches further than the key half does: the
+     * declared value is what {@code AssetResponseEnvelope.governedHeaders} puts under
+     * {@code Content-Type} and {@code GatewayEdgeRoute} then applies verbatim as a response-header
+     * value. Without this rule a value carrying CR/LF — or any non-media-type text at all — is
+     * accepted at boot and only misbehaves per request, deep inside the response write where the
+     * transport's own header-value validation throws after the status code is already set. That is
+     * the exact inversion of the fail-fast startup-validation posture the rest of this class holds,
+     * and it is asymmetric with the key half, which IS boot-refused.
+     * <p>
+     * This is a <strong>well-formedness</strong> gate, not a policy gate: it does not rank media
+     * types by safety and carries no allow-list of "safe" ones. The policy bound already exists one
+     * rule up — {@link #validateAssetContentTypesAddOnly} fences off every built-in,
+     * script-executable extension, so the stored-XSS lever cannot be reached through a built-in key
+     * whatever this rule permits.
+     * <p>
+     * The refusal names the offending extension and value, because an operator cannot fix a typo
+     * they cannot see. The value is rendered through {@link #renderForMessage} rather than echoed
+     * raw: a {@link ConfigError} is emitted into the boot ERROR log, so echoing an unescaped CR/LF
+     * would forge log lines (CWE-117) through the very key this rule constrains.
+     * <p>
+     * Every offending entry is collected rather than failing on the first, per ADR-0009.
+     */
+    private static void validateAssetContentTypeValues(GatewayConfig gateway, List<ConfigError> errors) {
+        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
+        if (assetDefaults == null) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : assetDefaults.contentTypes().entrySet()) {
+            // A null value is structurally impossible: AssetDefaultsConfig hands back a Map.copyOf,
+            // which refuses null values at binding time.
+            String value = entry.getValue();
+            if (!MEDIA_TYPE.matcher(value).matches()) {
+                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
+                        ("asset_defaults.content_types maps '%s' to '%s', which is not a well-formed media type; "
+                                + "the value is served verbatim as the asset's Content-Type response header, so it "
+                                + "must be a 'type/subtype' (optionally followed by ';name=value' parameters) and "
+                                + "must carry no control characters")
+                                .formatted(entry.getKey(), renderForMessage(value))));
+            }
+        }
+    }
+
+    /**
+     * Renders an offending configuration value for a refusal message: every character outside
+     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and the result is
+     * capped at {@link #ECHOED_VALUE_MAX_LENGTH}. The operator still sees what they typed; the boot
+     * ERROR log cannot be line-forged by it.
+     */
+    private static String renderForMessage(String value) {
+        StringBuilder rendered = new StringBuilder();
+        int limit = Math.min(value.length(), ECHOED_VALUE_MAX_LENGTH);
+        for (int index = 0; index < limit; index++) {
+            char current = value.charAt(index);
+            if (current >= 0x20 && current < 0x7F) {
+                rendered.append(current);
+            } else {
+                rendered.append("\\u%04X".formatted((int) current));
+            }
+        }
+        if (value.length() > limit) {
+            rendered.append("...");
+        }
+        return rendered.toString();
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
@@ -648,8 +799,8 @@ public final class ConfigValidator {
 
     /**
      * Rule: the fail-closed inbound-filter mode refusal (ADR-0024). A route whose effective
-     * {@code profile} resolves to {@link SecurityProfile#NONE} must be neither effectively
-     * authenticated nor anchored under a {@code type: bff} anchor. {@code none} drops the
+     * {@code profile} resolves to {@link SecurityProfile#MINIMAL} must be neither effectively
+     * authenticated nor anchored under a {@code type: bff} anchor. {@code minimal} drops the
      * url-parameter name/value validation, and dropping it in front of a token- or session-bearing
      * surface is never a deliberate posture — so the boot fails rather than serving the weakened
      * route.
@@ -659,27 +810,27 @@ public final class ConfigValidator {
      * endpoint may legally <em>strengthen</em> a {@code public}-access anchor's auth floor (ADR-0007
      * forbids weakening it, not strengthening it), and reading the anchor's static {@code access}
      * would under-refuse exactly those routes. The gateway-wide case needs no separate rule: a
-     * {@code security_defaults.profile: none} reaching an authenticated or BFF route through the
-     * fallback resolves to {@code none} here and is refused identically.
+     * {@code security_defaults.profile: minimal} reaching an authenticated or BFF route through the
+     * fallback resolves to {@code minimal} here and is refused identically.
      * <p>
      * The message names the route, the refusing dimension and the remedy, and echoes no configured
      * scalar value. Every violation collects into the shared list; the rule never fails fast
      * (ADR-0009).
      */
-    private static void validateSecurityProfileNone(GatewayConfig gateway, List<EndpointConfig> endpoints,
+    private static void validateSecurityProfileMinimal(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
-                if (effectiveProfile(gateway, route, anchor) != SecurityProfile.NONE) {
+                if (effectiveProfile(gateway, route, anchor) != SecurityProfile.MINIMAL) {
                     continue;
                 }
-                List<String> refusals = noneRefusalDimensions(gateway, endpoint, route, anchor);
+                List<String> refusals = minimalRefusalDimensions(gateway, endpoint, route, anchor);
                 if (!refusals.isEmpty()) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            ("route '%s' resolves inbound-filter profile 'none' but %s; 'none' is refused on "
+                            ("route '%s' resolves inbound-filter profile 'minimal' but %s; 'minimal' is refused on "
                                     + "authenticated and bff routes — declare profile 'strict' or 'lenient' for this "
-                                    + "route, or stop routing it through a 'none' fallback")
+                                    + "route, or stop routing it through a 'minimal' fallback")
                                     .formatted(route.id(), String.join(" and ", refusals))));
                 }
             }
@@ -687,11 +838,11 @@ public final class ConfigValidator {
     }
 
     /**
-     * The dimensions on which a {@code profile: none} route is refused: an effectively-authenticated
-     * access level, a {@code type: bff} anchor, or both. An empty list means the route may legally
-     * run under {@code none}.
+     * The dimensions on which a {@code profile: minimal} route is refused: an
+     * effectively-authenticated access level, a {@code type: bff} anchor, or both. An empty list
+     * means the route may legally run under {@code minimal}.
      */
-    private static List<String> noneRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
+    private static List<String> minimalRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route, @Nullable AnchorConfig anchor) {
         List<String> refusals = new ArrayList<>();
         AuthConfig auth = effectiveAuth(gateway, endpoint, route);
@@ -952,24 +1103,15 @@ public final class ConfigValidator {
      * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require an
      * {@code encryption_key} — omitting it selects the generate-on-startup key mode, a first-class
      * production option (at the cost of dropping every session on restart and being unshareable
-     * across replicas). Its companion rule survives the relaxation: a {@code previous_key} present
-     * <em>without</em> an {@code encryption_key} is still invalid, because a decrypt-only rotation
-     * key with no current key to roll onto is semantically nonsensical and rotation composes with
-     * the passed-key mode only.
+     * across replicas).
      */
     private static void validateSessionMode(GatewayConfig gateway, List<ConfigError> errors) {
-        // isCookieMode() / isServerMode() are the SHARED predicates over the mode value the
-        // OidcConfig.Session canonical constructor already canonicalized. Comparing against a
-        // literal here is what previously let 'Cookie' skip both rules while the edge still read it
-        // as active cookie mode and relaxed the pre-route Cookie header-value cap.
+        // isServerMode() is the SHARED predicate over the mode value the OidcConfig.Session canonical
+        // constructor already canonicalized. Comparing against a literal here is what previously let
+        // a value like 'Server' skip this rule while the runtime still read it as an active mode.
         OidcConfig.Session session = oidcSession(gateway);
         if (session == null) {
             return;
-        }
-        if (session.isCookieMode() && session.encryptionKey() == null && session.previousKey() != null) {
-            errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/previous_key",
-                    "cookie session mode with a previous_key requires an encryption_key — "
-                            + "the decrypt-only rotation key composes with the passed-key mode only"));
         }
         if (session.isServerMode() && session.store() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",

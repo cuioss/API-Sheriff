@@ -609,19 +609,21 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void acceptsTheNoneProfileAtEveryEnumSite() throws Exception {
-        // Arrange — the newly admitted member of the mode set, declared at all three sites at once
+    void acceptsTheMinimalProfileAtEveryEnumSite() throws Exception {
+        // Arrange — the partial-disable member of the mode set, declared at all three sites at once.
+        // The endpoint's `auth.require: none` rides along deliberately: it is a DIFFERENT knob in a
+        // different value space, so the profile rename must leave it accepted and unchanged.
         writeConfig("gateway.yaml", """
                 version: 1
                 security_defaults:
-                  profile: none
+                  profile: minimal
                 anchors:
                   api:
                     path_prefix: /api
                     type: proxy
                     access: public
                     security_filter:
-                      profile: none
+                      profile: minimal
                 """);
         writeConfig("endpoints/orders.yaml", """
                 endpoint:
@@ -634,18 +636,20 @@ class ConfigLoaderTest {
                       match:
                         path_prefix: /orders
                       security_filter:
-                        profile: none
+                        profile: minimal
                 """);
 
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
         // Assert
-        assertEquals("none", loaded.gateway().securityDefaults().profile());
-        assertEquals("none",
+        assertEquals("minimal", loaded.gateway().securityDefaults().profile());
+        assertEquals("minimal",
                 loaded.gateway().anchors().get("api").securityFilter().profile());
-        assertEquals("none", loaded.endpoints().getFirst().routes().getFirst()
+        assertEquals("minimal", loaded.endpoints().getFirst().routes().getFirst()
                 .securityFilter().profile());
+        assertEquals("none", loaded.endpoints().getFirst().auth().require(),
+                "auth.require: none is a different knob and survives the profile rename");
     }
 
     @Test
@@ -794,6 +798,46 @@ class ConfigLoaderTest {
                         + exception.errors());
     }
 
+    /**
+     * Pins the observable break of collapsing the cookie key material to a single key: a
+     * {@code gateway.yaml} that still declares the removed {@code oidc.session.previous_key} does
+     * not start.
+     * <p>
+     * This is a schema-level refusal, not a validator rule — {@code oidc.session} declares
+     * {@code additionalProperties: false}, so removing the property from the schema converts every
+     * lingering declaration into a boot failure. That is deliberately a clean break with no
+     * accept-and-ignore shim: silently tolerating the key would leave an operator believing a
+     * rotation key is still in force when nothing reads it. The operator remedy — delete the line —
+     * is documented in {@code doc/user/bff-cookie.adoc}.
+     */
+    @Test
+    void rejectsRetiredPreviousKeyAtBoot() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                  session:
+                    mode: cookie
+                    encryption_key: "${SHERIFF_SESSION_KEY}"
+                    previous_key: "${SHERIFF_SESSION_KEY_PREVIOUS}"
+                """);
+
+        ConfigLoader loader = loader(Map.of(
+                "OIDC_CLIENT_SECRET", "s3cr3t",
+                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "SHERIFF_SESSION_KEY_PREVIOUS", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("session")),
+                () -> "a config still declaring the removed oidc.session.previous_key must fail the boot "
+                        + "under additionalProperties: false, got: " + exception.errors());
+    }
+
     @Test
     void strayYmlEndpointFileFailsTheBoot() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
@@ -902,5 +946,107 @@ class ConfigLoaderTest {
         assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
                 () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
                         + exception.errors());
+    }
+
+    @Test
+    void bindsWellFormedAssetContentTypeAdditions() throws Exception {
+        // The schema bound on asset_defaults.content_types refuses malformed values, not the feature:
+        // an ordinary addition, with and without a media-type parameter, must still bind.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    avif: image/avif
+                    m4v: video/mp4;codecs=avc1
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(Map.of("avif", "image/avif", "m4v", "video/mp4;codecs=avc1"),
+                loaded.gateway().assetDefaults().contentTypes(),
+                "a well-formed media type, with and without a parameter, must still bind");
+    }
+
+    @Test
+    void refusesAnAssetContentTypeValueCarryingATrailingNewline() throws Exception {
+        // The value is served verbatim as the asset's Content-Type response header, so a trailing CR/LF is a
+        // response-header-injection vector. Both patterns in this block terminate with a negative lookahead
+        // rather than '$' because '$' also matches before a final line terminator: the validator library
+        // currently applies 'pattern' with whole-input semantics, under which '$' would be safe, but the
+        // lookahead makes the bound hold under find() semantics too rather than depending on that choice.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    avif: "image/avif\\n"
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // The refusal echoes the offending pattern verbatim, so assert on that rather than on the surrounding
+        // sentence — the validator's diagnostics are localized and the sentence changes with the JVM locale.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/asset_defaults/content_types/avif".equals(error.pointer())
+                                && error.message().contains("(?![\\s\\S])")),
+                () -> "a content-type value with a trailing newline must be refused by the value pattern at "
+                        + "its own pointer, got: " + exception.errors());
+    }
+
+    @Test
+    void refusesAnAssetContentTypeExtensionKeyCarryingATrailingNewline() throws Exception {
+        // The KEY half must close its anchor exactly as the value half does. A 'png\n' key is not the same
+        // string as 'png', so it slips past the add-only boot fence (which compares against the built-in
+        // extension set) and re-opens the immutability bound that stops an operator remapping a built-in
+        // extension — the stored-XSS lever the add-only rule exists to close. Pinned here so the bound is
+        // asserted at the gate that actually runs, not inferred from the pattern text.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    "png\\n": image/png
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/asset_defaults/content_types".equals(error.pointer())
+                                && error.message().contains("^[a-z0-9]+(?![\\s\\S])")),
+                () -> "an extension key with a trailing newline must be refused by the propertyNames pattern, "
+                        + "got: " + exception.errors());
+    }
+
+    @Test
+    void scansAnOversizedAssetContentTypeValueWithoutExhaustingTheStack() throws Exception {
+        // 50 000 well-formed ';name=value' parameters plus a trailing newline: a ~200 KB value that is both
+        // over the schema's maxLength AND malformed, so BOTH keywords must report. The maxLength refusal
+        // proves the cap fired; the pattern refusal proves the regex engine actually SCANNED the whole input
+        // instead of dying on it. The superseded nested-quantifier pattern compiled to a java.util.regex Loop
+        // node that recursed once per parameter, so this input threw StackOverflowError out of the schema
+        // gate — which runs BEFORE bind, and therefore before ConfigValidator's hardened possessive pattern
+        // is ever reached. A StackOverflowError escaping here is the regression.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    avif: "text/plain%s\\n"
+                """.formatted(";a=b".repeat(50_000)));
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+                "an oversized malformed content-type value must fail the boot as an aggregated "
+                        + "ConfigLoadException, never as a StackOverflowError out of the regex engine");
+
+        List<ConfigError> contentTypeErrors = exception.errors().stream()
+                .filter(error -> "gateway.yaml".equals(error.file()) && error.pointer().contains("content_types"))
+                .toList();
+        assertEquals(2, contentTypeErrors.size(),
+                () -> "both the length cap and the shape pattern must report — one alone would mean the "
+                        + "pattern never ran on the oversized input, got: " + exception.errors());
+        assertTrue(contentTypeErrors.stream().anyMatch(error -> error.message().contains("255")),
+                () -> "expected the maxLength refusal to name the 255-character cap, got: " + contentTypeErrors);
     }
 }

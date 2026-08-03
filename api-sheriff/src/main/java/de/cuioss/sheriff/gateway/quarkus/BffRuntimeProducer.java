@@ -337,14 +337,14 @@ public class BffRuntimeProducer {
 
     /**
      * Assembles the stateless cookie-mode binding from the resolved {@link CookieKeyMaterial}: the
-     * AES-256-GCM sealed-cookie codec (with the decrypt-only {@code previous_key} wired in when a
-     * rotation is in progress), plus the per-gateway salt that keys the derived, never-emitted
-     * session identity. The salt is derived from the sealing key rather than configured separately,
-     * so it needs no operator input and cannot be recomputed off-gateway.
+     * AES-256-GCM sealed-cookie codec over its one sealing key, plus the per-gateway salt that keys
+     * the derived, never-emitted session identity. The salt is derived from the sealing key rather
+     * than configured separately, so it needs no operator input and cannot be recomputed
+     * off-gateway.
      * <p>
-     * Per ADR-0011 the configuration stays neutral — the keys are {@code ${ENV_VAR}} references
+     * Per ADR-0011 the configuration stays neutral — the key is an {@code ${ENV_VAR}} reference
      * carrying no material — so the concrete runtime choice is named by a startup diagnostic
-     * reporting the active key mode and rotation state, never any key bytes. The
+     * reporting the active key mode, never any key bytes. The
      * generate-on-startup mode additionally raises the catalogued INFO
      * {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
      * sessions-die-on-restart consequence is operationally notable rather than merely diagnostic.
@@ -355,13 +355,13 @@ public class BffRuntimeProducer {
      */
     private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
             Duration sessionTtl) {
-        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey(), session.previousKey());
+        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey());
         Integer declaredMaxCookieSize = session.maxCookieSize();
         int maxCookieSize = declaredMaxCookieSize == null
                 ? SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET
                 : declaredMaxCookieSize;
-        LOGGER.debug("Cookie-mode key material resolved: mode=%s, rotating=%s, maxCookieSize=%s",
-                keyMaterial.mode().diagnosticName(), keyMaterial.hasPreviousKey(), maxCookieSize);
+        LOGGER.debug("Cookie-mode key material resolved: mode=%s, maxCookieSize=%s",
+                keyMaterial.mode().diagnosticName(), maxCookieSize);
         return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
                 keyMaterial.identitySalt());
     }

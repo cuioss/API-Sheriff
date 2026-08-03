@@ -401,29 +401,29 @@ class GatewayEdgeRouteTest {
         }
 
         @Test
-        @DisplayName("gives a none route the nearest non-none profile's limits so the body cap stays enforceable")
-        void givesNoneRouteConcreteLimits() {
+        @DisplayName("gives a minimal route the nearest non-minimal profile's limits so the body cap stays enforceable")
+        void givesMinimalRouteConcreteLimits() {
             // Arrange
-            SecurityFilterConfig none =
-                    SecurityFilterConfig.builder().profile("none").build();
+            SecurityFilterConfig minimal =
+                    SecurityFilterConfig.builder().profile("minimal").build();
 
-            // Act — chain none → lenient, then the all-none chain
+            // Act — chain minimal → lenient, then the all-minimal chain
             RouteRuntimeAssembler.SecurityPosture inheritsLenient =
-                    GatewayEdgeRoute.securityPostureFor(none, SecurityProfile.LENIENT);
-            RouteRuntimeAssembler.SecurityPosture allNone =
-                    GatewayEdgeRoute.securityPostureFor(none, SecurityProfile.NONE);
-            RouteRuntimeAssembler.SecurityPosture globalNoneBlockLess =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.NONE);
+                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.LENIENT);
+            RouteRuntimeAssembler.SecurityPosture allMinimal =
+                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.MINIMAL);
+            RouteRuntimeAssembler.SecurityPosture globalMinimalBlockLess =
+                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.MINIMAL);
 
             // Assert
-            assertEquals(SecurityProfile.NONE, inheritsLenient.profile(), "the mode itself stays 'none'");
+            assertEquals(SecurityProfile.MINIMAL, inheritsLenient.profile(), "the mode itself stays 'minimal'");
             assertEquals(SecurityConfiguration.lenient(), inheritsLenient.configuration(),
-                    "'none' takes the nearest non-none profile's limits");
-            assertEquals(SecurityConfiguration.strict(), allNone.configuration(),
-                    "an all-none chain lands on STRICT rather than leaving the limits unresolved");
-            assertEquals(SecurityProfile.NONE, globalNoneBlockLess.profile(),
-                    "a gateway-wide 'none' also reaches a route with no security_filter block");
-            assertEquals(SecurityConfiguration.strict(), globalNoneBlockLess.configuration());
+                    "'minimal' takes the nearest non-minimal profile's limits");
+            assertEquals(SecurityConfiguration.strict(), allMinimal.configuration(),
+                    "an all-minimal chain lands on STRICT rather than leaving the limits unresolved");
+            assertEquals(SecurityProfile.MINIMAL, globalMinimalBlockLess.profile(),
+                    "a gateway-wide 'minimal' also reaches a route with no security_filter block");
+            assertEquals(SecurityConfiguration.strict(), globalMinimalBlockLess.configuration());
         }
 
         @Test
@@ -490,7 +490,7 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("round-trips every preset component when an override restates the preset's own value")
         void roundTripsPresetThroughTheSeededBuilder() {
-            // Arrange / Act / Assert — one non-none preset per branch of limitsProfile
+            // Arrange / Act / Assert — one non-minimal preset per branch of limitsProfile
             assertPresetRoundTrips(SecurityProfile.STRICT);
             assertPresetRoundTrips(SecurityProfile.LENIENT);
         }
@@ -716,7 +716,7 @@ class GatewayEdgeRouteTest {
 
         private GatewayConfig gatewayWithAuthorizationCap(@Nullable Integer cap) {
             return GatewayConfig.builder().version(1)
-                    .securityDefaults(new SecurityDefaultsConfig("strict", cap))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", cap, null))
                     .build();
         }
 

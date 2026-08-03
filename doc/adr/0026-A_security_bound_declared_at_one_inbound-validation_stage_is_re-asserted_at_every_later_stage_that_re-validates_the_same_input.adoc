@@ -164,6 +164,6 @@ component that answers neither is where the exception ends, and it will end ther
 == References
 
 * link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths and the header-value relaxations] -- the concrete carve-outs whose per-site positions this record generalises. Not superseded; ADR-0019 remains authoritative for each carve-out's bounds.
-* link:0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- fixes which checks live at which stage, and so establishes the multi-stage shape this record constrains.
+* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- fixes which checks live at which stage, and so establishes the multi-stage shape this record constrains.
 * link:../architecture.adoc[Architecture] -- the inbound pipeline's stages and their position relative to route selection.
 * link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] -- the operator-facing surface of the carve-outs and their per-site bounds.

@@ -43,7 +43,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
  * <p>
  * The gateway — not the source — governs the response headers: every implementation
  * routes its proposed headers through
- * {@link AssetResponseEnvelope#governedHeaders(String, AccessLevel, Map)} and honours
+ * {@link AssetResponseEnvelope#governedHeaders(String, AccessLevel, Map, Map)} and honours
  * {@link AssetResponseEnvelope#isAllowedMethod(HttpMethod)} before serving.
  *
  * @author API Sheriff Team

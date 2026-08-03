@@ -668,7 +668,7 @@ class RouteTableBuilderTest {
         void shouldLogResolvedProfileForRouteOmittingTheKnob() {
             // Arrange — no security_filter anywhere, so the route inherits the gateway-wide profile
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig("lenient", null))
+                    .securityDefaults(new SecurityDefaultsConfig("lenient", null, null))
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(routeWithPrefix("orders-read", "/orders", HttpMethod.GET))).build();
@@ -677,7 +677,7 @@ class RouteTableBuilderTest {
             builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
             // Assert — the old logPosture printed the literal "none" as a placeholder for unset, which
-            // now reads as the real 'none' mode and would misreport every knob-less route.
+            // would misreport every knob-less route as the real partial-disable mode ('minimal').
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='lenient'");
         }
 
@@ -700,17 +700,17 @@ class RouteTableBuilderTest {
         void shouldLogDeclaredRouteProfile() {
             // Arrange
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig("strict", null))
+                    .securityDefaults(new SecurityDefaultsConfig("strict", null, null))
                     .build();
             RouteConfig declared = RouteConfig.builder().id("orders-read").match(match("/orders", HttpMethod.GET))
-                    .securityFilter(filter("none")).build();
+                    .securityFilter(filter("minimal")).build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(declared)).build();
 
             // Act
             builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
 
             // Assert
-            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='none'");
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.INFO, "filter='minimal'");
         }
 
         @Test
@@ -1120,7 +1120,7 @@ class RouteTableBuilderTest {
         @DisplayName("Should resolve a declared security_defaults profile")
         void shouldResolveDeclaredGlobalProfile() {
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig("lenient", null))
+                    .securityDefaults(new SecurityDefaultsConfig("lenient", null, null))
                     .build();
 
             assertEquals(SecurityProfile.LENIENT, RouteTableBuilder.globalProfile(config));
@@ -1136,10 +1136,33 @@ class RouteTableBuilderTest {
         @DisplayName("Should resolve a security_defaults block without a profile to the fail-closed default")
         void shouldResolveBlockWithoutProfileToDefault() {
             GatewayConfig config = gateway()
-                    .securityDefaults(new SecurityDefaultsConfig(null, null))
+                    .securityDefaults(new SecurityDefaultsConfig(null, null, null))
                     .build();
 
             assertEquals(SecurityProfile.DEFAULT_PROFILE, RouteTableBuilder.globalProfile(config));
+        }
+
+        @Test
+        @DisplayName("Should resolve the retired 'none' mode value to the fail-closed default")
+        void shouldResolveRetiredModeValueToDefault() {
+            // Arrange — 'none' is the mode value this release renamed to 'minimal'. The schema
+            // refuses it at boot, so this seam is not the primary guard; it is the fail-closed
+            // backstop, and proving it lands on STRICT rather than throwing or failing OPEN is what
+            // makes an un-migrated descriptor reaching the model layer safe.
+            GatewayConfig config = gateway()
+                    .securityDefaults(new SecurityDefaultsConfig("none", null, null))
+                    .build();
+
+            // Act
+            SecurityProfile resolved = RouteTableBuilder.globalProfile(config);
+
+            // Assert
+            assertEquals(SecurityProfile.DEFAULT_PROFILE, resolved,
+                    "an unrecognised profile value must fall back to the fail-closed default, never"
+                            + " to a looser mode and never by throwing");
+            assertEquals(SecurityProfile.STRICT, resolved,
+                    "the fail-closed default is STRICT — the retired 'none' value must not resolve to"
+                            + " its 'minimal' successor by accident");
         }
     }
 }

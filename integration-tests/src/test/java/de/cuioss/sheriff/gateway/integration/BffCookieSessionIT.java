@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,9 +39,16 @@ import org.junit.jupiter.api.Test;
 /**
  * Exercises the Variant 3 <em>stateless sealed-cookie</em> session end to end against the dedicated
  * cookie-mode gateway instance ({@code api-sheriff-cookie}, published on {@code 10445}): the
- * Keycloak login round trip, steady-state token mediation, session continuity across requests, and
- * RP-initiated logout — plus the two properties that distinguish the sealed cookie from the landed
- * server-mode opaque handle.
+ * Keycloak login round trip, steady-state token mediation, session continuity across requests,
+ * RP-initiated logout, and the re-authentication a cookie the gateway can no longer authenticate
+ * drives — plus the two properties that distinguish the sealed cookie from the landed server-mode
+ * opaque handle.
+ * <p>
+ * <strong>One sealing key, so an unauthenticatable cookie means a re-login.</strong> The gateway
+ * holds exactly one key: there is no decrypt-only companion, so a cookie stamped with a key
+ * generation the gateway does not hold is "no session" outright. The suite proves the whole
+ * consequence rather than just the rejection — the browser holding such a cookie completes a fresh
+ * authorization-code round trip and ends authenticated on a working session.
  * <p>
  * <strong>Hardening.</strong> The session cookie is {@code __Host-}-prefixed and carries
  * {@code Secure}, {@code HttpOnly}, {@code SameSite=Lax}, {@code Path=/} and no {@code Domain} — the
@@ -200,6 +208,66 @@ class BffCookieSessionIT {
                 .header("Accept", "application/json")
                 .when().get(SESSION_ROUTE)
                 .then().statusCode(401);
+    }
+
+    @Test
+    @DisplayName("a session cookie the gateway can no longer authenticate drives a full re-authentication")
+    void unauthenticatableCookieDrivesFullReAuthentication() {
+        // Arrange — establish a live session and prove it works, so the invalidation below is the only
+        // thing that changes between the working and the re-authenticating state.
+        Session established = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_ORIGIN);
+        BffKeycloakLoginFlow.gateway(established.gatewayCookies(), COOKIE_ORIGIN)
+                .when().get(SESSION_ROUTE)
+                .then().statusCode(200);
+
+        // Invalidate the cookie exactly the way withdrawing the sealing key invalidates it: the value
+        // still names a key generation, but not one the gateway holds. With a single key there is no
+        // decrypt-only companion to fall back on, so the outstanding cookie is simply "no session" —
+        // which is precisely why the operator-visible consequence is a re-login, not a silent rollover.
+        Map<String, String> staleJar = new HashMap<>(established.gatewayCookies());
+        String staleSealed = restampKeyId(established.gatewayCookies().get(SESSION_COOKIE));
+        staleJar.put(SESSION_COOKIE, staleSealed);
+
+        // Act — the browser STILL HOLDING that cookie navigates onto the protected route and runs the
+        // whole authorization-code round trip again: the 302 into the IdP (asserted inside the flow),
+        // the credential POST, and the callback navigation. Asserting only "the stale cookie is
+        // rejected" would stop one step short of the property that actually matters to an operator.
+        Session reAuthenticated = BffKeycloakLoginFlow.login(SESSION_ROUTE, COOKIE_ORIGIN, staleJar);
+
+        // Assert — the user ends authenticated on a FRESH sealed session, and that session works.
+        String reSealed = reAuthenticated.gatewayCookies().get(SESSION_COOKIE);
+        assertNotNull(reSealed, "the re-authentication must establish a fresh sealed session cookie");
+        assertNotEquals(staleSealed, reSealed,
+                "the re-authentication must mint a new sealed session, never revive the rejected one");
+
+        Response mediated = BffKeycloakLoginFlow.gateway(reAuthenticated.gatewayCookies(), COOKIE_ORIGIN)
+                .when().get(SESSION_ROUTE)
+                .then().statusCode(200).extract().response();
+        assertEquals("GET", mediated.path("method"),
+                "the re-authenticated session must reach the upstream like any other live session");
+        Object authorization = mediated.path("headers.Authorization");
+        assertNotNull(authorization, "the re-authenticated session must mediate a bearer upstream");
+        assertTrue(authorization.toString().contains("Bearer"),
+                "the mediated upstream credential must be a bearer token");
+    }
+
+    /**
+     * Re-stamps the sealed value's 1-byte key id so it names a generation the gateway does not hold —
+     * the state a withdrawn sealing key leaves every outstanding cookie in.
+     * <p>
+     * This targets the key-id gate rather than the authentication tag {@link #tamper} corrupts: the
+     * gateway refuses the value <em>before</em> a cipher is constructed, which is the specific
+     * rejection path a key change produces. XOR against {@code 0xFF} flips every bit, so the restamped
+     * id can never coincidentally equal the original.
+     *
+     * @param sealed the sealed cookie value
+     * @return the re-stamped value, still in the base64url alphabet
+     */
+    private static String restampKeyId(String sealed) {
+        assertNotNull(sealed, "the login must establish a sealed session cookie");
+        byte[] raw = Base64.getUrlDecoder().decode(sealed);
+        raw[1] ^= (byte) 0xFF;
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
     }
 
     /**

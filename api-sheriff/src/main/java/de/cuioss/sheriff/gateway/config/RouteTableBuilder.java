@@ -162,9 +162,17 @@ public final class RouteTableBuilder {
         UpstreamConfig routeUpstream = route.upstream();
         boolean retryEnabled = resolveRetryEnabled(routeUpstream, defaults);
         boolean notModifiedEnabled = resolveNotModifiedEnabled(routeUpstream, defaults);
-        ForwardConfig effectiveForward = Objects.requireNonNullElseGet(route.forward(),
-                () -> ForwardConfig.builder().build());
-        Protocol protocol = Objects.requireNonNullElse(route.protocol(), Protocol.HTTP);
+        // Both defaults are written as an explicit null check rather than Objects.requireNonNullElse*,
+        // matching the idiom every other resolve* helper in this class already uses. The explicit form
+        // also keeps the non-nullness visible to static analysis: Sonar's dataflow does not model
+        // requireNonNullElse as null-eliminating, so it carried route.forward()/route.protocol()'s
+        // @Nullable onto the result and raised java:S4449 at the first use of each local (PR #146).
+        ForwardConfig declaredForward = route.forward();
+        ForwardConfig effectiveForward = declaredForward != null
+                ? declaredForward
+                : ForwardConfig.builder().build();
+        Protocol declaredProtocol = route.protocol();
+        Protocol protocol = declaredProtocol != null ? declaredProtocol : Protocol.HTTP;
         Set<String> allowedOrigins = effectiveAllowedOrigins(route);
         Integer idleTimeout = resolveWebSocketIdleTimeout(route, protocol);
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
@@ -362,7 +370,7 @@ public final class RouteTableBuilder {
      * configuration validator rejects an asset action on a non-asset anchor before assembly, so
      * this default is a defensive floor).
      * <p>
-     * A shared seam: {@code ConfigValidator}'s fail-closed {@code profile: none} refusal derives the
+     * A shared seam: {@code ConfigValidator}'s fail-closed {@code profile: minimal} refusal derives the
      * access level through this same method rather than reading {@link AnchorConfig#access()}
      * directly, so the boot refusal and the runtime governance can never disagree about which routes
      * count as authenticated (ADR-0009 single-reporter, the {@link #normalizePrefix} precedent).
@@ -383,8 +391,8 @@ public final class RouteTableBuilder {
      * Emits the route's boot posture line. The profile logged is the <em>resolved effective</em>
      * one — the route's own {@code security_filter.profile} when declared, otherwise the
      * gateway-wide {@code security_defaults} fallback. It is deliberately NOT the raw declared
-     * value with a {@code "none"} placeholder for unset: {@code none} is now a real mode, so that
-     * placeholder would report a {@code none}-mode posture for every route that merely omits the knob.
+     * value with a {@code "none"} placeholder for unset: {@code minimal} is a real mode, so that
+     * placeholder would report a partial-disable posture for every route that merely omits the knob.
      */
     private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
         String anchorName = route.anchor() != null ? route.anchor() : NONE;
@@ -400,7 +408,7 @@ public final class RouteTableBuilder {
      * The gateway-wide effective profile: the declared {@code security_defaults.profile}, or
      * {@link SecurityProfile#DEFAULT_PROFILE} when the block (or the knob) is omitted.
      * <p>
-     * Shared with {@code ConfigValidator}'s fail-closed {@code profile: none} refusal so the boot
+     * Shared with {@code ConfigValidator}'s fail-closed {@code profile: minimal} refusal so the boot
      * refusal resolves the gateway-wide fallback through exactly this chain.
      *
      * @param gateway the bound gateway document

@@ -31,7 +31,7 @@ import lombok.experimental.UtilityClass;
  * {@code 103-106}) and the configuration subsystem
  * ({@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}: {@code 2-3} / {@code 101-102} /
  * {@code 200-201}), which share the same {@code ApiSheriff} prefix — this BFF catalogue owns
- * {@code 10-17} (INFO) and {@code 110-114} (WARN). Never renumber one catalogue without checking
+ * {@code 10-16} (INFO) and {@code 110-114} (WARN). Never renumber one catalogue without checking
  * the others for a collision.
  * <p>
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
@@ -51,7 +51,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-17).
+     * Info-level messages (INFO range 1-99; this catalogue owns 10-16).
      */
     @UtilityClass
     public static final class INFO {
@@ -117,19 +117,6 @@ public final class BffLogMessages {
                 .identifier(16)
                 .template("Cookie-mode sealing key generated at startup (%s) — sessions do not survive a restart")
                 .build();
-
-        /**
-         * A cookie still sealed under the decrypt-only {@code previous_key} was observed, so a key
-         * rotation is in progress: each such session is re-sealed under the current key on its next
-         * write. Recorded once per process — the condition is gateway-wide, and the detection recurs
-         * on every request for an unrotated session. Records only the bounded disposition.
-         */
-        public static final LogRecord COOKIE_ROLLOVER_IN_PROGRESS = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(17)
-                .template("Cookie-mode previous-key rotation in progress (%s) — affected sessions "
-                        + "re-seal under the current key on their next write")
-                .build();
     }
 
     /**
@@ -175,11 +162,17 @@ public final class BffLogMessages {
          * non-sensitive rejection disposition ({@code malformed} / {@code unknown-version} /
          * {@code unknown-key-id} / {@code authentication-tag} / {@code payload-format}) only —
          * never the offending cookie value or any key material.
+         * <p>
+         * <strong>Latched per disposition.</strong> The emitting path is reached per request and
+         * pre-authentication, so the record is emitted only on the FIRST occurrence of each
+         * disposition in a process and every repeat drops to {@code DEBUG} — see
+         * {@code SealedSessionCookieCodec.reject}. Absence of a repeated {@code WARN} therefore
+         * says nothing about the rejection <em>rate</em>; read the DEBUG channel for that.
          */
         public static final LogRecord COOKIE_UNSEAL_REJECTED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(113)
-                .template("Sealed session cookie rejected: %s")
+                .template("Sealed session cookie rejected: %s — further rejections with this disposition stay at DEBUG")
                 .build();
 
         /**

@@ -31,15 +31,15 @@ import org.junit.jupiter.api.Test;
  * <p>
  * Two routes on the mounted configuration carry the contrast. {@code /proxy} declares no
  * {@code security_filter.profile}, so it is governed by the gateway-wide
- * {@code security_defaults.profile: strict}; {@code /proxy/none-mode} declares
- * {@code profile: none} together with a {@code max_body_bytes} cap and an
+ * {@code security_defaults.profile: strict}; {@code /proxy/minimal-mode} declares
+ * {@code profile: minimal} together with a {@code max_body_bytes} cap and an
  * {@code allowed_paths} allowlist. Both ride the same public, effectively-unauthenticated
  * {@code api} anchor, so the boot refusal does not apply to either.
  * <p>
- * <strong>What the suite is really asserting.</strong> That {@code none} is a
+ * <strong>What the suite is really asserting.</strong> That {@code minimal} is a
  * <em>partial</em> disable and nothing more. It turns off exactly two things — the relocated
  * url-parameter name/value validation and the per-route pipeline re-run — while the pre-route floor,
- * the body cap and the path allowlist all keep rejecting. A test that only proved "the none route
+ * the body cap and the path allowlist all keep rejecting. A test that only proved "the minimal route
  * accepts what strict rejects" would pass equally well against a total bypass, which is why the
  * still-rejects cases below are the load-bearing ones.
  */
@@ -54,10 +54,10 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
     /** The strict preset's query-parameter count cap; the pre-route floor enforces it for every route. */
     private static final int STRICT_PARAMETER_COUNT_CAP = 20;
 
-    /** The {@code none} route's declared {@code max_body_bytes}. */
-    private static final int NONE_ROUTE_BODY_CAP = 1024;
+    /** The {@code minimal} route's declared {@code max_body_bytes}. */
+    private static final int MINIMAL_ROUTE_BODY_CAP = 1024;
 
-    private static final String NONE_ROUTE_PATH = "/proxy/none-mode/echo";
+    private static final String MINIMAL_ROUTE_PATH = "/proxy/minimal-mode/echo";
 
     @Nested
     @DisplayName("the gateway-wide security_defaults profile governs a route that omits one")
@@ -92,34 +92,34 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
     }
 
     @Nested
-    @DisplayName("profile: none disables the relocated url-parameter validation")
-    class NoneModeDisables {
+    @DisplayName("profile: minimal disables the relocated url-parameter validation")
+    class MinimalModeDisables {
 
         @Test
-        @DisplayName("the none route accepts and forwards a parameter value the strict route rejects")
-        void noneRouteAcceptsRejectedParameterValue() {
+        @DisplayName("the minimal route accepts and forwards a parameter value the strict route rejects")
+        void minimalRouteAcceptsRejectedParameterValue() {
             // The control for this assertion is rejectedParameterValueIsRejectedOnInheritingRoute
             // above: the SAME parameter value on the strict route returns 400. The echo proves the
             // request was forwarded, not merely un-rejected.
             var response = given()
                     .urlEncodingEnabled(false)
                     .when()
-                    .get(NONE_ROUTE_PATH + "?return_to=" + REJECTED_PARAMETER_VALUE)
+                    .get(MINIMAL_ROUTE_PATH + "?return_to=" + REJECTED_PARAMETER_VALUE)
                     .then()
                     .statusCode(200)
                     .extract();
 
             assertEquals("GET", response.path("method"));
-            assertTrue(response.path("url").toString().contains("/anything/none-mode"),
-                    "the none route must reach its own upstream path");
+            assertTrue(response.path("url").toString().contains("/anything/minimal-mode"),
+                    "the minimal route must reach its own upstream path");
             assertEquals(REJECTED_PARAMETER_VALUE, response.path("args.return_to[0]"),
-                    "the value strict rejects must be forwarded verbatim under 'none'");
+                    "the value strict rejects must be forwarded verbatim under 'minimal'");
         }
     }
 
     @Nested
-    @DisplayName("profile: none is a PARTIAL disable — the floor, the body cap and the allowlist still reject")
-    class NoneModeStillRejects {
+    @DisplayName("profile: minimal is a PARTIAL disable — the floor, the body cap and the allowlist still reject")
+    class MinimalModeStillRejects {
 
         @Test
         @DisplayName("the pre-route path filter still rejects an encoded path separator")
@@ -129,7 +129,7 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             given()
                     .urlEncodingEnabled(false)
                     .when()
-                    .get("/proxy/none-mode%2Fecho")
+                    .get("/proxy/minimal-mode%2Fecho")
                     .then()
                     .statusCode(400);
         }
@@ -147,7 +147,7 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             given()
                     .urlEncodingEnabled(false)
                     .when()
-                    .get(NONE_ROUTE_PATH + "?" + overCapQuery)
+                    .get(MINIMAL_ROUTE_PATH + "?" + overCapQuery)
                     .then()
                     .statusCode(400);
         }
@@ -159,43 +159,43 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
             // declared Content-Length is fast-rejected before the body is read. The route cap sits far
             // below the framework floor the IT stack raises, so the GATEWAY renders the rejection —
             // a 413 CONTENT_TOO_LARGE, not the 400 the other floor rejections carry.
-            String overCapBody = "x".repeat(NONE_ROUTE_BODY_CAP + 1);
+            String overCapBody = "x".repeat(MINIMAL_ROUTE_BODY_CAP + 1);
 
             given()
                     .contentType("text/plain")
                     .body(overCapBody)
                     .when()
-                    .post(NONE_ROUTE_PATH)
+                    .post(MINIMAL_ROUTE_PATH)
                     .then()
                     .statusCode(413);
         }
 
         @Test
-        @DisplayName("a body within the cap is still forwarded on the none route")
+        @DisplayName("a body within the cap is still forwarded on the minimal route")
         void bodyWithinCapIsForwarded() {
             // The control for the cap assertion: the cap rejects because of the SIZE, not because
-            // POST or a body is refused outright on a none route.
+            // POST or a body is refused outright on a minimal route.
             var response = given()
                     .contentType("text/plain")
-                    .body("none-mode-small-body")
+                    .body("minimal-mode-small-body")
                     .when()
-                    .post(NONE_ROUTE_PATH)
+                    .post(MINIMAL_ROUTE_PATH)
                     .then()
                     .statusCode(200)
                     .extract();
 
             assertEquals("POST", response.path("method"));
-            assertEquals("none-mode-small-body", response.path("data"));
+            assertEquals("minimal-mode-small-body", response.path("data"));
         }
 
         @Test
         @DisplayName("the route allowed_paths allowlist still rejects a path outside it")
         void allowedPathsStillRejectsPathOutsideAllowlist() {
             // The allowlist pattern admits exactly one wildcard segment, so a deeper path is a
-            // segment-count mismatch and is rejected 400 — under 'none' exactly as under 'strict'.
+            // segment-count mismatch and is rejected 400 — under 'minimal' exactly as under 'strict'.
             given()
                     .when()
-                    .get("/proxy/none-mode/deep/path")
+                    .get("/proxy/minimal-mode/deep/path")
                     .then()
                     .statusCode(400);
         }

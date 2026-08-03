@@ -95,36 +95,47 @@ public final class UpstreamAssetSource implements AssetSource {
     private final PathConfinement confinement;
     private final UpstreamFetcher fetcher;
     private final long maxBytes;
+    private final Map<String, String> operatorContentTypes;
 
     /**
      * Creates a source for a fixed-topology upstream and route access level, using the
      * default {@link PathConfinement}, the {@linkplain #httpFetcher(Duration, Duration,
      * long) SSRF-guarded HTTP fetcher}, and the default timeouts and size cap.
      *
-     * @param upstream the boot-resolved upstream target (mandatory)
-     * @param access   the serving route's effective access level (mandatory)
+     * @param upstream             the boot-resolved upstream target (mandatory)
+     * @param access               the serving route's effective access level (mandatory)
+     * @param operatorContentTypes the boot-resolved add-only content-type additions
+     *                             (mandatory; empty when unconfigured)
      */
-    public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access) {
+    public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access,
+            Map<String, String> operatorContentTypes) {
         this(upstream, access, new PathConfinement(),
-                httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES);
+                httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES,
+                operatorContentTypes);
     }
 
     /**
      * Creates a source with an explicit confinement, fetch seam, and size cap.
      *
-     * @param upstream    the boot-resolved upstream target (mandatory)
-     * @param access      the serving route's effective access level (mandatory)
-     * @param confinement the shared path confinement (mandatory)
-     * @param fetcher     the upstream fetch seam (mandatory)
-     * @param maxBytes    the maximum served-asset size in bytes
+     * @param upstream             the boot-resolved upstream target (mandatory)
+     * @param access               the serving route's effective access level (mandatory)
+     * @param confinement          the shared path confinement (mandatory)
+     * @param fetcher              the upstream fetch seam (mandatory)
+     * @param maxBytes             the maximum served-asset size in bytes
+     * @param operatorContentTypes the boot-resolved add-only content-type additions
+     *                             (mandatory; empty when unconfigured). Resolved once at
+     *                             boot and read-only thereafter — no per-request lookup
+     *                             and no shared mutable state.
      */
     public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access, PathConfinement confinement,
-            UpstreamFetcher fetcher, long maxBytes) {
+            UpstreamFetcher fetcher, long maxBytes, Map<String, String> operatorContentTypes) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.access = Objects.requireNonNull(access, "access");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
         this.fetcher = Objects.requireNonNull(fetcher, "fetcher");
         this.maxBytes = maxBytes;
+        this.operatorContentTypes = Map.copyOf(
+                Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
     }
 
     /**
@@ -168,7 +179,7 @@ public final class UpstreamAssetSource implements AssetSource {
             return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
         }
         Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                filenameOf(confined.get()), access, fetched.headers());
+                filenameOf(confined.get()), access, fetched.headers(), operatorContentTypes);
         boolean serveBody = method == HttpMethod.GET && fetched.status() < LOWEST_ERROR_STATUS;
         byte[] body = serveBody ? fetched.body() : EMPTY_BODY;
         return new Served(fetched.status(), governed, body);

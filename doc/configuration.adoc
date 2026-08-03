@@ -126,7 +126,8 @@ file-and-JSON-pointer error before any immutable value object is built:
 | `schema/gateway.schema.json`
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
   `management`, `security_headers`, `security_defaults`, `allowed_methods`, `anchors`,
-  `upstream_defaults`, `forwarded`, `edge_hardening`, `token_validation` and `oidc`.
+  `upstream_defaults`, `asset_defaults`, `forwarded`, `edge_hardening`, `token_validation` and
+  `oidc`.
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
@@ -195,9 +196,14 @@ security_headers:                  # response-header middleware (global default)
     allow_credentials: true
 
 security_defaults:                 # baseline inbound filter mode; overridable per route/anchor
-  profile: strict                  # strict | lenient | none   (omitted block => strict)
-                                   # 'none' is a PARTIAL disable, not an off switch:
-                                   # see "The `none` mode" below for the closed definition
+  profile: strict                  # strict | lenient | minimal   (omitted block => strict)
+                                   # 'minimal' is a PARTIAL disable, not an off switch:
+                                   # see "The `minimal` mode" below for the closed definition
+  allow_get_with_content_length_body: false   # OPTIONAL, default false. Admits a Content-Length-
+                                   #   framed body on GET (for upstreams like Elasticsearch
+                                   #   _search). PARTIAL: Transfer-Encoding on GET stays REJECTED
+                                   #   unconditionally, and HEAD is unaffected on every leg.
+                                   #   See "The `GET`-body opt-in" below.
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
                                    #   (global default). An anchor or endpoint may REPLACE this
@@ -227,6 +233,18 @@ anchors:                           # OPTIONAL namespace-scoped policy (see "Anch
     type: asset
     access: public                 # a public anchor declares NO auth block (public is the
                                    #   absence of auth); an auth block here fails the boot
+
+asset_defaults:                    # OPTIONAL. ADD-ONLY extension of the gateway's built-in asset
+                                   #   content-type map. Omit the block to let the built-in map
+                                   #   govern alone.
+  content_types:                   # extension (lowercase, no dot) -> Content-Type
+    webmanifest: application/manifest+json   # an extension the gateway does NOT map
+                                   #   An entry naming a BUILT-IN extension (html, css, js, svg,
+                                   #   png, ... -- 21 in total) is REFUSED AT BOOT, naming the
+                                   #   offending extension. The built-ins are immutable because
+                                   #   remapping one -- svg away from image/svg+xml, or any
+                                   #   built-in to text/html -- is a stored-XSS lever on a
+                                   #   security gateway.
 
 forwarded:                         # resolved by cui-http (de.cuioss.http.forwarded)
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
@@ -289,7 +307,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
     final_redirect: https://app.example.com/   # where the browser lands after verification
     backchannel_path: /logout/backchannel   # back-channel receiver (mode: server only)
   session:                         # NOTE: exhibit shows the fields of BOTH modes; store is
-                                   #   server-mode-only, the encryption keys cookie-mode-only
+                                   #   server-mode-only, the encryption key cookie-mode-only
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
     store: memory                  # REQUIRED for server mode; memory is the only initial option
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
@@ -297,8 +315,6 @@ oidc:                              # only used by the BFF variants (2 and 3)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
                                    #   generate a key on startup (sessions die on restart)
-    previous_key: ${SHERIFF_SESSION_KEY_PREVIOUS}   # optional; decrypt-only, for key rotation;
-                                   #   requires encryption_key
     max_cookie_size: 4096          # cookie mode only: sealed cookie-value size budget in bytes.
                                    #   40..8192, default 4096. Drives BOTH the seal budget and the
                                    #   gateway's pre-route Cookie header-value cap
@@ -532,6 +548,10 @@ the gateway's own extension map (overriding whatever the source claimed), `X-Con
 nosniff` is always added, any source `Set-Cookie` is stripped, and an `access: authenticated`
 asset is forced to `Cache-Control: no-store` even when the source sent `Cache-Control: public`.
 Only `GET` and `HEAD` are served; any other verb is rejected `405`.
+
+An operator may *teach* the gateway an extension it does not already map -- but never *restate* one
+it does. See link:#_asset_defaults[`asset_defaults`] for the add-only block and the security
+rationale behind that asymmetry.
 
 === Route ordering
 
@@ -1148,12 +1168,12 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Config field | cui-http mapping | Notes
 
 | `profile`
-| `SecurityConfiguration.strict()` / `lenient()`; `none` maps to *no preset*
+| `SecurityConfiguration.strict()` / `lenient()`; `minimal` maps to *no preset*
 | The inbound-filter mode. `strict` and `lenient` are baseline presets that the limits below
-  override individually. `none` is a *dispatch mode*, not a preset: it carries no
-  `SecurityConfiguration` of its own and inherits its limits from the nearest non-`none` profile in
-  the fallback chain (landing on `strict` when the whole chain is `none`), which is what keeps its
-  retained `max_body_bytes` cap concrete. See link:#_the_none_mode[The `none` mode].
+  override individually. `minimal` is a *dispatch mode*, not a preset: it carries no
+  `SecurityConfiguration` of its own and inherits its limits from the nearest non-`minimal` profile in
+  the fallback chain (landing on `strict` when the whole chain is `minimal`), which is what keeps its
+  retained `max_body_bytes` cap concrete. See link:#_the_minimal_mode[The `minimal` mode].
 
 | `max_body_bytes`
 | *(gateway-enforced, under a framework floor)*
@@ -1179,7 +1199,7 @@ The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature ma
 | Traversal / encoding / character / pattern checks. Run twice under different policies: once in the
   *non-skippable pre-route floor* under the gateway-wide baseline (this is the run that produces the
   canonical path), and again *post-route* under the route's own configuration when that configuration
-  diverges from the baseline. Only the second, divergent run is switched off by `profile: none`; the
+  diverges from the baseline. Only the second, divergent run is switched off by `profile: minimal`; the
   floor's run cannot be switched off by any profile value.
 
 | `allowed_header_names` / `blocked_header_names`
@@ -1638,7 +1658,7 @@ ignored when no route's effective auth is `require: session`.
 | Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default
   and recommended.
 
-| `session.encryption_key` / `session.previous_key`
+| `session.encryption_key`
 | `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
   fully supported production options:
 
@@ -1649,10 +1669,9 @@ ignored when no route's effective auth is `require: session`.
     *the key cannot be shared across replicas*, so a load-balanced deployment would reject every
     cookie sealed by another instance.
 
-  `previous_key` is optional and *decrypt-only*: during key rotation, cookies sealed with the old
-  key are still accepted (and re-sealed with the current key on next write) for a grace window; it
-  is never used to seal, so a rollover is one-way. It composes with the passed-key mode only, and
-  supplying it without an `encryption_key` is rejected at boot.
+  There is exactly *one* sealing key -- no decrypt-only companion key and no rotation window.
+  Replacing it is a clean break: cookies sealed under the withdrawn key carry a key id the gateway
+  no longer holds, are refused as "no session", and those users log in again.
 
 | `session.max_cookie_size`
 | *Cookie mode only.* The sealed cookie-value size budget in bytes. Optional; range `40`--`8192`,
@@ -1814,6 +1833,55 @@ upstream_defaults:
   not_modified: { enabled: false }
 ----
 
+[[_asset_defaults]]
+=== `asset_defaults`
+
+The operator's *add-only* extension of the gateway's built-in asset content-type map, declarable
+only at the global scope (`gateway.yaml`). It solves one problem: an asset whose extension the
+gateway does not know is served as `application/octet-stream`, which browsers download rather than
+render. Declaring the extension here gives it the right `Content-Type`.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `content_types`
+| A map of *lowercase extension* (without the dot) to the `Content-Type` served for it. Keys are
+  constrained to lowercase alphanumerics by the schema and lowercased on binding, so a key's case
+  can never decide whether a mapping applies. Values are bounded twice: the schema caps them at 255
+  characters and refuses anything that is not a control-character-free `type/subtype…` shape, and the
+  configuration validator then enforces the precise RFC 9110 media-type grammar, naming the offending
+  extension and value. Both bounds *fail the boot* -- the value is served verbatim as the asset's
+  `Content-Type` response header, so a CR/LF or non-media-type value would be a response-header
+  injection vector. Omitted (or an empty map) means the built-in map governs alone.
+|===
+
+[source,yaml]
+----
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
+    avif: image/avif
+----
+
+*Add-only -- and the built-ins are refused, not ignored.* The gateway's own 21-entry extension map
+(`html`, `htm`, `css`, `js`, `mjs`, `json`, `map`, `xml`, `txt`, `svg`, `png`, `jpg`, `jpeg`,
+`gif`, `webp`, `ico`, `woff`, `woff2`, `ttf`, `pdf`, `wasm`) is consulted *first* and always wins.
+An `asset_defaults.content_types` entry naming any of those extensions *fails the boot*, with a
+message naming the offending extension; it collects with every other violation in the same
+single-pass report rather than failing on the first. An extension *neither* map carries still falls
+back to `application/octet-stream`.
+
+The refusal is deliberate, and it is a *security* bound rather than an ergonomic one. The built-in
+map is precisely what makes an asset's `Content-Type` gateway-governed instead of source-dictated.
+Permitting an override would hand an operator (or anyone who can edit the mounted descriptor) a
+*stored-XSS lever* on a security gateway: remapping `svg` away from `image/svg+xml`, or pointing
+any built-in extension at `text/html`, turns a file served from a directory mount or a secondary
+origin into a script-executing document on the gateway's own origin. Add-only removes that lever
+while still solving the stated problem. Refusing at boot -- rather than silently ignoring the entry
+at request time -- is what makes the bound *visible*: the operator learns the mapping did not take
+effect instead of shipping a descriptor that reads as though it did.
+
 [[_edge_hardening]]
 === `edge_hardening`
 
@@ -1908,21 +1976,30 @@ set has exactly three members:
 | The relaxed posture, backed by `SecurityConfiguration.lenient()`. Even this preset never permits
   null bytes, and path traversal is blocked regardless of configuration.
 
-| `none`
+| `minimal`
 | A *partial* disable of the per-route validation. It is not an off switch -- see
-  link:#_the_none_mode[The `none` mode] for the closed definition of what it does and does not turn
-  off.
+  link:#_the_minimal_mode[The `minimal` mode] for the closed definition of what it does and does not
+  turn off.
 |===
 
 *An omitted `security_defaults` block -- or a block omitting `profile` -- resolves to `strict`*, the
 fail-closed choice. A deployment wanting a looser baseline must declare `lenient` explicitly. The
 concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
 
-The block carries one further key:
+The block carries two further keys:
 
 [cols="1,4"]
 |===
 | Key | Meaning
+
+| `allow_get_with_content_length_body`
+| *Boolean, default `false`.* Admits a `Content-Length`-framed request body on `GET`. It exists for
+  upstreams whose API genuinely takes a body on `GET` -- Elasticsearch's `_search` is the motivating
+  case. It is a *partial* relaxation of the framing gate, scoped to exactly one rejection leg and
+  only for `GET`: the declared-`Content-Length` leg. A `GET` whose body is signalled without a
+  declared `Content-Length` is not `Content-Length`-framed and stays rejected. See
+  link:#_the_get_body_opt_in[The `GET`-body opt-in] below for the closed definition of what stays
+  enforced.
 
 | `max_authorization_header_value_length`
 | *Integer, minimum `1`, default `8192`.* The budget for the `Authorization` header-value carve-out
@@ -1936,13 +2013,58 @@ The block carries one further key:
   declaring its own `security_filter`.
 |===
 
+[[_the_get_body_opt_in]]
+==== The `GET`-body opt-in
+
+`allow_get_with_content_length_body: true` relaxes the anti-smuggling framing gate by exactly one
+leg -- the declared-`Content-Length` leg -- and only for `GET`. Everything else the gate enforces is
+untouched. What *stays rejected* is the closed list:
+
+* *A body-present `GET` with no declared `Content-Length` -- rejected.* The opt-in admits a
+  `Content-Length`-framed body and nothing else, so a body signalled by any other means falls
+  outside it. The gate asserts this itself rather than relying on an upstream stage to have ruled
+  the shape out (ADR-0026).
+* *`Transfer-Encoding` on `GET` -- rejected unconditionally.* No configuration relaxes it. Chunked
+  framing on an otherwise-bodyless method is precisely the shape the request-smuggling defences exist
+  to constrain, and excluding it costs the motivating use case nothing: an Elasticsearch `_search`
+  client sends a `Content-Length`-framed body, never a chunked one. The relaxation is therefore
+  drawn at the boundary where the security value is, not where the convenience is.
+* *Any body on `HEAD` -- rejected on every leg.* The opt-in never applies to `HEAD`.
+* *`Content-Length` and `Transfer-Encoding` both present -- rejected.* The CL+TE coexistence rule is
+  a separate check that runs *before* the body-on-bodyless-method check, so a `GET` carrying both is
+  refused regardless of this key.
+* *Multiple `Content-Length` headers, or a comma-separated `Content-Length` value -- rejected.*
+* *A `Connection` header naming a framing or trust header -- rejected.* The framing-header-strip
+  defence is independent of this key.
+
+The key is *gateway-wide* rather than per-route by necessity, not convenience: the framing gate runs
+at stage 1, before route selection, so no route is resolved yet to scope it to.
+
+*The blast radius is therefore the whole gateway, not the one upstream that needed it.* Because the
+key cannot be scoped, enabling it for a single Elasticsearch-shaped upstream simultaneously admits a
+`Content-Length`-framed `GET` body on *every* other route -- including `require: bearer` routes and
+every route under a `type: bff` anchor. RFC 9110 section 9.3.1 notes that content on `GET` has no
+defined semantics, and the practical consequences on those other routes are caches that key on the
+URL while ignoring the body, and any component that authorizes on the URL while the application
+reads the body. Keep the key `false` unless every route on the gateway can tolerate a `GET` body.
+
+An omitted key resolves to `false`, which is bit-for-bit the behaviour of a gateway that never had
+this key: every framing rejection is preserved.
+
 [IMPORTANT]
 ====
 The former `default` value is *removed* from the mode set: it named the `cui-http` builder's
 incidental defaults rather than a policy. A configuration still declaring `profile: default` *fails
 to boot*. Migration is one line: replace `default` with `strict` (or with `lenient` to keep looser
-caps). The value range is enforced by the bundled JSON Schema, not by the configuration validator, so
-an out-of-range value is rejected when the document is bound.
+caps).
+
+The former `none` value is *renamed* to `minimal` -- the behaviour is unchanged, the name now states
+the residual posture instead of denying it. A configuration still declaring `profile: none` *fails to
+boot*. Migration is one line: replace `none` with `minimal`. The unrelated `auth.require: none` is a
+different key in a different value space and is untouched by the rename.
+
+The value range is enforced by the bundled JSON Schema, not by the configuration validator, so an
+out-of-range value is rejected when the document is bound.
 ====
 
 *The mode is resolved per route*, by wholesale replacement down the chain
@@ -1951,7 +2073,7 @@ an out-of-range value is rejected when the document is bound.
 anchor's profile -- the block is replaced whole, never merged. Any explicit limit keys in the winning
 block override the resolved preset's limits individually.
 
-*Fail-closed rule.* A route whose *effective* profile resolves to `none` *fails the boot* when either
+*Fail-closed rule.* A route whose *effective* profile resolves to `minimal` *fails the boot* when either
 
 * its effective access level is `authenticated`, or
 * its resolving anchor's `type` is `bff`.
@@ -1961,42 +2083,42 @@ legally strengthen a `public` anchor's auth floor (link:adr/0007-anchor-scoped-p
 forbids weakening a floor, not strengthening one), and such a route is authenticated in effect while
 its anchor still reads `access: public`. The refusal collects into the all-violations pass with every
 other configuration error and names the route, the refusing dimension, and the remedy. A
-`security_defaults.profile: none` that reaches such a route through the fallback chain is refused
+`security_defaults.profile: minimal` that reaches such a route through the fallback chain is refused
 identically -- there is no separate global exemption.
 
-[[_the_none_mode]]
-==== The `none` mode
+[[_the_minimal_mode]]
+==== The `minimal` mode
 
-`none` is a statement about *validation*, never about *limits*. The following two lists are the
+`minimal` is a statement about *validation*, never about *limits*. The following two lists are the
 *normative closed definition* of the mode, not illustrative examples: anything absent from the
 disabled list keeps running.
 
-*Still enforced under `none` -- without exception:*
+*Still enforced under `minimal` -- without exception:*
 
 * The entire *non-skippable pre-route floor*: raw-path canonicalisation and validation, header name
   and value validation, and the query-parameter and header *count* caps. The floor cannot be made
   skippable because route selection consumes the canonical path it produces -- so an encoded path
   separator, an over-cap parameter count and an oversized header value are all still rejected `400`
-  on a `none` route.
+  on a `minimal` route.
 * `max_body_bytes` -- a resource guard against exhaustion, not an injection defence.
 * `allowed_paths` -- a surface restriction, not an injection defence.
 * The verb gate (`allowed_methods`), authentication and the auth floor, CSRF, the forward-policy
   allowlists, the terminal-action rules, and the response-side security-header envelope.
 
-*Disabled under `none` -- exactly these two, and nothing else:*
+*Disabled under `minimal` -- exactly these two, and nothing else:*
 
 . The *url-parameter name and value validation* (the post-route run under the route's own
   configuration).
 . The *per-route pipeline re-run* -- the second pass of the path and header pipelines that a route
   whose configuration diverges from the gateway baseline would otherwise perform.
 
-Because `none` carries no preset of its own, a `none` route resolves its limits from the nearest
-non-`none` profile in its fallback chain, landing on `strict` when the whole chain is `none`. That is
-what gives the retained `max_body_bytes` cap a concrete number to enforce.
+Because `minimal` carries no preset of its own, a `minimal` route resolves its limits from the nearest
+non-`minimal` profile in its fallback chain, landing on `strict` when the whole chain is `minimal`.
+That is what gives the retained `max_body_bytes` cap a concrete number to enforce.
 
 The rationale for each bound -- and the alternatives rejected, including a wholesale skip of the
 post-route stage -- is recorded in
-link:adr/0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
+link:adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 
 [[_allowed_methods]]
 === `allowed_methods`
@@ -2101,7 +2223,7 @@ directive), and the NiFi-proprietary `X-ProxyScheme/-Host/-Port/-ContextPath`. P
 *Sanitization (fail-safe, never throws).* Every honored value passes the `cui-http`
 header-value pipeline (CR/LF, NUL, control characters, over-length, suspicious patterns; the
 pipeline is configured from the *gateway-wide* `security_defaults` profile -- forwarded-header
-handling is gateway-wide, so no per-route `profile`, `none` included, changes it), plus fixed
+handling is gateway-wide, so no per-route `profile`, `minimal` included, changes it), plus fixed
 fail-secure field guards that no profile can relax: scheme must be `http`/`https`, port `1..65535`, host
 must carry no path separators or whitespace, and the context-path rejects protocol-relative
 (`//host`) and backslash values on the *raw* value, before the sanitization pipeline -- whose
@@ -2190,14 +2312,12 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second
   restriction, which existed only for the `cui-http` `HttpHandler` builder).
-* Secrets in `oidc` (`client_secret`, the session keys) must be `${ENV_VAR}` references, not
-  literals.
+* Secrets in `oidc` (`client_secret`, the session encryption key) must be `${ENV_VAR}` references,
+  not literals.
 * `session.mode: cookie` does *not* require `session.encryption_key` -- omitting it selects the
   generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
-  across replicas). `previous_key` is optional and decrypt-only, and *requires* an
-  `encryption_key`: `previous_key` without `encryption_key` is rejected, because a decrypt-only
-  rotation key with no current key to roll onto is nonsensical. `session.mode: server` requires an
-  explicit `session.store` (only `memory` is valid) and uses neither encryption key.
+  across replicas). `session.mode: server` requires an explicit `session.store` (only `memory` is
+  valid) and uses no encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
   *non-empty* link:#_allowed_origins[`allowed_origins`] list; an absent or empty allowlist *fails
@@ -2231,3 +2351,11 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   Both bound *general* header values instead. The comparison uses the *resolved* profile, which is
   why it is a boot rule rather than a schema range; the schema owns only the `integer` /
   `minimum: 1` range. An omitted key is never refused -- it resolves to the default `8192`.
+* `asset_defaults.content_types` is *add-only*: an entry naming one of the gateway's 21 built-in
+  asset extensions is *refused at boot*, with the message naming the offending extension. The
+  built-in mappings are immutable because permitting an override -- remapping `svg` away from
+  `image/svg+xml`, or pointing any built-in at `text/html` -- is a stored-XSS lever on a security
+  gateway. Refusing (rather than silently ignoring the entry at request time) is what makes the
+  operator aware the mapping never took effect. Entries for extensions the gateway does *not* map
+  are always accepted, and an omitted or empty block is never refused. See
+  link:#_asset_defaults[`asset_defaults`].

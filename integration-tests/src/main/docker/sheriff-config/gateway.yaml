@@ -24,7 +24,7 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Every route that declares no `security_filter.profile` resolves to this value — including the
 # /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
 # parameters, 1024-character header values and parameter values, 1024-character paths) are the
-# floor the suite proves. The single `none`-mode route below is the only opt-out, and it is a
+# floor the suite proves. The single `minimal`-mode route below is the only opt-out, and it is a
 # PARTIAL one.
 #
 # `max_authorization_header_value_length` bounds the `Authorization` header VALUE only, at the
@@ -36,9 +36,19 @@ allowed_methods: ["GET", "POST", "PUT", "DELETE"]
 # Declared EXPLICITLY here, per the same convention as `profile` above, so the IT and benchmark
 # suites measure a pinned value rather than the omitted-key default. A declared value below the
 # resolved baseline cap is refused at boot.
+#
+# `allow_get_with_content_length_body` admits a Content-Length-framed body on GET. Declared true here
+# so the shipped descriptor actually ACTIVATES the opt-in rather than leaving it proven by unit tests
+# alone (GetWithBodyActivationWiringTest asserts this declaration). It is a PARTIAL relaxation: only
+# the declared-Content-Length leg is skipped, and only for GET — a GET whose body carries no declared
+# Content-Length is not Content-Length-framed and stays rejected. Transfer-Encoding
+# on GET remains REJECTED unconditionally — chunked framing on an otherwise-bodyless method is the
+# request-smuggling shape the framing gate exists to constrain — and a body on HEAD stays rejected on
+# every leg. The CL+TE and Connection-header framing-strip defences are untouched.
 security_defaults:
   profile: strict
   max_authorization_header_value_length: 8192
+  allow_get_with_content_length_body: true
 tls:
   # TLS POLICY for the terminated listener, single-sourced from this document and bound onto the
   # listener by tls/TlsServerCustomizer (ADR-0025). Declared here rather than left implicit so the
@@ -77,6 +87,20 @@ tls:
   passthrough_sni:
     passthrough.test.example: PASSTHROUGH_BACKEND
     fault.test.example: PASSTHROUGH_FAULT
+# Add-only extension of the gateway's built-in asset content-type map, serving the asset anchors
+# declared below. Declared here so the shipped descriptor ACTIVATES the feature rather than leaving
+# it proven by unit tests alone: `webmanifest` is an extension the gateway does not map, so without
+# this block a served .webmanifest would fall back to application/octet-stream.
+#
+# The block is add-only and the gateway enforces that at BOOT: an entry naming one of the built-in
+# extensions (html, css, js, svg, png, ... — 21 in total) is refused with a message naming it, not
+# silently ignored. That bound is a security property, not an ergonomic one — remapping `svg` away
+# from image/svg+xml, or pointing any built-in at text/html, would make a served asset a stored-XSS
+# lever on a security gateway. AssetContentTypeActivationWiringTest asserts both halves against this
+# committed descriptor: the block is declared, and no declared key collides with a built-in.
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
 anchors:
   api:
     path_prefix: /proxy

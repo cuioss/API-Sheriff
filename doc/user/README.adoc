@@ -113,21 +113,21 @@ section is the operator's decision guide.
 | Relaxed caps (10 MiB body, 8192-character header values, no suspicious-pattern rejection). Null
   bytes are *still* refused and path traversal is *still* blocked -- no mode permits either.
 
-| `none`
+| `minimal`
 | A specific route receives url-parameter values the validator rejects but your application requires
   -- a path-shaped callback target, an opaque token containing separators. Prefer it *per route*: a
-  gateway-wide `security_defaults.profile: none` is accepted only while no authenticated or BFF route
-  inherits it, because the boot validator refuses the mode on those routes.
+  gateway-wide `security_defaults.profile: minimal` is accepted only while no authenticated or BFF
+  route inherits it, because the boot validator refuses the mode on those routes.
 | Everything `strict` enforces *except* two things: the url-parameter name/value validation and the
-  per-route pipeline re-run. See "What `none` does not turn off" below -- it is a partial disable,
+  per-route pipeline re-run. See "What `minimal` does not turn off" below -- it is a partial disable,
   not an off switch.
 |===
 
-=== `none` is a partial disable, not an off switch
+=== `minimal` is a partial disable, not an off switch
 
-Setting `profile: none` does *not* stop the gateway defending the route. It turns off exactly two
+Setting `profile: minimal` does *not* stop the gateway defending the route. It turns off exactly two
 things -- the url-parameter name and value validation, and the per-route pipeline re-run -- and
-nothing else. In particular, a `none` route **still**:
+nothing else. In particular, a `minimal` route **still**:
 
 * enforces `max_body_bytes`, so an over-cap body is still rejected `413`;
 * enforces `allowed_paths`, so a path outside the allowlist is still rejected `400`;
@@ -135,31 +135,32 @@ nothing else. In particular, a `none` route **still**:
   count, and an oversized header value are all still rejected `400`;
 * enforces authentication, the verb gate, CSRF, and the forward-policy allowlists.
 
-If you set `none` expecting the body cap or the path allowlist to stop applying, that is the
-misreading to correct: the mode name is narrower than it sounds. The normative closed list of what
-`none` disables is in
-link:../configuration.adoc#_the_none_mode[Configuration Reference -- The `none` mode].
+If you set `minimal` expecting the body cap or the path allowlist to stop applying, that is the
+misreading to correct: the mode is the *least* validation the gateway performs, not none of it. The
+normative closed list of what `minimal` disables is in
+link:../configuration.adoc#_the_minimal_mode[Configuration Reference -- The `minimal` mode].
 
-=== `none` is refused at boot on authenticated and BFF routes
+=== `minimal` is refused at boot on authenticated and BFF routes
 
-The gateway *fails to start* if a route whose effective profile resolves to `none` is either
+The gateway *fails to start* if a route whose effective profile resolves to `minimal` is either
 
 * effectively authenticated -- its resolved auth posture requires a bearer token or a session, or
 * under a `type: bff` anchor.
 
-This includes the indirect case: a gateway-wide `security_defaults.profile: none` that reaches such a
+This includes the indirect case: a gateway-wide `security_defaults.profile: minimal` that reaches such a
 route through the fallback chain is refused exactly as a per-route declaration would be. It also
 includes the subtle case: a route that adds its own `auth.require: bearer` under an `access: public`
 anchor *is* authenticated in effect, so it is refused even though its anchor still reads `public`.
 
 The boot error names the route, which dimension refused it, and the remedy. Fix it by giving that
-route an explicit `profile: strict` (or `lenient`), or by moving the `none` declaration to the
+route an explicit `profile: strict` (or `lenient`), or by moving the `minimal` declaration to the
 specific public route that needs it.
 
 === An unrecognized `profile` value is a hard boot failure
 
-The mode set is exactly `strict`, `lenient`, `none`. Any other value -- including the *removed*
-`default` -- makes the gateway *refuse to start*. There is no fallback and no warning-and-continue.
+The mode set is exactly `strict`, `lenient`, `minimal`. Any other value -- including the *removed*
+`default` and the former `none`, now spelled `minimal` -- makes the gateway *refuse to start*. There
+is no fallback and no warning-and-continue.
 
 [IMPORTANT]
 ====
@@ -172,6 +173,24 @@ security_defaults:
 ----
 
 Choose `lenient` instead if you need to keep the looser caps `default` happened to provide.
+====
+
+[IMPORTANT]
+====
+*Migration from `none`.* The mode formerly spelled `none` is now spelled `minimal`. The behaviour is
+unchanged -- only the name is -- but the old spelling is *not* accepted: a `gateway.yaml` still
+declaring `profile: none` *fails to boot* with a value-range violation, at every site the key appears
+(`security_defaults`, an anchor's `security_filter`, a route's `security_filter`).
+
+*Remedy: rename the value.* One line per declaration site:
+
+[source,yaml]
+----
+security_defaults:
+  profile: minimal    # was: none
+----
+
+`auth.require: none` is a *different* key in a different value space and is *not* affected.
 ====
 
 === An omitted `security_defaults` block now means `strict`
@@ -205,3 +224,110 @@ that table first. Two remedies, in order of preference:
 
 Declaring the value you want -- rather than relying on the omitted-block default -- is the durable
 fix either way.
+
+== Admitting a Body on `GET` (`security_defaults.allow_get_with_content_length_body`)
+
+Some upstream APIs genuinely take a request body on `GET` -- Elasticsearch's `_search` is the
+common one. By default API Sheriff rejects that request `400` at the anti-smuggling framing gate,
+because a body on an otherwise-bodyless method is a request-smuggling shape. This knob admits the
+legitimate case without disabling the defence. Field-level contract lives in
+link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
+section is the operator's decision guide.
+
+=== Symptom and fix
+
+*Symptom:* a `GET` that carries a JSON body is rejected `400` with a framing violation, and the
+upstream never sees it.
+
+*Fix:* enable the opt-in gateway-wide:
+
+[source,yaml]
+----
+security_defaults:
+  profile: strict
+  allow_get_with_content_length_body: true
+----
+
+The key is gateway-wide, not per-route, because the framing gate runs before route selection --
+there is no route resolved yet to scope it to. Omit the key (or set `false`) and every framing
+rejection behaves exactly as it did before the key existed.
+
+*Decide it as a gateway-wide posture change, not an upstream-local one.* Since it cannot be scoped,
+enabling it for the one upstream that needs a `GET` body also admits a `Content-Length`-framed `GET`
+body on every other route -- your `require: bearer` routes and every route under a `type: bff`
+anchor included. Content on `GET` has no defined semantics (RFC 9110 section 9.3.1), so the risk on
+those routes is a cache that keys on the URL and ignores the body, or a component that authorizes on
+the URL while the application reads the body. Leave the key `false` unless every route on the
+gateway can tolerate a `GET` body.
+
+=== What it does *not* turn off
+
+Enabling it relaxes one rejection leg, and only for `GET`: the declared-`Content-Length` leg.
+Everything else the framing gate enforces still applies. In particular, a `GET` is **still**
+rejected `400` when it carries:
+
+* a body with no declared `Content-Length` -- such a body is not `Content-Length`-framed, so it
+  falls outside the single leg this key relaxes.
+* `Transfer-Encoding` -- *unconditionally, and no configuration relaxes it.* Chunked framing on an
+  otherwise-bodyless method is the exact shape the smuggling defences exist to constrain. This costs
+  the use case nothing: an Elasticsearch client sends a `Content-Length`-framed body, never a chunked
+  one, so the relaxation is drawn where the security value is rather than where the convenience is.
+* both `Content-Length` and `Transfer-Encoding` -- the CL+TE desync primer, checked before this leg.
+* more than one `Content-Length` header, or a comma-separated `Content-Length` value.
+* a `Connection` header naming a framing or trust header (the hop-by-hop strip vector).
+
+And `HEAD` is unaffected on every leg -- a body on `HEAD` stays rejected whatever this key says.
+
+If you set this expecting `GET` framing checks to stop applying generally, that is the misreading to
+correct: it admits one specific, well-framed shape and nothing else.
+
+== Asset Content Types (`asset_defaults.content_types`)
+
+The gateway -- never the backing directory or upstream -- decides the `Content-Type` of every asset
+it serves, from its own built-in extension map. An extension the map does not carry is served as
+`application/octet-stream`, which browsers download instead of rendering. `asset_defaults` is how
+you teach the gateway that extension. Field-level contract lives in
+link:../configuration.adoc#_asset_defaults[Configuration Reference -- `asset_defaults`]; this
+section is the operator's decision guide.
+
+=== Symptom and fix
+
+*Symptom:* a file served through an `type: asset` anchor downloads instead of rendering, and the
+response carries `Content-Type: application/octet-stream`.
+
+*Fix:* declare its extension, gateway-wide:
+
+[source,yaml]
+----
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
+    avif: image/avif
+----
+
+Keys are the lowercase extension without the dot. An omitted block is the same as an empty one: the
+built-in map governs alone.
+
+=== The block is add-only -- and a built-in extension is refused at boot
+
+You can *teach* the gateway an extension it does not know. You cannot *change* one it does. The 21
+built-in extensions -- `html`, `htm`, `css`, `js`, `mjs`, `json`, `map`, `xml`, `txt`, `svg`, `png`,
+`jpg`, `jpeg`, `gif`, `webp`, `ico`, `woff`, `woff2`, `ttf`, `pdf`, `wasm` -- always win, and an
+entry naming any of them makes the gateway *refuse to start*, with the error naming the offending
+extension.
+
+That refusal is a security bound, not a limitation to work around. The built-in map is exactly what
+makes an asset's `Content-Type` gateway-governed rather than source-dictated. If an entry here could
+override one, then anyone who can edit the mounted `gateway.yaml` could remap `svg` away from
+`image/svg+xml`, or point any built-in extension at `text/html` -- turning a file served from a
+directory mount or a secondary origin into a script-executing document on the *gateway's own
+origin*. That is a stored-XSS lever on a security gateway, so the map is closed to overrides while
+staying open to additions.
+
+The gateway refuses at boot rather than ignoring the entry at request time deliberately: a silently
+ignored mapping looks like a working one in the descriptor, and you would only discover otherwise
+from a served response. The boot failure tells you immediately.
+
+*If you believe you need to override a built-in*, the mapping is not the right tool -- serve the
+file under an extension the gateway does not map, or correct the file's extension to match its
+actual type.

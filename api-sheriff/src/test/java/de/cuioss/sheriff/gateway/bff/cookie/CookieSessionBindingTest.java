@@ -34,9 +34,6 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-import de.cuioss.test.juli.LogAsserts;
-import de.cuioss.test.juli.TestLogLevel;
-import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -49,14 +46,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for {@link CookieSessionBinding} — the stateless seam implementation. Covers the
  * bind/resolve/persist/destroy round trip, the server-side absolute-TTL enforcement (an expired
  * cookie the browser still holds is refused), the {@code Max-Age} reflecting the remaining rather
- * than the reset lifetime on a re-seal, the {@code previous_key} rotation (a retired-key cookie
- * resolves and its next write is sealed under the current key, while withdrawing the retired key
- * makes it no session), the stable-but-never-emitted session identity, and the
- * {@code UNSUPPORTED} IdP-driven destruction capability, the once-per-process rotation record, and
- * the {@link SessionRecord} session-nonce contract (absent is the valid server-mode shape; a
- * present-but-blank value is refused because it would degrade the derived identity).
+ * than the reset lifetime on a re-seal, the single-key change semantics (a cookie sealed under a
+ * withdrawn key is no session, and every fresh login seals under the one active key id), the
+ * stable-but-never-emitted session identity, the {@code UNSUPPORTED} IdP-driven destruction
+ * capability, and the {@link SessionRecord} session-nonce contract (absent is the valid server-mode
+ * shape; a present-but-blank value is refused because it would degrade the derived identity).
  */
-@EnableTestLogger
 class CookieSessionBindingTest {
 
     private static final String COOKIE_NAME = "__Host-sheriff-session";
@@ -69,7 +64,9 @@ class CookieSessionBindingTest {
     private static final String SUB = "user-sub-1";
     private static final String SID = "idp-sid-9";
     private static final byte CURRENT_KEY_ID = 1;
-    private static final byte PREVIOUS_KEY_ID = 7;
+
+    /** The id a cookie sealed before a key change still carries — a generation the binding no longer holds. */
+    private static final byte WITHDRAWN_KEY_ID = 7;
 
     private SealedSessionCookieCodec codec;
     private CookieSessionBinding binding;
@@ -267,82 +264,31 @@ class CookieSessionBindingTest {
     }
 
     @Nested
-    @DisplayName("previous_key rotation")
-    class Rotation {
+    @DisplayName("Key change")
+    class KeyChange {
 
-        private CookieSessionBinding retiredBinding;
-        private CookieSessionBinding rotatingBinding;
-
-        @BeforeEach
-        void setUpRotation() {
-            SecretKey previousKey = aesKey((byte) 0x33);
-            retiredBinding = new CookieSessionBinding(
-                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, previousKey, PREVIOUS_KEY_ID), identitySalt());
-            rotatingBinding = new CookieSessionBinding(
-                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x11), CURRENT_KEY_ID,
-                            previousKey, PREVIOUS_KEY_ID),
+        @Test
+        @DisplayName("Should treat a cookie sealed under a withdrawn key as no session, never an error")
+        void shouldRefuseCookieSealedUnderWithdrawnKey() {
+            CookieSessionBinding beforeTheKeyChange = new CookieSessionBinding(
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x33), WITHDRAWN_KEY_ID),
                     identitySalt());
+            BoundSession sealedBeforeTheKeyChange =
+                    beforeTheKeyChange.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            assertEquals(WITHDRAWN_KEY_ID, keyIdOf(sealedBeforeTheKeyChange),
+                    "the outstanding cookie still carries the withdrawn generation's id");
+
+            assertTrue(binding.resolve(cookieHeaderOf(sealedBeforeTheKeyChange), LOGIN).isEmpty(),
+                    "there is no decrypt-only companion key to fall back on, so the binding refuses the "
+                            + "outstanding cookie as no session and its owner re-authenticates");
         }
 
         @Test
-        @DisplayName("Should resolve a previous-key cookie and re-seal its next write with the current key")
-        void shouldResealOnNextWrite() {
-            BoundSession sealedBeforeRotation = retiredBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
-            assertEquals(PREVIOUS_KEY_ID, keyIdOf(sealedBeforeRotation), "the old cookie carries the retired key id");
+        @DisplayName("Should seal every fresh login under the one active key id")
+        void shouldBindFreshLoginsUnderTheActiveKey() {
+            BoundSession fresh = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
 
-            SessionRecord resolved = rotatingBinding.resolve(cookieHeaderOf(sealedBeforeRotation), LOGIN).orElseThrow();
-            BoundSession nextWrite = rotatingBinding.persist(resolved, LOGIN.plusSeconds(60));
-
-            assertEquals(CURRENT_KEY_ID, keyIdOf(nextWrite),
-                    "the session survives the rotation and its next write is sealed under the current key");
-            assertEquals(ACCESS_TOKEN, rotatingBinding.resolve(cookieHeaderOf(nextWrite), LOGIN.plusSeconds(60))
-                    .orElseThrow().accessToken(), "the re-sealed cookie still carries the session material");
-        }
-
-        @Test
-        @DisplayName("Should record the rotation once, not on every resolve of an unrotated cookie")
-        void shouldRecordTheRotationOnlyOnce() {
-            BoundSession sealedBeforeRotation = retiredBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
-            String cookieHeader = cookieHeaderOf(sealedBeforeRotation);
-
-            for (int request = 0; request < 5; request++) {
-                assertTrue(rotatingBinding.resolve(cookieHeader, LOGIN).isPresent(),
-                        "a previous-key cookie keeps resolving for the whole rotation window");
-            }
-
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
-                    "Cookie-mode previous-key rotation in progress");
-        }
-
-        @Test
-        @DisplayName("Should keep the absolute deadline anchored across the rotation re-seal")
-        void shouldNotExtendTheSessionOnRotation() {
-            BoundSession sealedBeforeRotation = retiredBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
-            Instant halfway = LOGIN.plus(TTL.dividedBy(2));
-            SessionRecord resolved = rotatingBinding.resolve(cookieHeaderOf(sealedBeforeRotation), halfway)
-                    .orElseThrow();
-
-            BoundSession reSealed = rotatingBinding.persist(resolved, halfway);
-
-            assertTrue(rotatingBinding.resolve(cookieHeaderOf(reSealed), LOGIN.plus(TTL)).isEmpty(),
-                    "rotating the key does not restart the absolute lifetime");
-        }
-
-        @Test
-        @DisplayName("Should treat a previous-key cookie as no session once the previous key is withdrawn")
-        void shouldRefusePreviousKeyCookieAfterWithdrawal() {
-            BoundSession sealedBeforeRotation = retiredBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
-
-            assertTrue(binding.resolve(cookieHeaderOf(sealedBeforeRotation), LOGIN).isEmpty(),
-                    "the current-key-only binding refuses the retired cookie as no session, never an error");
-        }
-
-        @Test
-        @DisplayName("Should seal a fresh cookie-mode login under the current key while rotation is active")
-        void shouldBindFreshLoginsUnderTheCurrentKey() {
-            BoundSession fresh = rotatingBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
-
-            assertEquals(CURRENT_KEY_ID, keyIdOf(fresh), "the previous key is decrypt-only and never seals");
+            assertEquals(CURRENT_KEY_ID, keyIdOf(fresh), "the binding holds exactly one sealing key");
         }
     }
 

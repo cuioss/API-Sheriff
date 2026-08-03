@@ -65,32 +65,42 @@ public final class DirectoryAssetSource implements AssetSource {
     private final AccessLevel access;
     private final PathConfinement confinement;
     private final long maxBytes;
+    private final Map<String, String> operatorContentTypes;
 
     /**
      * Creates a source rooted at {@code root} for a route of the given access level,
      * using the default {@link PathConfinement} and {@value #DEFAULT_MAX_BYTES}-byte
      * size cap.
      *
-     * @param root   the configured directory root (mandatory)
-     * @param access the serving route's effective access level (mandatory)
+     * @param root                 the configured directory root (mandatory)
+     * @param access               the serving route's effective access level (mandatory)
+     * @param operatorContentTypes the boot-resolved add-only content-type additions
+     *                             (mandatory; empty when unconfigured)
      */
-    public DirectoryAssetSource(Path root, AccessLevel access) {
-        this(root, access, new PathConfinement(), DEFAULT_MAX_BYTES);
+    public DirectoryAssetSource(Path root, AccessLevel access, Map<String, String> operatorContentTypes) {
+        this(root, access, new PathConfinement(), DEFAULT_MAX_BYTES, operatorContentTypes);
     }
 
     /**
      * Creates a source with an explicit confinement and size cap.
      *
-     * @param root        the configured directory root (mandatory)
-     * @param access      the serving route's effective access level (mandatory)
-     * @param confinement the shared path confinement (mandatory)
-     * @param maxBytes    the maximum served-file size in bytes
+     * @param root                 the configured directory root (mandatory)
+     * @param access               the serving route's effective access level (mandatory)
+     * @param confinement          the shared path confinement (mandatory)
+     * @param maxBytes             the maximum served-file size in bytes
+     * @param operatorContentTypes the boot-resolved add-only content-type additions
+     *                             (mandatory; empty when unconfigured). Resolved once at
+     *                             boot and read-only thereafter — no per-request lookup
+     *                             and no shared mutable state.
      */
-    public DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes) {
+    public DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
+            Map<String, String> operatorContentTypes) {
         this.root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
         this.access = Objects.requireNonNull(access, "access");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
         this.maxBytes = maxBytes;
+        this.operatorContentTypes = Map.copyOf(
+                Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
     }
 
     /**
@@ -125,7 +135,7 @@ public final class DirectoryAssetSource implements AssetSource {
                 return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
             }
             Map<String, String> headers = AssetResponseEnvelope.governedHeaders(
-                    file.getFileName().toString(), access, Map.of());
+                    file.getFileName().toString(), access, Map.of(), operatorContentTypes);
             byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : Files.readAllBytes(file);
             return new Served(OK, headers, body);
         } catch (IOException _) {

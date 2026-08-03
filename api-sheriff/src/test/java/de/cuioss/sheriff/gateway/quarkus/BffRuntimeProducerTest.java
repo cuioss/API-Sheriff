@@ -263,27 +263,6 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should refuse to boot a previous_key without an encryption_key")
-        void shouldRefusePreviousKeyWithoutEncryptionKey() {
-            OidcConfig previousOnly = OidcConfig.builder()
-                    .issuer(ISSUER)
-                    .clientId("gateway-client")
-                    .clientSecret("secret")
-                    .scopes(List.of("openid"))
-                    .redirectUri(REDIRECT_URI)
-                    .session(OidcConfig.Session.builder()
-                            .mode("cookie")
-                            .previousKey(Base64.getEncoder().encodeToString(new byte[32]))
-                            .build())
-                    .build();
-
-            BffRuntimeProducer producer = producer(previousOnly);
-
-            assertThrows(IllegalStateException.class, producer::bffRuntime,
-                    "a decrypt-only rotation key with no current key to roll onto is refused, never ignored");
-        }
-
-        @Test
         @DisplayName("Should refuse an encryption key that is not a base64 AES-256 value")
         void shouldRefuseMalformedKey() {
             BffRuntimeProducer nonBase64 = producer(cookieModeOidcWithKey("not-base64-~~~"));

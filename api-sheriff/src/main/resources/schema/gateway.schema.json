@@ -29,7 +29,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] },
+        "profile": { "type": "string", "enum": ["strict", "lenient", "minimal"] },
         "allowed_paths": { "type": "array", "items": { "type": "string" } },
         "max_header_count": { "type": "integer" },
         "max_header_value_length": { "type": "integer" },
@@ -154,13 +154,17 @@
     "security_defaults": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Global inbound-filter baseline. An omitted block — or a block without 'profile' — resolves the gateway-wide profile to 'strict'. 'none' is a partial disable: it turns off only the url-parameter name/value validation and the per-route pipeline re-run, and is refused at boot on effectively-authenticated and BFF routes (see ADR-0024).",
+      "description": "Global inbound-filter baseline. An omitted block — or a block without 'profile' — resolves the gateway-wide profile to 'strict'. 'minimal' is a partial disable: it turns off only the url-parameter name/value validation and the per-route pipeline re-run, and is refused at boot on effectively-authenticated and BFF routes (see ADR-0024).",
       "properties": {
-        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] },
+        "profile": { "type": "string", "enum": ["strict", "lenient", "minimal"] },
         "max_authorization_header_value_length": {
           "type": "integer",
           "minimum": 1,
           "description": "Budget for the pre-route 'Authorization' header-value carve-out (ADR-0019). A bearer token plus the 'Bearer ' prefix routinely exceeds the resolved profile's header-value cap (~1028 characters against strict's 1024), which the non-skippable pre-route floor would otherwise reject 400 before route selection. Defaults to 8192 when omitted. Boot-refused when declared below the resolved baseline max_header_value_length, since that would make the carve-out a tightening in disguise."
+        },
+        "allow_get_with_content_length_body": {
+          "type": "boolean",
+          "description": "Admits a Content-Length-framed request body on GET. Defaults to false (omitted = rejected, as before this key existed). PARTIAL relaxation, scoped to a single rejection leg on GET only: the declared Content-Length > 0 leg. A GET whose body is signalled without a declared Content-Length is not Content-Length-framed and stays rejected. Transfer-Encoding on GET stays rejected UNCONDITIONALLY — chunked framing on an otherwise-bodyless method is the shape the request-smuggling defences exist to constrain, and the motivating case (Elasticsearch _search) sends Content-Length-framed bodies, so excluding it costs nothing. HEAD is unaffected on every leg, and the CL+TE and Connection-header framing-strip rules are independent checks that still apply. Gateway-wide because the framing gate runs at stage 1, before route selection."
         }
       }
     },
@@ -192,6 +196,23 @@
     "upstream_defaults": {
       "$ref": "#/$defs/upstreamDefaults",
       "description": "Global retry / HTTP-304 not-modified defaults (both default true). An endpoint upstream_defaults block replaces this wholesale."
+    },
+    "asset_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Global asset-serving defaults. Add-only: the block extends the gateway's built-in content-type map, it never replaces an entry in it.",
+      "properties": {
+        "content_types": {
+          "type": "object",
+          "description": "Extension-to-Content-Type additions for extensions the gateway does not already map. ADD-ONLY: an entry naming a built-in extension (html, htm, css, js, mjs, json, map, xml, txt, svg, png, jpg, jpeg, gif, webp, ico, woff, woff2, ttf, pdf, wasm) is REFUSED AT BOOT, not silently ignored. The built-in mappings are immutable because remapping one — svg away from image/svg+xml, or any extension to text/html — is a stored-XSS lever on a security gateway. An extension neither map carries still falls back to application/octet-stream. The VALUE must be a well-formed type/subtype media type, optionally followed by ';name=value' parameters, and carries no control characters: it is served verbatim as the asset's Content-Type response header, so a CR/LF or non-media-type value would be a response-header-injection vector. This schema deliberately enforces only the CHEAP half of that bound — a length cap plus a flat, control-character-free 'type/subtype…' shape. The precise RFC 9110 parameter grammar is enforced at boot by the configuration validator (ConfigValidator.validateAssetContentTypeValues), which additionally names the offending extension and value. Both anchors terminate with a negative lookahead rather than '$', because the schema 'pattern' keyword is evaluated with find semantics and '$' also matches before a final line terminator — exactly the trailing CR/LF these bounds exist to refuse.",
+          "propertyNames": { "pattern": "^[a-z0-9]+(?![\\s\\S])" },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 255,
+            "pattern": "^[A-Za-z0-9!#$%&'*+.^_`|~-]+/[A-Za-z0-9!#$%&'*+.^_`|~;= \\t-]+(?![\\s\\S])"
+          }
+        }
+      }
     },
     "forwarded": {
       "type": "object",
@@ -277,7 +298,6 @@
             "store": { "type": "string", "enum": ["memory"] },
             "cookie_name": { "type": "string" },
             "encryption_key": { "type": "string" },
-            "previous_key": { "type": "string" },
             "ttl_seconds": { "type": "integer" },
             "csrf": {
               "type": "object",

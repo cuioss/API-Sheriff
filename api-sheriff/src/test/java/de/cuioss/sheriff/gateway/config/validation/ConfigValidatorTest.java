@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -78,7 +80,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
  * full-space rejection and broad-prefix boot-WARN, and the same-prefix
  * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
- * {@code TRACE}/{@code CONNECT} rejection, the fail-closed ADR-0024 {@code profile: none}
+ * {@code TRACE}/{@code CONNECT} rejection, the fail-closed ADR-0024 {@code profile: minimal}
  * refusal on effectively-authenticated and BFF routes, and the single-pass aggregation
  * contract that reports every violation together rather than stopping at the first.
  */
@@ -125,7 +127,7 @@ class ConfigValidatorTest {
      */
     private static GatewayConfig gatewayWithAuthorizationCap(String profile, @Nullable Integer cap) {
         return validGateway()
-                .securityDefaults(new SecurityDefaultsConfig(profile, cap))
+                .securityDefaults(new SecurityDefaultsConfig(profile, cap, null))
                 .build();
     }
 
@@ -796,33 +798,13 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject previous_key without encryption_key")
-        void shouldRejectPreviousKeyWithoutEncryptionKey() {
-            GatewayConfig gateway = validGateway()
-                    .oidc(OidcConfig.builder()
-                            .session(OidcConfig.Session.builder()
-                                    .mode("cookie")
-                                    .previousKey("${SHERIFF_SESSION_KEY_PREVIOUS}")
-                                    .build())
-                            .build())
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/oidc/session/previous_key",
-                    "cookie session mode with a previous_key requires an encryption_key");
-        }
-
-        @Test
-        @DisplayName("Should accept cookie session mode with both an encryption_key and a previous_key")
-        void shouldAcceptCookieSessionWithRotationKeys() {
+        @DisplayName("Should accept cookie session mode with an encryption_key (passed-key mode)")
+        void shouldAcceptCookieSessionWithEncryptionKey() {
             GatewayConfig gateway = validGateway()
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
                                     .mode("cookie")
                                     .encryptionKey("${SHERIFF_SESSION_KEY}")
-                                    .previousKey("${SHERIFF_SESSION_KEY_PREVIOUS}")
                                     .build())
                             .build())
                     .build();
@@ -831,7 +813,7 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
-                    () -> "rotation composes with the passed-key mode, got: " + errors);
+                    () -> "declaring the one sealing key selects the passed-key mode, got: " + errors);
         }
 
         @Test
@@ -852,13 +834,13 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should apply the cookie-mode companion rule to a mixed-case mode value")
-        void shouldApplyCookieRuleToMixedCaseMode() {
+        @DisplayName("Should not apply the server-mode store rule to a mixed-case cookie mode value")
+        void shouldNotApplyServerRuleToMixedCaseCookieMode() {
             GatewayConfig gateway = validGateway()
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
                                     .mode("  CoOkIe ")
-                                    .previousKey("${SHERIFF_SESSION_KEY_PREVIOUS}")
+                                    .encryptionKey("${SHERIFF_SESSION_KEY}")
                                     .build())
                             .build())
                     .build();
@@ -866,8 +848,8 @@ class ConfigValidatorTest {
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
-            assertHasError(errors, "/oidc/session/previous_key",
-                    "cookie session mode with a previous_key requires an encryption_key");
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
+                    () -> "the canonicalized value is cookie mode, which holds no server-side store, got: " + errors);
         }
 
         @Test
@@ -1656,13 +1638,13 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("The fail-closed 'profile: none' refusal (ADR-0024)")
-    class SecurityProfileNoneRefusal {
+    @DisplayName("The fail-closed 'profile: minimal' refusal (ADR-0024)")
+    class SecurityProfileMinimalRefusal {
 
-        private static final String NONE_PROFILE = "none";
+        private static final String MINIMAL_PROFILE = "minimal";
         private static final String REQUIRE_NONE = "none";
         private static final String REQUIRE_BEARER = "bearer";
-        private static final String REFUSAL_MESSAGE = "resolves inbound-filter profile 'none'";
+        private static final String REFUSAL_MESSAGE = "resolves inbound-filter profile 'minimal'";
 
         private static RouteConfig profiledRoute(String id, String prefix, String anchorName, String profile,
                 @Nullable AuthConfig auth) {
@@ -1705,20 +1687,20 @@ class ConfigValidatorTest {
             return validGateway()
                     .anchors(Map.of(anchorConfig.name(), anchorConfig))
                     .securityDefaults(new SecurityDefaultsConfig(globalProfile,
-                            null))
+                            null, null))
                     .tokenValidation(new TokenValidationConfig(List.of(
                             IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
         }
 
         @Test
-        @DisplayName("Should reject 'none' on a route under an access: authenticated anchor")
-        void shouldRejectNoneOnAuthenticatedAnchor() {
+        @DisplayName("Should reject 'minimal' on a route under an access: authenticated anchor")
+        void shouldRejectMinimalOnAuthenticatedAnchor() {
             // Arrange — the anchor's bearer floor makes every route under it effectively authenticated.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
-                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, null));
+                    profiledRoute("secure-read", "/secure/read", "secure", MINIMAL_PROFILE, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1729,14 +1711,14 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject 'none' on a route under a type: bff anchor, naming the anchor-type dimension")
-        void shouldRejectNoneOnBffAnchor() {
+        @DisplayName("Should reject 'minimal' on a route under a type: bff anchor, naming the anchor-type dimension")
+        void shouldRejectMinimalOnBffAnchor() {
             // Arrange — a bff anchor is required to be access: authenticated (ADR-0013), so a matrix-clean
             // bff fixture necessarily trips both refusal dimensions; the anchor-type one must be named.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("shell", "/shell", AnchorType.BFF, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
             EndpointConfig endpoint = anchoredEndpoint("bff", "BFF", "shell", null,
-                    profiledRoute("shell-view", "/shell/view", "shell", NONE_PROFILE, null));
+                    profiledRoute("shell-view", "/shell/view", "shell", MINIMAL_PROFILE, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("BFF"));
@@ -1746,8 +1728,8 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject 'none' on a public anchor whose route strengthens the auth floor")
-        void shouldRejectNoneOnRouteStrengtheningPublicAnchorFloor() {
+        @DisplayName("Should reject 'minimal' on a public anchor whose route strengthens the auth floor")
+        void shouldRejectMinimalOnRouteStrengtheningPublicAnchorFloor() {
             // Arrange — the under-refusal case: the anchor stays access: public, so reading the anchor's
             // static access would let this route through, but the route's own bearer floor makes it
             // effectively authenticated.
@@ -1755,7 +1737,7 @@ class ConfigValidatorTest {
                     matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
                     new AuthConfig(REQUIRE_NONE, List.of()),
-                    profiledRoute("open-secured", "/open/secured", "open", NONE_PROFILE,
+                    profiledRoute("open-secured", "/open/secured", "open", MINIMAL_PROFILE,
                             new AuthConfig(REQUIRE_BEARER, List.of())));
 
             // Act
@@ -1767,13 +1749,13 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should accept 'none' on a genuinely public, effectively-unauthenticated route")
-        void shouldAcceptNoneOnPublicUnauthenticatedRoute() {
+        @DisplayName("Should accept 'minimal' on a genuinely public, effectively-unauthenticated route")
+        void shouldAcceptMinimalOnPublicUnauthenticatedRoute() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("open",
                     matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
                     new AuthConfig(REQUIRE_NONE, List.of()),
-                    profiledRoute("open-read", "/open/read", "open", NONE_PROFILE, null));
+                    profiledRoute("open-read", "/open/read", "open", MINIMAL_PROFILE, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
@@ -1781,13 +1763,13 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject a gateway-wide security_defaults 'none' inherited by an authenticated route")
-        void shouldRejectGlobalNoneInheritedByAuthenticatedRoute() {
-            // Arrange — the route declares no security_filter at all; 'none' reaches it through the
+        @DisplayName("Should reject a gateway-wide security_defaults 'minimal' inherited by an authenticated route")
+        void shouldRejectGlobalMinimalInheritedByAuthenticatedRoute() {
+            // Arrange — the route declares no security_filter at all; 'minimal' reaches it through the
             // gateway-wide fallback, which is the same violation as declaring it per route.
             GatewayConfig gateway = gatewayWithGlobalProfile(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER),
-                    NONE_PROFILE);
+                    MINIMAL_PROFILE);
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", null, null));
 
@@ -1799,13 +1781,13 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should accept a gateway-wide 'none' that no authenticated or BFF route inherits")
-        void shouldAcceptGlobalNoneOnPublicRoutesOnly() {
+        @DisplayName("Should accept a gateway-wide 'minimal' that no authenticated or BFF route inherits")
+        void shouldAcceptGlobalMinimalOnPublicRoutesOnly() {
             GatewayConfig gateway = validGateway()
                     .anchors(Map.of("open",
                             matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)))
-                    .securityDefaults(new SecurityDefaultsConfig(NONE_PROFILE,
-                            null))
+                    .securityDefaults(new SecurityDefaultsConfig(MINIMAL_PROFILE,
+                            null, null))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
                     new AuthConfig(REQUIRE_NONE, List.of()),
@@ -1817,12 +1799,12 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject an anchor-declared 'none' inherited by a block-less authenticated route")
-        void shouldRejectAnchorDeclaredNoneInheritedByAuthenticatedRoute() {
+        @DisplayName("Should reject an anchor-declared 'minimal' inherited by a block-less authenticated route")
+        void shouldRejectAnchorDeclaredMinimalInheritedByAuthenticatedRoute() {
             // Arrange — the middle leg of the resolution chain: the route declares no security_filter,
-            // so 'none' reaches it from the anchor's own block rather than per route or gateway-wide.
+            // so 'minimal' reaches it from the anchor's own block rather than per route or gateway-wide.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchorWithProfile("secure", "/secure",
-                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE));
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, MINIMAL_PROFILE));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", null, null));
 
@@ -1835,11 +1817,11 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should accept an anchor-declared 'none' on a genuinely public, unauthenticated route")
-        void shouldAcceptAnchorDeclaredNoneOnPublicUnauthenticatedRoute() {
+        @DisplayName("Should accept an anchor-declared 'minimal' on a genuinely public, unauthenticated route")
+        void shouldAcceptAnchorDeclaredMinimalOnPublicUnauthenticatedRoute() {
             // Arrange — the mirror-image of the refusal above: no refusal dimension applies
             GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithProfile("open", "/open",
-                    AnchorType.PROXY, AccessLevel.PUBLIC, null, NONE_PROFILE)));
+                    AnchorType.PROXY, AccessLevel.PUBLIC, null, MINIMAL_PROFILE)));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
                     new AuthConfig(REQUIRE_NONE, List.of()),
                     profiledRoute("open-read", "/open/read", "open", null, null));
@@ -1855,10 +1837,10 @@ class ConfigValidatorTest {
         @DisplayName("Should replace the anchor's whole security_filter block rather than merge its profile")
         void shouldReplaceAnchorFilterBlockWholesaleRatherThanMergeProfile() {
             // Arrange — the route declares a security_filter block WITHOUT a profile under an anchor
-            // declaring 'none'. The block is replaced wholesale, so the profile falls back to the
-            // gateway-wide 'strict' and never to the anchor's 'none' — a merge would refuse here.
+            // declaring 'minimal'. The block is replaced wholesale, so the profile falls back to the
+            // gateway-wide 'strict' and never to the anchor's 'minimal' — a merge would refuse here.
             GatewayConfig gateway = gatewayWithGlobalProfile(anchorWithProfile("secure", "/secure",
-                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, NONE_PROFILE), "strict");
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, MINIMAL_PROFILE), "strict");
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profileLessFilterRoute("secure-read", "/secure/read", "secure"));
 
@@ -1871,8 +1853,8 @@ class ConfigValidatorTest {
 
         @ParameterizedTest(name = "profile ''{0}'' is accepted on an authenticated route")
         @ValueSource(strings = {"strict", "lenient", "STRICT", "Lenient"})
-        @DisplayName("Should accept a non-'none' profile on an authenticated route, case-insensitively")
-        void shouldAcceptNonNoneProfileOnAuthenticatedRoute(String profile) {
+        @DisplayName("Should accept a non-'minimal' profile on an authenticated route, case-insensitively")
+        void shouldAcceptNonMinimalProfileOnAuthenticatedRoute(String profile) {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
@@ -1886,7 +1868,7 @@ class ConfigValidatorTest {
         @Test
         @DisplayName("Should report the refusal alongside an unrelated violation in one pass")
         void shouldAggregateRefusalWithUnrelatedViolation() {
-            // Arrange — an unsupported version plus a refused 'none' route: the pass must report both.
+            // Arrange — an unsupported version plus a refused 'minimal' route: the pass must report both.
             GatewayConfig gateway = validGateway()
                     .version(2)
                     .anchors(Map.of("secure",
@@ -1896,7 +1878,7 @@ class ConfigValidatorTest {
                             IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
-                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, null));
+                    profiledRoute("secure-read", "/secure/read", "secure", MINIMAL_PROFILE, null));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1913,19 +1895,333 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
-                    profiledRoute("secure-read", "/secure/read", "secure", NONE_PROFILE, null));
+                    profiledRoute("secure-read", "/secure/read", "secure", MINIMAL_PROFILE, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
 
             ConfigError refusal = errors.stream()
                     .filter(error -> error.message().contains(REFUSAL_MESSAGE))
                     .findFirst()
-                    .orElseThrow(() -> new AssertionError("expected a 'none' refusal error, got: " + errors));
+                    .orElseThrow(() -> new AssertionError("expected a 'minimal' refusal error, got: " + errors));
             assertAll(
                     () -> assertTrue(refusal.message().contains("secure-read"), "names the route"),
                     () -> assertTrue(refusal.message().contains("declare profile 'strict' or 'lenient'"),
                             "names the remedy"),
                     () -> assertFalse(refusal.message().contains("https://idp.example"), "echoes no configured scalar value"));
+        }
+    }
+
+    @Nested
+    @DisplayName("The GET-body opt-in resolves fail-closed when omitted")
+    class GetBodyOptInDefault {
+
+        @Test
+        @DisplayName("Should resolve an omitted allow_get_with_content_length_body to false")
+        void shouldResolveOmittedKnobToFalse() {
+            SecurityDefaultsConfig securityDefaults = new SecurityDefaultsConfig("strict", null, null);
+
+            assertFalse(securityDefaults.effectiveAllowGetWithContentLengthBody(),
+                    "an omitted knob must resolve fail-closed, preserving every framing rejection "
+                            + "the gateway made before the key existed");
+        }
+
+        @Test
+        @DisplayName("Should resolve an explicitly declared value")
+        void shouldResolveDeclaredKnob() {
+            assertAll(
+                    () -> assertTrue(new SecurityDefaultsConfig("strict", null, true)
+                            .effectiveAllowGetWithContentLengthBody(), "declared true resolves true"),
+                    () -> assertFalse(new SecurityDefaultsConfig("strict", null, false)
+                            .effectiveAllowGetWithContentLengthBody(), "declared false resolves false"));
+        }
+
+        @Test
+        @DisplayName("Should accept a gateway declaring the opt-in without any validation error")
+        void shouldAcceptDeclaredOptIn() {
+            GatewayConfig gateway = validGateway()
+                    .securityDefaults(new SecurityDefaultsConfig("strict", null, true))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains("security_defaults")),
+                    () -> "the opt-in carries no cross-cutting boot rule, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("The add-only 'asset_defaults.content_types' boot refusal")
+    class AssetContentTypesAddOnlyRefusal {
+
+        private static final String POINTER = "/asset_defaults/content_types";
+        private static final String REFUSAL_MESSAGE = "the built-in content-type mappings are immutable";
+
+        private static GatewayConfig gatewayWithContentTypes(Map<String, String> contentTypes) {
+            return validGateway()
+                    .assetDefaults(new AssetDefaultsConfig(contentTypes))
+                    .build();
+        }
+
+        @Test
+        @DisplayName("Should accept an entry for an extension the gateway does not map")
+        void shouldAcceptUnmappedExtension() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("webmanifest", "application/manifest+json"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains(POINTER)),
+                    () -> "an unmapped extension is exactly what the block exists for, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an absent asset_defaults block")
+        void shouldAcceptAbsentBlock() {
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains(POINTER)),
+                    () -> "an omitted block is never refused, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept an empty content_types map")
+        void shouldAcceptEmptyMap() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of());
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertTrue(errors.stream().noneMatch(error -> error.pointer().contains(POINTER)),
+                    () -> "an empty block is the add-only no-op, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse an entry naming a built-in extension, naming that extension")
+        void shouldRefuseBuiltInExtension() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("png", "image/jpeg"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertHasError(errors, POINTER, REFUSAL_MESSAGE),
+                    () -> assertHasError(errors, POINTER, "png"));
+        }
+
+        @Test
+        @DisplayName("Should refuse the stored-XSS lever 'svg: text/html' the add-only ruling exists to remove")
+        void shouldRefuseSvgRemappedToHtml() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("svg", "text/html; charset=utf-8"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertHasError(errors, POINTER, REFUSAL_MESSAGE),
+                    () -> assertHasError(errors, POINTER, "svg"));
+        }
+
+        @Test
+        @DisplayName("Should refuse a built-in extension declared in upper case")
+        void shouldRefuseBuiltInExtensionRegardlessOfCase() {
+            GatewayConfig gateway = gatewayWithContentTypes(Map.of("SVG", "text/html; charset=utf-8"));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertHasError(errors, POINTER, "svg");
+        }
+
+        @Test
+        @DisplayName("Should collect every offending entry in one pass rather than failing on the first")
+        void shouldCollectEveryOffendingEntry() {
+            Map<String, String> contentTypes = new LinkedHashMap<>();
+            contentTypes.put("svg", "text/html; charset=utf-8");
+            contentTypes.put("png", "image/jpeg");
+            contentTypes.put("webmanifest", "application/manifest+json");
+            GatewayConfig gateway = gatewayWithContentTypes(contentTypes);
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertEquals(2, errors.stream().filter(e -> e.pointer().contains(POINTER)).count(),
+                            "both built-in collisions are reported, the legal addition is not"),
+                    () -> assertHasError(errors, POINTER, "svg"),
+                    () -> assertHasError(errors, POINTER, "png"));
+        }
+    }
+
+    /**
+     * The value half of {@code asset_defaults.content_types}. The declared value is served verbatim
+     * as the asset's {@code Content-Type} response header, so a value that is not a well-formed
+     * media type — a CR/LF-bearing one above all — must be refused at boot rather than misbehaving
+     * per request inside the response write. This is a well-formedness gate only: it ranks no media
+     * type as safe or unsafe, because the add-only key rule already fences the built-in,
+     * script-executable extensions.
+     */
+    @Nested
+    @DisplayName("The 'asset_defaults.content_types' value well-formedness refusal")
+    class AssetContentTypeValueRefusal {
+
+        private static final String POINTER = "/asset_defaults/content_types";
+        private static final String REFUSAL_MESSAGE = "is not a well-formed media type";
+        private static final String EXTENSION = "webmanifest";
+
+        private static GatewayConfig gatewayWithValue(String value) {
+            return validGateway()
+                    .assetDefaults(new AssetDefaultsConfig(Map.of(EXTENSION, value)))
+                    .build();
+        }
+
+        private static List<ConfigError> valueErrors(List<ConfigError> errors) {
+            return errors.stream()
+                    .filter(error -> error.pointer().contains(POINTER) && error.message().contains(REFUSAL_MESSAGE))
+                    .toList();
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "application/manifest+json",
+                "text/plain; charset=utf-8",
+                "application/vnd.api+json",
+                "font/collection",
+                "application/x-7z-compressed"})
+        @DisplayName("Should accept a well-formed media type, with or without parameters")
+        void shouldAcceptWellFormedMediaType(String value) {
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertTrue(valueErrors(errors).isEmpty(),
+                    () -> "'" + value + "' is a well-formed media type, got: " + errors);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "notamediatype",
+                "",
+                "   ",
+                "application/",
+                "/json",
+                "text/plain; charset",
+                "text/plain extra"})
+        @DisplayName("Should refuse a value that is not a 'type/subtype' media type")
+        void shouldRefuseMalformedValue(String value) {
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertEquals(1, valueErrors(errors).size(),
+                    () -> "'" + value + "' is not a media type and must be refused at boot, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should name the offending extension and value, so the operator can find the typo")
+        void shouldNameExtensionAndValue() {
+            List<ConfigError> errors = validator.validate(gatewayWithValue("notamediatype"), List.of(),
+                    topologyWith());
+
+            assertAll(
+                    () -> assertHasError(errors, POINTER, EXTENSION),
+                    () -> assertHasError(errors, POINTER, "notamediatype"),
+                    () -> assertHasError(errors, POINTER, REFUSAL_MESSAGE));
+        }
+
+        @Test
+        @DisplayName("Should refuse a CR/LF-bearing value — the response-header-injection shape")
+        void shouldRefuseHeaderInjectionValue() {
+            String injected = "text/plain\r\nX-Injected: 1";
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(injected), List.of(), topologyWith());
+
+            assertEquals(1, valueErrors(errors).size(),
+                    () -> "a CR/LF-bearing value never reaches a response header, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should escape the echoed value, so the refusal cannot forge a line in the boot ERROR log")
+        void shouldNotEchoRawControlCharacters() {
+            String injected = "text/plain\r\nX-Injected: 1";
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(injected), List.of(), topologyWith());
+
+            ConfigError refusal = valueErrors(errors).getFirst();
+            assertAll(
+                    () -> assertFalse(refusal.message().contains("\r"),
+                            () -> "a raw CR would forge a log line: " + refusal.message()),
+                    () -> assertFalse(refusal.message().contains("\n"),
+                            () -> "a raw LF would forge a log line: " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains("\\u000D\\u000A"),
+                            () -> "the operator still sees what they typed, escaped: " + refusal.message()));
+        }
+
+        @Test
+        @DisplayName("Should refuse a trailing newline an '^...$'-anchored regex would have admitted")
+        void shouldRefuseTrailingNewline() {
+            List<ConfigError> errors = validator.validate(gatewayWithValue("text/plain\n"), List.of(),
+                    topologyWith());
+
+            assertEquals(1, valueErrors(errors).size(),
+                    () -> "the match is whole-input, so a trailing newline is refused, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should accept a media type carrying several parameters")
+        void shouldAcceptSeveralParameters() {
+            String value = "multipart/form-data; boundary=abc123; charset=utf-8";
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertTrue(valueErrors(errors).isEmpty(),
+                    () -> "a multi-parameter media type is well-formed, got: " + errors);
+        }
+
+        /**
+         * Guards the possessive quantifiers in {@code ConfigValidator.MEDIA_TYPE}. With the greedy
+         * form this pattern previously carried, the parameter-list repetition made the regex engine
+         * recurse once per iteration and retain a backtracking position for each, so an input with
+         * enough parameters exhausted the stack ({@code StackOverflowError}) instead of matching.
+         * The possessive form scans flat, so the same input is simply accepted.
+         * <p>
+         * The input is deliberately <em>well-formed</em>: the assertion is that a long value is
+         * decided normally, and any stack exhaustion surfaces as a thrown error failing this test
+         * rather than as a boot-time crash on an operator's config.
+         */
+        @Test
+        @DisplayName("Should decide a value carrying very many parameters without exhausting the stack")
+        void shouldNotRecurseOnLongParameterList() {
+            String value = "text/plain" + "; a=b".repeat(50_000);
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertTrue(valueErrors(errors).isEmpty(),
+                    () -> "a long but well-formed parameter list is accepted, got: " + errors.size() + " error(s)");
+        }
+
+        /**
+         * The malformed counterpart: a long parameter list terminated by a character outside the
+         * token set must be refused, again without the engine recursing per parameter.
+         */
+        @Test
+        @DisplayName("Should refuse a long malformed value without exhausting the stack")
+        void shouldRefuseLongMalformedValueWithoutRecursing() {
+            String value = "text/plain" + "; a=b".repeat(50_000) + "\r\nX-Injected: 1";
+
+            List<ConfigError> errors = validator.validate(gatewayWithValue(value), List.of(), topologyWith());
+
+            assertEquals(1, valueErrors(errors).size(),
+                    () -> "a long CR/LF-bearing value is refused, got: " + errors.size() + " error(s)");
+        }
+
+        @Test
+        @DisplayName("Should collect every offending value in one pass rather than failing on the first")
+        void shouldCollectEveryOffendingValue() {
+            Map<String, String> contentTypes = new LinkedHashMap<>();
+            contentTypes.put("webmanifest", "application/manifest+json");
+            contentTypes.put("avifs", "notamediatype");
+            contentTypes.put("jxl", "image/jxl\r\nX-Injected: 1");
+            GatewayConfig gateway = validGateway()
+                    .assetDefaults(new AssetDefaultsConfig(contentTypes))
+                    .build();
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
+
+            assertAll(
+                    () -> assertEquals(2, valueErrors(errors).size(),
+                            "both malformed values are reported, the well-formed one is not"),
+                    () -> assertHasError(errors, POINTER, "avifs"),
+                    () -> assertHasError(errors, POINTER, "jxl"));
         }
     }
 }

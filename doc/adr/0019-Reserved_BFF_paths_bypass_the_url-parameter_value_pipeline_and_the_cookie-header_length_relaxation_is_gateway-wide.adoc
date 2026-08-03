@@ -119,7 +119,7 @@ per request by consulting a matcher.
 
 The url-parameter name and value validation has since *moved into the post-route stage*, so that it
 runs under the route's own configuration and under the inbound-filter profile gate introduced by
-link:0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
+link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
 That relocation makes decision (a) *structural*: a matched reserved path terminates at its reserved
 handler *before route selection*, so it never reaches the post-route stage and therefore never reaches
 the parameter pipeline at all. The exemption is now a consequence of the pipeline's shape rather than
@@ -394,7 +394,7 @@ limit is structural and is stated as such rather than left to be discovered.
 == References
 
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode and the reserved-path model] -- the architecture these relaxations serve.
-* link:0024-Inbound_filter_modes_none_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- relocates the url-parameter validation into the post-route stage, which is what makes relaxation (a) structural (see the Amendment above). Does not supersede this record.
+* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- relocates the url-parameter validation into the post-route stage, which is what makes relaxation (a) structural (see the Amendment above). Does not supersede this record.
 * link:../architecture.adoc[Architecture] -- the inbound pipeline's position ahead of routing.
 * link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the session block carrying the cookie-size budget.
 * link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] -- both carve-outs, their budget keys and their bounds, side by side.

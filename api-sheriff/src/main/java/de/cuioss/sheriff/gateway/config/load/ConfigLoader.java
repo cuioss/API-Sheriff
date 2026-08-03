@@ -31,6 +31,10 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
+
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -55,9 +59,6 @@ import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
-import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import org.jspecify.annotations.Nullable;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
@@ -113,7 +114,7 @@ public final class ConfigLoader {
     private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     private static final List<String> SECRET_POINTERS = List.of(
-            "/oidc/client_secret", "/oidc/session/encryption_key", "/oidc/session/previous_key");
+            "/oidc/client_secret", "/oidc/session/encryption_key");
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;

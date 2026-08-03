@@ -322,7 +322,7 @@ stays.
 * *Default:* an omitted `security_defaults` block resolves to `strict`. This is a *tightening*
   relative to earlier releases -- see the "Inbound Filter Modes" migration notes in the
   link:README.adoc[Operator Guide index].
-* *Posture:* secure by default, and the weakest mode is bounded rather than open-ended. `none` is a
+* *Posture:* secure by default, and the weakest mode is bounded rather than open-ended. `minimal` is a
   *partial* disable: it turns off exactly the url-parameter name/value validation and the per-route
   pipeline re-run, and nothing else -- the pre-route floor, the body cap and the path allowlist all
   still apply. It is additionally *refused at boot* on effectively-authenticated and BFF routes, so

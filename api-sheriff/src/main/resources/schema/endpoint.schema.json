@@ -24,7 +24,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "profile": { "type": "string", "enum": ["strict", "lenient", "none"] },
+        "profile": { "type": "string", "enum": ["strict", "lenient", "minimal"] },
         "allowed_paths": { "type": "array", "items": { "type": "string" } },
         "max_header_count": { "type": "integer" },
         "max_header_value_length": { "type": "integer" },

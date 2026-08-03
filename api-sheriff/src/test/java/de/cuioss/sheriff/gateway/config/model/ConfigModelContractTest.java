@@ -89,7 +89,7 @@ class ConfigModelContractTest {
                 .tls(tlsConfig())
                 .management(managementConfig())
                 .securityHeaders(securityHeadersConfig())
-                .securityDefaults(new SecurityDefaultsConfig("strict", 8192))
+                .securityDefaults(new SecurityDefaultsConfig("strict", 8192, null))
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
@@ -294,17 +294,23 @@ class ConfigModelContractTest {
                                     List.of("Accept"), false),
                             new SecurityHeadersConfig.Cors(false, List.of("b"), List.of("POST"),
                                     List.of("Authorization"), true)),
-                    // Two cases so the record contract is proven to discriminate on BOTH components:
-                    // an unequal instance differing only in 'profile' would leave the newer
-                    // max_authorization_header_value_length component silently out of equals().
+                    // One case per component, so the record contract is proven to discriminate on ALL
+                    // THREE: a single unequal instance differing only in 'profile' would leave both
+                    // max_authorization_header_value_length and allow_get_with_content_length_body
+                    // silently out of equals(). Each case varies exactly one component and holds the
+                    // other two fixed, so a component dropped from equals() fails its own case alone.
                     voCase("SecurityDefaultsConfig (profile)",
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("lenient", 8192)),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("lenient", 8192, null)),
                     voCase("SecurityDefaultsConfig (max_authorization_header_value_length)",
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("strict", 8192),
-                            new SecurityDefaultsConfig("strict", 4096)),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("strict", 8192, null),
+                            new SecurityDefaultsConfig("strict", 4096, null)),
+                    voCase("SecurityDefaultsConfig (allow_get_with_content_length_body)",
+                            new SecurityDefaultsConfig("strict", 8192, false),
+                            new SecurityDefaultsConfig("strict", 8192, false),
+                            new SecurityDefaultsConfig("strict", 8192, true)),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),
@@ -427,7 +433,7 @@ class ConfigModelContractTest {
         @Test
         void gatewayConfigBuilderMatchesConstructor() {
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
-                    List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null);
+                    List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null, null);
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .anchors(Map.of("api", anchorConfig())).build();
             assertEquals(viaCtor, viaBuilder);
@@ -453,7 +459,7 @@ class ConfigModelContractTest {
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
-                    null);
+                    null, null);
             assertNull(cfg.metadata());
             assertNull(cfg.tls());
             assertNull(cfg.management());
@@ -462,6 +468,7 @@ class ConfigModelContractTest {
             assertTrue(cfg.allowedMethods().isEmpty());
             assertTrue(cfg.anchors().isEmpty());
             assertNull(cfg.upstreamDefaults());
+            assertNull(cfg.assetDefaults());
             assertNull(cfg.forwarded());
             assertNull(cfg.tokenValidation());
             assertNull(cfg.oidc());

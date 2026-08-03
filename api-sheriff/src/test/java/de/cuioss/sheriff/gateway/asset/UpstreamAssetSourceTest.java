@@ -77,7 +77,13 @@ class UpstreamAssetSourceTest {
     }
 
     private UpstreamAssetSource source(AccessLevel access, UpstreamFetcher fetcher) {
-        return new UpstreamAssetSource(HTTPS_UPSTREAM, access, new PathConfinement(), fetcher, MAX_BYTES);
+        return source(access, fetcher, Map.of());
+    }
+
+    private UpstreamAssetSource source(AccessLevel access, UpstreamFetcher fetcher,
+            Map<String, String> operatorContentTypes) {
+        return new UpstreamAssetSource(HTTPS_UPSTREAM, access, new PathConfinement(), fetcher, MAX_BYTES,
+                operatorContentTypes);
     }
 
     private static Map<String, String> headers(String... pairs) {
@@ -154,7 +160,7 @@ class UpstreamAssetSourceTest {
     void shouldRefuseNonAllowlistedScheme() {
         ResolvedUpstream fileScheme = new ResolvedUpstream("file", "assets.internal", 0, "/static");
         UpstreamAssetSource source = new UpstreamAssetSource(
-                fileScheme, AccessLevel.PUBLIC, new PathConfinement(), mustNotFetch(), MAX_BYTES);
+                fileScheme, AccessLevel.PUBLIC, new PathConfinement(), mustNotFetch(), MAX_BYTES, Map.of());
 
         AssetSource.Served served = source.serve(HttpMethod.GET, "app.js");
 
@@ -235,8 +241,34 @@ class UpstreamAssetSourceTest {
     @Test
     @DisplayName("Should construct the default source with the SSRF-guarded transport fetcher")
     void shouldConstructWithDefaultFetcher() {
-        assertDoesNotThrow(() -> new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC),
-                "the two-arg constructor wires the default confinement, transport fetcher, timeouts, and cap");
+        assertDoesNotThrow(() -> new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of()),
+                "the short constructor wires the default confinement, transport fetcher, timeouts, and cap");
+    }
+
+    @Test
+    @DisplayName("Should serve an operator-declared extension with the operator's content type")
+    void shouldServeOperatorDeclaredExtension() {
+        UpstreamFetcher fetcher = cannedFetcher(OK, headers("Content-Type", "text/html-but-evil"), BODY);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher,
+                Map.of("webmanifest", "application/manifest+json")).serve(HttpMethod.GET, "site.webmanifest");
+
+        assertEquals("application/manifest+json", served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                "an extension the gateway does not map resolves to the operator's value, and the "
+                        + "hostile upstream Content-Type is still overridden");
+    }
+
+    @Test
+    @DisplayName("Should keep the built-in content type when an operator entry names a built-in extension")
+    void shouldKeepBuiltInContentTypeAgainstOperatorOverride() {
+        UpstreamFetcher fetcher = cannedFetcher(OK, headers("Content-Type", "text/html"), BODY);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher,
+                Map.of("svg", "text/html; charset=utf-8")).serve(HttpMethod.GET, "logo.svg");
+
+        assertEquals("image/svg+xml", served.headers().get(AssetResponseEnvelope.CONTENT_TYPE),
+                "remapping svg to text/html is the stored-XSS lever the add-only ruling removes — "
+                        + "the built-in wins here, and the entry is refused at boot");
     }
 
     @Test

@@ -31,8 +31,12 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.Unsealed;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -47,11 +51,19 @@ import org.junit.jupiter.api.Test;
  * seals of one payload never produce the same value); fail-closed unsealing for a flipped byte in
  * <em>each</em> of ciphertext / nonce / tag; the associated-data binding, so a value cannot be
  * replayed under a different cookie name, format version, or key id; the ~4 KB size budget failing
- * the seal rather than truncating; the decrypt-only {@code previous_key} rotation, where a retired
- * key still unseals but is never selected for a seal and withdrawing it makes the old value
- * unauthenticated rather than an error; and the absence of key or token material from every emitted
+ * the seal rather than truncating; and the absence of key or token material from every emitted
  * header and {@code toString()}.
+ * <p>
+ * The codec holds exactly one key, so a value stamped with any other key id is refused at the
+ * key-id gate before a cipher is constructed — there is no decrypt-only companion key and no
+ * try-every-key fallback. That makes withdrawing a key a fail-closed clean break rather than a
+ * staged rollover.
+ * <p>
+ * {@link BoundedRejectionLogging} additionally pins that the rejection WARN is latched per
+ * disposition: the unseal path is per-request and pre-authentication, so an unbounded record there
+ * would be a remotely-reachable log-amplification lever.
  */
+@EnableTestLogger
 class SealedSessionCookieCodecTest {
 
     private static final String COOKIE_NAME = "__Host-sheriff-session";
@@ -61,6 +73,9 @@ class SealedSessionCookieCodecTest {
     private static final Instant LOGIN = Instant.parse("2026-07-27T10:00:00Z");
     private static final byte KEY_ID = 1;
     private static final byte OTHER_KEY_ID = 2;
+
+    /** The id a cookie sealed before a key change still carries — a generation the codec no longer holds. */
+    private static final byte WITHDRAWN_KEY_ID = 7;
     private static final String ACCESS_TOKEN = "raw-access-token-SECRET-material";
     private static final String REFRESH_TOKEN = "raw-refresh-token-SECRET-material";
     private static final String ID_TOKEN = "raw-id-token-SECRET-material";
@@ -106,8 +121,8 @@ class SealedSessionCookieCodecTest {
             String sealed = codec.seal(original);
             Optional<Unsealed> unsealed = codec.unseal(sealed);
 
-            assertEquals(Optional.of(new Unsealed(original, false)), unsealed,
-                    "the payload survives the round trip intact, authenticated by the current key");
+            assertEquals(Optional.of(new Unsealed(original)), unsealed,
+                    "the payload survives the round trip intact, authenticated by the sealing key");
         }
 
         @Test
@@ -211,7 +226,21 @@ class SealedSessionCookieCodecTest {
             String sealedUnderOtherId = otherKeyId.seal(payload());
 
             assertTrue(codec.unseal(sealedUnderOtherId).isEmpty(),
-                    "key selection is deterministic by key id — never a try-every-key decrypt");
+                    "the key-id gate is deterministic — never a try-every-key decrypt, even though this value "
+                            + "happens to be sealed under the very key the codec holds");
+        }
+
+        @Test
+        @DisplayName("Should treat a value sealed under a withdrawn key as no session, never an error")
+        void shouldRejectValueSealedUnderWithdrawnKey() throws Exception {
+            SecretKey withdrawnKey = aesKey((byte) 0x33);
+            SealedSessionCookieCodec beforeTheKeyChange =
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, withdrawnKey, WITHDRAWN_KEY_ID);
+            String sealedUnderWithdrawnKey = beforeTheKeyChange.seal(payload());
+
+            assertTrue(codec.unseal(sealedUnderWithdrawnKey).isEmpty(),
+                    "with one key and no decrypt-only companion, a key change simply invalidates the "
+                            + "outstanding cookies — the owner re-authenticates, the gateway never errors");
         }
 
         @Test
@@ -230,74 +259,6 @@ class SealedSessionCookieCodecTest {
             assertTrue(codec.unseal("not base64 ~~~").isEmpty());
             assertTrue(codec.unseal("AAAA").isEmpty(), "a value shorter than the header plus tag is malformed");
             assertTrue(codec.unseal("").isEmpty());
-        }
-    }
-
-    @Nested
-    @DisplayName("previous_key rotation (decrypt-only)")
-    class Rotation {
-
-        private static final byte PREVIOUS_KEY_ID = 7;
-
-        private SecretKey previousKey;
-        private SealedSessionCookieCodec retiredCodec;
-        private SealedSessionCookieCodec rotating;
-
-        @BeforeEach
-        void setUpRotation() {
-            previousKey = aesKey((byte) 0x33);
-            retiredCodec = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, previousKey, PREVIOUS_KEY_ID);
-            rotating = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID, previousKey,
-                    PREVIOUS_KEY_ID);
-        }
-
-        @Test
-        @DisplayName("Should accept a value sealed under the previous key and flag it for re-seal")
-        void shouldAcceptPreviousKeyValue() throws Exception {
-            SealedSessionPayload original = payload();
-            String sealedUnderPreviousKey = retiredCodec.seal(original);
-
-            Optional<Unsealed> unsealed = rotating.unseal(sealedUnderPreviousKey);
-
-            assertEquals(Optional.of(new Unsealed(original, true)), unsealed,
-                    "the retired key still authenticates the value, flagged as the previous generation");
-        }
-
-        @Test
-        @DisplayName("Should never seal under the previous key id, so a rollover is one-way")
-        void shouldNeverSealWithThePreviousKey() throws Exception {
-            byte[] raw = Base64.getUrlDecoder().decode(rotating.seal(payload()));
-
-            assertEquals(KEY_ID, raw[1], "seal always stamps the current key id");
-            assertNotEquals(PREVIOUS_KEY_ID, raw[1], "the previous key is decrypt-only and never selected for a seal");
-        }
-
-        @Test
-        @DisplayName("Should still flag a current-key value as not sealed with the previous key")
-        void shouldNotFlagCurrentKeyValue() throws Exception {
-            Optional<Unsealed> unsealed = rotating.unseal(rotating.seal(payload()));
-
-            assertTrue(unsealed.isPresent());
-            assertFalse(unsealed.get().sealedWithPreviousKey(), "a freshly sealed value is already on the current key");
-        }
-
-        @Test
-        @DisplayName("Should treat a previous-key value as no session once the previous key is withdrawn")
-        void shouldRejectPreviousKeyValueAfterWithdrawal() throws Exception {
-            String sealedUnderPreviousKey = retiredCodec.seal(payload());
-            SealedSessionCookieCodec currentKeyOnly = new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID);
-
-            assertTrue(currentKeyOnly.unseal(sealedUnderPreviousKey).isEmpty(),
-                    "withdrawing the previous key makes the old cookie unauthenticated, never an error");
-        }
-
-        @Test
-        @DisplayName("Should refuse a previous key that reuses the current key id")
-        void shouldRefuseAmbiguousKeyIds() {
-            IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                    () -> new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, key, KEY_ID, previousKey, KEY_ID));
-
-            assertTrue(thrown.getMessage().contains("previousKeyId"), thrown.getMessage());
         }
     }
 
@@ -423,6 +384,68 @@ class SealedSessionCookieCodecTest {
 
             assertFalse(thrown.getMessage().contains(huge), "the offending payload is never echoed");
             assertFalse(thrown.getMessage().contains(ID_TOKEN), "no token material appears in the message");
+        }
+    }
+
+    /**
+     * The rejection WARN is bounded: one catalogued record per disposition per codec, every repeat
+     * at DEBUG.
+     * <p>
+     * {@code unseal} runs per request and is reached before the caller is authenticated, so an
+     * unconditional WARN is a log-amplification lever any client can pull with a junk cookie — and
+     * one that fires without any attacker for a whole re-authentication window after a key change,
+     * because with a single sealing key every still-live cookie takes the {@code unknown-key-id}
+     * branch on every one of its requests.
+     */
+    @Nested
+    @DisplayName("Bounded rejection logging")
+    class BoundedRejectionLogging {
+
+        /** Far more repeats than any bound under test, so an unlatched record could not pass. */
+        private static final int REPEATS = 50;
+
+        private static final String MALFORMED = "malformed";
+        private static final String UNKNOWN_KEY_ID = "unknown-key-id";
+        private static final String AUTHENTICATION_TAG = "authentication-tag";
+
+        @Test
+        @DisplayName("Should record ONE WARN for a whole re-authentication window of withdrawn-key cookies")
+        void shouldLatchTheUnknownKeyIdWarn() throws Exception {
+            SealedSessionCookieCodec beforeTheKeyChange =
+                    new SealedSessionCookieCodec(COOKIE_NAME, TTL, BUDGET, aesKey((byte) 0x33), WITHDRAWN_KEY_ID);
+            String sealedUnderWithdrawnKey = beforeTheKeyChange.seal(payload());
+
+            for (int request = 0; request < REPEATS; request++) {
+                assertTrue(codec.unseal(sealedUnderWithdrawnKey).isEmpty(), "every attempt is still 'no session'");
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, UNKNOWN_KEY_ID);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    BffLogMessages.WARN.COOKIE_UNSEAL_REJECTED.resolveIdentifierString());
+        }
+
+        @Test
+        @DisplayName("Should record ONE WARN however many junk cookies an unauthenticated client sends")
+        void shouldLatchTheMalformedWarnAgainstAnUnauthenticatedClient() {
+            for (int request = 0; request < REPEATS; request++) {
+                assertTrue(codec.unseal("not base64 ~~~").isEmpty(), "a junk cookie is 'no session'");
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, MALFORMED);
+        }
+
+        @Test
+        @DisplayName("Should still record each distinct disposition once, so no rejection class is silenced")
+        void shouldRecordEachDispositionOnce() throws Exception {
+            String tampered = flipByteAt(codec.seal(payload()), 14);
+
+            for (int request = 0; request < REPEATS; request++) {
+                codec.unseal("not base64 ~~~");
+                codec.unseal(tampered);
+            }
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, MALFORMED);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, AUTHENTICATION_TAG);
         }
     }
 }
