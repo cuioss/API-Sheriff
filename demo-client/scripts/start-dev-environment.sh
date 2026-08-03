@@ -160,16 +160,23 @@ echo "🐳 Rebuilding the api-sheriff image from the native executable..."
 export DOCKER_BUILDKIT=1
 $COMPOSE_CMD build api-sheriff
 
-# Quarkus file logging writes to the bind-mounted /logs. The container runs as uid 1001 while this
-# host directory is created by the (differently-numbered) build user, so without a world-writable
-# dedicated subdirectory the file sink fails with "FileNotFoundException: /logs/quarkus.log
-# (Permission denied)". Grant world write on that subdirectory ONLY — least privilege, ephemeral
-# test output — exactly as integration-tests/scripts/start-integration-container.sh does. The
-# container keeps its no-new-privileges / cap_drop / read_only posture.
+# Quarkus file logging writes to the bind-mounted /logs. The container runs as the distroless
+# 'nonroot' user (uid 65532) while this host directory is created by the (differently-numbered)
+# build user, so without a world-writable dedicated subdirectory the file sink fails with
+# "FileNotFoundException: /logs/quarkus.log (Permission denied)". Grant world write on that
+# subdirectory ONLY — least privilege, ephemeral test output — exactly as
+# integration-tests/scripts/start-integration-container.sh does. The container keeps its
+# no-new-privileges / cap_drop / read_only posture.
+#
+# Mode 1777, not 0777: the sticky bit keeps that world write from also being a world DELETE.
+# Without it any other local account on this host can remove or replace quarkus.log, which is
+# the log a developer reads to diagnose a failed run. The sticky bit restricts unlink and
+# rename to the file's owner and the directory's owner, and costs nothing here either: the
+# container still creates and rotates its own files, and 'mvn clean' runs as the owning build user.
 LOG_TARGET_ROOT="${LOG_TARGET_DIR:-${IT_DIR}/target}"
 export LOG_TARGET_DIR="${LOG_TARGET_ROOT}/quarkus-logs"
 mkdir -p "${LOG_TARGET_DIR}"
-chmod 0777 "${LOG_TARGET_DIR}"
+chmod 1777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
 # Keycloak FIRST, and READY, before either gateway starts. The native app eagerly loads the realm's

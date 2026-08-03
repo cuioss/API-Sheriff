@@ -73,17 +73,25 @@ fi
 
 
 # Set LOG_TARGET_DIR to a dedicated log subdirectory for Quarkus file logging.
-# The api-sheriff native/distroless container runs as uid 1001, but this host
-# directory is created by the (differently-numbered) Maven user, so the bind-mounted
+# The api-sheriff container runs as the distroless 'nonroot' user (uid 65532), but this
+# host directory is created by the (differently-numbered) Maven user, so the bind-mounted
 # /logs is not writable by the container and the file log sink fails with
 # "FileNotFoundException: /logs/quarkus.log (Permission denied)". Grant world write on
-# a dedicated 'quarkus-logs' subdirectory only — least privilege — so uid 1001 can write
+# a dedicated 'quarkus-logs' subdirectory only — least privilege — so the container can write
 # quarkus.log there without making the entire build target tree world-writable (ephemeral
 # test output — the container keeps its no-new-privileges / cap_drop / read_only posture).
+#
+# Mode 1777, not 0777: the sticky bit is what keeps that world write from also being a
+# world DELETE. Without it any local account on a shared CI runner or developer host can
+# remove or replace quarkus.log — the file this script uploads as a failure-diagnosis
+# artifact — so the evidence read after a failed run is locally tamperable. The sticky bit
+# restricts unlink and rename to the file's owner and the directory's owner, costing the
+# container nothing: it still creates and rotates the files it owns, and 'mvn clean' runs
+# as the build user that OWNS this directory.
 LOG_TARGET_ROOT="${LOG_TARGET_DIR:-${PROJECT_DIR}/target}"
 export LOG_TARGET_DIR="${LOG_TARGET_ROOT}/quarkus-logs"
 mkdir -p "${LOG_TARGET_DIR}"
-chmod 0777 "${LOG_TARGET_DIR}"
+chmod 1777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
 # Discover every host-side probe target from the resolved Compose model, BEFORE anything is started.
