@@ -19,6 +19,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
+import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -27,6 +28,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
+import de.cuioss.sheriff.gateway.config.model.ManagementConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -64,6 +66,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         Metadata.class,
         TlsConfig.class,
         TlsConfig.Mtls.class,
+        ManagementConfig.class,
+        ManagementConfig.ManagementTls.class,
         SecurityHeadersConfig.class,
         SecurityHeadersConfig.Hsts.class,
         SecurityHeadersConfig.Cors.class,
@@ -82,6 +86,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         OidcConfig.Csrf.class,
         OidcConfig.Refresh.class,
         OidcConfig.StepUp.class,
+        OidcConfig.UserInfo.class,
+        OidcConfig.Login.class,
         AuthConfig.class,
         AnchorConfig.class,
         RouteConfig.class,
@@ -93,6 +99,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         UpstreamConfig.CircuitBreaker.class,
         AssetConfig.class,
         AssetConfig.Source.class,
+        AssetDefaultsConfig.class,
         RateLimitConfig.class,
         WebSocketConfig.class,
         HttpMethod.class,
