@@ -57,6 +57,9 @@ import org.junit.jupiter.api.Test;
  * <strong>Two assertion strengths, chosen per surface.</strong> A bare enumeration is asserted by
  * <em>set equality</em>, plus the count the prose states in its own sentence — so appending an
  * extension to the list while leaving "21" untouched fails just as loudly as forgetting the list.
+ * Every enumeration additionally asserts how many entries it <em>listed</em>, counted before
+ * de-duplication: a set cannot see a duplicate, so a document naming one extension twice collapses
+ * into exactly the set a correct document produces and would otherwise pass unnoticed.
  * The mode set's per-mode documentation is asserted <em>structurally</em> instead, by requiring each
  * mode a table row of its own: the prose around it is free-form, so equality over it would be
  * brittle, but a row is something the document either has or has not. A bare-word containment check
@@ -118,7 +121,7 @@ class DocumentedSetsContractTest {
         int anchor = anchorIndex(document, CONFIG_EXTENSION_ANCHOR, CONFIGURATION_ADOC.toString());
 
         // Act
-        Set<String> documented = backtickedTokens(
+        TokenList documented = backtickedTokens(
                 parenthesised(document, anchor, CONFIGURATION_ADOC.toString(), CONFIG_EXTENSION_ANCHOR));
         int statedCount = statedCountBefore(document, anchor, CONFIGURATION_ADOC.toString(), CONFIG_EXTENSION_ANCHOR);
 
@@ -141,7 +144,7 @@ class DocumentedSetsContractTest {
                     + "\" is not terminated by '--'; the anchor no longer describes the document and this"
                     + " guard would otherwise assert over the rest of the file");
         }
-        Set<String> documented = backtickedTokens(document.substring(listStart, listEnd));
+        TokenList documented = backtickedTokens(document.substring(listStart, listEnd));
         int statedCount = statedCountBefore(document, anchor, USER_README_ADOC.toString(), README_EXTENSION_ANCHOR);
 
         // Assert
@@ -162,15 +165,11 @@ class DocumentedSetsContractTest {
             fail(SCHEMA_RESOURCE + ": the extension list opened by \"" + SCHEMA_EXTENSION_ANCHOR
                     + "\" is never closed; the anchor no longer describes the schema");
         }
-        Set<String> documented = commaSeparatedTokens(schema.substring(listStart, listEnd));
+        TokenList documented = separatedTokens(schema.substring(listStart, listEnd), ",");
 
-        // Assert — the schema states no count of its own, so only the set is asserted
-        assertFalse(documented.isEmpty(), SCHEMA_RESOURCE + ": anchor \"" + SCHEMA_EXTENSION_ANCHOR
-                + "\" matched but yielded no extensions — the guard would pass vacuously");
-        assertEquals(sorted(AssetResponseEnvelope.builtInExtensions()), sorted(documented),
-                SCHEMA_RESOURCE + " restates the built-in extension map of"
-                        + " AssetResponseEnvelope.CONTENT_TYPES and has drifted from it; correct the schema"
-                        + " description (or the map, if the change was intended)");
+        // Assert — the schema states no count of its own, so only the set and the number of entries
+        // it listed to name that set are asserted
+        assertExtensionSet(documented, SCHEMA_RESOURCE);
     }
 
     @Test
@@ -180,25 +179,17 @@ class DocumentedSetsContractTest {
         String document = read(CONFIGURATION_ADOC);
         String modeComment = profileModeComment(document);
 
-        // Act — count the RAW tokens alongside the set: the set collapses duplicates, so only the
-        // raw count can observe a mode the document lists twice
-        Set<String> documented = new LinkedHashSet<>();
-        int listedTokens = 0;
-        for (String token : modeComment.split("\\|")) {
-            String mode = token.strip();
-            if (!mode.isEmpty()) {
-                documented.add(mode);
-                listedTokens++;
-            }
-        }
+        // Act — the raw token count comes back alongside the set: the set collapses duplicates, so
+        // only that count can observe a mode the document lists twice
+        TokenList documented = separatedTokens(modeComment, "\\|");
 
         // Assert
-        assertFalse(documented.isEmpty(), CONFIGURATION_ADOC + ": anchor \"" + CONFIG_PROFILE_ANCHOR
+        assertFalse(documented.tokens().isEmpty(), CONFIGURATION_ADOC + ": anchor \"" + CONFIG_PROFILE_ANCHOR
                 + "\" matched but yielded no modes — the guard would pass vacuously");
-        assertEquals(modeNames(), sorted(documented),
+        assertEquals(modeNames(), sorted(documented.tokens()),
                 CONFIGURATION_ADOC + " enumerates the security_defaults.profile mode set, which is"
                         + " authoritatively defined by SecurityProfile, and has drifted from it");
-        assertEquals(SecurityProfile.values().length, listedTokens,
+        assertEquals(SecurityProfile.values().length, documented.rawCount(),
                 CONFIGURATION_ADOC + " lists a different number of modes than SecurityProfile declares."
                         + " The count is taken over the raw '|'-separated tokens rather than over the"
                         + " de-duplicated set, so a mode listed twice fails here even though the set"
@@ -226,19 +217,41 @@ class DocumentedSetsContractTest {
     // --- helpers ---------------------------------------------------------------------------------
 
     /**
-     * Asserts a documented extension enumeration against {@link AssetResponseEnvelope} — both the set
-     * itself and the count the prose states alongside it, so a list and a count cannot drift apart.
+     * Asserts a documented extension enumeration against {@link AssetResponseEnvelope} — the set it
+     * names, and how many entries it actually listed to name it.
+     * <p>
+     * The listed-token count is asserted alongside the set because the set alone cannot see a
+     * duplicate: an enumeration that names {@code html} twice de-duplicates into exactly the set a
+     * correct enumeration produces, so equality holds while the document is wrong. Counting the raw
+     * tokens is what makes that failure visible.
+     *
+     * @param documented the extensions extracted from the document
+     * @param document   the document label used in every failure message
+     */
+    private static void assertExtensionSet(TokenList documented, String document) {
+        assertFalse(documented.tokens().isEmpty(), document + ": the anchor matched but yielded no"
+                + " extensions — the guard would pass vacuously");
+        assertEquals(sorted(AssetResponseEnvelope.builtInExtensions()), sorted(documented.tokens()),
+                document + " enumerates the built-in asset extensions, which are authoritatively"
+                        + " defined by AssetResponseEnvelope.CONTENT_TYPES, and has drifted from them");
+        assertEquals(AssetResponseEnvelope.builtInExtensions().size(), documented.rawCount(),
+                document + " lists a different number of extension entries than"
+                        + " AssetResponseEnvelope.CONTENT_TYPES declares. The count is taken over the raw"
+                        + " tokens rather than over the de-duplicated set, so an extension listed twice"
+                        + " fails here even though the set equality above still holds");
+    }
+
+    /**
+     * Asserts a documented extension enumeration against {@link AssetResponseEnvelope} — the set and
+     * its listed-entry count per {@link #assertExtensionSet(TokenList, String)}, plus the count the
+     * prose states alongside it, so a list and a count cannot drift apart.
      *
      * @param documented  the extensions extracted from the document
      * @param statedCount the count the document's own sentence claims
      * @param document    the document label used in every failure message
      */
-    private static void assertExtensionsMatch(Set<String> documented, int statedCount, String document) {
-        assertFalse(documented.isEmpty(), document + ": the anchor matched but yielded no extensions —"
-                + " the guard would pass vacuously");
-        assertEquals(sorted(AssetResponseEnvelope.builtInExtensions()), sorted(documented),
-                document + " enumerates the built-in asset extensions, which are authoritatively"
-                        + " defined by AssetResponseEnvelope.CONTENT_TYPES, and has drifted from them");
+    private static void assertExtensionsMatch(TokenList documented, int statedCount, String document) {
+        assertExtensionSet(documented, document);
         assertEquals(AssetResponseEnvelope.builtInExtensions().size(), statedCount,
                 document + " states a count that no longer matches"
                         + " AssetResponseEnvelope.CONTENT_TYPES; the list and the stated count must move"
@@ -363,24 +376,52 @@ class DocumentedSetsContractTest {
         return text.substring(open + 1, close);
     }
 
-    private static Set<String> backtickedTokens(String segment) {
-        Set<String> tokens = new LinkedHashSet<>();
-        Matcher matcher = BACKTICKED.matcher(segment);
-        while (matcher.find()) {
-            tokens.add(matcher.group(1).strip());
-        }
-        return tokens;
+    /**
+     * A token enumeration lifted out of a document: the de-duplicated set, alongside the number of
+     * non-empty tokens the extraction actually saw.
+     * <p>
+     * The raw count is carried separately because a {@link Set} cannot observe a duplicate — a
+     * document listing an extension twice collapses to exactly the set a correct document produces,
+     * so set equality alone passes. Counting before de-duplication is the only thing that sees it.
+     *
+     * @param tokens   the de-duplicated tokens, in the order the document lists them
+     * @param rawCount how many non-empty tokens were read before de-duplication
+     */
+    private record TokenList(Set<String> tokens, int rawCount) {
     }
 
-    private static Set<String> commaSeparatedTokens(String segment) {
+    private static TokenList backtickedTokens(String segment) {
         Set<String> tokens = new LinkedHashSet<>();
-        for (String token : segment.split(",")) {
+        int rawCount = 0;
+        Matcher matcher = BACKTICKED.matcher(segment);
+        while (matcher.find()) {
+            String token = matcher.group(1).strip();
+            if (!token.isEmpty()) {
+                tokens.add(token);
+                rawCount++;
+            }
+        }
+        return new TokenList(tokens, rawCount);
+    }
+
+    /**
+     * Splits a segment on a separator, keeping every non-empty token.
+     *
+     * @param segment   the raw list text
+     * @param separator the separator, as a regular expression
+     * @return the de-duplicated tokens and the number of non-empty tokens that produced them
+     */
+    private static TokenList separatedTokens(String segment, String separator) {
+        Set<String> tokens = new LinkedHashSet<>();
+        int rawCount = 0;
+        for (String token : segment.split(separator)) {
             String stripped = token.strip();
             if (!stripped.isEmpty()) {
                 tokens.add(stripped);
+                rawCount++;
             }
         }
-        return tokens;
+        return new TokenList(tokens, rawCount);
     }
 
     private static Set<String> modeNames() {
