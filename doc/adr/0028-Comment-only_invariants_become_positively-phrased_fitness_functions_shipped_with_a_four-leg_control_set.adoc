@@ -1,0 +1,160 @@
+= ADR-0028: Comment-only invariants become positively-phrased fitness functions shipped with a four-leg control set
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: A repository invariant asserted only by an explanatory comment is converted into a machine-checked fitness function, phrased positively so the condition's violation events are not inverted away, and shipped with four mandatory control legs so the gate cannot replace a failed comment with a green one.
+// tags: fitness-function, archunit, vacuity, test-controls, invariants, native-image
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+Some repository invariants cannot be expressed in the type system and are instead
+recorded as prose beside the value they constrain -- a comment above a
+configuration list, a note in a Javadoc block. Prose has a structural weakness as
+an enforcement mechanism: it is read by whoever happens to read it, while the
+invariant must hold for every future author. A comment that names the exact
+failure mode it exists to prevent can still fail to prevent it.
+
+The obvious remedy is to convert the invariant into an executable assertion. That
+move introduces a second, quieter failure mode: an assertion can be *vacuous* --
+green not because the invariant holds but because the rule matches nothing,
+inverts its own verdict, or asserts a property that cannot fail. A vacuous gate is
+strictly worse than the comment it replaces, because it converts an unenforced
+invariant into an apparently-enforced one and removes the reader's motive to check.
+
+Vacuity has several distinct sources, and closing one leaves the others open:
+
+* **Polarity inversion.** Under ArchUnit's `no…` phrasing the framework inverts
+  the polarity of a condition's events: a `satisfied()` event is treated as a
+  violation and a `violated()` event as a pass. A hand-written `ArchCondition`
+  whose `check()` reports offenders via `SimpleConditionEvent.violated(...)` --
+  the natural way to write one -- therefore reports nothing, every offender is
+  silently reclassified as compliance, and the rule stays green over an
+  arbitrarily dirty codebase.
+* **Empty selection.** A rule whose predicate matches zero classes finds zero
+  violations and passes. Nothing distinguishes "no offenders exist" from "the
+  selector is wrong".
+* **Always-passing assertion.** A rule that asserts only the absence of something
+  passes when the subject is renamed, moved, or deleted -- the property it
+  believed it was checking is gone, and so is the check.
+* **Wrong artifact.** A gate that reads shipped configuration through the
+  classpath can resolve a test-profile copy instead of the packaged one, and
+  assert green against a file that is not what ships.
+
+The structural choice point is therefore not "assert or comment" but "what must an
+assertion ship with before it may be trusted as enforcement".
+
+== Decision
+
+An invariant that a comment cannot enforce is converted into a fitness function,
+and the fitness function is **phrased positively** -- `classes().should(condition)`
+or `fields().should(condition)`, with the condition emitting
+`SimpleConditionEvent.violated(...)` for offenders. The `no…` form is not used for
+a coverage assertion, because it inverts the very events the condition reports.
+
+Every such fitness function ships **four control legs**, each closing a distinct
+vacuity source:
+
+. **Non-vacuity guard** -- a direct assertion that the selection predicate resolves
+  to at least one subject today, that any parsed input is non-empty, and that the
+  configuration key the rule reads is present. This is what distinguishes "no
+  offenders" from "no selection".
+. **Negative control** -- a deliberately non-compliant fixture, in a dedicated
+  specimen package, that the rule must reject. Proven by asserting the rule throws
+  against it. This is what proves the rule is *capable of failing*.
+. **Matched positive controls** -- real classes from the production tree that are
+  near-misses for the predicate and must NOT be selected. A positive control
+  asserts the near-miss property still holds *before* asserting exclusion;
+  otherwise it passes when the class is renamed or deleted, which is the
+  always-passing failure one level down.
+. **Specimen carve-out** -- the specimen package is excluded from the production
+  selection *explicitly*, not merely by a test-source import filter, so no single
+  incidental mechanism is the only thing keeping the deliberate violation out of
+  the real rule.
+
+Two further constraints are part of the contract:
+
+* A gate that reads shipped configuration resolves it **by path** against the
+  packaged output directory, guarded by a regular-file precondition. Classpath
+  resolution is not used, because test resources may precede packaged resources on
+  the test classpath and the gate would assert against the wrong artifact.
+* The rule asserts a **property**, never equality with today's membership.
+  Freezing the selected set to its current members reintroduces the maintenance
+  burden the gate exists to remove: every legitimate addition becomes a test edit.
+
+A selection radius is justified against the rule's **scan** radius, not against
+today's known members. When a rule imports a wide tree but selects a narrow subtree,
+the difference is scanned-then-discarded surface where the invariant is unenforced.
+
+== Consequences
+
+=== Positive
+
+* An invariant that was previously enforced by attention is enforced by the build,
+  and fails in the fast local gate rather than in a downstream packaging step.
+* The control legs make the gate's own health observable: a change that breaks the
+  selector or neuters the condition fails the guard or the negative control rather
+  than silently passing.
+* Because the rule asserts a property rather than a membership list, legitimate
+  additions to the constrained set need no test edit.
+
+=== Negative
+
+* A fitness function with four control legs is materially larger than the comment
+  it replaces, and includes a fixture whose only purpose is to be rejected.
+* The specimen package is production-shaped code that exists solely as a control,
+  and a reader encountering it without the surrounding contract may mistake it for
+  a defect.
+
+=== Risks
+
+* A control leg can itself rot. A matched positive control whose near-miss property
+  silently disappears degrades to an always-passing assertion -- which is why the
+  contract requires asserting the property before asserting exclusion.
+* The specimen carve-out must be maintained alongside the selection predicate. A
+  widened predicate that does not widen the carve-out pulls the deliberate
+  violation into the production rule.
+
+== Alternatives Considered
+
+**Leave the invariant as an explanatory comment.** Costs nothing and reads well at
+the point of definition. It fails because enforcement by reading does not scale to
+authors who never read that point: the comment can name the exact failure mode and
+still not prevent it.
+
+**Widen the underlying configuration to a package prefix instead of asserting
+per-class.** Removes the invariant entirely by making the constrained set
+structural. Rejected because a prefix imposes the constrained behaviour on the
+whole package rather than the members that need it -- a materially larger blast
+radius, not a like-for-like swap.
+
+**Generate the configuration from the source set at build time.** Removes the
+possibility of drift by construction, which is stronger than any assertion.
+Rejected on cost: it introduces new build machinery whose maintenance and failure
+modes need separate ownership, where the assertion needs none.
+
+**Assert the selected set equals its current membership.** Trivially detects any
+change. Rejected because it detects *legitimate* changes just as loudly, converting
+every valid addition into a test edit -- the maintenance burden the gate was
+introduced to remove.
+
+**Phrase the rule with `no…` and report offenders as violations.** Reads more
+naturally as English. Rejected because the framework inverts the condition's event
+polarity under that form, so the rule reports nothing and stays green over an
+arbitrarily dirty codebase.
+
+The unifying failure across the rejected options is that each either moves the
+enforcement burden somewhere it is not carried, or produces a gate whose green is
+not evidence.
+
+== References
+
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] -- an example of an invariant carried structurally rather than by convention
