@@ -143,9 +143,14 @@ class BearerValidationIT extends BaseIntegrationTest {
      * minted token carries the container-internal {@code iss} the gateway's {@code integration-keycloak}
      * issuer declares — the host-published mint port does not change the issuer claim.
      *
+     * <p>
+     * Package-private rather than private so {@code BearerSecurityFilterInteractionIT} drives the same
+     * acquisition instead of introducing a second token helper — one realm/client/user fixture, one
+     * place to fix when the realm import changes.
+     *
      * @return the raw access token
      */
-    private static String mintIntegrationRealmAccessToken() {
+    static String mintIntegrationRealmAccessToken() {
         Response response = given()
                 .contentType(ContentType.URLENC)
                 .formParam("grant_type", "password")

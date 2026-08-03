@@ -14,3 +14,44 @@ endpoint:
     - id: secure-proxy
       match:
         path_prefix: /secure
+
+    # --- The bearer x security_filter interaction route -----------------------
+    # Until this route landed, the bearer-protected surface declared NO explicit
+    # security_filter anywhere, so the interaction of the two gates — auth and the
+    # inbound filter — was never exercised on a route carrying both. This route
+    # inherits `auth.require: bearer` from the 'secure' anchor (gateway.yaml:131-136)
+    # and adds its own filter block, so a single request can violate one gate, the
+    # other, or both. BearerSecurityFilterInteractionIT drives that full matrix and
+    # asserts WHICH gate wins when a request violates both.
+    #
+    # secure-proxy above is deliberately left untouched: BearerValidationIT measures
+    # it, and a route-shape change there would move that suite's fixture. The two
+    # prefixes are statically disjoint by specificity, exactly as /proxy and
+    # /proxy/minimal-mode coexist in endpoints/httpbin.yaml.
+    #
+    # Two design decisions here are load-bearing:
+    #
+    #   1. The block declares `profile: strict`, NOT `minimal`. Per ADR-0024 a
+    #      `minimal` profile on an effectively-authenticated route is refused
+    #      FAIL-CLOSED AT BOOT — declaring it here would abort this instance's boot
+    #      and take the whole IT stack down rather than produce a test result.
+    #
+    #   2. The block declares `allowed_paths` and deliberately NOT `max_body_bytes`.
+    #      A body cap declared here would land in the endpoints/ tree, which
+    #      BodyLimitActivationWiringTest's `sheriff-config*` glob resolves
+    #      gateway.yaml only and therefore never reaches (recorded as a report-only
+    #      finding in doc/development/declared-limit-assertion-coverage.adoc). The
+    #      new cap would sit outside the framework-floor guard entirely. An
+    #      allowed_paths allowlist probes the gate interaction just as sharply with
+    #      no framework-floor coupling, so this plan does not widen a hole it has
+    #      deliberately chosen to report rather than fix.
+    #
+    # The allowlist admits exactly one wildcard segment — /secure/filtered/<action>
+    # is admitted, a deeper path is a segment-count mismatch and is rejected —
+    # matching the httpbin-minimal-mode pattern the suite already proves.
+    - id: secure-filtered
+      match:
+        path_prefix: /secure/filtered
+      security_filter:
+        profile: strict
+        allowed_paths: ["/secure/filtered/{action}"]
