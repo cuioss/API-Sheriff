@@ -50,10 +50,11 @@ import org.junit.jupiter.api.Test;
  * unit test — only to a descriptor assertion like this one, or to the expensive container suite.
  * <p>
  * The coverage is deliberately <strong>all committed descriptors, not just the base one</strong>:
- * the compose stack boots five native gateway instances over four {@code sheriff-config*} gateway
+ * the compose stack boots six native gateway instances over four {@code sheriff-config*} gateway
  * descriptors ({@code api-sheriff}, {@code api-sheriff-mtls}, {@code api-sheriff-cookie},
- * {@code api-sheriff-cookie-2} and {@code api-sheriff-ws-admission}), so a cap raised in any sibling
- * descriptor pushes that instance into a boot abort. The descriptors are discovered by glob rather
+ * {@code api-sheriff-cookie-2}, {@code api-sheriff-ws-admission} and
+ * {@code api-sheriff-plain-mgmt}), so a cap raised in any sibling descriptor pushes that instance
+ * into a boot abort. The descriptors are discovered by glob rather
  * than hard-coded, so a new {@code sheriff-config-*} directory comes under the assertion
  * automatically — and a glob that matches fewer than the four present today fails rather than
  * passing vacuously.
