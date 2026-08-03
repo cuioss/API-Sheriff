@@ -162,9 +162,17 @@ public final class RouteTableBuilder {
         UpstreamConfig routeUpstream = route.upstream();
         boolean retryEnabled = resolveRetryEnabled(routeUpstream, defaults);
         boolean notModifiedEnabled = resolveNotModifiedEnabled(routeUpstream, defaults);
-        ForwardConfig effectiveForward = Objects.requireNonNullElseGet(route.forward(),
-                () -> ForwardConfig.builder().build());
-        Protocol protocol = Objects.requireNonNullElse(route.protocol(), Protocol.HTTP);
+        // Both defaults are written as an explicit null check rather than Objects.requireNonNullElse*,
+        // matching the idiom every other resolve* helper in this class already uses. The explicit form
+        // also keeps the non-nullness visible to static analysis: Sonar's dataflow does not model
+        // requireNonNullElse as null-eliminating, so it carried route.forward()/route.protocol()'s
+        // @Nullable onto the result and raised java:S4449 at the first use of each local (PR #146).
+        ForwardConfig declaredForward = route.forward();
+        ForwardConfig effectiveForward = declaredForward != null
+                ? declaredForward
+                : ForwardConfig.builder().build();
+        Protocol declaredProtocol = route.protocol();
+        Protocol protocol = declaredProtocol != null ? declaredProtocol : Protocol.HTTP;
         Set<String> allowedOrigins = effectiveAllowedOrigins(route);
         Integer idleTimeout = resolveWebSocketIdleTimeout(route, protocol);
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
