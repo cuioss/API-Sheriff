@@ -268,7 +268,9 @@ script prints is built from the same derived rows rather than from a second copy
 goal aborts the build immediately on a non-zero exit, so Maven never reaches `post-integration-test`
 and its teardown does not run. That is the useful behaviour for a developer -- the stack you need
 for diagnosis is still there. Tear it down with `demo-client/scripts/stop-dev-environment.sh` when
-you are done, or run any `clean` build, whose `pre-clean` teardown does it for you.
+you are done, or run a `clean` build under the profile (`./mvnw clean -Pe2e-demo -pl demo-client`),
+whose `pre-clean` teardown does it for you. The teardown execution is declared inside the `e2e-demo`
+profile, so a plain `clean` without the profile tears nothing down.
 
 CI is the opposite case: an abandoned stack there holds fixed host ports for the next run, so
 `.github/workflows/demo-client-e2e.yml` carries an `if: always()` teardown step.

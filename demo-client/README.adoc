@@ -35,7 +35,9 @@ both Playwright projects, and teardown on a successful run:
 
 A *failing* suite deliberately leaves the containers up: the npm goal aborts the build before Maven
 reaches its teardown phase, so the stack you need for diagnosis is still there. Stop it with
-`demo-client/scripts/stop-dev-environment.sh`, or run any `clean` build -- see
+`demo-client/scripts/stop-dev-environment.sh`, or with a `clean` build under the same profile
+(`./mvnw clean -Pe2e-demo -pl demo-client`) -- the `pre-clean` teardown lives inside `e2e-demo`, so a
+plain `clean` does not run it. See
 link:doc/playwright-suite.adoc#_running_the_suite_locally[Running the Suite Locally].
 
 When iterating on specs, hold the stack up and re-run only the tests. `playwright.config.js` takes
