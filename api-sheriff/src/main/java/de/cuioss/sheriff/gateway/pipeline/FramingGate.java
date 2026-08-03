@@ -64,13 +64,6 @@ public final class FramingGate {
     private final boolean allowGetWithContentLengthBody;
 
     /**
-     * Creates a gate with the strict default posture — a body on {@code GET} is rejected.
-     */
-    public FramingGate() {
-        this(false);
-    }
-
-    /**
      * Creates a gate with the boot-resolved {@code GET}-body posture.
      *
      * @param allowGetWithContentLengthBody the resolved

@@ -37,7 +37,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 class FramingGateTest {
 
     /** The strict default posture — the opt-in absent, i.e. every leg enforced as before it existed. */
-    private final FramingGate gate = new FramingGate();
+    private final FramingGate gate = new FramingGate(false);
 
     /** The same gate with {@code allow_get_with_content_length_body} enabled. */
     private final FramingGate permissiveGate = new FramingGate(true);
