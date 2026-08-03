@@ -164,7 +164,7 @@
         },
         "allow_get_with_content_length_body": {
           "type": "boolean",
-          "description": "Admits a Content-Length-framed request body on GET. Defaults to false (omitted = rejected, as before this key existed). PARTIAL relaxation, scoped to two rejection legs on GET only: the body-present leg and the declared Content-Length > 0 leg. Transfer-Encoding on GET stays rejected UNCONDITIONALLY — chunked framing on an otherwise-bodyless method is the shape the request-smuggling defences exist to constrain, and the motivating case (Elasticsearch _search) sends Content-Length-framed bodies, so excluding it costs nothing. HEAD is unaffected on every leg, and the CL+TE and Connection-header framing-strip rules are independent checks that still apply. Gateway-wide because the framing gate runs at stage 1, before route selection."
+          "description": "Admits a Content-Length-framed request body on GET. Defaults to false (omitted = rejected, as before this key existed). PARTIAL relaxation, scoped to a single rejection leg on GET only: the declared Content-Length > 0 leg. A GET whose body is signalled without a declared Content-Length is not Content-Length-framed and stays rejected. Transfer-Encoding on GET stays rejected UNCONDITIONALLY — chunked framing on an otherwise-bodyless method is the shape the request-smuggling defences exist to constrain, and the motivating case (Elasticsearch _search) sends Content-Length-framed bodies, so excluding it costs nothing. HEAD is unaffected on every leg, and the CL+TE and Connection-header framing-strip rules are independent checks that still apply. Gateway-wide because the framing gate runs at stage 1, before route selection."
         }
       }
     },

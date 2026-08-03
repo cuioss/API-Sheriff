@@ -1995,8 +1995,9 @@ The block carries two further keys:
 | `allow_get_with_content_length_body`
 | *Boolean, default `false`.* Admits a `Content-Length`-framed request body on `GET`. It exists for
   upstreams whose API genuinely takes a body on `GET` -- Elasticsearch's `_search` is the motivating
-  case. It is a *partial* relaxation of the framing gate, scoped to exactly two rejection legs and
-  only for `GET`: the body-present leg and the declared-`Content-Length` leg. See
+  case. It is a *partial* relaxation of the framing gate, scoped to exactly one rejection leg and
+  only for `GET`: the declared-`Content-Length` leg. A `GET` whose body is signalled without a
+  declared `Content-Length` is not `Content-Length`-framed and stays rejected. See
   link:#_the_get_body_opt_in[The `GET`-body opt-in] below for the closed definition of what stays
   enforced.
 
@@ -2015,10 +2016,14 @@ The block carries two further keys:
 [[_the_get_body_opt_in]]
 ==== The `GET`-body opt-in
 
-`allow_get_with_content_length_body: true` relaxes the anti-smuggling framing gate by exactly two
-legs, and only for `GET`. Everything else the gate enforces is untouched. What *stays rejected* is
-the closed list:
+`allow_get_with_content_length_body: true` relaxes the anti-smuggling framing gate by exactly one
+leg -- the declared-`Content-Length` leg -- and only for `GET`. Everything else the gate enforces is
+untouched. What *stays rejected* is the closed list:
 
+* *A body-present `GET` with no declared `Content-Length` -- rejected.* The opt-in admits a
+  `Content-Length`-framed body and nothing else, so a body signalled by any other means falls
+  outside it. The gate asserts this itself rather than relying on an upstream stage to have ruled
+  the shape out (ADR-0026).
 * *`Transfer-Encoding` on `GET` -- rejected unconditionally.* No configuration relaxes it. Chunked
   framing on an otherwise-bodyless method is precisely the shape the request-smuggling defences exist
   to constrain, and excluding it costs the motivating use case nothing: an Elasticsearch `_search`

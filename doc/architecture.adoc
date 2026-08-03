@@ -235,9 +235,12 @@ and a `Connection` header naming a framing or trust header (which would drop it 
 reopen the desync).
 
 Exactly one part of that gate is operator-relaxable, through the gateway-wide
-`security_defaults.allow_get_with_content_length_body`: the body-present and
-declared-`Content-Length` legs, and only for `GET`. It exists because some upstream APIs genuinely
-take a body on `GET` (Elasticsearch `_search`). The boundary is the architectural point --
+`security_defaults.allow_get_with_content_length_body`: the declared-`Content-Length` leg, and only
+for `GET`. It exists because some upstream APIs genuinely take a body on `GET`
+(Elasticsearch `_search`). The boundary is the architectural point -- the gate admits a
+`Content-Length`-framed body and nothing else, so a `GET` whose body is signalled without a declared
+`Content-Length` stays rejected, and the gate asserts that itself rather than inheriting the bound
+from the edge stage that built the request (ADR-0026).
 `Transfer-Encoding` on a bodyless method stays rejected *unconditionally*, because chunked framing on
 an otherwise-bodyless method is precisely the smuggling shape the gate exists to constrain, and the
 motivating clients send `Content-Length`-framed bodies, so excluding it costs the use case nothing.

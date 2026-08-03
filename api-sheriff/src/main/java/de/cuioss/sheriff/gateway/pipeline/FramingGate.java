@@ -36,10 +36,11 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  *   <li><strong>CL+TE</strong>: {@code Content-Length} and {@code Transfer-Encoding} both present,
  *       the classic front-end/back-end desync primer;</li>
  *   <li><strong>body on a bodyless method</strong>: a declared body (or {@code Transfer-Encoding})
- *       on {@code GET} or {@code HEAD}. The body-present and declared-{@code Content-Length} legs
- *       are the only part of this gate an operator can relax, and only for {@code GET}, via
- *       {@code security_defaults.allow_get_with_content_length_body};
- *       {@code Transfer-Encoding} on a bodyless method stays rejected unconditionally;</li>
+ *       on {@code GET} or {@code HEAD}. The declared-{@code Content-Length} leg is the only part
+ *       of this gate an operator can relax, and only for {@code GET}, via
+ *       {@code security_defaults.allow_get_with_content_length_body}; a body-present {@code GET}
+ *       carrying no declared {@code Content-Length} is not {@code Content-Length}-framed and stays
+ *       rejected, exactly as {@code Transfer-Encoding} on a bodyless method does;</li>
  *   <li><strong>framing/trust-header strip via {@code Connection}</strong>: a {@code Connection}
  *       token naming a framing header ({@code Content-Length} / {@code Transfer-Encoding} /
  *       {@code Host}) or a trust header ({@code Authorization} / {@code Forwarded} /
@@ -114,13 +115,16 @@ public final class FramingGate {
     }
 
     /**
-     * Rejects a body on a bodyless method, with the {@code GET} opt-in applied to two legs only.
+     * Rejects a body on a bodyless method, with the {@code GET} opt-in applied to one leg only.
      * <p>
      * The three conditions are deliberately no longer one disjunction. The {@code Transfer-Encoding}
      * leg is evaluated first and unconditionally: chunked framing on an otherwise-bodyless method is
      * the shape the smuggling defences exist to constrain, so no configuration relaxes it. Only the
-     * body-present and declared-{@code Content-Length} legs consult the opt-in, and only for
-     * {@code GET} — {@code HEAD} is unaffected on every leg.
+     * declared-{@code Content-Length} leg consults the opt-in, and only for {@code GET} —
+     * {@code HEAD} is unaffected on every leg. The opt-in therefore admits nothing that is not
+     * {@code Content-Length}-framed: a {@code GET} whose body is signalled without a positive
+     * declared {@code Content-Length} still falls through to the rejection below, so the gate
+     * re-asserts that bound itself rather than inheriting it from an upstream stage.
      */
     private void rejectBodyOnBodylessMethod(PipelineRequest request) {
         if (!BODYLESS_METHODS.contains(request.method())) {
@@ -131,7 +135,8 @@ public final class FramingGate {
             // produced before the split is preserved bit-for-bit, message included.
             throw violation("Body present on bodyless method " + request.method());
         }
-        if (allowGetWithContentLengthBody && request.method() == HttpMethod.GET) {
+        if (allowGetWithContentLengthBody && request.method() == HttpMethod.GET
+                && request.declaredContentLength() > 0) {
             return;
         }
         if (request.bodyPresent() || request.declaredContentLength() > 0) {

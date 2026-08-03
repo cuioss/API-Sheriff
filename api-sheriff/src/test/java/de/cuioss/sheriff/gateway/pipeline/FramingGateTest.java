@@ -180,7 +180,7 @@ class FramingGateTest {
                     () -> "chunked framing on " + method + " must still be rejected");
         }
 
-        // --- Opt-in ON: exactly two legs relaxed, and only for GET --------------------------------
+        // --- Opt-in ON: exactly one leg relaxed, and only for GET ---------------------------------
 
         @Test
         @DisplayName("on — admits a GET carrying a Content-Length-framed body")
@@ -192,12 +192,15 @@ class FramingGateTest {
         }
 
         @Test
-        @DisplayName("on — admits a body-present GET with no declared Content-Length")
-        void onAdmitsBodyPresentGet() {
+        @DisplayName("on — STILL rejects a body-present GET with no declared Content-Length")
+        void onStillRejectsBodyPresentGetWithoutContentLength() {
             PipelineRequest request = request(HttpMethod.GET, Map.of(), -1L, true);
 
-            assertDoesNotThrow(() -> permissiveGate.process(request),
-                    "the body-present leg is the second of the two legs the opt-in relaxes");
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> permissiveGate.process(request),
+                    "a body signalled without a declared Content-Length is not Content-Length-framed, "
+                            + "so it lies outside the single leg the opt-in relaxes");
+            assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
         }
 
         @Test

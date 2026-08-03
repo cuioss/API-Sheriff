@@ -94,9 +94,11 @@ public record SecurityDefaultsConfig(@Nullable String profile, @Nullable Integer
      * Resolves whether the framing gate admits a {@code Content-Length}-framed body on {@code GET}.
      * <p>
      * <strong>The relaxation is partial and its boundary is deliberate.</strong> When enabled, exactly
-     * two rejection legs are skipped, and only for {@code GET}: the body-present leg and the declared
-     * {@code Content-Length > 0} leg. Everything else the framing gate enforces is untouched:
+     * one rejection leg is skipped, and only for {@code GET}: the declared {@code Content-Length > 0}
+     * leg. Everything else the framing gate enforces is untouched:
      * <ul>
+     *   <li>A body-present {@code GET} carrying no declared {@code Content-Length} stays rejected — it
+     *       is not {@code Content-Length}-framed, so it lies outside the one leg this key relaxes.</li>
      *   <li>{@code Transfer-Encoding} on {@code GET} stays rejected <em>unconditionally</em>. Chunked
      *       framing on an otherwise-bodyless method is precisely the shape the request-smuggling
      *       defences exist to constrain, and it costs the motivating use case nothing — an

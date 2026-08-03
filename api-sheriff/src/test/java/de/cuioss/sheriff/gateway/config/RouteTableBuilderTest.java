@@ -1141,5 +1141,28 @@ class RouteTableBuilderTest {
 
             assertEquals(SecurityProfile.DEFAULT_PROFILE, RouteTableBuilder.globalProfile(config));
         }
+
+        @Test
+        @DisplayName("Should resolve the retired 'none' mode value to the fail-closed default")
+        void shouldResolveRetiredModeValueToDefault() {
+            // Arrange — 'none' is the mode value this release renamed to 'minimal'. The schema
+            // refuses it at boot, so this seam is not the primary guard; it is the fail-closed
+            // backstop, and proving it lands on STRICT rather than throwing or failing OPEN is what
+            // makes an un-migrated descriptor reaching the model layer safe.
+            GatewayConfig config = gateway()
+                    .securityDefaults(new SecurityDefaultsConfig("none", null, null))
+                    .build();
+
+            // Act
+            SecurityProfile resolved = RouteTableBuilder.globalProfile(config);
+
+            // Assert
+            assertEquals(SecurityProfile.DEFAULT_PROFILE, resolved,
+                    "an unrecognised profile value must fall back to the fail-closed default, never"
+                            + " to a looser mode and never by throwing");
+            assertEquals(SecurityProfile.STRICT, resolved,
+                    "the fail-closed default is STRICT — the retired 'none' value must not resolve to"
+                            + " its 'minimal' successor by accident");
+        }
     }
 }

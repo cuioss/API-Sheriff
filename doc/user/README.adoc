@@ -262,10 +262,12 @@ gateway can tolerate a `GET` body.
 
 === What it does *not* turn off
 
-Enabling it relaxes two rejection legs, both only for `GET`: the body-present leg and the
-declared-`Content-Length` leg. Everything else the framing gate enforces still applies. In
-particular, a `GET` is **still** rejected `400` when it carries:
+Enabling it relaxes one rejection leg, and only for `GET`: the declared-`Content-Length` leg.
+Everything else the framing gate enforces still applies. In particular, a `GET` is **still**
+rejected `400` when it carries:
 
+* a body with no declared `Content-Length` -- such a body is not `Content-Length`-framed, so it
+  falls outside the single leg this key relaxes.
 * `Transfer-Encoding` -- *unconditionally, and no configuration relaxes it.* Chunked framing on an
   otherwise-bodyless method is the exact shape the smuggling defences exist to constrain. This costs
   the use case nothing: an Elasticsearch client sends a `Content-Length`-framed body, never a chunked
