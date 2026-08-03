@@ -83,10 +83,6 @@ class EgressAllowlistActivationWiringTest {
     void httpSourcedIssuersDeclareAnEgressAllowlist() throws Exception {
         // Arrange
         List<Path> descriptors = committedGatewayDescriptors();
-        assertTrue(descriptors.size() >= COMMITTED_DESCRIPTOR_COUNT,
-                "expected at least " + COMMITTED_DESCRIPTOR_COUNT
-                        + " committed sheriff-config*/gateway.yaml descriptors under " + DOCKER
-                        + ", found " + descriptors.size() + ": " + descriptors);
         int httpIssuersSeen = 0;
 
         // Act + Assert
@@ -102,8 +98,9 @@ class EgressAllowlistActivationWiringTest {
                         + "' fetches its JWKS over http but declares no " + ALLOWLIST_KEY
                         + ". The egress guard then refuses the compose-internal address, the key set never"
                         + " loads, and every bearer request is rejected 401.");
-                assertInstanceOfList(allowlist, descriptor, issuer);
-                List<?> hosts = (List<?>) allowlist;
+                List<?> hosts = assertInstanceOf(List.class, allowlist, descriptor + " issuer '"
+                        + issuer.get("name") + "' declares " + ALLOWLIST_KEY + " as "
+                        + allowlist.getClass().getSimpleName() + ", expected a list");
                 assertFalse(hosts.isEmpty(), descriptor + " issuer '" + issuer.get("name")
                         + "' declares an EMPTY " + ALLOWLIST_KEY + ", which guards nothing");
                 for (Object host : hosts) {
@@ -125,10 +122,6 @@ class EgressAllowlistActivationWiringTest {
     void fileSourcedIssuersDeclareNoEgressAllowlist() throws Exception {
         // Arrange
         List<Path> descriptors = committedGatewayDescriptors();
-        assertTrue(descriptors.size() >= COMMITTED_DESCRIPTOR_COUNT,
-                "expected at least " + COMMITTED_DESCRIPTOR_COUNT
-                        + " committed sheriff-config*/gateway.yaml descriptors under " + DOCKER
-                        + ", found " + descriptors.size() + ": " + descriptors);
         int fileIssuersSeen = 0;
 
         // Act + Assert — an offline issuer loads from a mounted file and performs no outbound fetch, so
@@ -154,7 +147,9 @@ class EgressAllowlistActivationWiringTest {
 
     /**
      * Every committed gateway descriptor under a {@code sheriff-config} directory, discovered by glob
-     * so a new instance directory is covered automatically.
+     * so a new instance directory is covered automatically. The
+     * {@link #COMMITTED_DESCRIPTOR_COUNT} floor is asserted here rather than at each call site, so an
+     * empty or mis-rooted glob fails loudly instead of satisfying a per-descriptor loop vacuously.
      *
      * @return the descriptor paths, in directory-stream order
      * @throws IOException when the docker directory cannot be listed
@@ -169,6 +164,10 @@ class EgressAllowlistActivationWiringTest {
                 }
             }
         }
+        assertTrue(descriptors.size() >= COMMITTED_DESCRIPTOR_COUNT,
+                "expected at least " + COMMITTED_DESCRIPTOR_COUNT
+                        + " committed sheriff-config*/gateway.yaml descriptors under " + DOCKER
+                        + ", found " + descriptors.size() + ": " + descriptors);
         return descriptors;
     }
 
@@ -205,11 +204,6 @@ class EgressAllowlistActivationWiringTest {
         assertNotNull(jwks, "issuer '" + issuer.get("name") + "' declares no jwks block");
         assertInstanceOf(Map.class, jwks, "issuer '" + issuer.get("name") + "' declares a non-map jwks block");
         return (Map<String, Object>) jwks;
-    }
-
-    private static void assertInstanceOfList(Object allowlist, Path descriptor, Map<String, Object> issuer) {
-        assertInstanceOf(List.class, allowlist, descriptor + " issuer '" + issuer.get("name") + "' declares "
-                + ALLOWLIST_KEY + " as " + allowlist.getClass().getSimpleName() + ", expected a list");
     }
 
     @SuppressWarnings("unchecked")
