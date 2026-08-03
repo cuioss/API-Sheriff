@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# API Sheriff — global gateway document for the compose sample.
+#
+# Mounted read-only at /app/sheriff-config (SHERIFF_CONFIG_DIR). This is the whole of the gateway's
+# own configuration language: what it listens for, how strictly it filters, which namespaces exist,
+# and which token issuers it trusts. Endpoints live in endpoints/, topology aliases in
+# topology.properties.
+#
+# The document is deliberately SMALL. It declares one public proxy namespace and one token issuer,
+# which is the minimum that still demonstrates the shape of a real deployment. Everything the
+# integration suite needs and an operator does not — passthrough SNI, BFF sessions, asset anchors,
+# mTLS — is absent rather than present-and-disabled.
+version: 1
+metadata:
+  config_version: "compose-sample"
+
+# The methods this gateway will admit at all. Anything outside this list is rejected before route
+# selection. Narrow it further for a real deployment: this list is what the demo endpoint needs.
+allowed_methods: ["GET", "HEAD"]
+
+# The gateway-wide inbound-filter baseline. Declared EXPLICITLY rather than left to the omitted-key
+# default, so the posture is visible in the document an operator reads rather than inherited
+# invisibly. `strict` is also the default — stating it is a statement of intent, not a change.
+#
+# strict caps a request at 1 MiB of body, 20 query parameters, 1024-character header values,
+# parameter values and paths. Every route below inherits it; none opts out.
+security_defaults:
+  profile: strict
+
+# TLS POLICY for the terminated listener. The certificate and key themselves are NOT here — they are
+# deployment-supplied through the environment (see docker-compose.yml) and this document stays free
+# of key material and paths, so it is safe to commit and to copy between environments.
+tls:
+  # 1.2 is the floor, which enables TLS 1.2 and 1.3. Raise to "1.3" when every client can reach it.
+  min_version: "1.2"
+  cipher_suites:
+    - TLS_AES_256_GCM_SHA384
+    - TLS_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  alpn: ["h2", "http/1.1"]
+
+# One namespace. `type: proxy` + `access: public` are the two mandatory classification axes, and a
+# public anchor carries NO auth block — public IS the absence of auth, so the require: none posture
+# lives on the endpoint instead (endpoints/demo-api.yaml).
+anchors:
+  api:
+    path_prefix: /api
+    type: proxy
+    access: public
+
+# The issuers whose tokens this gateway will validate. Declared even though the one endpoint below is
+# public, because an operator adapting this sample will make a route authenticated as their first
+# change — and the issuer block is the part that is easy to get wrong.
+token_validation:
+  issuers:
+    - name: sample-keycloak
+      # The CONTAINER-INTERNAL issuer URL, not the host-published one. The realm import pins
+      # frontendUrl to https://keycloak:8443, so every token this realm mints carries exactly this
+      # `iss` value regardless of which host port it was minted through. A host-published URL here
+      # would reject every token with a 401 that looks like a signature problem and is not.
+      issuer: https://keycloak:8443/realms/sample
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/sample/protocol/openid-connect/certs
+        # The SSRF egress guard refuses a JWKS URL resolving to a private address unless the host is
+        # named here. `keycloak` is a Compose service name resolving to the bridge network's
+        # site-local address, so without this entry the key set never loads. The allowlist is
+        # host-exact — no wildcard — and names ONLY this one trusted IdP. Widen it for no other
+        # reason than adding a genuinely trusted issuer.
+        allowed_egress_hosts: ["keycloak"]
+        # NOTE FOR A REAL DEPLOYMENT: this sample's Keycloak serves the same self-signed certificate
+        # the gateway does, so the JWKS fetch trusts it only because both sides share the generated
+        # bundle. Against an IdP with its own CA, bind a trust profile here (`tls_profile: <name>`)
+        # and supply the concrete trust anchors from the deployment — this document names the
+        # logical profile, never the store path or its password.

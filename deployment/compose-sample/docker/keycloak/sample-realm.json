@@ -1,0 +1,73 @@
+{
+  "realm": "sample",
+  "displayName": "API Sheriff Compose Sample",
+  "enabled": true,
+
+  "attributes": {
+    "frontendUrl": "https://keycloak:8443"
+  },
+
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultSignatureAlgorithm": "RS256",
+
+  "roles": {
+    "realm": [
+      {
+        "name": "user",
+        "description": "The one role the sample grants. Map it to whatever a real deployment authorizes on."
+      }
+    ]
+  },
+
+  "clients": [
+    {
+      "clientId": "sample-client",
+      "name": "API Sheriff Sample Client",
+      "description": "Sample client. Its secret is the placeholder CHANGE-ME-BEFORE-PRODUCTION and MUST be replaced, from the deployment rather than from this file, before this realm is reachable by anything you care about.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "CHANGE-ME-BEFORE-PRODUCTION",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://localhost:8443/*"
+      ],
+      "webOrigins": [
+        "https://localhost:8443"
+      ],
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "roles"
+      ]
+    }
+  ],
+
+  "users": [
+    {
+      "username": "sample-user",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Sample",
+      "lastName": "User",
+      "email": "sample-user@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "CHANGE-ME-BEFORE-PRODUCTION",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "user"
+      ]
+    }
+  ]
+}

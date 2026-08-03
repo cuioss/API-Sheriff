@@ -1,0 +1,12 @@
+# NO KEY MATERIAL IS EVER COMMITTED.
+#
+# generate-certificates.sh is the source of truth for everything in this directory; the artifacts it
+# produces are local, disposable and — in the case of the key — secret. Ignoring them by pattern
+# rather than by name means a future addition (a truststore, a client bundle) is covered the moment
+# it appears, instead of the first time someone remembers to add it here.
+*.crt
+*.key
+*.p12
+
+# The script's own intermediate keystore, in case a run is interrupted before it is cleaned up.
+temp-keystore.p12

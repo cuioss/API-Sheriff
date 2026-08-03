@@ -1,0 +1,215 @@
+# API Sheriff — production-shaped docker-compose sample
+#
+# THREE services on one bridge network, and nothing else:
+#
+#   api-sheriff  the gateway, running the PUBLISHED image (never a local build)
+#   keycloak     the identity provider whose realm mints the bearer tokens the gateway validates
+#   demo-api     a stand-in upstream serving a canned JSON document, reached only on the internal network
+#
+# This is a SAMPLE, not a test harness. It deliberately carries none of the integration-tests
+# scaffolding — no toxiproxy, no go-httpbin, no passthrough backend, no asset origin, no gRPC echo —
+# because every one of those exists to exercise a test, not to show an operator how the gateway is
+# deployed. What it does carry is the deployment shape: the image is pulled by tag, all configuration
+# arrives through read-only mounts, and every runtime-hardening directive a production deployment
+# should set is set here explicitly rather than left to a default.
+#
+# See doc/user/compose-sample.adoc for the operator walkthrough and
+# doc/development/compose-sample.adoc for the rationale behind each decision below.
+
+services:
+
+  # --- The identity provider ----------------------------------------------------------------------
+  # Pinned BY DIGEST, not by tag alone: a tag is mutable, so a digest is what makes this sample
+  # reproducible. Dependabot cannot update this automatically — check https://quay.io/keycloak/keycloak
+  # and update the digest together with the version.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.5.4@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4
+    command:
+      - start-dev
+      - --import-realm
+      - --https-certificate-file=/opt/keycloak/certificates/localhost.crt
+      - --https-certificate-key-file=/opt/keycloak/certificates/localhost.key
+      - --https-port=8443
+    environment:
+      # SAMPLE CREDENTIALS. Change both before this stack is reachable by anything you care about.
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      # Enables the management interface on port 9000, which the TCP readiness probe below gates on.
+      - KC_HEALTH_ENABLED=true
+      - KC_LOG_LEVEL=INFO
+      # TLS is the only listener: the gateway reaches this IdP over HTTPS on the internal network,
+      # so the JWKS fetch it performs is not a plaintext hop even inside the bridge.
+      - KC_HTTP_ENABLED=false
+      - KC_HTTPS_PORT=8443
+      - KC_HOSTNAME=localhost
+      - KC_HOSTNAME_STRICT=false
+    ports:
+      # Published so an operator can reach the admin console and mint a token from the host. The
+      # gateway does NOT use this published port — it reaches Keycloak container-internally as
+      # keycloak:8443, which is why the realm below pins that URL as its frontend.
+      - "1443:8443"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+      - ./docker/certificates:/opt/keycloak/certificates:ro
+      # /opt/keycloak/data must be writable under read_only: true — Keycloak writes its
+      # transaction/state there during the realm import. A NAMED VOLUME rather than a tmpfs so the
+      # imported realm survives a restart. The read-only import bind above nests inside it: Compose
+      # orders mounts by path depth, so the volume lands first and the bind lands within it.
+      - keycloak-data:/opt/keycloak/data
+      # `start-dev` RE-AUGMENTS Quarkus on every boot ("Updating the configuration and installing
+      # your custom providers") and writes the rebuilt runner into /opt/keycloak/lib/quarkus. Under
+      # read_only: true that write fails with ReadOnlyFileSystemException and Keycloak never starts —
+      # so this mount is what makes the hardening block above survivable rather than fatal.
+      #
+      # A NAMED VOLUME, not a tmpfs, and the distinction is load-bearing: Docker seeds a named volume
+      # from the image's content at that path on first use, whereas a tmpfs would mask the shipped
+      # Quarkus libraries with an empty directory and break the augmentation a different way.
+      - keycloak-quarkus:/opt/keycloak/lib/quarkus
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    # A TCP accept probe on the management port, deliberately CURL-FREE: the Keycloak image ships
+    # neither curl nor wget, so a probe naming either would fail permanently and be indistinguishable
+    # from a service that never came up. bash IS present, so /dev/tcp is the available primitive.
+    # This is an ACCEPT-LEVEL probe only — it proves the management listener is bound, not that the
+    # realm finished importing. That is sufficient here: it exists to order the gateway's start
+    # behind the IdP's, and the gateway's own readiness gate (scripts/wait-for-ready.sh) is what
+    # asserts the stack is actually usable.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo -n > /dev/tcp/127.0.0.1/9000'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    # OWASP container hardening — the same posture every service in this file carries.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+
+  # --- The upstream the gateway proxies to --------------------------------------------------------
+  # A canned JSON responder standing in for a real backend API. It publishes NO host port: the whole
+  # point of the sample is that the gateway is the only way in, so reaching this service directly
+  # from the host must not be possible.
+  demo-api:
+    # Pinned to the 1.27 MINOR line rather than the floating :alpine tag, so a sample that worked
+    # yesterday still works today. Bump deliberately, not implicitly.
+    image: nginx:1.27-alpine
+    # Bypasses docker-entrypoint.sh entirely. That script's 10-listen-on-ipv6-only.sh step rewrites
+    # /etc/nginx/conf.d/default.conf in place, which fails under read_only: true and takes the whole
+    # container down with it. Executing nginx directly skips every entrypoint step; none of the rest
+    # is needed here because the configuration is mounted complete.
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    # The stock nginx image's unprivileged uid/gid. Declared explicitly because the image's default
+    # is root (it drops to nginx only for workers), and with cap_drop: ALL a root master process
+    # cannot bind or chown anything anyway — so running as the unprivileged user from the start is
+    # both safer and closer to what actually happens.
+    user: "101:101"
+    volumes:
+      - ./docker/nginx/demo-api.conf:/etc/nginx/conf.d/default.conf:ro
+    # nginx needs three writable paths and gets no more than three. Sized small on purpose: this is
+    # a canned responder, not a cache.
+    #
+    # uid/gid 101 is LOAD-BEARING, not decoration. A tmpfs is created root-owned and mode 755, so
+    # with `user: "101:101"` above nginx cannot create /var/cache/nginx/client_temp and dies at
+    # startup with "mkdir() ... failed (13: Permission denied)" — a crash loop, not a slow start.
+    # Handing each mount to the running uid is what makes read_only + non-root actually work here.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m,uid=101,gid=101
+      - /var/run:rw,noexec,nosuid,size=1m,uid=101,gid=101
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+
+  # --- The gateway ---------------------------------------------------------------------------------
+  api-sheriff:
+    # The PUBLISHED image, by tag, overridable for a local build or a newer release. This sample
+    # never builds an image: it demonstrates deploying a released artifact, which is what an operator
+    # actually does.
+    image: ${API_SHERIFF_IMAGE:-ghcr.io/cuioss/api-sheriff:0.1.0}
+    # Declares the scheme this instance's MANAGEMENT interface speaks. scripts/wait-for-ready.sh
+    # derives its entire probe URL from this label plus the host port published against container
+    # port 9000 — so the readiness gate restates neither scheme nor port, and renumbering the
+    # published port below needs no script edit (ADR-0031).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+    ports:
+      - "8443:8443"  # Public TLS listener — the only way into the stack
+      - "9000:9000"  # Management interface (health/metrics), HTTPS
+    environment:
+      # This block is the DEPLOYMENT DOOR, and it is deliberately the same door the release smoke
+      # test drives in .github/workflows/release.yml. The shipped artifact declares nothing about
+      # where its configuration or its key material lives (ADR-0032); the deployment supplies both.
+      #
+      # Where the gateway's own configuration is mounted.
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # The public TLS listener's certificate and key.
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # The management interface's certificate and key. Quarkus' management interface has exactly ONE
+      # port, so supplying these converts port 9000 itself to HTTPS — which is why the label above
+      # says https and why the readiness probe passes -k against the self-signed bundle.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # NOTE: QUARKUS_HTTP_SSL_PORT is deliberately ABSENT. The integration stack sets it to move the
+      # terminated listener off 8443 because its gateway.yaml declares a passthrough_sni block that
+      # claims the public port for the SNI front listener. This sample declares no passthrough_sni,
+      # so Quarkus terminates directly on 8443 and an override here would only mis-address it.
+    volumes:
+      # Both mounts are READ-ONLY. Configuration and key material are supplied by the deployment and
+      # are never written by the gateway; a writable mount would be surface for no benefit.
+      - ./docker/sheriff-config:/app/sheriff-config:ro
+      - ./docker/certificates:/app/certificates:ro
+    # The gateway eagerly loads the issuer's key set at boot. Starting it before Keycloak accepts
+    # connections makes that load fail, and the issuer then stays unhealthy for the whole run — so
+    # this gate is load-bearing, not cosmetic.
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    # NO healthcheck: key. The distroless image ships neither a shell nor curl, so every in-container
+    # probe form is unavailable by construction — a healthcheck here could only ever fail. Readiness
+    # is gated HOST-side by scripts/wait-for-ready.sh against the published management port.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    # No user: key — the image already declares USER nonroot (uid 65532) in its Dockerfile, so the
+    # container never runs as root and re-stating the uid here would only risk drifting from it.
+    #
+    # Resource limits: a starting point sized for the sample, not a tuning recommendation. Real
+    # values follow from measured load.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+volumes:
+  # Keycloak's writable state. Named rather than anonymous so `docker compose down` keeps it and the
+  # realm import is not re-run on every restart; `docker compose down -v` is the deliberate reset.
+  keycloak-data:
+  # Keycloak's re-augmented Quarkus runner (see the mount above). Derived content, not state — it is
+  # rebuilt from the image on any boot whose configuration changed, and `down -v` discards it.
+  keycloak-quarkus:
+
+networks:
+  api-sheriff:
+    driver: bridge

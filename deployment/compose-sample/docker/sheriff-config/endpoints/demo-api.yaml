@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The single endpoint this sample proxies.
+#
+# One endpoint, one route. A request to https://localhost:8443/api reaches the gateway, is filtered
+# under the strict inbound profile, and is forwarded to the UPSTREAM alias — which topology.properties
+# resolves to the demo-api responder on the internal network. The response comes back through the
+# gateway's own envelope. That round trip is the whole demonstration.
+endpoint:
+  id: demo-api
+  enabled: true
+  # Resolved through topology.properties. Never a literal address here.
+  base_url: UPSTREAM
+  # Joins the public proxy namespace declared in gateway.yaml.
+  anchor: api
+  # The `api` anchor is access: public, so a public anchor carries no auth block and the endpoint
+  # declares the posture itself. Every route inherits it.
+  #
+  # THIS IS THE FIRST THING TO CHANGE when adapting the sample: switch to `require: bearer` and the
+  # route below is gated on a token from the issuer gateway.yaml declares.
+  auth:
+    require: none
+  routes:
+    - id: demo-api-get
+      match:
+        path_prefix: /api
+      # The forward stage is DENY-BY-DEFAULT: a request header or query parameter crosses to the
+      # upstream only if it is named here. That is the posture, not a restriction to work around —
+      # an allowlist is what stops a header the gateway does not understand from becoming the
+      # upstream's problem. Nothing is allowed through here because the demo upstream serves a canned
+      # document and reads neither; add the exact names a real backend needs, and no others.
+      forward:
+        headers_allow: []
+        query_allow: []

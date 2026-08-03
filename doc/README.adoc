@@ -87,6 +87,17 @@ built* and *how the parts fit together*.
   link:user/container-image.adoc[operator guide] covers pulling, running and cryptographically
   verifying the image, and the link:development/release-process.adoc[release-artifact policy]
   covers the artifact set, the two-tag scheme, and why the image version equals the Maven version.
+
+| Compose Sample (two-layer topic)
+| The production-shaped Docker Compose sample under `deployment/compose-sample`, documented across
+  two layers. There is deliberately no reference layer: the sample introduces no runtime component
+  and no `gateway.yaml` key -- it is an *arrangement* of the artifact
+  link:architecture.adoc[Architecture] already describes, so neither that document nor
+  link:configuration.adoc[Configuration] has a surface for it. The
+  link:user/compose-sample.adoc[operator guide] covers bringing the stack up, the readiness gate and
+  the sample-only values that must change, and the
+  link:development/compose-sample.adoc[developer topic] covers its relationship to the
+  integration-test stack and the probe-derivation rules it is bound by.
 |===
 
 == Deployment Variants
