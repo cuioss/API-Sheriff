@@ -1,4 +1,4 @@
-= ADR-0026: The shipped artifact declares nothing test-shaped; the deployment supplies what it names
+= ADR-0032: The shipped artifact declares nothing test-shaped; the deployment supplies what it names
 :toc: left
 :toclevels: 2
 :sectnums:
