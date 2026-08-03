@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Demo-client logout flow — the SPA-facing legs only. The identity-provider
+  end-session round-trip is deliberately elided rather than redrawn.
+  Time flows downward.
+  theme-handling: A (theme-neutral)
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-sequence.md
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 710"
+     role="img" aria-labelledby="title desc"
+     font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
+  <title id="title">Demo-client logout round-trip and the 401 re-probe that proves it</title>
+  <desc id="desc">A time-ordered exchange showing the logout legs the demo single-page application participates in. The application hands the logout to the browser as a top-level navigation to /auth/logout. API Sheriff destroys the server-side session and clears the session cookie as the authoritative step before any identity-provider leg, then redirects to the end-session endpoint. The provider round-trip is elided and returns the browser to the state-verified /auth/logout/return, from which the gateway redirects to the configured final_redirect naming a concrete public file. A final same-origin fetch of /auth/userinfo answering 401 is the authoritative proof the session is gone; a rendered landing page proves only that a static file was served.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow-fill"/>
+    </marker>
+    <style>
+      .col-header   { font-size: 15px; font-weight: 600; fill: #6e7681; text-anchor: middle; }
+      .stroke       { stroke: #6e7681; stroke-width: 1.2; fill: none; }
+      .sep          { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; }
+      .arrow        { stroke: #6e7681; stroke-width: 1.5; fill: none; }
+      .arrow-return { stroke: #6e7681; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+      .arrow-fill   { fill: #6e7681; }
+      .arrow-lbl    { font-size: 11px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .activation   { stroke: #6e7681; stroke-width: 0.8; fill: #6e7681; opacity: 0.15; }
+      .note-end     { font-size: 11px; fill: #6e7681; text-anchor: end; font-style: italic; }
+      .caption      { font-size: 12px; fill: #6e7681; text-anchor: middle; font-style: italic; }
+      .ref-frame    { stroke: #6e7681; stroke-width: 0.6; stroke-dasharray: 3 3; fill: none; }
+    </style>
+  </defs>
+
+  <!-- actors + lifelines -->
+  <text x="140" y="30" class="col-header">Demo SPA</text>
+  <rect class="stroke" x="80" y="42" width="120" height="36" rx="6"/>
+  <line class="sep" x1="140" y1="80" x2="140" y2="640"/>
+
+  <text x="500" y="30" class="col-header">Browser</text>
+  <rect class="stroke" x="440" y="42" width="120" height="36" rx="6"/>
+  <line class="sep" x1="500" y1="80" x2="500" y2="640"/>
+
+  <text x="860" y="30" class="col-header">API Sheriff</text>
+  <rect class="stroke" x="800" y="42" width="120" height="36" rx="6"/>
+  <line class="sep" x1="860" y1="80" x2="860" y2="640"/>
+
+  <!-- activation bars -->
+  <rect class="activation" x="855" y="156" width="10" height="112"/>
+  <rect class="activation" x="855" y="378" width="10" height="56"/>
+  <rect class="activation" x="855" y="466" width="10" height="56"/>
+  <rect class="activation" x="855" y="554" width="10" height="56"/>
+
+  <!-- 1. SPA hands the logout to the browser -->
+  <line class="arrow" x1="140" y1="120" x2="495" y2="120" marker-end="url(#arrow)"/>
+  <text x="320" y="112" class="arrow-lbl">window.location.assign('/auth/logout')</text>
+
+  <!-- 2. browser -> gateway -->
+  <line class="arrow" x1="500" y1="164" x2="855" y2="164" marker-end="url(#arrow)"/>
+  <text x="680" y="156" class="arrow-lbl">GET /auth/logout (top-level navigation)</text>
+
+  <!-- gateway note: the authoritative local step, anchored inside the gutter -->
+  <text x="844" y="196" class="note-end">destroy server-side session</text>
+  <text x="844" y="212" class="note-end">clear session cookie</text>
+  <text x="844" y="228" class="note-end">(authoritative, before any IdP leg)</text>
+
+  <!-- 3. gateway -> browser 302 to end-session -->
+  <line class="arrow-return" x1="855" y1="264" x2="500" y2="264" marker-end="url(#arrow)"/>
+  <text x="680" y="256" class="arrow-lbl">302 &#8594; IdP end-session endpoint</text>
+
+  <!-- elided IdP end-session round-trip -->
+  <rect class="ref-frame" x="500" y="296" width="360" height="54" rx="6"/>
+  <text x="680" y="318" class="arrow-lbl">IdP end-session round-trip &#8212; not redrawn</text>
+  <text x="680" y="336" class="arrow-lbl">the browser returns to /auth/logout/return</text>
+
+  <!-- 4. browser -> gateway logout return -->
+  <line class="arrow" x1="500" y1="386" x2="855" y2="386" marker-end="url(#arrow)"/>
+  <text x="680" y="378" class="arrow-lbl">GET /auth/logout/return?state (state-verified)</text>
+
+  <!-- 5. gateway -> browser final_redirect -->
+  <line class="arrow-return" x1="855" y1="430" x2="500" y2="430" marker-end="url(#arrow)"/>
+  <text x="680" y="422" class="arrow-lbl">302 &#8594; final_redirect: /assets/demo/landing.html</text>
+
+  <!-- 6. browser fetches the public landing page -->
+  <line class="arrow" x1="500" y1="474" x2="855" y2="474" marker-end="url(#arrow)"/>
+  <text x="680" y="466" class="arrow-lbl">GET /assets/demo/landing.html (a concrete file)</text>
+
+  <!-- 7. gateway -> browser 200 public asset -->
+  <line class="arrow-return" x1="855" y1="518" x2="500" y2="518" marker-end="url(#arrow)"/>
+  <text x="680" y="510" class="arrow-lbl">200 &#183; public asset, no session required</text>
+
+  <!-- 8. the authoritative re-probe -->
+  <line class="arrow" x1="140" y1="562" x2="855" y2="562" marker-end="url(#arrow)"/>
+  <text x="680" y="554" class="arrow-lbl">fetch('/auth/userinfo') &#8212; the re-probe that proves it</text>
+
+  <!-- 9. gateway -> SPA 401 -->
+  <line class="arrow-return" x1="855" y1="606" x2="140" y2="606" marker-end="url(#arrow)"/>
+  <text x="680" y="598" class="arrow-lbl">401 &#183; the session is gone</text>
+
+  <!-- footer -->
+  <text x="500" y="672" class="caption">The local session is destroyed first, so a logout carrying no live session is already logged out.</text>
+  <text x="500" y="690" class="caption">Treat the 401 re-probe as the proof of logout &#8212; a rendered landing page proves only that a file was served.</text>
+</svg>

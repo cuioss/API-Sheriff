@@ -11,8 +11,8 @@ only forms that work against this gateway, and this document records which.
 
 The operator- and integrator-facing view -- the browser-facing contract, the claim views, the asset
 anchor an integrator declares in their own `gateway.yaml` -- is
-link:../user/demo-client.adoc[Demo Client -- Integration Sample]. The module's one-screen quickstart
-is link:../../demo-client/README.adoc[`demo-client/README.adoc`]. This document does not restate
+link:integration-sample.adoc[Demo Client -- Integration Sample]. The module's one-screen quickstart
+is link:../README.adoc[`demo-client/README.adoc`]. This document does not restate
 either.
 
 [IMPORTANT]
@@ -23,6 +23,7 @@ executable, and the asset route that serves it lives in the `integration-tests` 
 configuration -- not in any production example. See <<_the_demo_is_excluded_from_the_production_image>>.
 ====
 
+[#_why_the_demo_exists]
 == Why the Demo Exists
 
 The gateway's server-session and cookie-session BFF variants expose a browser-facing contract:
@@ -44,6 +45,16 @@ session modes -- `session.mode: server` on port 10443 and `session.mode: cookie`
 as two Playwright projects that differ only in `baseURL`. "The two variants are browser-observably
 identical" stops being a claim in a design document and becomes an executable assertion.
 
+The logout round-trip is the clearest example of what only a browser can assert. The suite drives the
+whole navigation chain and then re-probes the info endpoint, because the `401` -- not the landing page
+rendering -- is what proves the session is gone:
+
+image::../../doc/resources/diagrams/demo-client-logout-flow.svg[Demo-client logout round-trip and the 401 re-probe that proves it, align=center]
+
+Note where the authoritative step sits: the gateway destroys the local session *before* any
+identity-provider leg, so the elided round-trip cannot leave a usable local session behind even when
+it fails outright.
+
 [[_why_the_java_it_suite_could_not_catch_it]]
 === The first gap was not hypothetical -- it hid a real, total login failure
 
@@ -58,7 +69,7 @@ Lax cookie is not sent on a cross-site POST*. A real browser therefore arrived a
 without the binding cookie and was rejected `403` on the callback's "no browser-binding cookie"
 branch. Every login. The fix was to drive `response_mode=query` so the callback is a top-level GET
 navigation, on which a Lax cookie *is* sent -- see
-link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode]
+link:../../doc/architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode]
 for the mode, the rejected `SameSite=None` alternative, and the accepted code-in-URL tradeoff.
 
 [IMPORTANT]
@@ -77,6 +88,7 @@ it. That limitation is now recorded on `BffKeycloakLoginFlow` itself, so the nex
 the helper rather than in this document.
 ====
 
+[#_module_layout]
 == Module Layout
 
 `demo-client/` is a Maven module with `<packaging>pom</packaging>` and no Java. Every Java plugin is
@@ -124,7 +136,7 @@ Maven-standard source path even though no Maven plugin processes them.
 == Why the Gateway Serves the SPA
 
 The SPA is served *by the gateway itself*, through the `type: asset` / `access: public` terminal
-action decided in link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]. It is not served by
+action decided in link:../../doc/adr/0014-asset-serving-terminal-action.adoc[ADR-0014]. It is not served by
 a side-car static-file container, and that is the load-bearing decision in the whole module.
 
 *Same-origin is what makes the contract observable.* The gateway's reserved paths are exact-match
@@ -139,13 +151,16 @@ of it.
 
 Two consequences follow, and both are landed behaviour rather than demo choices:
 
-* The gateway owns the response envelope. It sets the `Content-Type` from the file extension, adds
-  `X-Content-Type-Options: nosniff`, and strips any `Set-Cookie`. The SPA therefore needs no inline
-  `<script>` and uses none -- `app.css` and `app.js` load as plain relative assets.
-* `DirectoryAssetSource` performs *no* directory-index resolution. `/assets/demo/` without a
-  filename returns `404`. Every entry point in the SPA, in this documentation, in the suite, and in
-  the gateway's `final_redirect` therefore names a concrete file -- `index.html` or `landing.html`
-  -- explicitly. This is not a bug to fix inside the demo.
+* The gateway owns the response envelope -- what it sets, and what the served content cannot
+  override, is stated for integrators in
+  link:integration-sample.adoc#_serving_your_application_from_the_gateway[Serving Your Application
+  from the Gateway]. The consequence here is that the SPA needs no inline `<script>` and uses none --
+  `app.css` and `app.js` load as plain relative assets.
+* `DirectoryAssetSource` performs *no* directory-index resolution
+  (link:integration-sample.adoc#_no_directory_index[the rule, stated for integrators]). Every entry
+  point in the SPA, in this documentation, in the suite, and in the gateway's `final_redirect`
+  therefore names a concrete file -- `index.html` or `landing.html` -- explicitly. This is not a bug
+  to fix inside the demo.
 
 This module is also the asset action's *first consumer outside the asset package's own tests*, which
 is a deliberate part of its value: it exercises the feature the way a deployment would.
@@ -223,29 +238,12 @@ Base URLs, the Keycloak host URL and `PW_TEST_HTML_REPORT_OPEN=never` are passed
 execution as environment, sourced from POM properties. *No port number is restated inside
 JavaScript* -- when a published port changes, it changes in one place.
 
+[#_running_the_suite_locally]
 == Running the Suite Locally
 
-Prerequisites: Docker with Compose, and a built `api-sheriff:distroless` native image.
-
-The full run, from a clean tree:
-
-[source,bash]
-----
-python3 .plan/execute-script.py plan-marshall:build-maven:maven \
-  run --command-args "verify -Pe2e-demo -pl demo-client"
-----
-
-That single command installs the toolchain, lints, brings up the three containers, runs both
-Playwright projects, and tears the stack down again.
-
-When iterating on specs it is faster to hold the stack up and re-run only the tests:
-
-[source,bash]
-----
-demo-client/scripts/start-dev-environment.sh
-cd demo-client && npm run test
-demo-client/scripts/stop-dev-environment.sh
-----
+The prerequisites, the one full-run command and the faster iterate loop are the module quickstart and
+live in link:../README.adoc[`demo-client/README.adoc`]. This section is what that quickstart leaves
+out: why those commands behave as they do, and what they leave behind.
 
 [WARNING]
 ====
@@ -270,7 +268,9 @@ script prints is built from the same derived rows rather than from a second copy
 goal aborts the build immediately on a non-zero exit, so Maven never reaches `post-integration-test`
 and its teardown does not run. That is the useful behaviour for a developer -- the stack you need
 for diagnosis is still there. Tear it down with `demo-client/scripts/stop-dev-environment.sh` when
-you are done, or run any `clean` build, whose `pre-clean` teardown does it for you.
+you are done, or run a `clean` build under the profile (`./mvnw clean -Pe2e-demo -pl demo-client`),
+whose `pre-clean` teardown does it for you. The teardown execution is declared inside the `e2e-demo`
+profile, so a plain `clean` without the profile tears nothing down.
 
 CI is the opposite case: an abandoned stack there holds fixed host ports for the next run, so
 `.github/workflows/demo-client-e2e.yml` carries an `if: always()` teardown step.
@@ -325,11 +325,12 @@ later reader does not re-derive it -- or worse, reverse it.
 *No test may send `Accept: text/html` to the info endpoint expecting `302` -- the 401-vs-302 split
 is PATH-based.*
 
-Both reserved endpoints are `Accept`-blind. `/auth/userinfo` is an XHR probe: with no live session
-it answers `401 application/problem+json`, *never* a redirect, whatever the request's `Accept`
-header says. `/auth/login` always answers `302`. Which of the two a caller gets is determined by
-*which path it called*, not by content negotiation. No spec may assert that the info endpoint varies
-on `Accept`, and none may send an `Accept` header to it expecting a redirect.
+The contract itself -- that both reserved endpoints are `Accept`-blind, and that which of the two
+answers a caller gets is determined by *which path it called* rather than by content negotiation --
+is stated for integrators in
+link:integration-sample.adoc#_the_401_versus_302_split[Demo Client -- Integration Sample]. The
+prohibition this section carries is the testing consequence: no spec may assert that the info
+endpoint varies on `Accept`, and none may send an `Accept` header to it expecting a redirect.
 
 This prohibition is recorded verbatim because a superseded framing described the split as
 `Accept`-driven, and a test written against that framing would pass for the wrong reason on the
@@ -426,7 +427,7 @@ It is deliberately not attached to any `pull_request` trigger and is not added t
 The demo adds a bind mount to two services in `integration-tests/docker-compose.yml`, and one
 `de.cuioss.sheriff.management-scheme` label to `keycloak` so the bring-up derives that service's
 readiness probe from the model exactly as it derives the gateways'. The
-link:integration-test-topology.adoc[Integration-Test Topology] document draws the mounted material of
+link:../../doc/development/integration-test-topology.adoc[Integration-Test Topology] document draws the mounted material of
 that stack and states that a change to `docker-compose.yml` makes its diagram stale. When the demo
 mount changes shape -- a different host path, a third instance, a second mounted directory -- update
 that diagram in the same change rather than annotating it.

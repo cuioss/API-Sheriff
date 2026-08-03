@@ -21,7 +21,7 @@
     <!-- This module carries NO Java. It exists to own the demo SPA sources, the Playwright suite and the
          npm toolchain that runs them. Everything npm-related lives inside the 'e2e-demo' profile below,
          so a default reactor build of this module is a genuine no-op: no Node download, no npm install,
-         no container, no artifact. See doc/development/demo-client.adoc for the full rationale. -->
+         no container, no artifact. See doc/playwright-suite.adoc for the full rationale. -->
 
     <dependencies />
 
@@ -142,7 +142,7 @@
                                      the containers left up for. Making the local path tear down
                                      unconditionally would destroy the logs of the failure being
                                      diagnosed. This is a decision, not an omission; it is documented
-                                     for developers in doc/development/demo-client.adoc. -->
+                                     for developers in doc/playwright-suite.adoc. -->
                             <execution>
                                 <id>stop-dev-environment-post-integration-test</id>
                                 <phase>post-integration-test</phase>
