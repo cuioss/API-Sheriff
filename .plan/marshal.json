@@ -138,7 +138,7 @@
           "lane": "minimal"
         },
         "default:lessons-capture": {
-          "lane": "minimal"
+          "lane": "off"
         },
         "default:finalize-step-preference-emitter": {
           "preference_min_recurrence": 2,
