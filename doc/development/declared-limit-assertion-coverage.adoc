@@ -47,8 +47,8 @@ identically for all six booted gateway instances.
 *No limit-shaped key lives outside this surface.* A key-shaped sweep
 (`max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`)
 over all twelve files returns hits only in the four `gateway.yaml` documents and in
-`endpoints/httpbin.yaml`, `endpoints/websocket.yaml`, `endpoints/bff-session.yaml` and
-`endpoints/grpc.yaml`. `assets.yaml`, `assets-secure.yaml`, `secure.yaml` and
+`endpoints/httpbin.yaml`, `endpoints/websocket.yaml`, `endpoints/bff-session.yaml`,
+`endpoints/grpc.yaml` and `endpoints/secure.yaml`. `assets.yaml`, `assets-secure.yaml` and
 `topology.properties` declare none.
 
 === Citation notation
@@ -174,6 +174,13 @@ declaration's *existence* is proven while its *boundary* is not.
 | COVERED
 | `MtlsHandshakeIT` (wrong-CA identity rejected; trusted identity admitted)
 
+| `secure-filtered.security_filter.profile: strict` / `allowed_paths`
+  `sheriff-config/endpoints/secure.yaml:19-56`
+| `ThoroughChecksStage` (stage 3) on a route that also inherits a bearer floor
+| COVERED
+| `BearerSecurityFilterInteractionIT` -- the four-case gate-interaction matrix, including which gate
+  wins when a request violates both
+
 | `asset_defaults.content_types`
   `sheriff-config/gateway.yaml:101-103`
 | Asset response envelope (add-only map, boot-enforced)
@@ -190,37 +197,40 @@ declaration's *existence* is proven while its *boundary* is not.
 | *G1* `security_defaults.max_authorization_header_value_length: 8192`
   `sheriff-config/gateway.yaml:50`
 | `BasicChecksStage` -- the non-skippable pre-route floor, *before* route selection
-| PARTIAL
-| `BearerValidationIT:120` asserts a real token exceeds 1024 and is still admitted, proving the
-  carve-out is *in force*. Nothing exercises the *8192 boundary*: no at-cap-admitted /
-  over-cap-rejected pair exists, and the literal `8192` appears nowhere in the corpus.
+| COVERED
+| `DeclaredLimitBoundaryIT` -- 8192 admitted and reaching bearer validation (401), 8193 rejected 400
+  at the floor; the 401-vs-400 delta on a one-character change is the discriminator.
+  `BearerValidationIT:120` independently proves the carve-out is in force on a real token.
 
 | *G2* `token_validation.issuers[*].jwks.allowed_egress_hosts`
   `gateway.yaml` ×4 -- base:222,245; cookie:97,110; mtls:104,121; ws:102,109
 | token-sheriff SSRF egress guard (GW-05 / BFF-07)
-| GAP
-| none
+| WIRED
+| `EgressAllowlistActivationWiringTest` -- every http-sourced issuer declares a non-empty allowlist
+  and every file-sourced issuer declares none. Descriptor-parsing only; no runtime egress refusal is
+  exercised, which is why this is `WIRED` and not `COVERED`.
 
 | *G3* Strict preset header-value length cap (1024)
   Layer 2 -- resolved, in no yaml
 | `BasicChecksStage` (pre-route floor, every header)
-| GAP
-| none -- and this is the exact cap G1 carves `Authorization` out of
+| COVERED
+| `DeclaredLimitBoundaryIT` -- a non-`Authorization` header admitted at 1024 and rejected 400 at
+  1025. Paired with G1 this proves the carve-out is scoped to `Authorization` and did not widen.
 
 | *G4* Strict preset body cap (1 MiB) on an *inheriting* route
   Layer 2 -- resolved, in no yaml
 | `ThoroughChecksStage` (GW-07 default body guard)
-| GAP
-| none -- only the deliberately raised (64 MiB) and deliberately lowered (1024) route caps are
-  asserted; the inherited default never is
+| COVERED
+| `DeclaredLimitBoundaryIT` -- one byte over is rejected 413 carrying the gateway's own RFC 9457
+  envelope (not the framework's bare 413), one byte under is forwarded and echoed
 
 | *G5* `forward.headers_allow` / `query_allow` deny-by-default
   `endpoints/httpbin.yaml:32-33,60-63,80,92,102` (5 routes);
   `endpoints/bff-session.yaml:25` (1 route); `endpoints/grpc.yaml:48-50,67-69` (2 routes)
 | Forward stage 5 (deny-by-default allow-listing)
-| GAP
-| none -- positive echo is asserted throughout, but no test proves a *non*-allow-listed name is
-  stripped
+| COVERED
+| `DeclaredLimitBoundaryIT` -- one request carrying both an allow-listed and a non-allow-listed
+  header *and* query parameter; the allow-listed pair is echoed, the other is stripped
 
 | *G6* Strict preset parameter-*value* length cap (1024)
   Layer 2 -- resolved, in no yaml
@@ -264,11 +274,13 @@ declaration's *existence* is proven while its *boundary* is not.
 
 == The Gap Count and This Plan's Selection
 
-*Real gap count: 11* -- eight outright `GAP` (G2--G9) plus three `PARTIAL` (G1, G10, G11).
+*Real gap count when this sweep began: 11* -- eight outright `GAP` (G2--G9) plus three `PARTIAL`
+(G1, G10, G11).
 
-The sweep's hard ceiling is five assertions, so *the cap binds at its ceiling*: five of the eleven
-are closed here, ranked by blast radius (a limit whose breach degrades the whole gateway outranks
-one that degrades a single request).
+The sweep's hard ceiling is five assertions, so *the cap bound at its ceiling*: **G1--G5 are now
+closed** (their rows above name the asserting tests), ranked below by blast radius -- a limit whose
+breach degrades the whole gateway outranks one that degrades a single request. *Six remain*, and
+they are listed as the standing remainder so the class stays countable.
 
 [cols="1,1,1,4"]
 |===
@@ -298,7 +310,7 @@ one that degrades a single request).
 
 === The standing remainder
 
-*G6--G11 are deliberately not authored here*, and are recorded so the class stays countable rather
+*G6--G11 are deliberately not authored*, and are recorded so the class stays countable rather
 than forgotten:
 
 * *G6* -- strict parameter-value length cap (1024)
