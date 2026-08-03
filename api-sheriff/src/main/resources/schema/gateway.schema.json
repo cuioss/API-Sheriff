@@ -204,11 +204,12 @@
       "properties": {
         "content_types": {
           "type": "object",
-          "description": "Extension-to-Content-Type additions for extensions the gateway does not already map. ADD-ONLY: an entry naming a built-in extension (html, htm, css, js, mjs, json, map, xml, txt, svg, png, jpg, jpeg, gif, webp, ico, woff, woff2, ttf, pdf, wasm) is REFUSED AT BOOT, not silently ignored. The built-in mappings are immutable because remapping one — svg away from image/svg+xml, or any extension to text/html — is a stored-XSS lever on a security gateway. An extension neither map carries still falls back to application/octet-stream. The VALUE must be a well-formed type/subtype media type, optionally followed by ';name=value' parameters, and carries no control characters: it is served verbatim as the asset's Content-Type response header, so a CR/LF or non-media-type value would be a response-header-injection vector. The same constraint is enforced by the configuration validator, which additionally names the offending extension and value.",
-          "propertyNames": { "pattern": "^[a-z0-9]+$" },
+          "description": "Extension-to-Content-Type additions for extensions the gateway does not already map. ADD-ONLY: an entry naming a built-in extension (html, htm, css, js, mjs, json, map, xml, txt, svg, png, jpg, jpeg, gif, webp, ico, woff, woff2, ttf, pdf, wasm) is REFUSED AT BOOT, not silently ignored. The built-in mappings are immutable because remapping one — svg away from image/svg+xml, or any extension to text/html — is a stored-XSS lever on a security gateway. An extension neither map carries still falls back to application/octet-stream. The VALUE must be a well-formed type/subtype media type, optionally followed by ';name=value' parameters, and carries no control characters: it is served verbatim as the asset's Content-Type response header, so a CR/LF or non-media-type value would be a response-header-injection vector. This schema deliberately enforces only the CHEAP half of that bound — a length cap plus a flat, control-character-free 'type/subtype…' shape. The precise RFC 9110 parameter grammar is enforced at boot by the configuration validator (ConfigValidator.validateAssetContentTypeValues), which additionally names the offending extension and value. Both anchors terminate with a negative lookahead rather than '$', because the schema 'pattern' keyword is evaluated with find semantics and '$' also matches before a final line terminator — exactly the trailing CR/LF these bounds exist to refuse.",
+          "propertyNames": { "pattern": "^[a-z0-9]+(?![\\s\\S])" },
           "additionalProperties": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9!#$%&'*+.^_`|~-]+/[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:[ \\t]*;[ \\t]*[A-Za-z0-9!#$%&'*+.^_`|~-]+=[A-Za-z0-9!#$%&'*+.^_`|~-]+)*(?![\\s\\S])"
+            "maxLength": 255,
+            "pattern": "^[A-Za-z0-9!#$%&'*+.^_`|~-]+/[A-Za-z0-9!#$%&'*+.^_`|~;= \\t-]+(?![\\s\\S])"
           }
         }
       }

@@ -947,4 +947,106 @@ class ConfigLoaderTest {
                 () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
                         + exception.errors());
     }
+
+    @Test
+    void bindsWellFormedAssetContentTypeAdditions() throws Exception {
+        // The schema bound on asset_defaults.content_types refuses malformed values, not the feature:
+        // an ordinary addition, with and without a media-type parameter, must still bind.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    avif: image/avif
+                    m4v: video/mp4;codecs=avc1
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(Map.of("avif", "image/avif", "m4v", "video/mp4;codecs=avc1"),
+                loaded.gateway().assetDefaults().contentTypes(),
+                "a well-formed media type, with and without a parameter, must still bind");
+    }
+
+    @Test
+    void refusesAnAssetContentTypeValueCarryingATrailingNewline() throws Exception {
+        // The value is served verbatim as the asset's Content-Type response header, so a trailing CR/LF is a
+        // response-header-injection vector. Both patterns in this block terminate with a negative lookahead
+        // rather than '$' because '$' also matches before a final line terminator: the validator library
+        // currently applies 'pattern' with whole-input semantics, under which '$' would be safe, but the
+        // lookahead makes the bound hold under find() semantics too rather than depending on that choice.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    avif: "image/avif\\n"
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // The refusal echoes the offending pattern verbatim, so assert on that rather than on the surrounding
+        // sentence — the validator's diagnostics are localized and the sentence changes with the JVM locale.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/asset_defaults/content_types/avif".equals(error.pointer())
+                                && error.message().contains("(?![\\s\\S])")),
+                () -> "a content-type value with a trailing newline must be refused by the value pattern at "
+                        + "its own pointer, got: " + exception.errors());
+    }
+
+    @Test
+    void refusesAnAssetContentTypeExtensionKeyCarryingATrailingNewline() throws Exception {
+        // The KEY half must close its anchor exactly as the value half does. A 'png\n' key is not the same
+        // string as 'png', so it slips past the add-only boot fence (which compares against the built-in
+        // extension set) and re-opens the immutability bound that stops an operator remapping a built-in
+        // extension — the stored-XSS lever the add-only rule exists to close. Pinned here so the bound is
+        // asserted at the gate that actually runs, not inferred from the pattern text.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    "png\\n": image/png
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/asset_defaults/content_types".equals(error.pointer())
+                                && error.message().contains("^[a-z0-9]+(?![\\s\\S])")),
+                () -> "an extension key with a trailing newline must be refused by the propertyNames pattern, "
+                        + "got: " + exception.errors());
+    }
+
+    @Test
+    void scansAnOversizedAssetContentTypeValueWithoutExhaustingTheStack() throws Exception {
+        // 50 000 well-formed ';name=value' parameters plus a trailing newline: a ~200 KB value that is both
+        // over the schema's maxLength AND malformed, so BOTH keywords must report. The maxLength refusal
+        // proves the cap fired; the pattern refusal proves the regex engine actually SCANNED the whole input
+        // instead of dying on it. The superseded nested-quantifier pattern compiled to a java.util.regex Loop
+        // node that recursed once per parameter, so this input threw StackOverflowError out of the schema
+        // gate — which runs BEFORE bind, and therefore before ConfigValidator's hardened possessive pattern
+        // is ever reached. A StackOverflowError escaping here is the regression.
+        writeConfig("gateway.yaml", """
+                version: 1
+                asset_defaults:
+                  content_types:
+                    avif: "text/plain%s\\n"
+                """.formatted(";a=b".repeat(50_000)));
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+                "an oversized malformed content-type value must fail the boot as an aggregated "
+                        + "ConfigLoadException, never as a StackOverflowError out of the regex engine");
+
+        List<ConfigError> contentTypeErrors = exception.errors().stream()
+                .filter(error -> "gateway.yaml".equals(error.file()) && error.pointer().contains("content_types"))
+                .toList();
+        assertEquals(2, contentTypeErrors.size(),
+                () -> "both the length cap and the shape pattern must report — one alone would mean the "
+                        + "pattern never ran on the oversized input, got: " + exception.errors());
+        assertTrue(contentTypeErrors.stream().anyMatch(error -> error.message().contains("255")),
+                () -> "expected the maxLength refusal to name the 255-character cap, got: " + contentTypeErrors);
+    }
 }

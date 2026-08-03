@@ -1848,8 +1848,12 @@ render. Declaring the extension here gives it the right `Content-Type`.
 | `content_types`
 | A map of *lowercase extension* (without the dot) to the `Content-Type` served for it. Keys are
   constrained to lowercase alphanumerics by the schema and lowercased on binding, so a key's case
-  can never decide whether a mapping applies. Omitted (or an empty map) means the built-in map
-  governs alone.
+  can never decide whether a mapping applies. Values are bounded twice: the schema caps them at 255
+  characters and refuses anything that is not a control-character-free `type/subtype…` shape, and the
+  configuration validator then enforces the precise RFC 9110 media-type grammar, naming the offending
+  extension and value. Both bounds *fail the boot* -- the value is served verbatim as the asset's
+  `Content-Type` response header, so a CR/LF or non-media-type value would be a response-header
+  injection vector. Omitted (or an empty map) means the built-in map governs alone.
 |===
 
 [source,yaml]
