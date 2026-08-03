@@ -49,8 +49,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Standing guard that every BFF class holding a {@code static final SecureRandom} is registered for
- * GraalVM <em>runtime</em> initialization.
+ * Standing guard that every gateway class holding a {@code static final SecureRandom} is registered
+ * for GraalVM <em>runtime</em> initialization.
  * <p>
  * GraalVM initializes static state at <strong>build</strong> time by default. A
  * {@code static final SecureRandom} therefore gets its class initializer run inside the image build,
@@ -77,12 +77,16 @@ import org.junit.jupiter.api.Test;
  *       configuration key would reduce the rule to a green no-op.</li>
  *   <li><em>Negative control</em> — the same condition run against
  *       {@link de.cuioss.sheriff.gateway.arch.specimen.StaticSecureRandomSpecimen}, proving the
- *       condition actually fails on an unregistered class.</li>
+ *       condition actually fails on an unregistered class. The specimen resides <em>under</em> the
+ *       gated package prefix, so the positive rule carves its package out explicitly rather than
+ *       leaning on {@code DO_NOT_INCLUDE_TESTS} as the single guard — see {@link #SPECIMEN_PACKAGE}.</li>
  *   <li><em>Matched positive controls</em> — {@code SealedSessionCookieCodec} (a per-instance
  *       {@code private final SecureRandom}, constructed at runtime) and {@code CookieKeyMaterial} (a
  *       local {@code new SecureRandom()} argument, not a field) must <strong>not</strong> be
  *       selected. These are what prove the selection discriminates rather than matching everything
- *       that mentions {@code SecureRandom}.</li>
+ *       that mentions {@code SecureRandom}. Both first assert their near-miss is <em>real</em> and
+ *       only then assert exclusion: an exclusion assertion on its own would pass just as happily if
+ *       the class were renamed, moved or deleted, reporting green while proving nothing.</li>
  * </ol>
  * <p>
  * <strong>Coverage is evaluated class → list, never list → class.</strong> The gate asks "is this
@@ -109,9 +113,34 @@ import org.junit.jupiter.api.Test;
  */
 class NativeRuntimeInitRegistrationArchTest {
 
-    private static final String BASE_PACKAGE = "de.cuioss.sheriff.gateway";
-    private static final String BFF_PACKAGE = "de.cuioss.sheriff.gateway.bff";
-    private static final String BFF_PACKAGE_PATTERN = "de.cuioss.sheriff.gateway.bff..";
+    /**
+     * The one package selector this gate is scoped by: the whole gateway tree, not just BFF.
+     * <p>
+     * Crypto-adjacent static state is not a BFF-only concern. A {@code static final SecureRandom} added
+     * under {@code auth}, {@code tls}, {@code edge}, {@code forward}, {@code routing} or any other
+     * gateway package carries the identical build-time-initialization hazard, and a bff-scoped
+     * selection would simply not see it — the gate would report green while GraalVM baked a seeded
+     * generator into the image heap. Every holder happens to live under {@code bff} today, so the wider
+     * radius costs nothing now and closes the gap ahead of the first non-BFF holder.
+     * <p>
+     * It is deliberately <em>one</em> constant. {@link #PRODUCTION_CLASSES}, the ArchUnit rule and the
+     * {@link #selectedOwnerNames()} non-vacuity helper all reach the scope through {@link #GATED_CLASS},
+     * which is derived from this value — so a single edit moves the rule and the guard that proves the
+     * rule non-vacuous together. Two independent literals would agree right up until the day one of
+     * them was edited, silently desynchronizing the guard from the rule it protects.
+     */
+    private static final String GATED_PACKAGE = "de.cuioss.sheriff.gateway";
+
+    /**
+     * The negative control's specimen package, carved out of {@link #GATED_PACKAGE} explicitly.
+     * <p>
+     * The specimen lives in {@code src/test} <em>under</em> the gated prefix, and
+     * {@link ImportOption.Predefined#DO_NOT_INCLUDE_TESTS} already keeps it out of
+     * {@link #PRODUCTION_CLASSES}. The explicit carve-out in {@link #GATED_CLASS} exists so that
+     * {@code ImportOption} is not the <em>single</em> load-bearing guard: were the production import
+     * ever widened to include tests, the specimen's deliberate violation would otherwise start failing
+     * the positive rule rather than only its own negative control.
+     */
     private static final String SPECIMEN_PACKAGE = "de.cuioss.sheriff.gateway.arch.specimen";
 
     private static final String SEALED_SESSION_COOKIE_CODEC =
@@ -134,7 +163,7 @@ class NativeRuntimeInitRegistrationArchTest {
 
     private static final JavaClasses PRODUCTION_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-            .importPackages(BASE_PACKAGE);
+            .importPackages(GATED_PACKAGE);
 
     /**
      * The specimen package is imported <em>separately and with tests included</em>: the control lives
@@ -142,6 +171,23 @@ class NativeRuntimeInitRegistrationArchTest {
      */
     private static final JavaClasses SPECIMEN_CLASSES = new ClassFileImporter()
             .importPackages(SPECIMEN_PACKAGE);
+
+    /**
+     * The class-level half of the selection: a gateway class that is not the arch-test specimen.
+     * <p>
+     * Shared <em>verbatim</em> — the same object, not two expressions of one intent — by the ArchUnit
+     * rule in {@link #everyStaticSecureRandomHolderIsRegisteredForRuntimeInit()} and by
+     * {@link #selectedOwnerNames()}. That is what makes the non-vacuity guard's count a statement about
+     * exactly the set the rule checks, and what stops a future scope edit from moving one without the
+     * other.
+     */
+    private static final DescribedPredicate<JavaClass> GATED_CLASS =
+            new DescribedPredicate<>("classes under " + GATED_PACKAGE + " outside " + SPECIMEN_PACKAGE) {
+                @Override
+                public boolean test(JavaClass javaClass) {
+                    return residesIn(javaClass, GATED_PACKAGE) && !residesIn(javaClass, SPECIMEN_PACKAGE);
+                }
+            };
 
     /**
      * The selection: a field whose raw type is exactly {@link SecureRandom} and whose modifiers carry
@@ -165,10 +211,10 @@ class NativeRuntimeInitRegistrationArchTest {
             };
 
     @Test
-    @DisplayName("Every BFF class holding a static final SecureRandom is registered for runtime initialization")
+    @DisplayName("Every gateway class holding a static final SecureRandom is registered for runtime initialization")
     void everyStaticSecureRandomHolderIsRegisteredForRuntimeInit() {
         ArchRule rule = fields()
-                .that().areDeclaredInClassesThat().resideInAPackage(BFF_PACKAGE_PATTERN)
+                .that().areDeclaredInClassesThat(GATED_CLASS)
                 .and(STATIC_FINAL_SECURE_RANDOM)
                 .should(beDeclaredInAClassRegisteredForRuntimeInit(runtimeInitRegistrations()))
                 .because("GraalVM initializes static state at build time, so an unregistered "
@@ -184,7 +230,7 @@ class NativeRuntimeInitRegistrationArchTest {
      * configuration key, and the parsed registration list.
      * <p>
      * Any one of them resolving to nothing would leave the rule green while checking nothing — a
-     * renamed BFF package matches zero fields, a retired configuration key parses to an empty list,
+     * renamed gateway package matches zero fields, a retired configuration key parses to an empty list,
      * and a reworked build-argument syntax yields zero registrations. The negative control below
      * cannot catch that: it exercises its own hardcoded specimen package, so it proves the condition
      * works while saying nothing about whether the real inputs still resolve.
@@ -210,9 +256,9 @@ class NativeRuntimeInitRegistrationArchTest {
                                 + "nothing and silently protecting nothing. Restore the key, or retire "
                                 + "this gate deliberately if native builds no longer read it."),
                 () -> assertFalse(selectedOwners.isEmpty(),
-                        "No static final SecureRandom field was found in '" + BFF_PACKAGE_PATTERN
-                                + "' — the rule above matched zero fields and passed vacuously. Fix "
-                                + "BFF_PACKAGE_PATTERN if the package was renamed, or retire this gate "
+                        "No static final SecureRandom field was found among " + GATED_CLASS.getDescription()
+                                + " — the rule above matched zero fields and passed vacuously. Fix "
+                                + "GATED_PACKAGE if the package was renamed, or retire this gate "
                                 + "deliberately if the last such field was removed."),
                 () -> assertFalse(registrations.isEmpty(),
                         "Key '" + NATIVE_BUILD_ARGS_KEY + "' carries no '" + RUNTIME_INIT_PREFIX
@@ -280,14 +326,34 @@ class NativeRuntimeInitRegistrationArchTest {
          * <p>
          * This is the second discrimination axis — the first control proves the selection reads
          * modifiers, this one proves it reads <em>fields</em> rather than every mention of the type.
+         * <p>
+         * Like its sibling above, it asserts the near-miss is <em>real</em> before asserting exclusion,
+         * and for the same reason: {@link #selectedOwnerNames()} can never contain a class that no
+         * longer exists, so an exclusion-only control would report green just as happily if
+         * {@code CookieKeyMaterial} were renamed, moved out of the imported tree or deleted. The
+         * near-miss has two halves and both are asserted: the class must still <em>reference</em>
+         * {@link SecureRandom} (otherwise it is no longer near anything) and must still declare no
+         * {@code SecureRandom} <em>field</em> (otherwise it is no longer a miss).
          */
         @Test
         @DisplayName("Selection excludes a local SecureRandom construction (positive control)")
         void selectionExcludesLocalSecureRandomConstruction() {
-            assertFalse(selectedOwnerNames().contains(COOKIE_KEY_MATERIAL),
-                    COOKIE_KEY_MATERIAL + " was selected, but it constructs SecureRandom as a local "
-                            + "argument and stores none — the selection has stopped reading declared "
-                            + "fields and now matches any reference to the type");
+            assertAll("CookieKeyMaterial is a real, excluded near-miss",
+                    () -> assertTrue(referencesSecureRandom(COOKIE_KEY_MATERIAL),
+                            COOKIE_KEY_MATERIAL + " is not an imported production class referencing "
+                                    + "SecureRandom — it was renamed, moved out of the imported tree, "
+                                    + "deleted, or stopped using SecureRandom altogether. This control "
+                                    + "has stopped controlling anything; point it at another local-"
+                                    + "construction site or retire it deliberately"),
+                    () -> assertFalse(declaresSecureRandomField(COOKIE_KEY_MATERIAL),
+                            COOKIE_KEY_MATERIAL + " now declares a SecureRandom field, so it is no "
+                                    + "longer the local-construction near-miss this control needs. "
+                                    + "Point the control at another local-construction site — and check "
+                                    + "whether the new field needs a runtime-init registration"),
+                    () -> assertFalse(selectedOwnerNames().contains(COOKIE_KEY_MATERIAL),
+                            COOKIE_KEY_MATERIAL + " was selected, but it constructs SecureRandom as a "
+                                    + "local argument and stores none — the selection has stopped "
+                                    + "reading declared fields and now matches any reference to the type"));
         }
     }
 
@@ -378,7 +444,7 @@ class NativeRuntimeInitRegistrationArchTest {
      */
     private static Set<String> selectedOwnerNames() {
         return PRODUCTION_CLASSES.stream()
-                .filter(NativeRuntimeInitRegistrationArchTest::residesInBffPackage)
+                .filter(GATED_CLASS)
                 .flatMap(javaClass -> javaClass.getFields().stream())
                 .filter(STATIC_FINAL_SECURE_RANDOM::test)
                 .map(field -> field.getOwner().getFullName())
@@ -392,8 +458,30 @@ class NativeRuntimeInitRegistrationArchTest {
                 .anyMatch(field -> field.getRawType().isEquivalentTo(SecureRandom.class));
     }
 
-    private static boolean residesInBffPackage(JavaClass javaClass) {
-        String packageName = javaClass.getPackageName();
-        return BFF_PACKAGE.equals(packageName) || packageName.startsWith(BFF_PACKAGE + ".");
+    /**
+     * Whether the named class is present in {@link #PRODUCTION_CLASSES} <em>and</em> depends on
+     * {@link SecureRandom} in any way — a constructor call, a method call, a parameter or a field type.
+     * <p>
+     * This is the "is it still a near-miss?" half of the local-construction control. It is deliberately
+     * broader than field declaration: the whole point of that control is a class that touches
+     * {@code SecureRandom} without holding one, so the anchor has to see the touch. It is also
+     * deliberately narrower than mere existence — a class that stopped mentioning
+     * {@code SecureRandom} entirely is no longer near the selection and controls nothing.
+     */
+    private static boolean referencesSecureRandom(String className) {
+        return PRODUCTION_CLASSES.stream()
+                .filter(javaClass -> javaClass.getFullName().equals(className))
+                .anyMatch(javaClass -> javaClass.getDirectDependenciesFromSelf().stream()
+                        .anyMatch(dependency -> dependency.getTargetClass().isEquivalentTo(SecureRandom.class)));
+    }
+
+    /**
+     * Prefix containment: the class sits in exactly this package, or in a sub-package of it. The dot is
+     * appended deliberately — a bare {@code startsWith} would let {@code …gateway} also swallow an
+     * unrelated sibling package such as {@code …gatewayadmin}.
+     */
+    private static boolean residesIn(JavaClass javaClass, String packageName) {
+        String candidate = javaClass.getPackageName();
+        return candidate.equals(packageName) || candidate.startsWith(packageName + ".");
     }
 }
