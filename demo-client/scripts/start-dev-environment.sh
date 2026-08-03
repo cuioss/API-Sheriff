@@ -160,16 +160,23 @@ echo "🐳 Rebuilding the api-sheriff image from the native executable..."
 export DOCKER_BUILDKIT=1
 $COMPOSE_CMD build api-sheriff
 
-# Quarkus file logging writes to the bind-mounted /logs. The container runs as uid 1001 while this
-# host directory is created by the (differently-numbered) build user, so without a world-writable
-# dedicated subdirectory the file sink fails with "FileNotFoundException: /logs/quarkus.log
-# (Permission denied)". Grant world write on that subdirectory ONLY — least privilege, ephemeral
-# test output — exactly as integration-tests/scripts/start-integration-container.sh does. The
-# container keeps its no-new-privileges / cap_drop / read_only posture.
+# Quarkus file logging writes to the bind-mounted /logs. The container runs as the distroless
+# 'nonroot' user (uid 65532) while this host directory is created by the (differently-numbered)
+# build user, so without a world-writable dedicated subdirectory the file sink fails with
+# "FileNotFoundException: /logs/quarkus.log (Permission denied)". Grant world write on that
+# subdirectory ONLY — least privilege, ephemeral test output — exactly as
+# integration-tests/scripts/start-integration-container.sh does. The container keeps its
+# no-new-privileges / cap_drop / read_only posture.
+#
+# Mode 1777, not 0777: the sticky bit keeps that world write from also being a world DELETE.
+# Without it any other local account on this host can remove or replace quarkus.log, which is
+# the log a developer reads to diagnose a failed run. The sticky bit restricts unlink and
+# rename to the file's owner and the directory's owner, and costs nothing here either: the
+# container still creates and rotates its own files, and 'mvn clean' runs as the owning build user.
 LOG_TARGET_ROOT="${LOG_TARGET_DIR:-${IT_DIR}/target}"
 export LOG_TARGET_DIR="${LOG_TARGET_ROOT}/quarkus-logs"
 mkdir -p "${LOG_TARGET_DIR}"
-chmod 0777 "${LOG_TARGET_DIR}"
+chmod 1777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
 # Keycloak FIRST, and READY, before either gateway starts. The native app eagerly loads the realm's
@@ -213,6 +220,15 @@ done
 echo "🐳 Starting ONLY ${DEMO_GATEWAY_SERVICES[*]} (no other stack service is touched)..."
 $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 
+# Wait for READINESS, not liveness, and keep the retry budget as ONE number rather than three
+# literals that can drift apart — the same pairing integration-tests/scripts/start-integration-container.sh
+# uses, and for the same reason: /q/health/live answers as soon as the process is up, which is
+# strictly earlier than the point at which the SPA can be driven against it. The switch costs no
+# additional wait — GatewayReadinessCheck's `jwks` datum is a boot-time constructibility fact
+# (ADR-0027), so readiness flips at the same moment liveness does. The measured live-to-ready delta
+# behind that claim is in doc/development/integration-test-topology.adoc, "The Readiness Contract".
+GATEWAY_READY_ATTEMPTS=30
+
 echo "⏳ Waiting for the demo gateway instances to be ready..."
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
@@ -222,20 +238,20 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
     if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
         # -k is load-bearing on an HTTPS management interface: it serves a self-signed localhost
         # bundle, and without it curl fails certificate validation and this wait degrades into a
-        # silent 30-attempt timeout against a perfectly healthy container.
+        # silent full-budget timeout against a perfectly healthy container.
         GATEWAY_PROBE_OPTS+=(-k)
         GATEWAY_DIAG_OPTS+=(-k)
     fi
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
 
     echo "⏳ Waiting for ${GATEWAY_SERVICE} (management ${GATEWAY_MGMT_SCHEME} on ${GATEWAY_MGMT_PORT})..."
-    for i in {1..30}; do
-        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/live" > /dev/null 2>&1; then
+    for ((i = 1; i <= GATEWAY_READY_ATTEMPTS; i++)); do
+        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
             echo "✅ ${GATEWAY_SERVICE} is ready!"
             break
         fi
-        if [ "$i" -eq 30 ]; then
-            echo "❌ ${GATEWAY_SERVICE} failed to start within 30 attempts"
+        if [ "$i" -eq "$GATEWAY_READY_ATTEMPTS" ]; then
+            echo "❌ ${GATEWAY_SERVICE} failed to become ready within ${GATEWAY_READY_ATTEMPTS} attempts"
             # Capture the container log + health payload so a startup failure is diagnosable from
             # the CI artifacts rather than only from a lost console.
             DIAG_DIR="${MODULE_DIR}/target/test-results"
@@ -247,7 +263,7 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _; do
             echo ""
             exit 1
         fi
-        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/30)"
+        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/${GATEWAY_READY_ATTEMPTS})"
         sleep 1
     done
 done <<< "$GATEWAY_TARGETS"

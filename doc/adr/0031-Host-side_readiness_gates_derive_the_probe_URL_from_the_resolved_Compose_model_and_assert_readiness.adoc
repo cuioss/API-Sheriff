@@ -1,0 +1,148 @@
+= ADR-0031: Host-side readiness gates derive the probe URL from the resolved Compose model and assert readiness
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: A host-side bring-up gate restates neither scheme nor published port -- it derives both from the resolved Compose model via the service's management-scheme label -- and it waits on the readiness probe rather than the liveness probe, with a retry budget traceable to a worst-case ready time measured under contention.
+// tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, retry-budget
+// affects: integration-tests, demo-client
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A host-side script that brings a container stack up must decide when the stack may
+be driven. That decision has two independent failure modes, and both are quiet.
+
+**Waiting on the wrong signal.** A liveness probe answers as soon as the process is
+up. Readiness answers when the instance can serve. The window between them is
+exactly the window in which a test suite's first request reaches an instance whose
+bindings are not yet resolved. A suite gated on liveness therefore has a
+nondeterministic failure surface that grows with the instance's boot cost, and the
+resulting failures present as flakes rather than as a gate defect.
+
+**Restating the model in the gate.** A probe URL embeds a scheme and a published
+port. Both are already declared in the Compose model. Restating them in the script
+creates two authorities for one fact: republishing a service on a different host
+port, adding an instance, or changing an instance's management scheme silently
+desynchronises the gate. The failure is asymmetric -- the gate keeps passing while
+probing the wrong endpoint, or fails against a healthy container.
+
+A third consideration constrains the remedy. Switching a gate from liveness to
+readiness changes *when* it clears, so its retry budget must be re-derived rather
+than carried over. A budget adopted from a neighbouring wait, or picked as a round
+number, is not evidence; and a budget derived from an uncontended local run
+measures the wrong machine.
+
+== Decision
+
+A host-side readiness gate is built on three rules.
+
+**Gate on readiness, not liveness.** The wait probes the readiness endpoint. The
+probe must fail closed: the HTTP client is configured to treat a non-2xx response
+as failure, so a service answering "not ready" while starting does not clear the
+gate at port-accept time.
+
+**Derive the whole probe target from the resolved Compose model.** The script
+resolves the service set, each service's published management port, and the scheme
+its management interface speaks, from the model -- the scheme via an explicit
+per-service label rather than by inferring it from a name or a port number. No
+host and no *published* host port is restated in the script. The container-side
+management port remains a fixed literal, used as the selector that picks the
+management binding out of each service's port list; that is a stable
+platform-level contract rather than a per-instance fact, so it is not a
+derivation target. Adding, removing, or renumbering an instance requires no
+script edit.
+
+Deriving the scheme structurally is what makes a *deliberate* exception free: an
+instance whose management interface serves plain HTTP by design is probed over
+plain HTTP because its label says so, not because the probe carries a branch on
+its service name. The exception costs one label, not one special case.
+
+**Derive the retry budget from measurement, and record the measurement.** The
+budget is traceable to an observed worst-case time-to-ready, measured with all
+instances brought up concurrently on a machine under load, plus a stated headroom
+factor. The measured figures and the factor are recorded in developer documentation
+alongside the gate, so a later reader can re-evaluate the budget rather than guess
+at it. Within a script, the retry budget is a single constant read by every site
+that needs it -- the loop bound, the last-attempt comparison, the progress
+message -- so the number cannot drift between spellings. The constant is
+per-script: two bring-up scripts that gate independently each declare their own,
+and that duplication is stated as a consequence below rather than claimed away.
+
+One nuance belongs to the rationale rather than the rule. When a readiness check
+reports a *boot-time constructibility* fact read from a cached instance, the
+network cost sits in boot, ahead of readiness, not inside the probe. The reason to
+re-derive the budget is therefore that readiness lands later than liveness, not
+that the probe became network-dependent. Stating the rationale correctly matters:
+the wrong rationale over-predicts probe cost and invites an inflated budget.
+
+== Consequences
+
+=== Positive
+
+* The suite cannot start against a half-initialised instance, removing a class of
+  failure that presents as flakiness rather than as a gate defect.
+* Topology changes -- new instances, republished ports, a changed management scheme
+  -- propagate to the gate with no script edit, so the model stays the single
+  authority.
+* A deliberate per-instance exception is expressed as data on the service rather
+  than as a branch in the probe, so one loop covers every instance.
+* The budget is auditable: its origin is a recorded measurement, not a convention.
+
+=== Negative
+
+* The gate now depends on the model being resolvable at bring-up time, and on each
+  service carrying its scheme label. A service that omits the label is not probed
+  correctly, so the discovery step must fail loudly rather than degrade.
+* Re-deriving the budget requires an instrumented run under contention, which is
+  more work than adopting a neighbouring value.
+
+=== Risks
+
+* The recorded measurement ages. It bounds the live-to-ready delta on the machine
+  measured, not absolute container start on slower hosts, so the budget must carry
+  headroom rather than track the observed figures.
+* Where two bring-up scripts derive from the same model independently, both the
+  derivation logic and the retry-budget constant are duplicated. Duplicated
+  derivation is materially safer than a duplicated literal -- both stay correct
+  when the model changes -- but the budget constant is a genuine duplicate: the
+  two can be re-tuned apart, and only a shared library would make them one.
+
+== Alternatives Considered
+
+**Keep gating on liveness and accept the window.** Costs nothing and keeps the wait
+fast. Rejected because the window is exactly where the suite's first request lands;
+the resulting failures are attributed to the tests rather than to the gate, which
+is the worst property a failure can have.
+
+**Keep the probe URL hardcoded and correct it when it drifts.** Simple to read at
+the call site. Rejected because the drift is silent in the dangerous direction: the
+gate keeps passing against a stale endpoint, and the model change that caused it is
+elsewhere.
+
+**Branch the probe on the service name for the plain-HTTP instance.** Localises the
+exception to one conditional. Rejected because it moves a property of the service
+into the prober, so every future exception costs another branch and the prober
+accumulates knowledge the model already holds.
+
+**Adopt a neighbouring wait's retry budget.** Removes the need to measure. Rejected
+because a budget without a derivation is indistinguishable from a guess, and cannot
+be re-evaluated when the boot profile changes.
+
+**Size the budget from an uncontended local run.** Cheap and green. Rejected
+because it measures the wrong machine: the budget must survive a loaded CI runner,
+and a fast local observation provides no evidence about that.
+
+The rejected options share one shape: each keeps a fact in the gate that the model
+already owns, or keeps a number whose origin cannot be reconstructed.
+
+== References
+
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] -- the management-interface TLS posture the scheme label expresses per service
+* link:../development/integration-test-topology.adoc[Integration-Test Topology] -- carries the readiness contract, the measured budget, and the per-instance port map
