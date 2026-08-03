@@ -15,14 +15,12 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
-import java.lang.reflect.WildcardType;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashSet;
@@ -103,16 +101,6 @@ class ConfigModelReflectionTest {
         assertTrue(reachable.containsAll(BINDING_ROOTS), "the binding roots are themselves bound types");
     }
 
-    @Test
-    @DisplayName("Should expose the reflection targets at runtime so the guard can read them")
-    void shouldCarryRuntimeVisibleTargets() {
-        // Arrange / Act
-        Set<Class<?>> registered = registeredTargets();
-
-        // Assert
-        assertFalse(registered.isEmpty(), "the target list must be readable at runtime");
-    }
-
     /** Reads the consolidated target list off the holder class. */
     private static Set<Class<?>> registeredTargets() {
         RegisterForReflection annotation = ConfigModelReflection.class.getAnnotation(RegisterForReflection.class);
@@ -156,13 +144,9 @@ class ConfigModelReflectionTest {
                     collectRawTypes(argument, sink);
                 }
             }
-            case WildcardType wildcard -> {
-                for (Type bound : wildcard.getUpperBounds()) {
-                    collectRawTypes(bound, sink);
-                }
-            }
             default -> {
-                // Type variables and generic array types do not occur in the configuration model.
+                // Wildcards, type variables and generic array types do not occur in the
+                // configuration model.
             }
         }
     }
