@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>deployment</artifactId>
+    <packaging>pom</packaging>
+    <name>API Sheriff Deployment</name>
+    <description>Deployment material for API Sheriff — a production-shaped docker-compose sample that shows how the
+        gateway is configured, fronted and bound to an identity provider. Sample and documentation material only —
+        never a shipped default, never part of the production image or the native build.
+    </description>
+
+    <!-- This module carries NO Java. It owns exactly ONE subtree, compose-sample/, holding the compose
+         file, the configuration it mounts, the certificate tooling and the bring-up scripts. Nothing here
+         is built, tested or published: a default reactor build of this module is a deliberate no-op, so the
+         sample costs the standard build nothing. See doc/user/compose-sample.adoc for the operator guide and
+         doc/development/compose-sample.adoc for the rationale. -->
+
+    <dependencies />
+
+    <properties>
+        <!-- ==== Java plugin suppression =================================================== -->
+        <!-- There is no Java here, so every inherited Java-oriented plugin is switched off. Without
+             these the module would still run compilation, javadoc, static analysis and coverage over
+             an empty source tree, costing time in every build for no signal. -->
+        <maven.compiler.skip>true</maven.compiler.skip>
+        <skipTests>true</skipTests>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <checkstyle.skip>true</checkstyle.skip>
+        <spotbugs.skip>true</spotbugs.skip>
+        <pmd.skip>true</pmd.skip>
+        <cpd.skip>true</cpd.skip>
+        <enforcer.skip>true</enforcer.skip>
+        <jacoco.skip>true</jacoco.skip>
+        <license.skip>true</license.skip>
+        <dependency-check.skip>true</dependency-check.skip>
+        <skip.openrewrite>true</skip.openrewrite>
+
+        <!-- Never publish this module to Maven Central: it is deployment sample material, not a
+             consumable artifact. The effective switch is skipPublishing, NOT maven.deploy.skip —
+             cui-java-parent publishes through central-publishing-maven-plugin, whose own user property
+             this is. The same reasoning is recorded at integration-tests/pom.xml, where it was
+             established, and at demo-client/pom.xml. -->
+        <skipPublishing>true</skipPublishing>
+    </properties>
+</project>
