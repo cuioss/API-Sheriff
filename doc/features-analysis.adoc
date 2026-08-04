@@ -200,21 +200,34 @@ architecture makes it uniquely able to close all three.
   `realip` / Kong issues cited in ADR-0003's references) and "Forwarded header sabotage".
   See link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
-| *PAR-driven, FAPI-2.0-aligned confidential-client flow*
-| A *major* differentiator. API Sheriff drives the authorization-code flow through *Pushed
-  Authorization Requests* (PAR, RFC 9126) -- pushing the authorization parameters over the back
-  channel and redirecting with the returned `request_uri`, so parameters are never exposed or
-  tamperable in the browser -- as part of a FAPI-2.0-aligned confidential-client posture (PKCE
-  `S256`, exact `redirect_uri`, `iss` mix-up defence, sender-constrained tokens). This is
-  delivered by the `token-sheriff-client` engine (`CLIENT-10` PAR, `CLIENT-11`
-  sender-constraint; the authoritative surface is `TokenSheriff/doc/client`), which API Sheriff
-  consumes. *Competitor reality (verified):* three of the six evaluated gateways
+| *PAR-driven, FAPI-2.0-aligned confidential-client flow* -- *TARGET, NOT SHIPPED IN 0.1.0*
+| A *major* differentiator -- and, as of the 0.1.0 alpha, an *unrealised* one. The intended posture
+  drives the authorization-code flow through *Pushed Authorization Requests* (PAR, RFC 9126) --
+  pushing the authorization parameters over the back channel and redirecting with the returned
+  `request_uri`, so parameters are never exposed or tamperable in the browser -- as part of a
+  FAPI-2.0-aligned confidential-client posture (PKCE `S256`, exact `redirect_uri`, `iss` mix-up
+  defence, sender-constrained tokens).
++
+[IMPORTANT]
+====
+*0.1.0 ships none of the PAR or sender-constrained-token half of this claim.* PKCE `S256` and the
+`iss` mix-up defence are delivered; PAR, sender-constrained tokens, and a FAPI-permitted client
+authentication method are not. The capabilities exist in the `token-sheriff-client` engine
+(`CLIENT-10` PAR, `CLIENT-11` sender-constraint) but are *not wired* by the gateway -- a capability
+present in a dependency is not a capability of the product. See
+link:fapi_status.adoc[FAPI 2.0 Conformance Status] for the requirement-by-requirement position and
+link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for the route to closing it. *No FAPI conformance may
+be claimed for this release.*
+====
++
+*Competitor reality (verified):* three of the six evaluated gateways
   (KrakenD, Tyk, Gravitee-APIM) are not OIDC relying parties in the data plane at all -- they
   only *validate* pre-issued JWTs. The two that genuinely act as an RP in OSS (APISIX's
   `openid-connect`, community Traefik plugins) run a plain PKCE code flow and expose *no* PAR and
   claim *no* FAPI 2.0. The only product shipping PAR inside its RP is *Kong, Enterprise-only*,
   and it markets generic "FAPI" (1.0-era), not FAPI 2.0. A first-class, *OSS*, PAR-initiating,
-  FAPI-2.0-aligned RP/BFF is therefore genuinely uncovered. (Do not conflate sides: many IdPs
+  FAPI-2.0-aligned RP/BFF is therefore genuinely uncovered -- *the opportunity is real and still
+  open; API Sheriff has not yet taken it.* (Do not conflate sides: many IdPs
   and Gravitee's separate *Access Management* product support PAR/FAPI as the *authorization
   server* -- the opposite side of the wire; the differentiator claimed here is the *client/RP*
   side, pushing to the `pushed_authorization_request_endpoint` and driving the redirect.) See
@@ -254,7 +267,7 @@ Secondary differentiators worth claiming:
 | Immutable static config | Yes | Standalone mode | file provider | Yes (native)
 | OIDC RP + cookie mediation | Yes | Yes | EE only | No
 | Transparent token refresh | Yes | Yes | EE only | M2M only
-| PAR-initiating FAPI 2.0 RP | *Yes* | No | No | No
+| PAR-initiating FAPI 2.0 RP | Planned (not in 0.1.0) | No | No | No
 | Offline JWT validation | Yes | Yes | Partial | Yes
 | Zero-trust forwarding | Yes | No | No | Yes
 | Path allowlist + param limits | Yes | Partial | No | Partial

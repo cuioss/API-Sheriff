@@ -1,0 +1,176 @@
+= API Sheriff -- FAPI 2.0 Conformance Status (0.1.0 Alpha)
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 2
+
+This document states, requirement by requirement, where API Sheriff's BFF stands against the
+*FAPI 2.0 Security Profile (Final)* as of the 0.1.0 alpha release. It exists because the profile is
+frequently claimed loosely, and because an earlier revision of
+link:features-analysis.adoc[the feature analysis] claimed capabilities the shipped code does not
+have (corrected in the same change that added this document).
+
+[IMPORTANT]
+====
+*Verdict: API Sheriff 0.1.0 is NOT FAPI 2.0 conformant.* Three of the profile's mandatory client
+requirements are unmet. What ships is a hardened OIDC confidential-client BFF -- a sound
+implementation of the RFC 9700 baseline -- not a FAPI 2.0 relying party. No FAPI conformance should
+be claimed, implied, or marketed for this release.
+
+The gap is *wiring and key management*, not architecture. See
+link:fapi_next_steps.adoc[FAPI 2.0 -- Next Steps] for the route to closing it.
+====
+
+== Scope
+
+FAPI 2.0 places requirements on both the authorization server and the client. API Sheriff's BFF is
+a *client* (relying party), so only the client-side requirements are assessed here. Requirements on
+the authorization server are the IdP's concern (Keycloak, in the reference topology) and are out of
+scope for this document.
+
+Everything below was verified first-party against the shipped source of API Sheriff and of the
+`token-sheriff-client` engine it consumes. Where a capability exists in the engine but is not wired
+by the gateway, that distinction is stated explicitly -- *a capability present in a dependency is
+not a capability of the product.*
+
+== Requirement Matrix
+
+[cols="3,1,4"]
+|===
+| FAPI 2.0 requirement | Status | Evidence
+
+| Sender-constrained access tokens -- mTLS (RFC 8705) and/or DPoP (RFC 9449) (§5.3.3.1)
+| *UNMET*
+| `BffRuntimeProducer` constructs `AuthorizationCodeFlow` with a `null` `senderConstraint`, and
+  `RefreshFlow` via its three-argument constructor. Tokens are plain bearer tokens carrying no
+  `cnf` claim.
+
+| Pushed Authorization Requests (RFC 9126) (§5.3.3.2)
+| *UNMET*
+| The authorization URL is built front-channel by
+  `QueryResponseModeAuthorizationRequestBuilder` through `AuthorizationCodeFlow.authorize`. The
+  engine ships a complete `ParClient`, but the gateway holds no reference to it -- the only mention
+  of `ParResponse` in this repository is a GraalVM reflection registration in
+  `TokenClientDslJsonReflection`, which registers the type for serialization and never calls it.
+
+| Client authentication -- mTLS or `private_key_jwt` (§5.3.3.1)
+| *UNMET*
+| `ClientAuthMethod.CLIENT_SECRET_BASIC` with `ClientSecretBasicAuth`. `client_secret_basic` is not
+  among the profile's permitted methods.
+
+| PKCE with `S256` (§5.3.3.2)
+| *MET*
+| The engine's `AuthorizationRequestBuilder` always emits `code_challenge` /
+  `code_challenge_method=S256`, and *fails closed* -- it throws and refuses to start the flow when
+  the provider does not advertise `S256`, so no `plain` or non-PKCE downgrade is reachable.
+
+| `iss` authorization-response parameter (RFC 9207) (§5.3.3.2)
+| *MET*
+| `IssValidator`, applied in `AuthorizationCodeFlow.exchange` after the state check and before the
+  code is redeemed. When the provider advertises
+  `authorization_response_iss_parameter_supported`, an *absent* `iss` is itself rejected, closing
+  the omit-`iss` bypass.
+
+| Signing algorithms restricted to `PS256`, `ES256`, or `EdDSA` (Ed25519) (§5.4.1)
+| *N/A today, blocking later*
+| No client-side signing is performed today, because neither `private_key_jwt` nor DPoP is in use.
+  It becomes binding the moment either is wired -- see <<_the_dpop_algorithm_constraint>>.
+|===
+
+Any one of the three *UNMET* rows is disqualifying on its own.
+
+== What Is Actually In Place
+
+The absence of FAPI conformance should not be read as a weak flow. The shipped BFF implements the
+RFC 9700 baseline carefully, and several controls exceed it:
+
+* *PKCE `S256`, fail-closed.* A provider that does not advertise `S256` causes the flow to be
+  refused rather than downgraded.
+* *RFC 9207 mix-up defence*, including rejection of an omitted `iss` where the provider advertises
+  support.
+* *Browser binding.* A short-lived `__Host-`-prefixed binding cookie ties an in-flight login to the
+  browser that started it. A callback is honoured only when *both* the binding cookie resolves the
+  pending record *and* the returned `state` matches it (constant-time). A callback replayed in a
+  different browser is rejected `403` even with a valid `state`.
+* *Single-use pending records.* Single-use is a store invariant, not a caller contract --
+  `PendingAuthorizationStore.consume` removes the record as it returns it, so a replay resolves
+  empty even inside the record's five-minute TTL. That TTL is fixed rather than operator-tunable,
+  because unauthenticated browsers create these records.
+* *Parameter-injection defence.* The callback rejects a duplicated `code` or `state` before
+  anything else (the Keycloak CVE-2026-9689 class).
+* *SSRF-guarded back channel.* Discovery-advertised endpoints are run through an egress/scheme
+  validator before every back-channel call, so a hostile discovery document cannot redirect the
+  token request at an internal address.
+
+== The Accepted `response_mode` Tradeoff
+
+This is not a FAPI requirement, but it is the design decision most often mistaken for one, so it is
+recorded here.
+
+The engine's default `AuthorizationRequestBuilder` requests `response_mode=form_post` deliberately,
+so that `code`, `state`, and `iss` are delivered in a POST body rather than on a URL, where they
+would reach browser history, proxy/CDN and server access logs, and the `Referer` header.
+
+*API Sheriff overrides this* with `QueryResponseModeAuthorizationRequestBuilder`. The reason is the
+binding cookie: it is `SameSite=Lax`, and a Lax cookie is sent on a top-level GET navigation but
+*not* on the cross-site POST that a `form_post` callback performs. With `form_post` the binding
+cookie is dropped and every real-browser login dead-ends on the "no binding cookie" rejection.
+
+The exposure is accepted by operator decision and *bounded, not removed*:
+
+* PKCE means a leaked code is not redeemable without the gateway-held verifier;
+* the code is single-use and short-lived at the token endpoint;
+* the binding-cookie plus `state` double-check rejects a code replayed from another browser even
+  while it is still live.
+
+`SameSite=None` was considered and rejected -- it would require permitting the cross-site sends the
+binding cookie exists to prevent. `SameSite=Strict` is not an option at all: the callback is a
+cross-site top-level navigation, on which a Strict cookie is never sent. The full statement lives on
+`QueryResponseModeAuthorizationRequestBuilder`.
+
+[NOTE]
+====
+The binding cookie carries no CSRF weight, and should not be read as if it did. A Lax cookie *is*
+sent on an attacker-initiated cross-site top-level GET. What defends against login CSRF and code
+injection is the `state` comparison against the record the cookie resolved to; the cookie defends a
+different attack -- replay of a captured callback in another browser. The two controls are
+orthogonal (see link:security-threat-model.adoc[the threat model], BFF-02).
+====
+
+[#_the_dpop_algorithm_constraint]
+== The DPoP Algorithm Constraint
+
+Sender-constraining has two permitted routes, and they are *not* equally available:
+
+* *mTLS is available today.* `SenderConstraint.mtls(certificateThumbprint)` records a
+  transport-level binding -- the certificate is presented by the HTTP handler's SSL context, no
+  header is added and no signing algorithm is involved. Nothing in the engine blocks this route.
+* *DPoP is blocked upstream.* `DpopProofGenerator` accepts RSA key pairs only and signs with
+  `RS256` / `RS384` / `RS512`; every other algorithm throws. Its embedded header `jwk` and its `jkt`
+  thumbprint are both computed RSA-only. FAPI 2.0 §5.4.1 does not permit `RS256`, so a proof this
+  generator emits is non-conformant by construction. Tracked upstream as
+  https://github.com/cuioss/TokenSheriff/issues/618[TokenSheriff#618].
+
+Because the profile accepts "one or both of" mTLS and DPoP, *the upstream issue does not block
+conformance* -- it blocks one of the two routes to it.
+
+== Consequence for Deployments
+
+Sender-constraining is realised *at the resource server*: the `cnf` claim only does work when
+something validating the token checks it. Terminating the constraint at the gateway -- the intended
+boundary -- protects the token at rest in the gateway's session store and binds the refresh token,
+and buys the upstreams behind the gateway nothing, because they continue to receive a plain bearer
+token exactly as today.
+
+That is a legitimate architecture, and it is the one planned. It carries one forward-looking
+consequence recorded in link:fapi_next_steps.adoc[Next Steps]: a `require: session` route forwards
+the mediated token upstream as `Authorization: Bearer`, and once that token is sender-constrained it
+carries `cnf`. A `cnf`-blind upstream accepts it unchanged; a DPoP-aware upstream *must reject* it
+for want of a proof.
+
+== Related
+
+* link:fapi_next_steps.adoc[FAPI 2.0 -- Next Steps] -- the route to conformance
+* link:security-threat-model.adoc[Threat Model] -- BFF-02 and the callback controls
+* link:variants/02-bff-session.adoc[Variant 2 -- Server-Side Session BFF]
+* link:variants/03-bff-cookie.adoc[Variant 3 -- Sealed-Cookie BFF]
