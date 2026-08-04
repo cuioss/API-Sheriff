@@ -28,8 +28,8 @@ import lombok.experimental.UtilityClass;
  * assertable. This catalogue's identifier ranges are disjoint from
  * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}'s (the boot-time configuration
  * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1} / {@code 4} /
- * {@code 6-7} / {@code 100} / {@code 103-109} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
- * there — never renumber one catalogue without checking the other for a collision.
+ * {@code 6-7} / {@code 100} / {@code 103-109} here vs {@code 2-3} / {@code 101-102} / {@code 115-116} /
+ * {@code 200-201} there — never renumber one catalogue without checking the other for a collision.
  * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
  * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
  * directly and are not catalogued here.

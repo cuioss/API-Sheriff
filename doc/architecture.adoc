@@ -703,7 +703,20 @@ initial metrics surface.
 posture that single port has -- HTTPS by default, plain HTTP if the opt-out above is taken. That
 sharing is the point: health cannot be downgraded separately from metrics, because they are the
 same listener. Readiness reflects the loaded-and-validated configuration and, for the BFF variants,
-the ability to reach the configured issuer at startup. The management port is not exposed publicly,
+the ability to reach the configured issuer at startup.
+
+Readiness reports *state, never cause*, consistent with the boot-time-constructibility reading of the
+`jwks` datum in
+link:adr/0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027].
+When the bearer-token validator cannot be resolved the probe marks readiness DOWN with
+`jwks: unavailable` and a fixed `error: validation-unavailable` token -- it never places the
+underlying exception message on the payload, which can name issuer URLs, internal hostnames,
+TLS/trust material and filesystem paths. Because the management interface has exactly one port and
+may legitimately be plain HTTP (the opt-out above), that payload must be treated as reachable by
+anything that can reach the port. The full cause reaches the operator through `WARN ApiSheriff-116`
+instead.
+
+The management port is not exposed publicly,
 so health and metrics endpoints carry no authentication of their own -- TLS, where it is in force,
 protects them in transit, but that is transport protection, not authentication. Data-plane routes such as a public `/health` proxy are ordinary
 routes and need an explicit `auth: { require: none }`.

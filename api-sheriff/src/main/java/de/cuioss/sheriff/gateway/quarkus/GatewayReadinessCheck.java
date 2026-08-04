@@ -16,12 +16,14 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.tools.logging.CuiLogger;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.CreationException;
@@ -45,7 +47,9 @@ import org.eclipse.microprofile.health.Readiness;
  *   <li><strong>JWKS</strong> — when a {@code token_validation} block is configured, the gateway's
  *       own {@link GatewayValidator}-qualified {@link TokenValidator} resolves successfully. Building
  *       that validator requires every configured issuer to declare a usable JWKS source, so a
- *       resolution failure ({@link GatewayException}) marks the probe {@code DOWN} with the cause.
+ *       resolution failure ({@link GatewayException}) marks the probe {@code DOWN} — reporting a
+ *       fixed status token, never the cause, which is logged instead (see
+ *       {@link #ERROR_VALIDATION_UNAVAILABLE}).
  *       A gateway with no {@code token_validation} block needs no bearer validation, so JWKS is
  *       reported {@code not-applicable} and does not gate readiness.</li>
  *   <li><strong>Issuer reachability (mode: server)</strong> — when the gateway runs a BFF
@@ -70,6 +74,8 @@ import org.eclipse.microprofile.health.Readiness;
 @ApplicationScoped
 public class GatewayReadinessCheck implements HealthCheck {
 
+    private static final CuiLogger LOGGER = new CuiLogger(GatewayReadinessCheck.class);
+
     private static final String CHECK_NAME = "gateway-readiness";
     private static final String DATA_CONFIG = "config";
     private static final String DATA_CONFIG_VERSION = "config_version";
@@ -84,6 +90,18 @@ public class GatewayReadinessCheck implements HealthCheck {
     private static final String ISSUER_REACHABLE = "reachable";
     private static final String ISSUER_UNREACHABLE = "unreachable";
     private static final String ISSUER_UNVERIFIED = "unverified";
+
+    /**
+     * The fixed, non-disclosing value of the {@code error} datum on a DOWN response.
+     * <p>
+     * The probe previously wrote the raw exception message here. That message can carry issuer URLs,
+     * internal hostnames, TLS/trust detail and filesystem paths, and this payload is served on the
+     * management interface — which has exactly one port and may legitimately be plain HTTP (ADR-0025),
+     * so it must be treated as reachable by anything that can reach that port. Readiness owes the
+     * caller a <em>state</em>, not a cause (ADR-0027): the datum is now a bounded constant, and the
+     * cause reaches the operator through {@code WARN ApiSheriff-116} instead.
+     */
+    private static final String ERROR_VALIDATION_UNAVAILABLE = "validation-unavailable";
 
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> gatewayValidator;
@@ -103,7 +121,8 @@ public class GatewayReadinessCheck implements HealthCheck {
      * {@inheritDoc}
      *
      * @return {@code UP} when the configuration is bound and — if bearer validation is configured —
-     *         the JWKS-backed validator resolves; {@code DOWN} carrying the failure cause otherwise
+     *         the JWKS-backed validator resolves; {@code DOWN} carrying a fixed, non-disclosing status
+     *         token otherwise (the failure cause is logged, never returned)
      */
     @Override
     public HealthCheckResponse call() {
@@ -142,8 +161,11 @@ public class GatewayReadinessCheck implements HealthCheck {
             }
             return builder.up().build();
         } catch (GatewayException | CreationException failure) {
+            // The operator gets the cause through the log; the wire gets a fixed token. See
+            // ERROR_VALIDATION_UNAVAILABLE for why the raw message must not travel on this payload.
+            LOGGER.warn(failure, ConfigLogMessages.WARN.READINESS_VALIDATION_UNAVAILABLE);
             builder.withData(DATA_JWKS, "unavailable")
-                    .withData(DATA_ERROR, String.valueOf(failure.getMessage()));
+                    .withData(DATA_ERROR, ERROR_VALIDATION_UNAVAILABLE);
             if (serverMode) {
                 builder.withData(DATA_ISSUER_REACHABILITY, ISSUER_UNREACHABLE);
             }

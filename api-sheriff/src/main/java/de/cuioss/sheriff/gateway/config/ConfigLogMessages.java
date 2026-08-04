@@ -116,6 +116,26 @@ public final class ConfigLogMessages {
                 .identifier(115)
                 .template("Management interface is serving PLAIN HTTP on port %s — health and metrics are unencrypted and every HTTPS consumer of that port will fail. Expose it only behind a trusted boundary; restore the HTTPS default by setting management.tls.enabled back to true in gateway.yaml, or by removing a QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME override supplied by the deployment")
                 .build();
+
+        /**
+         * The readiness probe could not resolve the gateway's bearer-token validator, so it reports
+         * {@code jwks: unavailable} and marks readiness DOWN.
+         * <p>
+         * This log line is the <em>only</em> place the cause is disclosed. The readiness payload is
+         * served on the management interface, which has exactly one port and may legitimately be plain
+         * HTTP (ADR-0025), so the wire response carries a fixed status token and nothing else — the
+         * underlying failure can name issuer URLs, internal hostnames, TLS/trust material and
+         * filesystem paths. The operator keeps the full diagnostic here, where it belongs; the probe
+         * response discloses no part of it.
+         * <p>
+         * The template takes no parameters by design: the cause travels as the logged exception, so
+         * there is no formatted fragment that could drift into carrying the detail itself.
+         */
+        public static final LogRecord READINESS_VALIDATION_UNAVAILABLE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(116)
+                .template("Readiness probe reports validation unavailable — the gateway bearer-token validator could not be resolved. The readiness payload discloses only a fixed status token; the cause is logged here")
+                .build();
     }
 
     /**

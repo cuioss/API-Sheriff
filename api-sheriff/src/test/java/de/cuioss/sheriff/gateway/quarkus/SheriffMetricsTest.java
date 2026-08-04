@@ -16,10 +16,10 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
@@ -235,7 +235,41 @@ class SheriffMetricsTest {
             assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("unavailable", data.get("jwks"));
-            assertTrue(String.valueOf(data.get("error")).contains("no usable jwks source"));
+            // Positive control: the payload reports a FIXED token. It previously echoed the raw
+            // exception message, which is the disclosure this datum was redacted to close.
+            assertEquals("validation-unavailable", data.get("error"));
+        }
+
+        @Test
+        @DisplayName("DOWN payload discloses no fragment of the underlying failure message")
+        void downPayloadNeverEchoesTheFailureCause() {
+            // Arrange — a failure message shaped like the ones this redaction exists to contain: an
+            // internal issuer URL, a private hostname, and a filesystem path to trust material. The
+            // readiness payload is served on the management port, which has exactly one port and may
+            // legitimately be plain HTTP (ADR-0025), so none of this may reach the wire.
+            GatewayConfig config = configWith(null, new TokenValidationConfig(List.of()), null);
+            GatewayException failure = new GatewayException(EventType.CONFIG_INVALID,
+                    "no usable jwks source at https://idp.internal.example.com/realms/main"
+                            + "/protocol/openid-connect/certs using truststore /etc/sheriff/trust/corporate-ca.pem");
+            GatewayReadinessCheck check = new GatewayReadinessCheck(config,
+                    FakeValidatorInstance.failing(failure));
+
+            // Act
+            HealthCheckResponse response = check.call();
+
+            // Assert — negative control over the WHOLE payload, not just the error datum: a future
+            // change that moved the cause onto any other datum would still be a disclosure.
+            assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus());
+            Map<String, Object> data = response.getData().orElseThrow();
+            for (Map.Entry<String, Object> datum : data.entrySet()) {
+                String rendered = String.valueOf(datum.getValue());
+                for (String disclosive : List.of(failure.getMessage(), "idp.internal.example.com",
+                        "openid-connect", "/etc/sheriff/trust", "corporate-ca.pem")) {
+                    assertFalse(rendered.contains(disclosive),
+                            () -> "readiness datum '%s' disclosed '%s' from the failure cause: %s"
+                                    .formatted(datum.getKey(), disclosive, rendered));
+                }
+            }
         }
 
         @Test
