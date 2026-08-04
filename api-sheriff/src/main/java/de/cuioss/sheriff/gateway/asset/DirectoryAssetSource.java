@@ -15,16 +15,30 @@
  */
 package de.cuioss.sheriff.gateway.asset;
 
+import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.channels.Channels;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
+import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.tools.logging.CuiLogger;
 
 /**
  * The local-directory / volume-mount {@link AssetSource} (decision: ADR-0014).
@@ -45,14 +59,36 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
  * Honouring the {@link AssetSource} ordering contract, the backing filesystem is
  * touched only after confinement has produced an in-root target — no byte is read for
  * a rejected path.
+ * <p>
+ * <strong>How the bytes are materialized, and what that does and does not close.</strong>
+ * Proving a path in-root and then re-walking it to open it is a check-then-act window: the
+ * same volume-write capability {@link #realPathWithinRoot} already reasons about can
+ * re-point a component of that path between the check and the open. On a platform whose
+ * default provider yields a {@link SecureDirectoryStream} (POSIX systems with the
+ * {@code *at} syscalls — Linux and macOS in practice), this class closes the window for
+ * <em>every</em> component: it descends from the root one confined name at a time with
+ * {@link LinkOption#NOFOLLOW_LINKS}, and both the stat and the bounded read are issued
+ * against the descriptor that descent produced. No component can be re-pointed after it
+ * was proven, because no component is ever looked up by name from the filesystem root a
+ * second time.
+ * <p>
+ * <strong>Where the window remains open.</strong> When the default provider does
+ * <em>not</em> yield a {@link SecureDirectoryStream}, the source falls back to the
+ * resolved-path form: the stat and the read target the already-resolved real path with
+ * {@link LinkOption#NOFOLLOW_LINKS}. That refuses a swapped <em>final</em> component, but
+ * {@code NOFOLLOW_LINKS} constrains the last path component only — so on such a platform an
+ * <em>ancestor directory</em> of the resolved path can still be replaced by a symlink after
+ * the check and be traversed by the read. The ancestor window is therefore NOT closed on
+ * that platform, and the fallback is announced once per source with
+ * {@link ApiSheriffLogMessages.WARN#ASSET_CONFINED_WALK_UNAVAILABLE} so the residual
+ * exposure is visible in the operator log rather than only in this javadoc.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 public final class DirectoryAssetSource implements AssetSource {
 
-    /** The default served-file size cap (10 MiB). */
-    public static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
+    private static final CuiLogger LOGGER = new CuiLogger(DirectoryAssetSource.class);
 
     private static final int OK = 200;
     private static final int NOT_FOUND = 404;
@@ -61,16 +97,35 @@ public final class DirectoryAssetSource implements AssetSource {
     private static final int SERVER_ERROR = 500;
     private static final byte[] EMPTY_BODY = new byte[0];
 
+    /**
+     * The largest cap this source can enforce on the bytes it actually reads.
+     * <p>
+     * A served body is a {@code byte[]}, and the bounded read asks for {@code maxBytes + 1} so the
+     * length check can see one byte past the cap. Both quantities must therefore be representable as
+     * an {@code int}, which puts the ceiling exactly here. A cap ABOVE this bound is not merely
+     * awkward, it is unenforceable: the read would stop at {@link Integer#MAX_VALUE} while the
+     * post-read check still passed, so a PREFIX of a larger asset would be served as a complete
+     * {@code 200}. That is the failure mode {@code UpstreamAssetSource} refuses through
+     * {@link UpstreamAssetSource.UpstreamFetcher.Fetched#truncated()}; here it is refused at
+     * construction instead, because unlike a fetch-seam mismatch it is decidable before any request.
+     */
+    private static final long MAX_ENFORCEABLE_BYTES = Integer.MAX_VALUE - 1L;
+
+    /** Read-only open, refusing to follow a final component swapped to a symlink. */
+    private static final Set<OpenOption> READ_NOFOLLOW =
+            Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+
     private final Path root;
     private final AccessLevel access;
     private final PathConfinement confinement;
     private final long maxBytes;
     private final Map<String, String> operatorContentTypes;
+    private final Opener opener;
 
     /**
      * Creates a source rooted at {@code root} for a route of the given access level,
-     * using the default {@link PathConfinement} and {@value #DEFAULT_MAX_BYTES}-byte
-     * size cap.
+     * using the default {@link PathConfinement} and the shared
+     * {@link AssetSource#DEFAULT_MAX_BYTES} size cap.
      *
      * @param root                 the configured directory root (mandatory)
      * @param access               the serving route's effective access level (mandatory)
@@ -78,7 +133,7 @@ public final class DirectoryAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured)
      */
     public DirectoryAssetSource(Path root, AccessLevel access, Map<String, String> operatorContentTypes) {
-        this(root, access, new PathConfinement(), DEFAULT_MAX_BYTES, operatorContentTypes);
+        this(root, access, new PathConfinement(), AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes);
     }
 
     /**
@@ -92,15 +147,46 @@ public final class DirectoryAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured). Resolved once at
      *                             boot and read-only thereafter — no per-request lookup
      *                             and no shared mutable state.
+     * @throws IllegalArgumentException when {@code maxBytes} is negative or exceeds
+     *                                  {@link #MAX_ENFORCEABLE_BYTES}
      */
     public DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
             Map<String, String> operatorContentTypes) {
+        this(root, access, confinement, maxBytes, operatorContentTypes, new SecureWalkOpener());
+    }
+
+    /**
+     * Creates a source with an explicit {@link Opener} — the seam that materializes the asset.
+     * <p>
+     * Package-visible for tests: the production {@link SecureWalkOpener} reports a stat and a read
+     * that always agree, which leaves the post-read cap check unreachable. Injecting an opener whose
+     * stat sits at or under the cap while its read yields more bytes is what exercises that check.
+     *
+     * @param root                 the configured directory root (mandatory)
+     * @param access               the serving route's effective access level (mandatory)
+     * @param confinement          the shared path confinement (mandatory)
+     * @param maxBytes             the maximum served-file size in bytes
+     * @param operatorContentTypes the boot-resolved add-only content-type additions (mandatory)
+     * @param opener               the stat-and-read seam (mandatory)
+     * @throws IllegalArgumentException when {@code maxBytes} is negative, or exceeds
+     *                                  {@link #MAX_ENFORCEABLE_BYTES} — a cap this source could not
+     *                                  hold the bytes for, and so could only honour by serving a
+     *                                  prefix as a complete response
+     */
+    DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
+            Map<String, String> operatorContentTypes, Opener opener) {
         this.root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
         this.access = Objects.requireNonNull(access, "access");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
+        if (maxBytes < 0 || maxBytes > MAX_ENFORCEABLE_BYTES) {
+            throw new IllegalArgumentException(
+                    "maxBytes must be between 0 and %d, got %d"
+                            .formatted(MAX_ENFORCEABLE_BYTES, maxBytes));
+        }
         this.maxBytes = maxBytes;
         this.operatorContentTypes = Map.copyOf(
                 Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
+        this.opener = Objects.requireNonNull(opener, "opener");
     }
 
     /**
@@ -127,16 +213,42 @@ public final class DirectoryAssetSource implements AssetSource {
         if (!Files.isRegularFile(file)) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
-        if (!realPathWithinRoot(file)) {
+        Optional<InRoot> inRoot = realPathWithinRoot(file);
+        if (inRoot.isEmpty()) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
-        try {
-            if (Files.size(file) > maxBytes) {
+        return serveConfined(method, file, inRoot.get());
+    }
+
+    /**
+     * Materializes the proven-in-root asset through the {@link Opener} seam and governs the response.
+     * <p>
+     * The size pre-check is deliberately KEPT as a cheap fast-reject — it refuses a known-oversized
+     * file without reading a single byte — while the length check on the bytes actually READ is the
+     * authoritative guard. That pairing is what survives a file which GROWS between the stat and the
+     * read: an unbounded read would materialize it in full, bounding the read to {@code maxBytes + 1}
+     * makes the in-memory ceiling hold regardless. It gives the directory source the same mid-flight
+     * guarantee {@code UpstreamAssetSource.CappedByteArrayBodySubscriber} gives the upstream source,
+     * so neither asset path can be outrun into an unbounded buffer.
+     *
+     * @param method the request verb, already narrowed to {@code GET} or {@code HEAD}
+     * @param file   the confined request target, used for the content-type resolution only
+     * @param inRoot the real root and the proven-in-root path relative to it
+     * @return the governed response — {@code 413} when either the stat or the bytes read exceed the
+     *         cap, {@code 500} when the asset cannot be materialized (including an ancestor or final
+     *         component re-pointed to a symlink after the confinement check), otherwise {@code 200}
+     */
+    private Served serveConfined(HttpMethod method, Path file, InRoot inRoot) {
+        try (ConfinedAsset asset = opener.open(inRoot.realRoot(), inRoot.relative())) {
+            if (asset.size() > maxBytes) {
+                return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
+            }
+            byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : asset.read(readLimit());
+            if (body.length > maxBytes) {
                 return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
             }
             Map<String, String> headers = AssetResponseEnvelope.governedHeaders(
                     file.getFileName().toString(), access, Map.of(), operatorContentTypes);
-            byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : Files.readAllBytes(file);
             return new Served(OK, headers, body);
         } catch (IOException _) {
             return new Served(SERVER_ERROR, Map.of(), EMPTY_BODY);
@@ -144,8 +256,22 @@ public final class DirectoryAssetSource implements AssetSource {
     }
 
     /**
-     * Verifies the confined {@code file}'s symlink-resolved real path still lies inside the
-     * configured root's real path.
+     * @return the number of bytes to read — one past the cap, so the caller's length check can
+     *         detect a breach without ever materializing an oversized file. The narrowing is exact
+     *         rather than clamped: {@link #MAX_ENFORCEABLE_BYTES} is enforced at construction, so
+     *         {@code maxBytes + 1} is representable by definition here. A clamp in this position
+     *         would be worse than the overflow it prevented — it would silently read LESS than the
+     *         cap the caller asked for, and the post-read length check would then pass a prefix of
+     *         a larger asset off as the whole of it.
+     */
+    private int readLimit() {
+        return (int) maxBytes + 1;
+    }
+
+    /**
+     * Resolves the confined {@code file} to its real path and reports it — as a root-relative
+     * path, ready to be walked down from the root — only when it still lies inside the configured
+     * root's real path.
      * <p>
      * {@link PathConfinement} closes the encoding/traversal class <em>lexically</em>: it proves
      * the requested path's normalized string starts with the root's normalized string. A symlink
@@ -156,12 +282,275 @@ public final class DirectoryAssetSource implements AssetSource {
      * {@link Path#toRealPath(java.nio.file.LinkOption...)} (default: follow symlinks) and
      * comparing the real paths closes that spelling too. Fails closed: any I/O failure resolving
      * either real path (a TOCTOU removal, an unresolvable symlink cycle) is treated as an escape.
+     * <p>
+     * The result is expressed RELATIVE to the real root rather than as an absolute path, because
+     * that is the form the descent in {@link SecureWalkOpener} consumes: the real path is by
+     * construction free of symlinks, so re-walking it name by name with
+     * {@link LinkOption#NOFOLLOW_LINKS} reaches the same file and refuses any component that was
+     * re-pointed in the meantime. An in-root symlinked asset therefore still serves — it is
+     * resolved here first — while a post-check swap of any component is refused.
+     *
+     * @param file the confined, lexically in-root request target
+     * @return the real root paired with the resolved path relative to it, or
+     *         {@link Optional#empty()} when the target resolves outside the root or cannot be
+     *         resolved at all
      */
-    private boolean realPathWithinRoot(Path file) {
+    private Optional<InRoot> realPathWithinRoot(Path file) {
         try {
-            return file.toRealPath().startsWith(root.toRealPath());
+            Path realRoot = root.toRealPath();
+            Path real = file.toRealPath();
+            if (!real.startsWith(realRoot)) {
+                return Optional.empty();
+            }
+            return Optional.of(new InRoot(realRoot, realRoot.relativize(real)));
         } catch (IOException _) {
-            return false;
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Reports the size of an asset that is still a regular file, refusing one that is not.
+     * <p>
+     * The {@link Files#isRegularFile} test in {@link #serve} is taken on a path, from the filesystem
+     * root, before the descent even begins — so it says what the entry <em>was</em>, not what the
+     * read is about to open. That gap matters beyond symlinks: {@link LinkOption#NOFOLLOW_LINKS}
+     * refuses a component swapped to a <em>symlink</em>, but it accepts a FIFO, and opening a FIFO
+     * for reading blocks until a writer appears. On a writable asset volume — the same capability
+     * {@link #realPathWithinRoot} already reasons about — that turns a served asset into a stalled
+     * request thread.
+     * <p>
+     * Re-testing the type here, on the descriptor the read itself will use and immediately before it,
+     * NARROWS that window to the interval between this stat and the open. It does not CLOSE it:
+     * closing it needs a non-blocking open, and the JDK's NIO surface exposes no {@code O_NONBLOCK}
+     * for {@link SecureDirectoryStream#newByteChannel}. The residual is therefore a deployment-posture
+     * matter — an immutable or trusted-writer asset mount removes it entirely — and is stated here
+     * rather than left implied by the presence of a check.
+     *
+     * @param attributes the attributes read without following a symlink
+     * @return the asset's size in bytes
+     * @throws IOException when the entry is not a regular file, so no byte of it may be served
+     */
+    private static long regularFileSize(BasicFileAttributes attributes) throws IOException {
+        if (!attributes.isRegularFile()) {
+            throw new IOException("the confined entry is not a regular file");
+        }
+        return attributes.size();
+    }
+
+    /**
+     * A proven-in-root asset location, split into the two halves the descent needs.
+     *
+     * @param realRoot the configured root resolved through its own symlink chain
+     * @param relative the asset's resolved real path, expressed relative to {@code realRoot}
+     */
+    private record InRoot(Path realRoot, Path relative) {
+    }
+
+    /**
+     * The stat-and-read seam: ONE handle on an asset, from which both the size and the bounded
+     * read are taken.
+     * <p>
+     * Keeping the pair on a single handle is what lets the production implementation bind both
+     * operations to the same descriptor, and what lets a test drive them apart — a stat within the
+     * cap against a read that yields more bytes is the shape that reaches the post-read refusal.
+     */
+    interface ConfinedAsset extends Closeable {
+
+        /**
+         * @return the asset's size in bytes, without following a symlink
+         * @throws IOException when the asset cannot be stat-ed, or is no longer a regular file — a
+         *                     type the read must refuse rather than open, since a FIFO put in an
+         *                     asset's place would block the reading thread instead of yielding bytes
+         */
+        long size() throws IOException;
+
+        /**
+         * @param limit the maximum number of bytes to read
+         * @return at most {@code limit} bytes of the asset
+         * @throws IOException when the asset cannot be read, or a component was re-pointed to a
+         *                     symlink after the confinement check
+         */
+        byte[] read(int limit) throws IOException;
+
+        @Override
+        void close() throws IOException;
+    }
+
+    /**
+     * Opens a {@link ConfinedAsset} on an asset already proven to lie inside the root.
+     */
+    @FunctionalInterface
+    interface Opener {
+
+        /**
+         * @param realRoot the configured root, resolved through its own symlink chain
+         * @param relative the asset's resolved real path relative to {@code realRoot}
+         * @return an open handle on the asset; the caller closes it
+         * @throws IOException when the asset cannot be opened
+         */
+        ConfinedAsset open(Path realRoot, Path relative) throws IOException;
+    }
+
+    /**
+     * The production opener: descends from the root one confined name at a time, so no path
+     * component can be re-pointed between the confinement check and the read.
+     * <p>
+     * Falls back to the resolved-path form — which leaves the ancestor window open, see the class
+     * javadoc — on a platform whose default provider yields no {@link SecureDirectoryStream}. The
+     * fallback is warned once per instance rather than once per request: it is a fixed property of
+     * the platform, so repeating it per served asset would flood the operator log without adding
+     * information.
+     */
+    static final class SecureWalkOpener implements Opener {
+
+        private final AtomicBoolean fallbackWarned = new AtomicBoolean();
+
+        @Override
+        public ConfinedAsset open(Path realRoot, Path relative) throws IOException {
+            DirectoryStream<Path> top = Files.newDirectoryStream(realRoot);
+            if (top instanceof SecureDirectoryStream<Path> secure) {
+                return descend(secure, relative);
+            }
+            top.close();
+            if (fallbackWarned.compareAndSet(false, true)) {
+                LOGGER.warn(ApiSheriffLogMessages.WARN.ASSET_CONFINED_WALK_UNAVAILABLE, realRoot);
+            }
+            return new ResolvedPathAsset(realRoot.resolve(relative));
+        }
+
+        /**
+         * Walks {@code relative}'s directory components down from {@code top}, refusing to follow a
+         * symlink at any of them, and hands the final directory's descriptor to the returned handle.
+         * <p>
+         * The descent owns exactly ONE stream at a time — the one {@code dir} names — and the
+         * {@code finally} closes it on every path that does not hand it off. The child is adopted
+         * into {@code dir} <em>before</em> its parent is closed, so a failing parent close cannot
+         * strand the descriptor it just produced; ownership passes to the returned handle only once
+         * that handle exists. Descending still opens each child from its parent's descriptor and
+         * closes the parent immediately afterwards, so the confinement the walk exists to provide is
+         * unchanged: no component is ever looked up by name from the filesystem root a second time.
+         * <p>
+         * The clean-up close is the one close that must not speak: an exception thrown from a
+         * {@code finally} SUPERSEDES the one already in flight, so a failing descriptor close would
+         * replace the refusal a re-pointed component produced with an unrelated I/O failure. The
+         * reason the descent ended is the diagnostically valuable half, so the clean-up close is
+         * demoted to a debug line and the walk failure is the exception that propagates. The
+         * in-loop {@code parent.close()} is deliberately NOT demoted — there it is not clean-up
+         * after a failure but part of the descent itself, and a parent that cannot be closed would
+         * leak a descriptor per request if the walk carried on regardless.
+         *
+         * @param top      an open, secure stream on the real root
+         * @param relative the asset path relative to the real root
+         * @return a handle bound to the descriptor of the directory holding the asset
+         * @throws IOException when a component does not exist or was re-pointed to a symlink
+         */
+        private static ConfinedAsset descend(SecureDirectoryStream<Path> top, Path relative) throws IOException {
+            SecureDirectoryStream<Path> dir = top;
+            boolean owned = true;
+            try {
+                for (int i = 0; i < relative.getNameCount() - 1; i++) {
+                    SecureDirectoryStream<Path> parent = dir;
+                    dir = parent.newDirectoryStream(relative.getName(i), LinkOption.NOFOLLOW_LINKS);
+                    parent.close();
+                }
+                ConfinedAsset asset = new DescriptorAsset(dir, relative.getFileName());
+                owned = false;
+                return asset;
+            } finally {
+                if (owned) {
+                    closeQuietly(dir);
+                }
+            }
+        }
+
+        /**
+         * Closes an abandoned descent descriptor without letting its own failure replace the reason
+         * the descent ended.
+         *
+         * @param dir the descriptor to release
+         */
+        private static void closeQuietly(SecureDirectoryStream<Path> dir) {
+            try {
+                dir.close();
+            } catch (IOException closeFailure) {
+                LOGGER.debug(closeFailure, "closing an abandoned descent descriptor failed");
+            }
+        }
+    }
+
+    /**
+     * A handle bound to the descriptor of the directory holding the asset: the stat and the read
+     * both name the asset relative to that descriptor, never from the filesystem root, so neither
+     * can traverse a component swapped after the confinement check.
+     */
+    private static final class DescriptorAsset implements ConfinedAsset {
+
+        private final SecureDirectoryStream<Path> dir;
+        private final Path name;
+
+        DescriptorAsset(SecureDirectoryStream<Path> dir, Path name) {
+            this.dir = dir;
+            this.name = name;
+        }
+
+        @Override
+        public long size() throws IOException {
+            return regularFileSize(dir
+                    .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+                    .readAttributes());
+        }
+
+        @Override
+        public byte[] read(int limit) throws IOException {
+            try (InputStream in = Channels.newInputStream(dir.newByteChannel(name, READ_NOFOLLOW))) {
+                return in.readNBytes(limit);
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            dir.close();
+        }
+    }
+
+    /**
+     * The platform fallback: stat and read the already-resolved real path with
+     * {@link LinkOption#NOFOLLOW_LINKS}.
+     * <p>
+     * This refuses a <em>final</em> component swapped to a symlink after resolution — the open
+     * fails with an {@link IOException}, which the caller renders as a {@code 500}, rather than
+     * silently reading out of root. It does NOT refuse a swapped <em>ancestor</em> directory:
+     * {@code NOFOLLOW_LINKS} constrains the last component only. Used only where the platform
+     * offers no {@link SecureDirectoryStream}; the residual exposure is warned and documented
+     * rather than papered over.
+     */
+    static final class ResolvedPathAsset implements ConfinedAsset {
+
+        private final Path file;
+
+        /**
+         * @param file the asset's resolved, proven-in-root real path
+         */
+        ResolvedPathAsset(Path file) {
+            this.file = file;
+        }
+
+        @Override
+        public long size() throws IOException {
+            return regularFileSize(
+                    Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS));
+        }
+
+        @Override
+        public byte[] read(int limit) throws IOException {
+            try (InputStream in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+                return in.readNBytes(limit);
+            }
+        }
+
+        @Override
+        public void close() {
+            // The resolved-path form holds nothing open between calls.
         }
     }
 }

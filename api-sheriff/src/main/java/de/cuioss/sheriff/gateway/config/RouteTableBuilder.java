@@ -77,6 +77,29 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// java:S6539 (a class should not depend on too many other classes) is suppressed here rather than
+// fixed, and the reasoning is recorded at the site because the rule is fighting the design.
+//
+// What the dependencies ARE matters more than how many. Nearly all of them are DATA records from the
+// single config.model package, not behavioural collaborators: this class is the ONE assembly point
+// that maps the whole configuration record model onto ResolvedRoute, so naming every record type is
+// precisely its job. The metric counts breadth of a mapping surface as if it were entanglement.
+//
+// Extraction was considered and rejected on the terms the ADRs set, not for convenience:
+//   - ADR-0007 centralises the gateway-defaults -> anchor -> endpoint -> route inheritance chains
+//     HERE, once, so the request pipeline never re-implements them and never consults an anchor.
+//     Splitting the resolve* cascade into a second class would fragment exactly that single place,
+//     while the orchestration in resolveRoute still has to name the same types to feed the builder —
+//     so the aggregate coupling would not drop, it would only be spread across two files plus a new
+//     carrier type.
+//   - normalizePrefix, effectiveAccessLevel and globalProfile are documented SHARED SEAMS that
+//     ConfigValidator resolves through (ADR-0009 single-reporter), so relocating them would break the
+//     single-implementation property their own javadoc asserts and let the boot refusal and the
+//     runtime governance drift apart.
+//
+// If this class ever grows real behavioural collaborators (as opposed to more model records), that is
+// the signal to revisit the split — the suppression covers the mapping breadth, not unbounded growth.
+@SuppressWarnings("java:S6539")
 public final class RouteTableBuilder {
 
     private static final CuiLogger LOGGER = new CuiLogger(RouteTableBuilder.class);

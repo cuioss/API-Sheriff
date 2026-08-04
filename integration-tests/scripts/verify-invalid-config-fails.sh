@@ -4,7 +4,7 @@
 #
 # ConfigProducer validates the mounted gateway configuration at boot
 # (StartupEvent). On any violation it logs structured ERROR records and throws, so
-# Quarkus exits non-zero. This script exercises six independent invalid
+# Quarkus exits non-zero. This script exercises seven independent invalid
 # configurations and asserts a fail-fast non-zero exit for each:
 #   1. a schema-invalid gateway.yaml (non-integer version + an unknown top-level key,
 #      both rejected by the D2 schema);
@@ -17,11 +17,19 @@
 #   5. profile 'minimal' on an effectively-authenticated route, refused by the fail-closed
 #      ADR-0024 ConfigValidator rule on the effective-access-level dimension;
 #   6. profile 'minimal' on a type: bff route, refused by the same rule on the anchor-type
-#      dimension.
+#      dimension;
+#   7. an unresolvable JWKS source (token_validation issuer whose 'source: file' names a
+#      path that does not exist), which aborts boot from the ADR-0027 eager-assembly seam.
 #
 # Cases 4-6 split the two ADR-0024 gates deliberately: the schema owns the profile
 # value range (case 4) and ConfigValidator owns the posture refusal (cases 5-6), so a
 # regression in either gate fails a distinct case rather than being masked by the other.
+#
+# Case 7 is the only case that also carries a NEGATIVE leg (it publishes the management
+# port and proves nothing ever answered on it). Cases 1-6 are refused by ConfigProducer
+# before any bean that could open a port is created, whereas case 7 is refused later, from
+# a StartupEvent observer — so it is the case where "exited non-zero" alone would not rule
+# out a port having been served first. See assert_fails_to_boot's $4 parameter.
 
 set -euo pipefail
 
@@ -32,6 +40,15 @@ IMAGE="api-sheriff:distroless"
 CONTAINER_NAME="api-sheriff-invalid-config-check"
 BOOT_TIMEOUT_SECONDS=60
 CONFIG_DIRS=()
+
+# The container-side management port, matching MANAGEMENT_CONTAINER_PORT in
+# start-integration-container.sh's probe-target discovery.
+MANAGEMENT_CONTAINER_PORT=9000
+# Host port for case 7's negative leg. Deliberately outside the 19000-19005 block
+# docker-compose.yml publishes for the six gateway instances, so this script can run
+# against a live integration stack without colliding with it. A collision surfaces as
+# docker's own "port is already allocated" failure under `set -e`, which is loud enough.
+MGMT_PROBE_PORT=19009
 
 cleanup() {
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -51,28 +68,89 @@ fi
 
 # Boots the api-sheriff container against the mounted config dir and asserts it
 # exits non-zero (fail-fast). $1 = config dir, $2 = human label, $3 = an extra
-# grep marker expected in the fail-fast logs.
+# grep marker expected in the fail-fast logs. $4 = an OPTIONAL host port to publish
+# against the container's management port; supplying it adds the negative leg — the
+# wait becomes an observing one and the case additionally proves that no management
+# interface ever answered (see the assertions at the end of this function).
 assert_fails_to_boot() {
     local config_dir="$1"
     local label="$2"
     local marker="$3"
+    local mgmt_probe_port="${4:-}"
 
     echo "🚦 Starting '${CONTAINER_NAME}' with ${label}..."
     docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-    docker run -d --name "${CONTAINER_NAME}" \
-        -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
-        -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt \
-        -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key \
-        -v "${PROJECT_DIR}/src/main/docker/certificates:/app/certificates:ro" \
-        -v "${config_dir}:/app/sheriff-config:ro" \
-        "${IMAGE}" >/dev/null
+    # Assembled as an array so the optional port mapping can be appended without a second
+    # docker run invocation. The array is never empty, so expanding it does not trip the
+    # `set -u` empty-array behaviour of the bash 3.2 that ships on macOS.
+    local run_args=(
+        -d --name "${CONTAINER_NAME}"
+        -e SHERIFF_CONFIG_DIR=/app/sheriff-config
+        -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+        -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+        -v "${PROJECT_DIR}/src/main/docker/certificates:/app/certificates:ro"
+        -v "${config_dir}:/app/sheriff-config:ro"
+    )
+    if [[ -n "${mgmt_probe_port}" ]]; then
+        # Bound to the LOOPBACK interface, not to every host interface. This leg exists precisely
+        # for the case where the container DOES serve an unauthenticated management interface it
+        # should never have opened — publishing that on 0.0.0.0 would make the regression this
+        # assertion is hunting reachable from off-host for the whole boot window, on whatever CI or
+        # developer machine happens to run the suite. The probe below targets localhost, so the
+        # narrower bind costs the assertion nothing.
+        run_args+=(-p "127.0.0.1:${mgmt_probe_port}:${MANAGEMENT_CONTAINER_PORT}")
+    fi
+    run_args+=("${IMAGE}")
+    docker run "${run_args[@]}" >/dev/null
 
-    echo "⏳ Waiting up to ${BOOT_TIMEOUT_SECONDS}s for the container to exit..."
-    set +e
-    local exit_code
-    exit_code="$(timeout "${BOOT_TIMEOUT_SECONDS}" docker wait "${CONTAINER_NAME}")"
-    local wait_status=$?
-    set -e
+    local exit_code=""
+    local wait_status=0
+    local served_by=""
+
+    if [[ -z "${mgmt_probe_port}" ]]; then
+        echo "⏳ Waiting up to ${BOOT_TIMEOUT_SECONDS}s for the container to exit..."
+        set +e
+        exit_code="$(timeout "${BOOT_TIMEOUT_SECONDS}" docker wait "${CONTAINER_NAME}")"
+        wait_status=$?
+        set -e
+    else
+        echo "⏳ Waiting up to ${BOOT_TIMEOUT_SECONDS}s for the container to exit, probing"
+        echo "   published management port ${mgmt_probe_port} for the whole window..."
+        local deadline=$(($(date +%s) + BOOT_TIMEOUT_SECONDS))
+        local scheme code probe_opts running
+        while true; do
+            for scheme in http https; do
+                probe_opts=(-s -o /dev/null -w '%{http_code}' --connect-timeout 1 --max-time 2)
+                # -k on the https probe only: a TLS management interface presents the same
+                # self-signed localhost bundle the compose instances serve, and certificate
+                # validation failing there would mask a port that DID answer. Both schemes
+                # are probed because which one the management interface speaks is a
+                # configuration outcome, and this leg must not depend on predicting it.
+                if [[ "${scheme}" == "https" ]]; then
+                    probe_opts+=(-k)
+                fi
+                # Any HTTP status at all — including 503 — means the interface ANSWERED,
+                # which is the partial-config serving this leg exists to catch. '000' is
+                # curl's no-response code and is what a refused or reset connection yields.
+                code="$(curl "${probe_opts[@]}" \
+                    "${scheme}://localhost:${mgmt_probe_port}/q/health/ready" || true)"
+                if [[ -n "${code}" && "${code}" != "000" ]]; then
+                    served_by="${scheme} (HTTP ${code})"
+                fi
+            done
+
+            running="$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null || echo unknown)"
+            if [[ "${running}" == "false" ]]; then
+                exit_code="$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER_NAME}")"
+                break
+            fi
+            if (($(date +%s) >= deadline)); then
+                wait_status=1
+                break
+            fi
+            sleep 1
+        done
+    fi
 
     if [[ ${wait_status} -ne 0 ]]; then
         echo "❌ docker wait timed out — the container failed to exit and may be"
@@ -95,6 +173,31 @@ assert_fails_to_boot() {
     if [[ "${exit_code}" == "0" ]]; then
         echo "❌ Expected a non-zero exit for ${label}, but the container exited 0."
         exit 1
+    fi
+
+    if [[ -n "${mgmt_probe_port}" ]]; then
+        # Negative leg. The assertions above are the POSITIVE leg and prove only that the
+        # container ended up exiting non-zero with the expected marker. A regression that
+        # opened the ports first and failed afterwards would satisfy both and let the case
+        # pass green while a partial-config management port had in fact been served. Two
+        # co-assertions close that from both sides:
+        #   (a) the log line below is emitted the instant the management listener binds, so
+        #       its absence is a race-free proof that no listener was ever opened;
+        #   (b) the live probe above sampled the published port across the whole boot window,
+        #       so it is the direct "nothing answered on the wire" observation.
+        # (a) is the load-bearing one — (b) samples, and a serving window shorter than its
+        # cadence could slip past it, which is exactly why it is not asserted alone.
+        if grep -Fq -- "Management interface listening on" <<<"${logs}"; then
+            echo "❌ A management listener was announced for ${label} — the container served"
+            echo "   on partially-applied configuration before exiting."
+            exit 1
+        fi
+        if [[ -n "${served_by}" ]]; then
+            echo "❌ Management port ${mgmt_probe_port} answered over ${served_by} for ${label} —"
+            echo "   a readiness endpoint served a partial-config response."
+            exit 1
+        fi
+        echo "✅ No management listener was announced and port ${mgmt_probe_port} never answered."
     fi
 
     echo "✅ ${label} correctly caused a fail-fast non-zero exit (${exit_code})."
@@ -306,5 +409,67 @@ chmod 755 "${MINIMAL_BFF_DIR}" "${MINIMAL_BFF_DIR}/endpoints"
 chmod 644 "${MINIMAL_BFF_DIR}/gateway.yaml" "${MINIMAL_BFF_DIR}/topology.properties" \
     "${MINIMAL_BFF_DIR}/endpoints/shell.yaml"
 assert_fails_to_boot "${MINIMAL_BFF_DIR}" "profile 'minimal' on a type: bff route" "is type 'bff'"
+
+# Case 7: an unresolvable JWKS source — a token_validation issuer whose 'source: file' names a
+# path that is not present in the mounted config. This is the boot-time constructibility contract
+# ADR-0027 describes and TokenValidatorProducer.onStartup forces into existence: the producer
+# invokes a method on the @ApplicationScoped validator proxy at StartupEvent, which runs the full
+# assembly path and throws here, so a gateway that cannot build a validator refuses to run at all
+# rather than deferring the failure to the first bearer request.
+#
+# This case, uniquely, passes MGMT_PROBE_PORT to get the negative leg. The reason is the seam it
+# exercises: cases 1-6 are refused by ConfigProducer while the route table is being produced —
+# before any bean that could open a port exists — whereas this one is refused from a StartupEvent
+# OBSERVER, which is late enough that "did a port open first?" is a real question rather than a
+# structurally impossible one. Asserting only the non-zero exit would leave that question
+# unanswered, and a future change that moved JWKS assembly behind the listener bind would keep the
+# case green while shipping exactly the partial-config serving it exists to forbid.
+#
+# The config is otherwise complete and valid — anchor, endpoint, topology — so the unresolvable
+# JWKS is the ONLY violation and the case cannot pass on an unrelated refusal.
+JWKS_UNRESOLVABLE_DIR="$(mktemp -d)"
+CONFIG_DIRS+=("${JWKS_UNRESOLVABLE_DIR}")
+mkdir -p "${JWKS_UNRESOLVABLE_DIR}/endpoints"
+cat > "${JWKS_UNRESOLVABLE_DIR}/gateway.yaml" <<'YAML'
+version: 1
+metadata:
+  config_version: "jwks-unresolvable"
+anchors:
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/sheriff-config/absent-jwks.json
+YAML
+cat > "${JWKS_UNRESOLVABLE_DIR}/topology.properties" <<'PROPS'
+SECURE_UPSTREAM=http://go-httpbin:8080/anything
+PROPS
+cat > "${JWKS_UNRESOLVABLE_DIR}/endpoints/secure.yaml" <<'YAML'
+endpoint:
+  id: secure
+  base_url: SECURE_UPSTREAM
+  anchor: secure
+  routes:
+    - id: secure-echo
+      match:
+        path_prefix: /secure/echo
+YAML
+chmod 755 "${JWKS_UNRESOLVABLE_DIR}" "${JWKS_UNRESOLVABLE_DIR}/endpoints"
+chmod 644 "${JWKS_UNRESOLVABLE_DIR}/gateway.yaml" "${JWKS_UNRESOLVABLE_DIR}/topology.properties" \
+    "${JWKS_UNRESOLVABLE_DIR}/endpoints/secure.yaml"
+# Marker is the fixed sentence token-sheriff's JWKSKeyLoader raises, WITHOUT the path it appends.
+# Keeping the configured path out of the marker holds this case to the same discipline as the
+# others (assert on the fixed diagnostic, never on the rejected scalar) and additionally keeps the
+# assertion independent of the path this fixture happens to choose.
+assert_fails_to_boot "${JWKS_UNRESOLVABLE_DIR}" "an unresolvable JWKS source" \
+    "Cannot read JWKS file" "${MGMT_PROBE_PORT}"
 
 echo "✅ All invalid configurations correctly caused fail-fast non-zero exits."

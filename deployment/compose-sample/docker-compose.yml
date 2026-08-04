@@ -13,6 +13,14 @@
 # arrives through read-only mounts, and every runtime-hardening directive a production deployment
 # should set is set here explicitly rather than left to a default.
 #
+# SCOPE OF THAT CLAIM, stated precisely so it is not read wider than it holds. The SECURITY
+# directives — non-root, cap_drop: ALL, no-new-privileges, read_only with explicitly sized tmpfs, and
+# read-only configuration mounts — are set on ALL THREE services. Resource limits are set on the
+# gateway only, and that asymmetry is deliberate rather than an omission: an unvalidated memory cap
+# on a third-party image is a crash loop in an operator's face rather than a hardening win, and the
+# right ceiling for the IdP follows from the database and realm size a real deployment runs, which
+# this sample cannot know. Set them when you size your own stack — do not copy a number from here.
+#
 # See doc/user/compose-sample.adoc for the operator walkthrough and
 # doc/development/compose-sample.adoc for the rationale behind each decision below.
 
@@ -44,10 +52,18 @@ services:
       - KC_HOSTNAME=localhost
       - KC_HOSTNAME_STRICT=false
     ports:
-      # Published so an operator can reach the admin console and mint a token from the host. The
-      # gateway does NOT use this published port — it reaches Keycloak container-internally as
+      # Published so an operator can reach the admin console and mint a token from the host, and
+      # bound to the LOOPBACK interface for the same reason the gateway's management port below is:
+      # this is the Keycloak ADMIN CONSOLE, reachable with the sample bootstrap credentials three
+      # lines above, on the IdP that mints every token the gateway trusts. Publishing it on 0.0.0.0
+      # would hand full control of the stack's trust root to anything that can reach the host — a
+      # strictly worse exposure than the unauthenticated metrics view that made 9000 loopback-only.
+      # Nothing is lost: doc/user/compose-sample.adoc documents the console as
+      # https://localhost:1443, which still resolves.
+      #
+      # The gateway does NOT use this published port — it reaches Keycloak container-internally as
       # keycloak:8443, which is why the realm below pins that URL as its frontend.
-      - "1443:8443"
+      - "127.0.0.1:1443:8443"
     volumes:
       - ./docker/keycloak:/opt/keycloak/data/import:ro
       - ./docker/certificates:/opt/keycloak/certificates:ro
@@ -148,7 +164,15 @@ services:
       de.cuioss.sheriff.management-scheme: "https"
     ports:
       - "8443:8443"  # Public TLS listener — the only way into the stack
-      - "9000:9000"  # Management interface (health/metrics), HTTPS
+      # Management interface (health/metrics), HTTPS — bound to the LOOPBACK interface rather than to
+      # every host interface. /q/health and /q/metrics carry no authentication by construction, so
+      # publishing them on 0.0.0.0 hands an internal-state view to anything that can reach the host.
+      # Nothing is lost by narrowing it here: the readiness gate (scripts/wait-for-ready.sh) probes
+      # localhost, and the https://localhost:9000/q/health/ready address the user guide documents
+      # still resolves. A deployment that genuinely needs off-host scraping widens this deliberately
+      # and puts a private network or an authenticating proxy in front of it — it does not open the
+      # port to every interface and leave it unauthenticated.
+      - "127.0.0.1:9000:9000"
     environment:
       # This block is the DEPLOYMENT DOOR, and it is deliberately the same door the release smoke
       # test drives in .github/workflows/release.yml. The shipped artifact declares nothing about

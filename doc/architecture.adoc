@@ -702,8 +702,35 @@ initial metrics surface.
 (`/q/health/live`, `/q/health/ready`) on the same management port, and therefore shares whatever
 posture that single port has -- HTTPS by default, plain HTTP if the opt-out above is taken. That
 sharing is the point: health cannot be downgraded separately from metrics, because they are the
-same listener. Readiness reflects the loaded-and-validated configuration and, for the BFF variants,
-the ability to reach the configured issuer at startup. The management port is not exposed publicly,
+same listener. Readiness reflects the loaded-and-validated configuration and the boot-time
+*constructibility* of the bearer-token validator -- not live issuer reachability. The distinction is
+load-bearing: resolving the validator proves every configured issuer declared a usable JWKS source,
+but the JWKS fetch itself is lazy, so an issuer that is configured correctly and unreachable right
+now still reports ready. A deployment with no `token_validation` block has no validator to
+construct. In that case a BFF `mode: server` deployment reports its `issuer_reachability` datum as
+`unverified` rather than asserted, because it reaches its issuer lazily on the first login and that
+does not gate boot readiness; a bearer-only deployment emits no `issuer_reachability` datum at all.
+
+That reading is why the DOWN branch is, in the shipped topology, effectively unreachable rather than
+a routine outcome. `TokenValidatorProducer.onStartup` forces the same eager contextual-instance
+creation the probe's `Instance.get()` performs -- it calls a method on the injected validator proxy
+at `StartupEvent` -- so a validator that cannot be constructed aborts the boot before the management
+listener ever binds; a validator that constructs but whose JWKS is lazily unreachable reports UP.
+The probe is therefore hardened for a *future* relaxation of that eager assembly, not against a live
+exposure.
+
+The hardening itself stands regardless. Readiness reports *state, never cause*, consistent with the
+boot-time-constructibility reading of the `jwks` datum in
+link:adr/0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027].
+Where the bearer-token validator cannot be resolved the probe marks readiness DOWN with
+`jwks: unavailable` and a fixed `error: validation-unavailable` token -- it never places the
+underlying exception message on the payload, which can name issuer URLs, internal hostnames,
+TLS/trust material and filesystem paths. Because the management interface has exactly one port and
+may legitimately be plain HTTP (the opt-out above), that payload must be treated as reachable by
+anything that can reach the port. The full cause reaches the operator through `WARN ApiSheriff-116`
+instead.
+
+The management port is not exposed publicly,
 so health and metrics endpoints carry no authentication of their own -- TLS, where it is in force,
 protects them in transit, but that is transport protection, not authentication. Data-plane routes such as a public `/health` proxy are ordinary
 routes and need an explicit `auth: { require: none }`.

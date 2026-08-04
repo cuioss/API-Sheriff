@@ -333,7 +333,7 @@ class DispatchStageTest {
             ResolvedUpstream upstream = new ResolvedUpstream("https", "cdn.internal", 443, "");
             UpstreamAssetSource.UpstreamFetcher fetcher = _ -> new UpstreamAssetSource.UpstreamFetcher.Fetched(
                     200, Map.of("Content-Type", "text/plain", "Cache-Control", "public"),
-                    "PNGDATA".getBytes(StandardCharsets.UTF_8));
+                    "PNGDATA".getBytes(StandardCharsets.UTF_8), false);
             UpstreamAssetSource source = new UpstreamAssetSource(upstream, AccessLevel.AUTHENTICATED,
                     new PathConfinement(), fetcher, 1024L, Map.of());
 

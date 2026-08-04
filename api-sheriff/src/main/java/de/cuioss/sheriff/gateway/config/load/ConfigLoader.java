@@ -17,8 +17,9 @@ package de.cuioss.sheriff.gateway.config.load;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Reader;
 import java.io.Serializable;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -77,6 +78,20 @@ import org.yaml.snakeyaml.nodes.Node;
  * {@link de.cuioss.sheriff.gateway.config.model} records. Every problem is collected —
  * never fail on the first — and raised together as a {@link ConfigLoadException}.
  * <p>
+ * Every file is read <em>exactly once</em> into a snapshot bounded by
+ * {@link #MAX_CONFIG_FILE_BYTES}; the expansion-bomb pre-pass and the bind both consume that one
+ * snapshot, so no check-then-act window exists between them and no single boot read is unbounded.
+ * The bound is <em>per file</em>, and deliberately so: the loader reads {@code gateway.yaml} plus
+ * every {@code endpoints/*.yaml} entry the directory holds, so the aggregate a boot pulls into
+ * memory is bounded by the cap times the endpoint-file count, not by the cap alone. Capping the
+ * file count would be an operator-visible limit on how many endpoints a deployment may declare, so
+ * it is not imposed here — the configuration directory is a deployment-supplied, read-only mount
+ * (ADR-0032), and an operator able to place ten thousand files in it can already stop the boot by
+ * simpler means.
+ * <p>
+ * Each substituted scalar is typed from the destination type the bundled schema declares at that
+ * value's own JSON pointer, never from the resolved string's shape — see {@link #coerce}.
+ * <p>
  * The endpoint-enablement resolution, topology-alias resolution, cross-cutting
  * semantic validation, and route-table assembly steps of the full boot sequence are
  * layered on by later deliverables; this loader owns steps 1-4 (read,
@@ -104,6 +119,21 @@ public final class ConfigLoader {
     private static final int MAX_YAML_ALIASES = 50;
     private static final int MAX_YAML_STRING_LENGTH = 1024 * 1024;
     /**
+     * Total-byte cap on a single configuration file, enforced while the file is read into the
+     * in-memory snapshot that both the bomb pre-pass and the bind consume. This is the only cap on
+     * the <em>whole document</em>: the nesting and alias caps bound the composed node graph rather
+     * than the input, so neither bounds the bytes a boot pass is willing to pull into memory.
+     * Exceeding it is a collected {@link ConfigError}, never a fail-fast throw.
+     * <p>
+     * It sits deliberately <em>below</em> {@link #MAX_YAML_STRING_LENGTH}, which SnakeYAML applies as
+     * a code-point budget over the whole incoming stream: were the byte cap the larger of the two, the
+     * code-point budget would always trip first and this cap could never fire with its own diagnostic —
+     * an over-sized file would be reported as a bomb rather than as an over-sized file. Since a UTF-8
+     * document never has more code points than bytes, keeping this cap the smaller value makes it the
+     * binding constraint on document size.
+     */
+    private static final int MAX_CONFIG_FILE_BYTES = 512 * 1024;
+    /**
      * Enables the validator's {@code errorMessage} extension, which is OFF unless the keyword is
      * named on the registry configuration. Naming it lets a schema attach an operator-facing sentence
      * to a specific subschema, so a deliberate rejection reports <em>why</em> and <em>where the knob
@@ -113,6 +143,11 @@ public final class ConfigLoader {
      */
     private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
+    /**
+     * Bound on {@code $ref} indirections followed when resolving a destination type. The bundled
+     * schemas nest one level deep; the cap simply stops a malformed or cyclic reference from spinning.
+     */
+    private static final int MAX_SCHEMA_REF_HOPS = 10;
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key");
 
@@ -121,6 +156,8 @@ public final class ConfigLoader {
     private final ObjectMapper mapper;
     private final Schema gatewaySchema;
     private final Schema endpointSchema;
+    private final JsonNode gatewaySchemaTree;
+    private final JsonNode endpointSchemaTree;
 
     /**
      * Creates a loader for the given configuration directory.
@@ -140,6 +177,8 @@ public final class ConfigLoader {
                         .build()));
         this.gatewaySchema = loadSchema(registry, "/schema/gateway.schema.json");
         this.endpointSchema = loadSchema(registry, "/schema/endpoint.schema.json");
+        this.gatewaySchemaTree = loadSchemaTree("/schema/gateway.schema.json");
+        this.endpointSchemaTree = loadSchemaTree("/schema/endpoint.schema.json");
     }
 
     /**
@@ -167,7 +206,7 @@ public final class ConfigLoader {
             return null;
         }
         validateSecretReferences(node, errors);
-        substitute(node, GATEWAY_FILE, "", errors);
+        substitute(node, gatewaySchemaTree, GATEWAY_FILE, "", errors);
         if (hasErrorsFor(GATEWAY_FILE, errors)) {
             return null;
         }
@@ -231,7 +270,7 @@ public final class ConfigLoader {
         if (root == null) {
             return null;
         }
-        substitute(root, file, "", errors);
+        substitute(root, endpointSchemaTree, file, "", errors);
         if (hasErrorsFor(file, errors)) {
             return null;
         }
@@ -267,16 +306,50 @@ public final class ConfigLoader {
         }
     }
 
+    /**
+     * Reads a configuration file <em>exactly once</em> into a byte-bounded snapshot and drives both
+     * boot passes from it.
+     * <p>
+     * Reading the file a second time for the bind would reopen a check-then-act (TOCTOU) window: the
+     * document the bomb pre-pass cleared would not provably be the document Jackson binds. Both passes
+     * therefore consume the same {@code byte[]}, so the bytes the alias / nesting caps were evaluated
+     * against are exactly the bytes that reach {@link ObjectMapper#readTree(byte[])}.
+     */
     private @Nullable JsonNode readYaml(Path path, String file, List<ConfigError> errors) {
         if (!Files.isRegularFile(path)) {
             errors.add(new ConfigError(file, "", "configuration file not found"));
             return null;
         }
-        if (!withinExpansionLimits(path, file, errors)) {
+        byte[] snapshot = readBoundedSnapshot(path, file, errors);
+        if (snapshot == null || !withinExpansionLimits(snapshot, file, errors)) {
             return null;
         }
-        try (Reader reader = Files.newBufferedReader(path)) {
-            return mapper.readTree(reader);
+        try {
+            return mapper.readTree(snapshot);
+        } catch (IOException e) {
+            errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
+            return null;
+        }
+    }
+
+    /**
+     * Reads at most {@link #MAX_CONFIG_FILE_BYTES} bytes plus one probe byte from {@code path}; the
+     * probe byte is what makes an over-cap file detectable without ever buffering it whole. A file
+     * over the cap is rejected as a collected {@link ConfigError}, upholding the loader's
+     * collect-all-errors contract.
+     *
+     * @return the file's bytes, or {@code null} when the cap tripped or the file could not be read
+     *         (an error was recorded in either failing case)
+     */
+    private static byte @Nullable [] readBoundedSnapshot(Path path, String file, List<ConfigError> errors) {
+        try (InputStream stream = Files.newInputStream(path)) {
+            byte[] snapshot = stream.readNBytes(MAX_CONFIG_FILE_BYTES + 1);
+            if (snapshot.length > MAX_CONFIG_FILE_BYTES) {
+                errors.add(new ConfigError(file, "",
+                        "configuration file exceeds the %d-byte maximum".formatted(MAX_CONFIG_FILE_BYTES)));
+                return null;
+            }
+            return snapshot;
         } catch (IOException e) {
             errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
             return null;
@@ -298,17 +371,20 @@ public final class ConfigLoader {
      * forces the {@code Composer} to run and makes the alias-count and nesting-depth
      * caps actually fire. A tripped limit is reported as a collected {@link ConfigError}
      * so the boot fails with the aggregate rather than throwing fail-fast.
+     * <p>
+     * The pass reads the caller's in-memory {@code snapshot} rather than reopening the file, so it
+     * provably inspects the same bytes the subsequent bind consumes (see {@link #readYaml}).
      *
+     * @param snapshot the file's bytes, decoded as UTF-8 — the same bytes the bind will parse
      * @return {@code true} when the document is within the expansion / nesting limits,
-     *         {@code false} when a limit tripped or the file could not be read (an error
-     *         was recorded in either failing case)
+     *         {@code false} when a limit tripped (an error was recorded)
      */
-    private static boolean withinExpansionLimits(Path path, String file, List<ConfigError> errors) {
+    private static boolean withinExpansionLimits(byte[] snapshot, String file, List<ConfigError> errors) {
         LoaderOptions loaderOptions = new LoaderOptions();
         loaderOptions.setMaxAliasesForCollections(MAX_YAML_ALIASES);
         loaderOptions.setNestingDepthLimit(MAX_YAML_NESTING_DEPTH);
         loaderOptions.setCodePointLimit(MAX_YAML_STRING_LENGTH);
-        try (Reader reader = Files.newBufferedReader(path)) {
+        try (StringReader reader = new StringReader(new String(snapshot, StandardCharsets.UTF_8))) {
             // Advancing the iterator forces the Composer to walk the node graph; the
             // alias-count and nesting-depth caps throw a YAMLException from next() if the
             // document is a bomb. The composed nodes themselves carry no information this
@@ -321,9 +397,6 @@ public final class ConfigLoader {
         } catch (YAMLException e) {
             errors.add(new ConfigError(file, "",
                     "YAML expansion/nesting bomb protection tripped: " + e.getMessage()));
-            return false;
-        } catch (IOException e) {
-            errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
             return false;
         }
     }
@@ -338,62 +411,180 @@ public final class ConfigLoader {
         }
     }
 
-    private void substitute(JsonNode node, String file, String pointer, List<ConfigError> errors) {
+    private void substitute(JsonNode node, JsonNode schemaTree, String file, String pointer,
+            List<ConfigError> errors) {
         if (node instanceof ObjectNode object) {
             List<String> names = new ArrayList<>();
             object.fieldNames().forEachRemaining(names::add);
             for (String name : names) {
-                substituteChild(object.get(name), file, pointer + "/" + name, errors,
+                substituteChild(object.get(name), schemaTree, file, pointer + "/" + name, errors,
                         resolved -> object.set(name, resolved));
             }
         } else if (node instanceof ArrayNode array) {
             for (int index = 0; index < array.size(); index++) {
                 int position = index;
-                substituteChild(array.get(index), file, pointer + "/" + index, errors,
+                substituteChild(array.get(index), schemaTree, file, pointer + "/" + index, errors,
                         resolved -> array.set(position, resolved));
             }
         }
     }
 
-    private void substituteChild(JsonNode child, String file, String pointer, List<ConfigError> errors,
-            Consumer<JsonNode> replacer) {
+    private void substituteChild(JsonNode child, JsonNode schemaTree, String file, String pointer,
+            List<ConfigError> errors, Consumer<JsonNode> replacer) {
         if (child.isTextual() && secretResolver.hasReference(child.asText())) {
             try {
-                replacer.accept(coerce(secretResolver.resolve(child.asText())));
+                replacer.accept(coerce(secretResolver.resolve(child.asText()),
+                        declaredScalarType(schemaTree, pointer)));
             } catch (EnvSecretResolver.MissingVariableException | EnvSecretResolver.MalformedPlaceholderException e) {
                 errors.add(new ConfigError(file, pointer, e.getMessage()));
             }
         } else {
-            substitute(child, file, pointer, errors);
+            substitute(child, schemaTree, file, pointer, errors);
         }
     }
 
     /**
-     * Re-types a substituted scalar so schema validation sees the natural JSON type
-     * the value would have carried if written literally: {@code true}/{@code false}
-     * bind to a boolean, an integer literal to an integer, everything else stays a
-     * string. Only substituted scalars pass through here — a literal (unquoted) value
-     * was already typed by the YAML parser.
+     * Re-types a substituted scalar to the type the bundled schema declares at the value's own JSON
+     * pointer, so a placeholder is typed by its <em>destination</em> rather than by the resolved
+     * string's shape.
+     * <p>
+     * Shape inference alone silently retypes a string-typed field whose {@code ${VAR}} happens to
+     * resolve to {@code true} or {@code 123}: the value would reach the binder as a boolean or an
+     * integer purely because of how it looked, which is a value-dependent change of meaning the
+     * operator never wrote. Consulting the destination type removes that coupling — a schema-declared
+     * string stays a string whatever it resolves to. Where the destination cannot be pinned to one
+     * scalar type ({@code declaredType == null}: no {@code type} keyword, a union such as
+     * {@code ["string","integer"]}, or a pointer the schema does not describe) the historical
+     * shape inference remains, since there the schema genuinely permits more than one scalar type.
+     * <p>
+     * A value that cannot be represented as the declared type is deliberately left as a
+     * {@link TextNode} rather than being coerced or reported here: schema validation runs next and
+     * refuses the type mismatch with a diagnostic naming the expected and actual <em>types</em>, never
+     * the value — which is what keeps a resolved secret out of every collected {@link ConfigError}.
+     * Only substituted scalars pass through here; a literal (unquoted) value was already typed by the
+     * YAML parser.
      */
-    private static JsonNode coerce(String value) {
+    private static JsonNode coerce(String value, @Nullable String declaredType) {
+        return switch (declaredType) {
+            case "string" -> TextNode.valueOf(value);
+            case "boolean" -> coerceBoolean(value);
+            case "integer", "number" -> coerceNumber(value);
+            case null, default -> inferFromShape(value);
+        };
+    }
+
+    private static JsonNode coerceBoolean(String value) {
         if ("true".equalsIgnoreCase(value)) {
             return BooleanNode.TRUE;
         }
         if ("false".equalsIgnoreCase(value)) {
             return BooleanNode.FALSE;
         }
-        if (INTEGER.matcher(value).matches()) {
-            try {
-                long parsed = Long.parseLong(value);
-                if (parsed >= Integer.MIN_VALUE && parsed <= Integer.MAX_VALUE) {
-                    return IntNode.valueOf((int) parsed);
+        return TextNode.valueOf(value);
+    }
+
+    private static JsonNode coerceNumber(String value) {
+        if (!INTEGER.matcher(value).matches()) {
+            return TextNode.valueOf(value);
+        }
+        try {
+            long parsed = Long.parseLong(value);
+            if (parsed >= Integer.MIN_VALUE && parsed <= Integer.MAX_VALUE) {
+                return IntNode.valueOf((int) parsed);
+            }
+            return LongNode.valueOf(parsed);
+        } catch (NumberFormatException _) {
+            return TextNode.valueOf(value);
+        }
+    }
+
+    /**
+     * The legacy shape-guessed typing, retained only for pointers whose destination type the schema
+     * does not pin to a single scalar type.
+     */
+    private static JsonNode inferFromShape(String value) {
+        JsonNode asBoolean = coerceBoolean(value);
+        if (asBoolean.isBoolean()) {
+            return asBoolean;
+        }
+        return coerceNumber(value);
+    }
+
+    /**
+     * Reports the single scalar type the bundled schema declares for the instance location
+     * {@code pointer}, or {@code null} when the schema pins no single scalar type there.
+     * <p>
+     * The walk follows {@code properties}, {@code patternProperties}, {@code additionalProperties},
+     * {@code items}, and local {@code $ref}s, mirroring the structures the bundled schemas actually
+     * use. {@code null} — returned for an undescribed pointer, a union {@code type}, or an absent
+     * {@code type} keyword — is the "cannot pin it" signal that routes the caller to shape inference;
+     * it is never an error, because a pointer the schema does not describe is refused moments later by
+     * the schema validation pass itself.
+     */
+    private static @Nullable String declaredScalarType(JsonNode schemaTree, String pointer) {
+        JsonNode current = deref(schemaTree, schemaTree);
+        for (String token : pointer.split("/")) {
+            if (token.isEmpty()) {
+                continue;
+            }
+            if (current == null) {
+                return null;
+            }
+            current = deref(schemaTree, childSchema(current, token));
+        }
+        if (current == null) {
+            return null;
+        }
+        JsonNode type = current.get("type");
+        return type != null && type.isTextual() ? type.asText() : null;
+    }
+
+    /**
+     * Descends one instance-pointer token into {@code schema}. An array schema consumes the token as
+     * an index; an object schema resolves it as a property name, falling back to a matching
+     * {@code patternProperties} entry and then to a schema-valued {@code additionalProperties}.
+     */
+    private static @Nullable JsonNode childSchema(JsonNode schema, String token) {
+        JsonNode items = schema.get("items");
+        if (items != null) {
+            return items;
+        }
+        JsonNode properties = schema.get("properties");
+        if (properties != null && properties.has(token)) {
+            return properties.get(token);
+        }
+        JsonNode patternProperties = schema.get("patternProperties");
+        if (patternProperties != null) {
+            Iterator<String> patterns = patternProperties.fieldNames();
+            while (patterns.hasNext()) {
+                String pattern = patterns.next();
+                if (Pattern.compile(pattern).matcher(token).find()) {
+                    return patternProperties.get(pattern);
                 }
-                return LongNode.valueOf(parsed);
-            } catch (NumberFormatException _) {
-                return TextNode.valueOf(value);
             }
         }
-        return TextNode.valueOf(value);
+        JsonNode additional = schema.get("additionalProperties");
+        return additional != null && additional.isObject() ? additional : null;
+    }
+
+    /**
+     * Follows local {@code $ref} indirections to the schema they name. Bounded by
+     * {@link #MAX_SCHEMA_REF_HOPS} so a malformed bundled schema cannot spin here; a non-local or
+     * unresolvable reference yields {@code null}, which the caller reads as "type not pinned".
+     */
+    private static @Nullable JsonNode deref(JsonNode schemaTree, @Nullable JsonNode schema) {
+        JsonNode current = schema;
+        for (int hops = 0; current != null && current.has("$ref"); hops++) {
+            JsonNode reference = current.get("$ref");
+            if (hops >= MAX_SCHEMA_REF_HOPS || !reference.isTextual() || !reference.asText().startsWith("#/")) {
+                return null;
+            }
+            current = schemaTree.at(reference.asText().substring(1));
+            if (current.isMissingNode()) {
+                return null;
+            }
+        }
+        return current;
     }
 
     private static void applyEnabledDefault(JsonNode endpointBlock) {
@@ -481,6 +672,25 @@ public final class ConfigLoader {
                 throw new IllegalStateException("Missing bundled schema resource: " + resource);
             }
             return registry.getSchema(stream);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot read bundled schema resource: " + resource, e);
+        }
+    }
+
+    /**
+     * Parses the same bundled schema resource into a plain tree, which
+     * {@link #declaredScalarType(JsonNode, String)} walks to answer "what type does this pointer
+     * declare?". The validator's own {@link Schema} handle exposes no such lookup, so the resource is
+     * read a second time rather than reaching into the validator's internals. Both reads target a
+     * bundled classpath resource, so a plain mapper is the right reader — the hardened YAML factory
+     * guards untrusted operator input, which this is not.
+     */
+    private static JsonNode loadSchemaTree(String resource) {
+        try (InputStream stream = ConfigLoader.class.getResourceAsStream(resource)) {
+            if (stream == null) {
+                throw new IllegalStateException("Missing bundled schema resource: " + resource);
+            }
+            return new ObjectMapper().readTree(stream);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read bundled schema resource: " + resource, e);
         }

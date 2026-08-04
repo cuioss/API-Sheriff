@@ -69,8 +69,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class UpstreamAssetSource implements AssetSource {
 
-    /** The default served-asset size cap (10 MiB). */
-    public static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
     /** The default upstream connect timeout. */
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
     /** The default upstream read timeout. */
@@ -110,17 +108,38 @@ public final class UpstreamAssetSource implements AssetSource {
     public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access,
             Map<String, String> operatorContentTypes) {
         this(upstream, access, new PathConfinement(),
-                httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES,
-                operatorContentTypes);
+                httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, AssetSource.DEFAULT_MAX_BYTES),
+                AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes);
     }
 
     /**
      * Creates a source with an explicit confinement, fetch seam, and size cap.
+     * <p>
+     * <strong>The fetch-cap / serve-cap relation is enforced, not asserted.</strong> The two bounds
+     * are separate parameters — a supplied {@code fetcher} is already built, so this constructor
+     * cannot read the cap inside it — and the mismatch that matters is a fetcher capped BELOW
+     * {@code maxBytes}: it returns a body truncated at its own, lower limit, which is short enough
+     * to pass any length check {@link #serve} could apply. Prose asking the caller to keep the caps
+     * in agreement is not a defence against that, because the failure is silent by construction.
+     * <p>
+     * The seam therefore carries the fact rather than the obligation:
+     * {@link UpstreamFetcher.Fetched#truncated()} reports whether the body is a prefix, and
+     * {@link #serve} answers a truncated fetch with a {@code 413} refusal. A mismatched pair now
+     * degrades to a visible refusal instead of a {@code 200} carrying a partial asset. Note what
+     * this does and does not buy: it makes the truncation unservable, it does NOT make the two caps
+     * agree — a fetcher capped below {@code maxBytes} still refuses assets this source would
+     * otherwise serve.
+     * <p>
+     * The production path keeps the caps aligned anyway: the {@linkplain
+     * #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map) three-argument constructor} passes
+     * {@link AssetSource#DEFAULT_MAX_BYTES} to both, so both derive from the one shared seam.
      *
      * @param upstream             the boot-resolved upstream target (mandatory)
      * @param access               the serving route's effective access level (mandatory)
      * @param confinement          the shared path confinement (mandatory)
-     * @param fetcher              the upstream fetch seam (mandatory)
+     * @param fetcher              the upstream fetch seam (mandatory); a seam whose own cap is
+     *                             lower than {@code maxBytes} yields refusals rather than truncated
+     *                             bodies — see the relation above
      * @param maxBytes             the maximum served-asset size in bytes
      * @param operatorContentTypes the boot-resolved add-only content-type additions
      *                             (mandatory; empty when unconfigured). Resolved once at
@@ -146,7 +165,7 @@ public final class UpstreamAssetSource implements AssetSource {
      * @return the governed {@link Served} response — {@code 405} for a non-read verb,
      *         {@code 404} for a confinement rejection, {@code 502} for a disallowed
      *         scheme or fetch error, {@code 504} on a timeout, {@code 413} for an
-     *         oversized body, otherwise the governed upstream status
+     *         oversized <em>or truncated</em> body, otherwise the governed upstream status
      */
     @Override
     public Served serve(HttpMethod method, String remainder) {
@@ -175,7 +194,12 @@ public final class UpstreamAssetSource implements AssetSource {
         } catch (IOException _) {
             return new Served(BAD_GATEWAY, Map.of(), EMPTY_BODY);
         }
-        if (fetched.body().length > maxBytes) {
+        // Two independent refusals, both landing on 413 — consistent with the directory source's
+        // over-cap answer. The length check catches a body that overruns THIS source's cap; the
+        // truncation signal catches a fetch that stopped at its OWN, possibly lower, cap and
+        // therefore returned a prefix. The prefix is short, so only the explicit signal can refuse
+        // it — serving it would pass a partial asset off as the whole one.
+        if (fetched.truncated() || fetched.body().length > maxBytes) {
             return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
         }
         Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
@@ -242,10 +266,14 @@ public final class UpstreamAssetSource implements AssetSource {
                 throw new IOException("upstream fetch interrupted", interrupted);
             }
             byte[] body = response.body();
+            // Crossing THIS seam's cap is what makes the body a prefix rather than the whole
+            // response, so the signal is captured here — before the trim below changes the length
+            // the caller would otherwise have to infer it from.
+            boolean truncated = body.length > maxBytes;
             // The subscriber already stopped pulling once the cap was crossed, so body is at most
             // one in-flight chunk past maxBytes; this backstop trims it to a fixed, small over-cap
             // size so callers checking body.length > maxBytes see a stable signal either way.
-            if (body.length > maxBytes) {
+            if (truncated) {
                 body = Arrays.copyOf(body, (int) Math.min(maxBytes + 1, body.length));
             }
             Map<String, String> headers = new LinkedHashMap<>();
@@ -254,7 +282,7 @@ public final class UpstreamAssetSource implements AssetSource {
                     headers.put(name, values.getFirst());
                 }
             });
-            return new UpstreamFetcher.Fetched(response.statusCode(), headers, body);
+            return new UpstreamFetcher.Fetched(response.statusCode(), headers, body, truncated);
         };
     }
 
@@ -347,13 +375,20 @@ public final class UpstreamAssetSource implements AssetSource {
         /**
          * A raw upstream response, before gateway governance.
          *
-         * @param status  the upstream HTTP status
-         * @param headers the upstream response headers (first value per name)
-         * @param body    the upstream response body
+         * @param status    the upstream HTTP status
+         * @param headers   the upstream response headers (first value per name)
+         * @param body      the upstream response body, possibly truncated at the seam's own cap
+         * @param truncated {@code true} when the fetch stopped at its own body cap, so {@code body}
+         *                  is a PREFIX of the upstream response rather than the whole of it. This is
+         *                  the explicit overflow signal a caller needs: the body length alone cannot
+         *                  carry it, because a seam capped below the caller's own limit returns a
+         *                  short body that is indistinguishable from a complete one. A truncated
+         *                  response is never servable content — {@link UpstreamAssetSource#serve}
+         *                  refuses it rather than passing a silent prefix off as the asset.
          * @author API Sheriff Team
          * @since 1.0
          */
-        record Fetched(int status, Map<String, String> headers, byte[] body) {
+        record Fetched(int status, Map<String, String> headers, byte[] body, boolean truncated) {
 
             /**
              * Canonical constructor defensively copying the headers and body.
@@ -378,15 +413,17 @@ public final class UpstreamAssetSource implements AssetSource {
              *
              * @param other the object to compare against
              * @return {@code true} when {@code other} is a {@code Fetched} with the same
-             *         status, headers, and body bytes
+             *         status, headers, body bytes, and truncation signal
              */
             @Override
             public boolean equals(Object other) {
                 if (this == other) {
                     return true;
                 }
-                return other instanceof Fetched(var otherStatus, var otherHeaders, var otherBody)
+                return other instanceof Fetched(var otherStatus, var otherHeaders, var otherBody,
+                        var otherTruncated)
                         && status == otherStatus
+                        && truncated == otherTruncated
                         && headers.equals(otherHeaders)
                         && Arrays.equals(body, otherBody);
             }
@@ -400,19 +437,20 @@ public final class UpstreamAssetSource implements AssetSource {
              */
             @Override
             public int hashCode() {
-                return Objects.hash(status, headers, Arrays.hashCode(body));
+                return Objects.hash(status, headers, Arrays.hashCode(body), truncated);
             }
 
             /**
-             * Renders the status and headers with only the body <em>length</em> — the raw
-             * upstream body bytes are never dumped, since they may carry sensitive content
-             * on this security-focused gateway.
+             * Renders the status, headers, and truncation signal with only the body
+             * <em>length</em> — the raw upstream body bytes are never dumped, since they may
+             * carry sensitive content on this security-focused gateway.
              *
              * @return a body-content-free description of this upstream response
              */
             @Override
             public String toString() {
-                return "Fetched[status=%d, headers=%s, body.length=%d]".formatted(status, headers, body.length);
+                return "Fetched[status=%d, headers=%s, body.length=%d, truncated=%b]"
+                        .formatted(status, headers, body.length, truncated);
             }
         }
 

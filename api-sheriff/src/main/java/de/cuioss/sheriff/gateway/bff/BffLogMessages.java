@@ -26,13 +26,9 @@ import lombok.experimental.UtilityClass;
  * <p>
  * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the shared
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and assertable.
- * This catalogue's identifier ranges are disjoint from the request-pipeline edge
- * ({@link de.cuioss.sheriff.gateway.ApiSheriffLogMessages}: {@code 1} / {@code 4} / {@code 100} /
- * {@code 103-106}) and the configuration subsystem
- * ({@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}: {@code 2-3} / {@code 101-102} /
- * {@code 200-201}), which share the same {@code ApiSheriff} prefix — this BFF catalogue owns
- * {@code 10-16} (INFO) and {@code 110-114} (WARN). Never renumber one catalogue without checking
- * the others for a collision.
+ * Identifiers are allocated across every catalogue sharing the {@code ApiSheriff} prefix, not per
+ * class, and that allocation is enforced by {@code LogMessagesCatalogueTest} rather than by an
+ * inventory kept here by hand.
  * <p>
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
  * ({@code sid}), token material, and raw offending values never appear in a template: a rejection

@@ -21,14 +21,17 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -67,6 +70,14 @@ class ConfigLoaderTest {
                     + "set quarkus.management.port (environment QUARKUS_MANAGEMENT_PORT, default 9000) "
                     + "instead — see ADR-0025";
 
+    /**
+     * Mirrors the loader's private {@code MAX_CONFIG_FILE_BYTES}. The value is pinned from both
+     * directions rather than by widening the constant's visibility:
+     * {@link #bindsAConfigFileExactlyAtTheByteCap} fails if the loader's cap ever drops below this
+     * number, and {@link #rejectsAConfigFileOneByteOverTheByteCap} fails if it ever rises above it.
+     */
+    private static final int MAX_CONFIG_FILE_BYTES = 512 * 1024;
+
     @TempDir
     Path configDir;
 
@@ -87,6 +98,20 @@ class ConfigLoaderTest {
         Path target = configDir.resolve(relativeTarget);
         Files.createDirectories(target.getParent());
         Files.writeString(target, content);
+    }
+
+    /**
+     * Builds a {@code gateway.yaml}-shaped document of exactly {@code totalBytes} bytes by padding a
+     * YAML comment. A comment contributes no keys, so the padding cannot perturb schema validation or
+     * binding — only the document's size. The text is pure ASCII, so its character count is its UTF-8
+     * byte count. Under the cap the document binds; over it, size is the only thing about it that is
+     * ever examined.
+     */
+    private static String configDocumentOfExactly(int totalBytes) {
+        String head = "version: 1\n# ";
+        int padding = totalBytes - head.length() - 1;
+        assertTrue(padding > 0, "requested size is too small to hold the padded document");
+        return head + "x".repeat(padding) + "\n";
     }
 
     @Test
@@ -754,8 +779,326 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", tooLargeForALong)).load();
 
         assertEquals(tooLargeForALong, loaded.gateway().oidc().clientSecret(),
-                "an all-digit substitution that overflows a long must fall back to a text node rather than "
-                        + "propagate the parse failure");
+                "client_secret is a schema-declared string, so an all-digit substitution stays text on its "
+                        + "destination type alone — the numeric parse is never attempted, let alone allowed to "
+                        + "propagate a parse failure");
+    }
+
+    /**
+     * The destination-type contract's core case: a schema-declared STRING field whose placeholder
+     * resolves to a value that merely <em>looks</em> boolean or numeric. Shape inference retyped such a
+     * value to a boolean or integer node, which schema validation then refused as a type mismatch — so
+     * an operator whose client id happened to be {@code true} or {@code 123} could not boot at all, for
+     * no reason other than how the value looked. The declared destination type is now what decides.
+     */
+    @ParameterizedTest(name = "a schema-string field resolving to ''{0}'' binds as a string")
+    @ValueSource(strings = {"true", "false", "TRUE", "123", "-7"})
+    void schemaStringFieldKeepsAShapeLookalikeSubstitutionAsText(String resolved) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "${SHERIFF_CLIENT_ID}"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of(
+                "SHERIFF_CLIENT_ID", resolved,
+                "OIDC_CLIENT_SECRET", "s3cr3t")).load();
+
+        // Assert
+        assertEquals(resolved, loaded.gateway().oidc().clientId(),
+                "a schema-declared string must be typed by its destination, never by the resolved value's shape");
+    }
+
+    /**
+     * The matched positive control for the rule above: where the schema really does declare a boolean,
+     * a substituted {@code true}/{@code false} must still be coerced to one. Fixing the string case by
+     * disabling coercion outright would pass the negative test and silently break every genuinely
+     * boolean-typed placeholder.
+     */
+    @ParameterizedTest(name = "a schema-boolean field resolving to ''{0}'' binds as a boolean")
+    @ValueSource(strings = {"true", "false"})
+    void schemaBooleanFieldStillCoercesASubstitutedBoolean(String resolved) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: []
+                  trust_scheme_host: "${TRUST_SCHEME_HOST}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("TRUST_SCHEME_HOST", resolved)).load();
+
+        // Assert
+        assertEquals(Boolean.valueOf(resolved), loaded.gateway().forwarded().trustSchemeHost(),
+                "a schema-declared boolean must still coerce from its substituted value");
+    }
+
+    @Test
+    void schemaIntegerFieldRefusesANonNumericSubstitutionWithoutEchoingIt() throws Exception {
+        // Arrange — the fail-closed leg: a value that cannot carry the declared type is left as text for
+        // schema validation to refuse, rather than being force-fitted into the destination type.
+        writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION}\"\n");
+
+        // Act
+        ConfigLoader loader = loader(Map.of("CONFIG_VERSION", "s3cr3t-topsecret-value"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert — refused at its own pointer, and the refusal names TYPES rather than the resolved
+        // value: a resolved scalar may hold a secret and must never reach a collected error message.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("version")),
+                () -> "a non-numeric substitution on an integer field must be refused, got: "
+                        + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("s3cr3t-topsecret-value")),
+                () -> "no error may echo the resolved scalar, got: " + exception.errors());
+    }
+
+    @Test
+    void typesASubstitutedScalarInsideAnArrayItemFromItsDeclaredItemType() throws Exception {
+        // Arrange — the pointer walk must descend array positions too, not just object properties:
+        // /token_validation/issuers/0/name is reached through an `items` schema.
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: "${ISSUER_NAME}"
+                      issuer: https://issuer.example.com
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("ISSUER_NAME", "123")).load();
+
+        // Assert
+        assertEquals("123", loaded.gateway().tokenValidation().issuers().getFirst().name(),
+                "a schema-string inside an array item must be typed from its declared item type");
+    }
+
+    // --- Destination-type walk: $ref, patternProperties, and the numeric arms ---------------------
+    // The walk's indirection resolvers had no coverage at all: no test resolved a local $ref, none
+    // drove a key described only by patternProperties, and neither numeric arm past the int range was
+    // ever reached — so the whole indirection machinery could have been deleted without a test
+    // noticing. Each test below asserts the OBSERVABLE consequence (the bound value, or the collected
+    // ConfigError), never a private resolver's return.
+
+    @Test
+    void typesAScalarReachedThroughALocalSchemaRef() throws Exception {
+        // Arrange — /endpoint/auth is declared as `$ref: #/$defs/auth`, so required_scopes is only
+        // reachable by following the indirection. Stop at the $ref node and the destination type is
+        // left unpinned, which sends "123" through shape inference and retypes it to an integer —
+        // and the referenced subschema declares the items string, so the document stops binding.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/api.yaml", """
+                endpoint:
+                  id: api
+                  base_url: alias-api
+                  auth:
+                    require: bearer
+                    required_scopes: ["${SHERIFF_SCOPE}"]
+                  routes:
+                    - id: r1
+                      match:
+                        path_prefix: /api
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_SCOPE", "123")).load();
+
+        // Assert
+        assertEquals(List.of("123"), loaded.endpoints().getFirst().auth().requiredScopes(),
+                "a scalar behind a local $ref must be typed from the REFERENCED subschema — without "
+                        + "following the $ref the type is unpinned, \"123\" is inferred as an integer, "
+                        + "and the declared string items refuse the document");
+    }
+
+    @Test
+    void typesAScalarUnderAKeyDescribedOnlyByPatternProperties() throws Exception {
+        // Arrange — /anchors carries no `properties` at all: every anchor is described solely by the
+        // patternProperties entry ^[a-z][a-z0-9_-]*$. Reaching max_body_bytes therefore requires
+        // matching the anchor's own name against that pattern, and then following a second $ref
+        // (security_filter -> #/$defs/securityFilter).
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  api-public:
+                    path_prefix: /api
+                    type: proxy
+                    access: public
+                    security_filter:
+                      max_body_bytes: "${SHERIFF_MAX_BODY}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_MAX_BODY", "4096")).load();
+
+        // Assert
+        assertEquals(4096, loaded.gateway().anchors().get("api-public").securityFilter().maxBodyBytes(),
+                "a scalar under a patternProperties-described key must still be typed from the "
+                        + "matched subschema — an unmatched key leaves the type unpinned and the "
+                        + "integer field unbound");
+    }
+
+    @Test
+    void refusesAnAnchorKeyNoPatternPropertiesEntryDescribes() throws Exception {
+        // Arrange — an uppercase anchor name matches neither the patternProperties entry nor any
+        // `properties` key, and /anchors sets additionalProperties: false, so the walk runs off the
+        // described schema part-way through the pointer and the document is refused.
+        writeConfig("gateway.yaml", """
+                version: 1
+                anchors:
+                  API:
+                    path_prefix: /api
+                    type: proxy
+                    access: public
+                    security_filter:
+                      max_body_bytes: "${SHERIFF_MAX_BODY}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("SHERIFF_MAX_BODY", "4096"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("anchors")),
+                () -> "an anchor name outside the declared pattern must be refused at its own "
+                        + "pointer rather than silently accepted, got: " + exception.errors());
+    }
+
+    @Test
+    void keepsAnIntegerBeyondTheIntRangeWideEnoughToBeRefusedRatherThanWrapped() throws Exception {
+        // Arrange — the substituted value is a valid JSON integer, so schema validation passes it;
+        // the binding to `int version` is what refuses it. That refusal is the observable proof the
+        // coercion widened to a long: narrowing it to an int would WRAP this value to -2147483648
+        // and bind silently, giving the operator a version they never wrote.
+        writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION}\"\n");
+
+        // Act
+        ConfigLoader loader = loader(Map.of("CONFIG_VERSION", "2147483648"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("version")),
+                () -> "a beyond-int integer must be carried at full width and refused by the bind AT "
+                        + "ITS OWN POINTER — naming only the file would be satisfied by any other "
+                        + "refusal path this document could take, got: " + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains(String.valueOf(Integer.MIN_VALUE))),
+                () -> "no error may report the wrapped value a narrowing coercion would have "
+                        + "produced — seeing it means the width was lost before the bind refused it, "
+                        + "got: " + exception.errors());
+    }
+
+    @Test
+    void keepsAnAllDigitSubstitutionThatOverflowsALongAsTextOnAnIntegerField() throws Exception {
+        // Arrange — all digits, so it matches the integer shape, but too wide for a long. The parse
+        // failure must degrade to text for schema validation to refuse, never propagate out of the
+        // loader as a NumberFormatException.
+        writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION}\"\n");
+        String widerThanALong = "9".repeat(25);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("CONFIG_VERSION", widerThanALong));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("version")),
+                () -> "an all-digit value too wide for a long must be collected as an error at its "
+                        + "own pointer, not thrown out of the loader, got: " + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains(widerThanALong)),
+                () -> "no error may echo the resolved scalar, got: " + exception.errors());
+    }
+
+    @Test
+    void refusesTheManagementPortWhateverShapeItsSubstitutionTakes() throws Exception {
+        // Arrange — /management/port declares `not: {}` and no `type`, so the schema pins no scalar
+        // type there and the substituted value falls through to shape inference. The refusal must
+        // come from the schema's own sentence regardless, so a boolean-looking placeholder cannot
+        // slip a deployment-bound knob past the gate.
+        writeConfig("gateway.yaml", """
+                version: 1
+                management:
+                  port: "${SHERIFF_MANAGEMENT_PORT}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("SHERIFF_MANAGEMENT_PORT", "true"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> MANAGEMENT_PORT_REJECTION.equals(error.message())),
+                () -> "the management port must be refused with the schema's own actionable "
+                        + "sentence however the placeholder resolves, got: " + exception.errors());
+    }
+
+    // --- Read-failure arms -----------------------------------------------------------------------
+    // Both file-read failure paths were uncovered, so the loader's collect-all-errors contract was
+    // unasserted exactly where it matters most: a read that fails must become a ConfigError, never
+    // an exception escaping load().
+
+    @Test
+    void collectsAnErrorForAConfigFileThatCannotBeOpened() throws Exception {
+        // Arrange — the file exists and stats as a regular file, so the not-found branch is passed;
+        // opening it is what fails. Permissions are the deterministic way to stage that.
+        Path gateway = configDir.resolve("gateway.yaml");
+        Files.writeString(gateway, "version: 1\n");
+        try {
+            Files.setPosixFilePermissions(gateway, Set.of());
+        } catch (IOException | UnsupportedOperationException unsupported) {
+            assumeTrue(false, "POSIX permissions are unavailable here: " + unsupported.getMessage());
+        }
+        assumeTrue(Files.isRegularFile(gateway), "the staged file must still stat as a regular file");
+        assumeTrue(!Files.isReadable(gateway),
+                "the staged file must be genuinely unreadable — a privileged user bypasses the mode");
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.message().contains("cannot read configuration file")),
+                () -> "an unopenable file must be COLLECTED as an error — the loader's contract is "
+                        + "to aggregate every problem, not to throw the first I/O failure through, "
+                        + "got: " + exception.errors());
+        Files.setPosixFilePermissions(gateway, PosixFilePermissions.fromString("rw-------"));
+    }
+
+    @Test
+    void collectsAnErrorForAConfigFileTheParserRejects() throws Exception {
+        // Arrange — the bomb pre-pass decodes the snapshot as UTF-8 with replacement, so a malformed
+        // byte composes cleanly there; the bind reads the same bytes strictly and fails. That gap is
+        // exactly the parse-failure arm, and it must surface as a collected error.
+        byte[] malformedUtf8 = {'v', 'e', 'r', 's', 'i', 'o', 'n', ':', ' ', '"', (byte) 0xFF, '"', '\n'};
+        Files.write(configDir.resolve("gateway.yaml"), malformedUtf8);
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.message().contains("cannot read configuration file")),
+                () -> "a file the parser rejects must be collected as the READ-FAILURE error rather "
+                        + "than throwing an IOException out of load() — naming only the file would "
+                        + "also be satisfied by a schema or secrets refusal this document never "
+                        + "reaches, got: " + exception.errors());
     }
 
     @Test
@@ -945,6 +1288,95 @@ class ConfigLoaderTest {
 
         assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
                 () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void bindsAConfigFileExactlyAtTheByteCap() throws Exception {
+        // Arrange — the inclusive boundary: the cap refuses what EXCEEDS it, so a document sitting
+        // exactly on it must still load.
+        writeConfig("gateway.yaml", configDocumentOfExactly(MAX_CONFIG_FILE_BYTES));
+        assertEquals(MAX_CONFIG_FILE_BYTES, Files.size(configDir.resolve("gateway.yaml")),
+                "the fixture must sit exactly on the cap for the boundary to be the thing under test");
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert
+        assertEquals(1, loaded.gateway().version(),
+                "a document exactly at the byte cap must bind normally");
+    }
+
+    @Test
+    void rejectsAConfigFileOneByteOverTheByteCap() throws Exception {
+        // Arrange — the matched negative half of the boundary pair: one byte more than the cap allows.
+        writeConfig("gateway.yaml", configDocumentOfExactly(MAX_CONFIG_FILE_BYTES + 1));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+                "a configuration file one byte over the cap must fail the boot");
+
+        // Assert — the refusal is a collected error, and it is the ONLY error for the file: a schema or
+        // binding error alongside it would mean the over-cap document was partially bound anyway.
+        List<ConfigError> gatewayErrors = exception.errors().stream()
+                .filter(error -> "gateway.yaml".equals(error.file()))
+                .toList();
+        assertEquals(1, gatewayErrors.size(),
+                () -> "the size refusal must be the only error reported for the file, got: "
+                        + exception.errors());
+        assertTrue(gatewayErrors.getFirst().message().contains(String.valueOf(MAX_CONFIG_FILE_BYTES)),
+                () -> "the refusal must name the byte cap it enforced, got: " + gatewayErrors);
+    }
+
+    @Test
+    void overCapAliasBombIsRefusedBySizeAloneProvingBothPassesShareOneSnapshot() throws Exception {
+        // Arrange — an alias bomb padded past the byte cap. The size check gates the ONE snapshot that
+        // both the compose-only bomb pre-pass and the bind consume, so this document must never reach
+        // the composer. Were the pre-pass to reopen the file itself — the second, unbounded read this
+        // deliverable removed — it would compose the whole document and report the alias diagnostic
+        // alongside the size refusal. The absence of that diagnostic is what pins the single-read
+        // contract against a silent reintroduction.
+        StringBuilder yaml = new StringBuilder("version: 1\nanchor_def: &a [1, 2, 3]\naliases:\n");
+        for (int i = 0; i < 60; i++) {
+            yaml.append("  - *a\n");
+        }
+        yaml.append("# ").append("x".repeat(MAX_CONFIG_FILE_BYTES)).append('\n');
+        writeConfig("gateway.yaml", yaml.toString());
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("bomb protection tripped")),
+                () -> "an over-cap document must be refused before the composer ever sees it; an alias "
+                        + "diagnostic here means a second, unbounded read of the file survived, got: "
+                        + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.message().contains(String.valueOf(MAX_CONFIG_FILE_BYTES))),
+                () -> "expected the byte-cap refusal to be the reported failure, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void appliesTheByteCapToEndpointFilesToo() throws Exception {
+        // Arrange — the cap is a property of "a configuration file", not of gateway.yaml specifically;
+        // endpoints/*.yaml are read through the same single-snapshot path and must be bounded alike.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", configDocumentOfExactly(MAX_CONFIG_FILE_BYTES + 1));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.message().contains(String.valueOf(MAX_CONFIG_FILE_BYTES))),
+                () -> "an over-cap endpoint file must be refused by the same byte cap, got: "
                         + exception.errors());
     }
 

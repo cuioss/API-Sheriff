@@ -33,6 +33,12 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
+          # Matches every other checkout in this repository. It matters more here than elsewhere:
+          # this job runs an LLM agent with Bash access (git*, gh*) over comment bodies that any
+          # commenter can author, so leaving the token in .git/config would put a credential
+          # directly in reach of the very surface this workflow hands to a model. The job needs no
+          # authenticated git operation — the action talks to the API with its own token.
+          persist-credentials: false
       - name: Set up JDK 25
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:

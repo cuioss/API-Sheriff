@@ -25,11 +25,9 @@ import lombok.experimental.UtilityClass;
  * <p>
  * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and
- * assertable. This catalogue's identifier ranges are disjoint from
- * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}'s (the boot-time configuration
- * subsystem catalogue), which shares the same {@code ApiSheriff} prefix: {@code 1} / {@code 4} /
- * {@code 6-7} / {@code 100} / {@code 103-109} here vs {@code 2-3} / {@code 101-102} / {@code 200-201}
- * there — never renumber one catalogue without checking the other for a collision.
+ * assertable. Identifiers are allocated across every catalogue sharing the {@code ApiSheriff}
+ * prefix, not per class, and that allocation is enforced by
+ * {@code LogMessagesCatalogueTest} rather than by an inventory kept here by hand.
  * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
  * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
  * directly and are not catalogued here.
@@ -157,6 +155,24 @@ public final class ApiSheriffLogMessages {
                 .prefix(PREFIX)
                 .identifier(109)
                 .template("Reserved-path request body exceeded the %s byte ceiling (%s) — rejected 413")
+                .build();
+
+        /**
+         * The directory asset source could not obtain a {@code SecureDirectoryStream} on its root,
+         * so it serves assets through the resolved path rather than by descending from the root one
+         * confined component at a time. Emitted once per source: it reports a fixed property of the
+         * platform, not a per-request event.
+         * <p>
+         * The consequence is concrete and is stated rather than glossed: the descriptor-relative
+         * walk closes the check-then-act window on every path component, the fallback closes it on
+         * the final component only, so an ancestor directory of the asset can still be replaced by a
+         * symlink after the in-root check and be traversed by the read. The template names the
+         * configured asset root — operator-supplied configuration, never request content.
+         */
+        public static final LogRecord ASSET_CONFINED_WALK_UNAVAILABLE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(117)
+                .template("Asset root '%s' offers no SecureDirectoryStream on this platform — falling back to the resolved-path read, which leaves an ancestor-directory symlink swap after the in-root check unrefused")
                 .build();
     }
 }
