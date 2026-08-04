@@ -347,6 +347,38 @@ class DirectoryAssetSourceTest {
     }
 
     @Test
+    @DisplayName("Should refuse a cap it could never enforce, instead of serving a prefix")
+    void shouldRefuseACapItCouldNotEnforceOnTheBytesRead() {
+        // A served body is a byte[] and the bounded read asks for maxBytes + 1, so a cap above
+        // Integer.MAX_VALUE - 1 is unenforceable BY CONSTRUCTION: the read would stop at
+        // Integer.MAX_VALUE while the post-read length check still passed, and serveConfined would
+        // answer 200 with a PREFIX of a larger asset. Clamping the read limit hid that behind a
+        // successful-looking response; refusing the cap where it is supplied is the only place the
+        // caller can still be told. The at-boundary leg is the control: it proves the guard refuses
+        // the unenforceable cap rather than every large one.
+        long beyondEnforceable = Integer.MAX_VALUE;
+        long largestEnforceable = Integer.MAX_VALUE - 1L;
+
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class, () -> cappedSource(beyondEnforceable),
+                        "a cap one past the largest enforceable value must be refused where it is "
+                                + "supplied, never honoured by reading less than it asked for"),
+                () -> assertThrows(IllegalArgumentException.class, () -> cappedSource(Long.MAX_VALUE),
+                        "an effectively unbounded cap must be refused for the same reason"),
+                () -> {
+                    AssetSource.Served served =
+                            cappedSource(largestEnforceable).serve(HttpMethod.GET, "index.html");
+                    assertAll(
+                            () -> assertEquals(OK, served.status(),
+                                    "the largest enforceable cap must still construct and serve — "
+                                            + "otherwise the guard above could pass by refusing "
+                                            + "every cap worth having"),
+                            () -> assertArrayEquals(INDEX_BODY, served.body(),
+                                    "an asset under the largest enforceable cap serves whole"));
+                });
+    }
+
+    @Test
     @DisplayName("Should serve a file sitting exactly at the cap")
     void shouldServeFileExactlyAtCap() {
         // THE CONTROL for the refusal tests below. Without it, a source that refused

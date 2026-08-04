@@ -56,7 +56,10 @@ import org.junit.jupiter.api.Test;
  * and reports green is worse than no guard, because it reports a guarantee it never evaluated. Every
  * lookup below therefore fails with the path or pattern it could not resolve, and the extracted
  * values are asserted present and non-empty before any comparison is made — a skip or a silent pass
- * is not an available outcome.
+ * is not an available outcome. That holds on BOTH sides of every comparison: the script side through
+ * {@link #scriptLiteral(String)}, and the realm side through {@link #requiredRealmString(Map, String,
+ * String)}, which refuses an absent field rather than letting {@code String.valueOf} turn it into the
+ * ordinary-looking literal {@code "null"}.
  * <p>
  * It reads two committed files only — it starts no container and reaches no network.
  *
@@ -91,7 +94,7 @@ class BenchmarkRealmCredentialConsistencyTest {
                 () -> "the realm import declares no client with clientId '" + scriptClientId
                         + "' — the benchmark would authenticate against a client that does not exist "
                         + "and every request would come back 401. Realm: " + REALM_IMPORT);
-        assertEquals(scriptClientSecret, String.valueOf(client.get("secret")),
+        assertEquals(scriptClientSecret, requiredRealmString(client, "secret", "client '" + scriptClientId + "'"),
                 () -> "the client secret in " + K6_SCRIPT.getFileName() + " no longer matches the "
                         + "secret the realm import provisions for '" + scriptClientId
                         + "'; the token request would be refused and the whole run would 401");
@@ -125,7 +128,7 @@ class BenchmarkRealmCredentialConsistencyTest {
                 () -> "the token URL literal carries no /realms/<name>/ segment, so the realm it "
                         + "targets cannot be checked against the import: " + tokenUrl);
 
-        assertEquals(String.valueOf(realmImport().get("realm")), realmInUrl.group(1),
+        assertEquals(requiredRealmString(realmImport(), "realm", "the realm import"), realmInUrl.group(1),
                 "the k6 token URL targets a different realm than the import creates — the client and "
                         + "user assertions would then compare credentials the benchmark never uses");
     }
@@ -213,9 +216,38 @@ class BenchmarkRealmCredentialConsistencyTest {
         return ((List<?>) entries).stream()
                 .filter(Map.class::isInstance)
                 .map(entry -> (Map<String, Object>) entry)
-                .filter(entry -> keyValue.equals(String.valueOf(entry.get(keyField))))
+                // Compared against the raw value, never String.valueOf(...): an entry that declares
+                // no such field would otherwise be matched on the four-character literal "null",
+                // which is a real string a mirrored k6 literal could be spelled as.
+                .filter(entry -> keyValue.equals(entry.get(keyField)))
                 .findFirst()
                 .orElse(null);
+    }
+
+    /**
+     * Reads a realm-import field that must be present as a non-blank string, failing by NAME when it
+     * is not.
+     * <p>
+     * {@code String.valueOf(null)} yields the four-character literal {@code "null"}, so a field the
+     * import never declares would otherwise reach a comparison looking like an ordinary value — and
+     * would pass outright whenever the mirrored k6 literal happened to be spelled the same way. This
+     * guard's stated contract is that every compared value is proven present first, so the absence is
+     * asserted here rather than silently converted into a string.
+     *
+     * @param entry     the parsed realm entry to read
+     * @param field     the field the comparison needs
+     * @param described what the entry is, for the failure message
+     * @return the field's non-blank string value
+     */
+    private static String requiredRealmString(Map<String, Object> entry, String field, String described) {
+        String value = assertInstanceOf(String.class, entry.get(field),
+                () -> "the realm import declares no string '" + field + "' for " + described
+                        + ", so the benchmark's mirrored value has nothing to be checked against: "
+                        + REALM_IMPORT);
+        assertFalse(value.isBlank(),
+                () -> "the realm import's '" + field + "' for " + described + " is blank, so the "
+                        + "mirrored benchmark value cannot be meaningfully compared: " + REALM_IMPORT);
+        return value;
     }
 
     /**
@@ -230,8 +262,8 @@ class BenchmarkRealmCredentialConsistencyTest {
         return ((List<?>) credentials).stream()
                 .filter(Map.class::isInstance)
                 .map(entry -> (Map<String, Object>) entry)
-                .filter(entry -> "password".equals(String.valueOf(entry.get("type"))))
-                .map(entry -> String.valueOf(entry.get("value")))
+                .filter(entry -> "password".equals(entry.get("type")))
+                .map(entry -> requiredRealmString(entry, "value", "the user's password credential"))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError(
                         "the realm user declares no credential of type 'password', so the benchmark's "

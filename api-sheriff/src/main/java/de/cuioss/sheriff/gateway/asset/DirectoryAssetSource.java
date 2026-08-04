@@ -97,6 +97,20 @@ public final class DirectoryAssetSource implements AssetSource {
     private static final int SERVER_ERROR = 500;
     private static final byte[] EMPTY_BODY = new byte[0];
 
+    /**
+     * The largest cap this source can enforce on the bytes it actually reads.
+     * <p>
+     * A served body is a {@code byte[]}, and the bounded read asks for {@code maxBytes + 1} so the
+     * length check can see one byte past the cap. Both quantities must therefore be representable as
+     * an {@code int}, which puts the ceiling exactly here. A cap ABOVE this bound is not merely
+     * awkward, it is unenforceable: the read would stop at {@link Integer#MAX_VALUE} while the
+     * post-read check still passed, so a PREFIX of a larger asset would be served as a complete
+     * {@code 200}. That is the failure mode {@code UpstreamAssetSource} refuses through
+     * {@link UpstreamAssetSource.UpstreamFetcher.Fetched#truncated()}; here it is refused at
+     * construction instead, because unlike a fetch-seam mismatch it is decidable before any request.
+     */
+    private static final long MAX_ENFORCEABLE_BYTES = Integer.MAX_VALUE - 1L;
+
     /** Read-only open, refusing to follow a final component swapped to a symlink. */
     private static final Set<OpenOption> READ_NOFOLLOW =
             Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
@@ -133,6 +147,8 @@ public final class DirectoryAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured). Resolved once at
      *                             boot and read-only thereafter — no per-request lookup
      *                             and no shared mutable state.
+     * @throws IllegalArgumentException when {@code maxBytes} exceeds
+     *                                  {@link #MAX_ENFORCEABLE_BYTES}
      */
     public DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
             Map<String, String> operatorContentTypes) {
@@ -152,12 +168,20 @@ public final class DirectoryAssetSource implements AssetSource {
      * @param maxBytes             the maximum served-file size in bytes
      * @param operatorContentTypes the boot-resolved add-only content-type additions (mandatory)
      * @param opener               the stat-and-read seam (mandatory)
+     * @throws IllegalArgumentException when {@code maxBytes} exceeds
+     *                                  {@link #MAX_ENFORCEABLE_BYTES} — a cap this source could not
+     *                                  hold the bytes for, and so could only honour by serving a
+     *                                  prefix as a complete response
      */
     DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
             Map<String, String> operatorContentTypes, Opener opener) {
         this.root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
         this.access = Objects.requireNonNull(access, "access");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
+        if (maxBytes > MAX_ENFORCEABLE_BYTES) {
+            throw new IllegalArgumentException(
+                    "maxBytes must not exceed %d, got %d".formatted(MAX_ENFORCEABLE_BYTES, maxBytes));
+        }
         this.maxBytes = maxBytes;
         this.operatorContentTypes = Map.copyOf(
                 Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
@@ -232,13 +256,15 @@ public final class DirectoryAssetSource implements AssetSource {
 
     /**
      * @return the number of bytes to read — one past the cap, so the caller's length check can
-     *         detect a breach without ever materializing an oversized file. Clamped before the
-     *         increment so a {@code maxBytes} at or near {@link Long#MAX_VALUE} cannot overflow
-     *         into a negative (and then a zero-length) limit.
+     *         detect a breach without ever materializing an oversized file. The narrowing is exact
+     *         rather than clamped: {@link #MAX_ENFORCEABLE_BYTES} is enforced at construction, so
+     *         {@code maxBytes + 1} is representable by definition here. A clamp in this position
+     *         would be worse than the overflow it prevented — it would silently read LESS than the
+     *         cap the caller asked for, and the post-read length check would then pass a prefix of
+     *         a larger asset off as the whole of it.
      */
     private int readLimit() {
-        long clamped = Math.min(maxBytes, Integer.MAX_VALUE - 1L);
-        return (int) clamped + 1;
+        return (int) maxBytes + 1;
     }
 
     /**
@@ -371,6 +397,15 @@ public final class DirectoryAssetSource implements AssetSource {
          * that handle exists. Descending still opens each child from its parent's descriptor and
          * closes the parent immediately afterwards, so the confinement the walk exists to provide is
          * unchanged: no component is ever looked up by name from the filesystem root a second time.
+         * <p>
+         * The clean-up close is the one close that must not speak: an exception thrown from a
+         * {@code finally} SUPERSEDES the one already in flight, so a failing descriptor close would
+         * replace the refusal a re-pointed component produced with an unrelated I/O failure. The
+         * reason the descent ended is the diagnostically valuable half, so the clean-up close is
+         * demoted to a debug line and the walk failure is the exception that propagates. The
+         * in-loop {@code parent.close()} is deliberately NOT demoted — there it is not clean-up
+         * after a failure but part of the descent itself, and a parent that cannot be closed would
+         * leak a descriptor per request if the walk carried on regardless.
          *
          * @param top      an open, secure stream on the real root
          * @param relative the asset path relative to the real root
@@ -391,8 +426,22 @@ public final class DirectoryAssetSource implements AssetSource {
                 return asset;
             } finally {
                 if (owned) {
-                    dir.close();
+                    closeQuietly(dir);
                 }
+            }
+        }
+
+        /**
+         * Closes an abandoned descent descriptor without letting its own failure replace the reason
+         * the descent ended.
+         *
+         * @param dir the descriptor to release
+         */
+        private static void closeQuietly(SecureDirectoryStream<Path> dir) {
+            try {
+                dir.close();
+            } catch (IOException closeFailure) {
+                LOGGER.debug(closeFailure, "closing an abandoned descent descriptor failed");
             }
         }
     }

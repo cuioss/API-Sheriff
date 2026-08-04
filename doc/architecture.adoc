@@ -707,13 +707,14 @@ same listener. Readiness reflects the loaded-and-validated configuration and the
 load-bearing: resolving the validator proves every configured issuer declared a usable JWKS source,
 but the JWKS fetch itself is lazy, so an issuer that is configured correctly and unreachable right
 now still reports ready. A deployment with no `token_validation` block has no validator to
-construct, and its `issuer_reachability` datum is reported `unverified` rather than asserted --
-a BFF `mode: server` deployment reaches its issuer lazily on the first login, and that does not
-gate boot readiness.
+construct. In that case a BFF `mode: server` deployment reports its `issuer_reachability` datum as
+`unverified` rather than asserted, because it reaches its issuer lazily on the first login and that
+does not gate boot readiness; a bearer-only deployment emits no `issuer_reachability` datum at all.
 
 That reading is why the DOWN branch is, in the shipped topology, effectively unreachable rather than
-a routine outcome. `TokenValidatorProducer.onStartup` performs the same eager `Instance.get()` the
-probe performs, so a validator that cannot be constructed aborts the boot before the management
+a routine outcome. `TokenValidatorProducer.onStartup` forces the same eager contextual-instance
+creation the probe's `Instance.get()` performs -- it calls a method on the injected validator proxy
+at `StartupEvent` -- so a validator that cannot be constructed aborts the boot before the management
 listener ever binds; a validator that constructs but whose JWKS is lazily unreachable reports UP.
 The probe is therefore hardened for a *future* relaxation of that eager assembly, not against a live
 exposure.

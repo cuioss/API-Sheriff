@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
@@ -57,7 +58,8 @@ import org.junit.jupiter.api.Test;
 class LogMessagesCatalogueTest {
 
     private static final String CATALOGUE_SUFFIX = "LogMessages.class";
-    private static final int MINIMUM_EXPECTED_CATALOGUES = 3;
+    private static final String CATALOGUE_SOURCE_SUFFIX = "LogMessages.java";
+    private static final String JAVA_EXTENSION = ".java";
 
     /**
      * One catalogued constant, carrying enough context to name it in a failure message.
@@ -126,29 +128,40 @@ class LogMessagesCatalogueTest {
     }
 
     @Test
-    @DisplayName("Should discover every catalogue and every constant, so neither check can pass vacuously")
+    @DisplayName("Should discover exactly the catalogues the sources declare, so neither check can pass vacuously")
     void shouldDiscoverEveryCatalogueAndConstant() throws Exception {
         // Without this, a reflection walk that silently found nothing — a renamed suffix, a changed
         // build layout, a holder that stopped being nested — would satisfy both checks above by
         // examining an empty list, and the contract would be unenforced while still reporting green.
+        //
+        // The anchor has to come from OUTSIDE the walk to say anything at all. A count of catalogues
+        // maintained here by hand could not: after a fourth catalogue is added, a rename that drops
+        // one out of the walk still leaves three, and the collision and band checks then pass over a
+        // set that quietly shrank. The module's own SOURCE tree is the set both this walk and that
+        // count were trying to mirror, so it is read directly instead — a catalogue the walk stops
+        // seeing now fails here, and a new one is expected the moment its file exists.
+        List<String> declared = declaredCatalogueNames();
         List<Class<?>> catalogues = discoverCatalogues();
         List<Catalogued> catalogued = collectCatalogued();
 
-        long declaredFields = catalogues.stream()
-                .flatMap(LogMessagesCatalogueTest::holdersOf)
-                .flatMap(holder -> Stream.of(holder.getDeclaredFields()))
-                .filter(LogMessagesCatalogueTest::isCatalogueConstant)
-                .count();
+        List<String> discovered = catalogues.stream().map(Class::getSimpleName).sorted().toList();
 
         assertAll(
-                () -> assertTrue(catalogues.size() >= MINIMUM_EXPECTED_CATALOGUES,
-                        () -> "expected at least " + MINIMUM_EXPECTED_CATALOGUES
-                                + " catalogues on the compiled output, found " + catalogues),
-                () -> assertTrue(catalogued.size() > 0,
+                () -> assertFalse(declared.isEmpty(),
+                        "no *LogMessages source was found at all, so the expected set is empty and "
+                                + "every comparison against it is vacuous"),
+                () -> assertEquals(declared, discovered,
+                        "the compiled catalogues the walk finds must be exactly the ones the module's "
+                                + "sources declare — a catalogue missing here is one whose identifiers "
+                                + "no longer reach the collision and band checks"),
+                () -> assertFalse(catalogued.isEmpty(),
                         "the walk collected no constants at all, so every other assertion here is vacuous"),
-                () -> assertEquals(declaredFields, catalogued.size(),
-                        "every declared LogRecord constant must reach the collision check — a constant "
-                                + "the walk misses is a constant nothing stops from colliding"));
+                () -> assertAll(catalogues.stream().map(catalogue -> () -> assertTrue(
+                        catalogued.stream()
+                                .anyMatch(entry -> entry.owner().equals(catalogue.getSimpleName())),
+                        () -> catalogue.getSimpleName() + " contributed no constant to the collision "
+                                + "check — a catalogue whose holders the walk cannot read is a "
+                                + "catalogue nothing stops from colliding"))));
     }
 
     /**
@@ -190,6 +203,47 @@ class LogMessagesCatalogueTest {
     }
 
     /**
+     * The catalogue names the module's SOURCE tree declares, read at run time rather than listed.
+     * <p>
+     * This is the one anchor in this test that does not derive from the reflection walk, which is
+     * what makes the walk falsifiable: a catalogue the walk stops seeing still has a source file, so
+     * the two sets diverge and the comparison fails. Deriving it from the sources also means a newly
+     * added catalogue is expected the moment its file lands — no second place to update by hand, and
+     * therefore no second place to be silently wrong.
+     *
+     * @return the simple names of every {@code *LogMessages} source file in this module, sorted
+     */
+    private static List<String> declaredCatalogueNames() throws Exception {
+        // <module>/target/classes -> <module>. Resolved relatively rather than through getParent()
+        // so the derivation carries no nullable hop.
+        Path sourceRoot = compiledClassesRoot().resolve("../../src/main/java").normalize();
+        assertTrue(Files.isDirectory(sourceRoot),
+                () -> "expected the module's Java source root, got " + sourceRoot
+                        + " — the derivation below is what anchors the reflection walk, so a layout "
+                        + "change must fail here rather than yield an empty expected set");
+        try (Stream<Path> entries = Files.walk(sourceRoot)) {
+            return entries
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(CATALOGUE_SOURCE_SUFFIX))
+                    .map(name -> name.substring(0, name.length() - JAVA_EXTENSION.length()))
+                    .sorted()
+                    .toList();
+        }
+    }
+
+    /**
+     * @return the module's compiled-classes directory, the root both the catalogue walk and the
+     *         source-root derivation are anchored on
+     */
+    private static Path compiledClassesRoot() throws Exception {
+        Path classesRoot = Path.of(ApiSheriffLogMessages.class.getProtectionDomain()
+                .getCodeSource().getLocation().toURI());
+        assertTrue(Files.isDirectory(classesRoot),
+                () -> "expected the module's compiled classes directory, got " + classesRoot);
+        return classesRoot;
+    }
+
+    /**
      * Discovers the catalogues from the module's compiled output rather than from a hand-written
      * list. A list would reintroduce exactly the defect this test exists to remove: a second place
      * that must be kept in step by hand, and that is silently wrong the moment it is not.
@@ -197,10 +251,7 @@ class LogMessagesCatalogueTest {
      * @return every compiled {@code *LogMessages} class in this module, in a stable order
      */
     private static List<Class<?>> discoverCatalogues() throws Exception {
-        Path classesRoot = Path.of(ApiSheriffLogMessages.class.getProtectionDomain()
-                .getCodeSource().getLocation().toURI());
-        assertTrue(Files.isDirectory(classesRoot),
-                () -> "expected the module's compiled classes directory, got " + classesRoot);
+        Path classesRoot = compiledClassesRoot();
         try (Stream<Path> entries = Files.walk(classesRoot)) {
             List<String> binaryNames = entries
                     .filter(path -> path.getFileName().toString().endsWith(CATALOGUE_SUFFIX))

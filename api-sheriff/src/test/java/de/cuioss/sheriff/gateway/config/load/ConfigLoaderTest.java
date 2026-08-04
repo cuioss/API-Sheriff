@@ -987,9 +987,16 @@ class ConfigLoaderTest {
 
         // Assert
         assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())),
-                () -> "a beyond-int integer must be carried at full width and refused by the bind, "
-                        + "never truncated into a wrapped value that binds, got: " + exception.errors());
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("version")),
+                () -> "a beyond-int integer must be carried at full width and refused by the bind AT "
+                        + "ITS OWN POINTER — naming only the file would be satisfied by any other "
+                        + "refusal path this document could take, got: " + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains(String.valueOf(Integer.MIN_VALUE))),
+                () -> "no error may report the wrapped value a narrowing coercion would have "
+                        + "produced — seeing it means the width was lost before the bind refused it, "
+                        + "got: " + exception.errors());
     }
 
     @Test
@@ -1086,9 +1093,12 @@ class ConfigLoaderTest {
 
         // Assert
         assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())),
-                () -> "a file the parser rejects must be collected as an error rather than throwing "
-                        + "an IOException out of load(), got: " + exception.errors());
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.message().contains("cannot read configuration file")),
+                () -> "a file the parser rejects must be collected as the READ-FAILURE error rather "
+                        + "than throwing an IOException out of load() — naming only the file would "
+                        + "also be satisfied by a schema or secrets refusal this document never "
+                        + "reaches, got: " + exception.errors());
     }
 
     @Test
