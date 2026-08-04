@@ -1,0 +1,172 @@
+= API Sheriff -- FAPI 2.0 Next Steps
+:toc: left
+:toclevels: 3
+:sectnums:
+:sectnumlevels: 2
+
+The route from the 0.1.0 alpha position recorded in link:fapi_status.adoc[FAPI 2.0 Conformance
+Status] to a genuinely conformant FAPI 2.0 relying party. This document scopes the work and names
+the decisions that must be taken before it starts; it does not schedule it.
+
+[IMPORTANT]
+====
+*The work is wiring, configuration, and key lifecycle -- not architecture.* Every protocol
+capability FAPI 2.0 requires, except one, is already implemented in the `token-sheriff-client`
+engine and merely unused by the gateway. The single exception is the DPoP proof algorithm set, and
+it does not block conformance because the mTLS route is unaffected.
+====
+
+== The Two Routes
+
+FAPI 2.0 §5.3.3.1 requires sender-constrained access tokens via mTLS (RFC 8705) *and/or* DPoP
+(RFC 9449), and permits client authentication by mTLS *or* `private_key_jwt`. That yields two
+coherent routes, which differ sharply in operational cost.
+
+[cols="1,3,3"]
+|===
+| | *mTLS route* | *DPoP route*
+
+| Sender constraint
+| `SenderConstraint.mtls(thumbprint)` -- transport-level, no header, no signing
+| `SenderConstraint.dpop(generator)` -- a signed proof JWT per request
+
+| Client authentication
+| `tls_client_auth` -- the same certificate serves both purposes
+| `private_key_jwt` -- a separate signing key
+
+| Engine support
+| *Complete today*
+| *Blocked* on https://github.com/cuioss/TokenSheriff/issues/618[TokenSheriff#618] (RSA/`RS256`-only)
+
+| Deployment cost
+| A client certificate the IdP trusts; certificate lifecycle and rotation
+| A signing key pair; key lifecycle and rotation
+
+| Operational fit
+| Heavier -- requires mTLS to the IdP, which many deployments do not run
+| Lighter -- ordinary TLS to the IdP, key material held by the gateway
+|===
+
+*Recommendation: build the seam so both are selectable, and implement the mTLS route first.* It is
+unblocked today, it exercises the whole configuration and wiring surface, and it makes the eventual
+DPoP addition a second implementation behind an existing seam rather than a new feature. The engine
+already models exactly this -- `SenderConstraint` is one type with two factory methods.
+
+== Workstreams
+
+=== W1 -- PAR
+
+Route the authorization request through `ParClient.pushAuthorizationRequest` and redirect with the
+returned `request_uri` instead of building a parameterised front-channel URL.
+
+* The gateway currently holds no reference to `ParClient`; add one to the BFF runtime assembly.
+* `LoginFlow.initiate` changes shape: the authorization URL it redirects to carries only
+  `client_id` and `request_uri`.
+* PAR is a *new outbound leg* to the AS. It inherits the existing back-channel egress and scheme
+  validation, but the operational surface (timeouts, failure handling at login initiation) is new.
+* *Consequence worth taking deliberately:* with parameters pushed over the back channel, the
+  front-channel URL no longer carries `state`. This does not by itself retire the
+  `response_mode=query` tradeoff recorded in link:fapi_status.adoc[the status document] -- the
+  *response* still returns `code`/`state`/`iss` on a URL -- so the binding-cookie design is
+  unchanged. Re-evaluate `form_post` only as a separate decision, on its own merits.
+
+=== W2 -- Client authentication
+
+Replace `client_secret_basic` with `tls_client_auth` (mTLS route) or `private_key_jwt` (DPoP route).
+Both are implemented in the engine as `MtlsClientAuth` and `PrivateKeyJwtAuth`, and both are
+selectable through `ClientAuthMethod`.
+
+This is a *breaking configuration change*: `oidc.client_secret` gives way to a key or certificate
+reference. `ConfigLoader` lists `/oidc/client_secret` among its secrets-rule pointers, and that list
+changes with it.
+
+=== W3 -- Sender constraint and key lifecycle
+
+Wire a `SenderConstraint` into both `AuthorizationCodeFlow` (the code-exchange constructor takes it)
+and `RefreshFlow` (its four-argument constructor takes it). *It must be the same instance* -- a
+refresh presented against a token bound to a different key fails.
+
+Key lifecycle is the substantive work, and the constraint it imposes is the one to design for
+first:
+
+* The proof key or client certificate must *outlive the tokens bound to it*. A key generated at boot
+  silently kills refresh for every live session on restart, because the AS bound those tokens to a
+  key that no longer exists.
+* A per-node key breaks refresh across nodes: a session bound on one node cannot refresh on another.
+  This is the *same* single-node constraint the in-memory `PendingAuthorizationStore` already
+  imposes, arriving by a different route -- and it applies to the sealed-cookie mode too, which is
+  otherwise the horizontally scalable one.
+* *Therefore the key is provisioned deployment material, alongside the TLS profiles -- never a
+  per-process artifact.*
+
+=== W4 -- Trust and key material plumbing
+
+`ClientConfiguration` is currently built with no SSL context, so the BFF's back-channel legs use the
+JVM default trust store while the JWKS leg is trust-profile-configurable. The mTLS route requires
+the gateway to *present* a certificate on those legs, so this asymmetry has to close.
+
+`JwksTrustProfileResolver` maps a logical profile name to an `SSLContext` and deliberately refuses a
+profile carrying no trust anchors. Client *key* material is a different shape, so this needs either
+a widened contract on that resolver or a second seam beside it. Whichever is chosen, preserve the
+property that makes the existing one sound: *a named profile means these anchors, and never "no
+verification at all"* -- the resolver refuses `trust-all` for exactly that reason.
+
+=== W5 -- Configuration surface
+
+New `oidc` sub-blocks for client authentication and the sender constraint, with the secrets rule
+applied to any new secret-bearing pointer.
+
+[WARNING]
+====
+Every new nested configuration record *must* be registered in `ConfigModelReflection`. It registers
+the config model explicitly, including `OidcConfig` and each of its nested records. A record omitted
+there boot-fails *only in the native image*, while every JVM-level gate stays green.
+====
+
+=== W6 -- The `cnf` forwarding decision
+
+A `require: session` route injects the mediated token upstream as `Authorization: Bearer`
+(`SessionAuthenticationStage`). Once that token is sender-constrained it carries a `cnf` claim. A
+`cnf`-blind upstream accepts it unchanged, which is the status quo; a DPoP-aware upstream *must
+reject* it for want of a proof. This is latent breakage, not a current fault -- it surfaces the day
+any backend gets stricter.
+
+Two clean resolutions, both cheap now and expensive to retrofit:
+
+. *Document the contract* -- the gateway forwards a bound token as bearer, and upstreams must not
+  validate `cnf`. Zero code, but it writes an assumption into every backend.
+. *Stop forwarding the bound token* -- exchange it at the gateway (RFC 8693 token exchange) for an
+  upstream-scoped token, so the binding never leaves the gateway. The upstream contract then stays
+  literally unchanged.
+
+*This decision is a prerequisite, not a follow-up.* It determines whether conformance is a
+gateway-local property or a contract change reaching every backend.
+
+=== W7 -- Documentation
+
+Update link:fapi_status.adoc[the status document] as requirements move from UNMET to MET, and revise
+link:features-analysis.adoc[the feature analysis] -- whose FAPI/PAR differentiator claim is written
+against this target state rather than the shipped one.
+
+== Decisions Required Before Work Starts
+
+. *Which route* -- mTLS, DPoP, or a seam supporting both. Determines W2, W3, and W4.
+. *The `cnf` forwarding contract* (W6) -- document the assumption, or introduce token exchange.
+. *Key and certificate provisioning* -- how deployment supplies the material, and how rotation works
+  without invalidating live sessions.
+. *Whether conformance is a stated product goal* -- it implies ongoing tracking of the profile, and
+  a conformance suite run is the only credible evidence for the claim. Until such a run exists, the
+  honest posture is "implements the FAPI 2.0 controls", never "FAPI 2.0 certified".
+
+== Out of Scope
+
+* Authorization-server-side requirements -- the IdP's concern.
+* FAPI 2.0 Message Signing (a separate profile from the Security Profile assessed here).
+* Retiring the `response_mode=query` tradeoff, which is an independent decision on its own merits
+  (see W1).
+
+== Related
+
+* link:fapi_status.adoc[FAPI 2.0 Conformance Status] -- the current position and its evidence
+* https://github.com/cuioss/TokenSheriff/issues/618[TokenSheriff#618] -- the DPoP algorithm gap
+* link:security-threat-model.adoc[Threat Model]

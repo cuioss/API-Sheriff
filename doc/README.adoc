@@ -71,6 +71,15 @@ built* and *how the parts fit together*.
   real CVE in a comparable gateway/proxy or OAuth/OIDC stack is mapped to an API Sheriff
   control, a status, and a testable assertion. Doubles as the 1.0 security release gate.
 
+| link:fapi_status.adoc[FAPI 2.0 Conformance Status]
+| Where the BFF stands against the FAPI 2.0 Security Profile (Final), requirement by requirement,
+  with first-party evidence. *0.1.0 is not FAPI 2.0 conformant* -- three mandatory client
+  requirements are unmet. Read this before making any FAPI claim.
+
+| link:fapi_next_steps.adoc[FAPI 2.0 Next Steps]
+| The route from that position to conformance: the mTLS and DPoP routes and why they differ, the
+  seven workstreams, the key-lifecycle constraint, and the decisions owed before work starts.
+
 | TLS Edge (three-layer topic)
 | The accept-time SNI split and mTLS edge, documented across all three layers: the
   link:configuration.adoc#_tls[`tls` configuration reference], the link:user/tls-edge.adoc[operator
