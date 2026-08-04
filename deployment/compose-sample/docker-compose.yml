@@ -13,6 +13,14 @@
 # arrives through read-only mounts, and every runtime-hardening directive a production deployment
 # should set is set here explicitly rather than left to a default.
 #
+# SCOPE OF THAT CLAIM, stated precisely so it is not read wider than it holds. The SECURITY
+# directives — non-root, cap_drop: ALL, no-new-privileges, read_only with explicitly sized tmpfs, and
+# read-only configuration mounts — are set on ALL THREE services. Resource limits are set on the
+# gateway only, and that asymmetry is deliberate rather than an omission: an unvalidated memory cap
+# on a third-party image is a crash loop in an operator's face rather than a hardening win, and the
+# right ceiling for the IdP follows from the database and realm size a real deployment runs, which
+# this sample cannot know. Set them when you size your own stack — do not copy a number from here.
+#
 # See doc/user/compose-sample.adoc for the operator walkthrough and
 # doc/development/compose-sample.adoc for the rationale behind each decision below.
 
@@ -148,7 +156,15 @@ services:
       de.cuioss.sheriff.management-scheme: "https"
     ports:
       - "8443:8443"  # Public TLS listener — the only way into the stack
-      - "9000:9000"  # Management interface (health/metrics), HTTPS
+      # Management interface (health/metrics), HTTPS — bound to the LOOPBACK interface rather than to
+      # every host interface. /q/health and /q/metrics carry no authentication by construction, so
+      # publishing them on 0.0.0.0 hands an internal-state view to anything that can reach the host.
+      # Nothing is lost by narrowing it here: the readiness gate (scripts/wait-for-ready.sh) probes
+      # localhost, and the https://localhost:9000/q/health/ready address the user guide documents
+      # still resolves. A deployment that genuinely needs off-host scraping widens this deliberately
+      # and puts a private network or an authenticating proxy in front of it — it does not open the
+      # port to every interface and leave it unauthenticated.
+      - "127.0.0.1:9000:9000"
     environment:
       # This block is the DEPLOYMENT DOOR, and it is deliberately the same door the release smoke
       # test drives in .github/workflows/release.yml. The shipped artifact declares nothing about

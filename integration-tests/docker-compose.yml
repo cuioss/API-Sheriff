@@ -829,7 +829,12 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=1h'
-      - '--web.enable-lifecycle'
+      # --web.enable-lifecycle is deliberately NOT set. It exposes unauthenticated POST /-/reload and
+      # POST /-/quit on port 9090, which the block above publishes to the host — a remote-shutdown
+      # control on a service that needs none. Nothing in this repository calls either endpoint, and
+      # the scrape config is a read-only mount that cannot change while the stack is up, so a reload
+      # endpoint would have nothing to reload. Do not add it back to "make reloading easier": bring
+      # the service down and up, which is what an ephemeral test stack does anyway.
     networks:
       - api-sheriff
 
