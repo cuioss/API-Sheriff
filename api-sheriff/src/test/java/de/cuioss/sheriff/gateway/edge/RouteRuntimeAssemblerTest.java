@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -184,23 +185,51 @@ class RouteRuntimeAssemblerTest {
         assertEquals("session", webSocketSession.getEffectiveAuth().require(),
                 "and keeps its require:session posture for the stage-4 runtime to dispatch on");
 
-        // A gRPC route with non-session auth assembles cleanly — the forced-h2 upstream client is
-        // built by the injected client factory.
+        // A gRPC route with non-session auth assembles cleanly — and asks for a forced-h2 upstream
+        // client. The observable that proves the gRPC branch ran is the UpstreamTarget handed to the
+        // client factory, whose forcedHttp2 flag the assembler sets exactly for Protocol.GRPC.
+        // Capturing it is what makes this leg discriminating: the shared clientFactory discards its
+        // target and never returns null, so asserting only that a client came back would hold whether
+        // or not forced-h2 was ever requested.
+        List<RouteRuntimeAssembler.UpstreamTarget> grpcTargets = new ArrayList<>();
         RouteTable grpcTable = new RouteTable(List.of(
                 route("g", Protocol.GRPC, "none", null, upstream("a.example"))));
-        RouteRuntime grpc = assembler.assemble(grpcTable, securityConfigFactory, clientFactory,
-                guardFactory, assetSourceFactory).getFirst();
+        RouteRuntime grpc = assembler.assemble(grpcTable, securityConfigFactory,
+                capturingClientFactory(grpcTargets), guardFactory, assetSourceFactory).getFirst();
         assertEquals("g", grpc.getId(), "the gRPC route reaches the assembled table");
         assertNotNull(grpc.getHttpClient(), "a gRPC route carries the forced-h2 upstream client");
+        assertEquals(1, grpcTargets.size(), "the gRPC route resolves exactly one upstream client");
+        assertTrue(grpcTargets.getFirst().forcedHttp2(),
+                "the gRPC route asks the client factory for a forced-h2 client");
 
-        // A WebSocket route with non-session auth likewise assembles cleanly.
+        // A WebSocket route with non-session auth likewise assembles cleanly, and doubles as the
+        // matched negative control for the forced-h2 assertion above: the identical capture over a
+        // non-gRPC route must report forcedHttp2() == false, so that assertion is pinned to the
+        // protocol rather than passing for every route the assembler builds.
+        List<RouteRuntimeAssembler.UpstreamTarget> webSocketTargets = new ArrayList<>();
         RouteTable webSocketNoneTable = new RouteTable(List.of(
                 route("w", Protocol.WEBSOCKET, "none", null, upstream("a.example"))));
         RouteRuntime webSocketNone = assembler.assemble(webSocketNoneTable, securityConfigFactory,
-                clientFactory, guardFactory, assetSourceFactory).getFirst();
+                capturingClientFactory(webSocketTargets), guardFactory, assetSourceFactory).getFirst();
         assertEquals("w", webSocketNone.getId(), "the WebSocket route reaches the assembled table");
         assertEquals("none", webSocketNone.getEffectiveAuth().require(),
                 "and carries its declared require:none posture");
+        assertEquals(1, webSocketTargets.size(), "the WebSocket route resolves exactly one upstream client");
+        assertFalse(webSocketTargets.getFirst().forcedHttp2(),
+                "a non-gRPC route asks for a plain client, never a forced-h2 one");
+    }
+
+    /**
+     * A client factory that records every {@link RouteRuntimeAssembler.UpstreamTarget} the assembler
+     * asks it for, so a test can assert on the factory's <em>input</em> rather than only on its
+     * never-null output.
+     */
+    private RouteRuntimeAssembler.UpstreamClientFactory capturingClientFactory(
+            List<RouteRuntimeAssembler.UpstreamTarget> captured) {
+        return target -> {
+            captured.add(target);
+            return vertx.createHttpClient();
+        };
     }
 
     @Test
