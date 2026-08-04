@@ -111,7 +111,7 @@
   <rect class="stroke" x="64" y="600" width="480" height="172" rx="4"/>
   <line class="own-bar" x1="64" y1="608" x2="64" y2="764"/>
   <text x="76" y="624" class="encl">variant instances (6)</text>
-  <text x="76" y="640" class="encl-sub">same image, overlaid gateway.yaml, own published ports</text>
+  <text x="76" y="640" class="encl-sub">same image, per-variant overlay, own published ports</text>
   <text x="76" y="668" class="item">api-sheriff-mtls</text>
   <text x="76" y="686" class="item">api-sheriff-cookie</text>
   <text x="76" y="704" class="item">api-sheriff-cookie-2</text>
