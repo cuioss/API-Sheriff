@@ -66,8 +66,17 @@ class UpstreamAssetSourceTest {
     private static final ResolvedUpstream HTTPS_UPSTREAM =
             new ResolvedUpstream("https", "assets.internal", 443, "/static");
 
+    /** A seam that returns the whole upstream response — nothing was cut off at the fetch cap. */
     private static UpstreamFetcher cannedFetcher(int status, Map<String, String> headers, byte[] body) {
-        return _ -> new UpstreamFetcher.Fetched(status, headers, body);
+        return _ -> new UpstreamFetcher.Fetched(status, headers, body, false);
+    }
+
+    /**
+     * A seam that stopped at its OWN body cap, so {@code body} is a prefix of the upstream response.
+     * This is the shape a fetcher capped below the source's {@code maxBytes} produces.
+     */
+    private static UpstreamFetcher truncatingFetcher(int status, Map<String, String> headers, byte[] body) {
+        return _ -> new UpstreamFetcher.Fetched(status, headers, body, true);
     }
 
     private static UpstreamFetcher mustNotFetch() {
@@ -200,6 +209,69 @@ class UpstreamAssetSourceTest {
         assertEquals(PAYLOAD_TOO_LARGE, served.status(), "a body over the cap is refused");
     }
 
+    // --- Fetch-cap / serve-cap relation ----------------------------------------------------------
+    // A fetch seam capped BELOW this source's maxBytes returns a body cut off at its own limit —
+    // short enough to pass every length check serve() could apply, so it used to be served as a
+    // normal 200 carrying a partial asset. The relation is now carried by an explicit signal on the
+    // seam rather than by a prose caller invariant, and the three tests below pin it as a matched
+    // set: the refusal, the positive control that stops it being unconditional, and the negative
+    // control that proves the SIGNAL drives it rather than the body length.
+
+    @Test
+    @DisplayName("Should refuse a truncated upstream fetch rather than serving a partial asset")
+    void shouldRefuseTruncatedFetch() {
+        byte[] prefix = "console.log('x".getBytes(StandardCharsets.UTF_8);
+        UpstreamFetcher fetcher = truncatingFetcher(OK, headers("Content-Type", "text/plain"), prefix);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+
+        assertAll(
+                () -> assertEquals(PAYLOAD_TOO_LARGE, served.status(),
+                        "a fetch that stopped at its own cap must be refused — serving it would pass "
+                                + "a prefix of the asset off as the whole asset"),
+                () -> assertEquals(0, served.body().length,
+                        "the refusal carries no body, so no partial asset reaches the caller"));
+    }
+
+    @Test
+    @DisplayName("Should still serve a complete at-cap body untouched")
+    void shouldServeCompleteAtCapBody() {
+        // THE POSITIVE CONTROL for the refusal above. Without it, a source that refused every fetch
+        // — or one that read the truncation signal inverted — would satisfy the refusal test while
+        // serving nothing at all.
+        byte[] atCap = new byte[(int) MAX_BYTES];
+        UpstreamFetcher fetcher = cannedFetcher(OK, headers("Content-Type", "text/plain"), atCap);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+
+        assertAll(
+                () -> assertEquals(OK, served.status(),
+                        "a complete body exactly at the cap is within it and serves"),
+                () -> assertEquals((int) MAX_BYTES, served.body().length,
+                        "the at-cap body serves in full, not truncated"));
+    }
+
+    @Test
+    @DisplayName("Should refuse a truncated fetch on the signal alone, not on the body length")
+    void shouldRefuseTruncatedFetchOnTheSignalNotTheLength() {
+        // THE NEGATIVE CONTROL. This body is far UNDER the cap, so every length-based check passes
+        // it — exactly the case a fetcher capped below maxBytes produces. Only the explicit
+        // truncation signal can refuse it, so this test fails the moment serve() goes back to
+        // deciding on body.length alone.
+        byte[] tinyPrefix = new byte[1];
+        UpstreamFetcher fetcher = truncatingFetcher(OK, headers("Content-Type", "text/plain"), tinyPrefix);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+
+        assertAll(
+                () -> assertTrue(tinyPrefix.length < MAX_BYTES,
+                        "the staged body must sit UNDER the cap for this to test the signal rather "
+                                + "than the length"),
+                () -> assertEquals(PAYLOAD_TOO_LARGE, served.status(),
+                        "a truncated fetch is refused however short its body is — the length cannot "
+                                + "carry the fact that bytes were cut off"));
+    }
+
     @Test
     @DisplayName("Should map an upstream timeout to 504")
     void shouldMapTimeoutToGatewayTimeout() {
@@ -275,8 +347,8 @@ class UpstreamAssetSourceTest {
     @DisplayName("Fetched equals/hashCode compare the body by content, not array identity")
     void fetchedEqualsIsContentBased() {
         Map<String, String> headers = headers("Content-Type", "text/plain");
-        UpstreamFetcher.Fetched first = new UpstreamFetcher.Fetched(OK, headers, BODY.clone());
-        UpstreamFetcher.Fetched second = new UpstreamFetcher.Fetched(OK, headers, BODY.clone());
+        UpstreamFetcher.Fetched first = new UpstreamFetcher.Fetched(OK, headers, BODY.clone(), false);
+        UpstreamFetcher.Fetched second = new UpstreamFetcher.Fetched(OK, headers, BODY.clone(), false);
 
         assertAll(
                 () -> assertEquals(first, second, "two Fetched with equal body bytes are equal"),
@@ -288,14 +360,17 @@ class UpstreamAssetSourceTest {
     @DisplayName("Fetched with differing body bytes are not equal")
     void fetchedWithDifferentBodyNotEqual() {
         Map<String, String> headers = headers("Content-Type", "text/plain");
-        UpstreamFetcher.Fetched first = new UpstreamFetcher.Fetched(OK, headers, BODY);
-        UpstreamFetcher.Fetched other =
-                new UpstreamFetcher.Fetched(OK, headers, "different".getBytes(StandardCharsets.UTF_8));
+        UpstreamFetcher.Fetched first = new UpstreamFetcher.Fetched(OK, headers, BODY, false);
+        UpstreamFetcher.Fetched other = new UpstreamFetcher.Fetched(OK, headers,
+                "different".getBytes(StandardCharsets.UTF_8), false);
 
         assertAll(
                 () -> assertNotEquals(first, other, "differing body bytes break equality"),
-                () -> assertNotEquals(first, new UpstreamFetcher.Fetched(NOT_FOUND, headers, BODY),
+                () -> assertNotEquals(first, new UpstreamFetcher.Fetched(NOT_FOUND, headers, BODY, false),
                         "a differing status breaks equality"),
+                () -> assertNotEquals(first, new UpstreamFetcher.Fetched(OK, headers, BODY, true),
+                        "a differing truncation signal breaks equality — a prefix and the whole "
+                                + "response are not the same value even when their bytes match"),
                 () -> assertNotEquals(BODY, first, "a Fetched never equals an unrelated type"));
     }
 
@@ -304,13 +379,16 @@ class UpstreamAssetSourceTest {
     void fetchedToStringHidesBody() {
         byte[] secret = "top-secret-token".getBytes(StandardCharsets.UTF_8);
         UpstreamFetcher.Fetched fetched =
-                new UpstreamFetcher.Fetched(OK, headers("Content-Type", "text/plain"), secret);
+                new UpstreamFetcher.Fetched(OK, headers("Content-Type", "text/plain"), secret, true);
 
         String rendered = fetched.toString();
 
         assertAll(
                 () -> assertTrue(rendered.contains("body.length=" + secret.length),
                         "the length is rendered for diagnostics"),
+                () -> assertTrue(rendered.contains("truncated=true"),
+                        "the truncation signal is rendered — a diagnostic that omitted it would hide "
+                                + "why an apparently fine response was refused"),
                 () -> assertFalse(rendered.contains("top-secret-token"),
                         "the raw upstream body bytes must never be dumped"));
     }
@@ -338,7 +416,7 @@ class UpstreamAssetSourceTest {
         UpstreamFetcher fetcher = target -> {
             assertEquals(URI.create("https://assets.internal:443/static/nested/app.js"), target,
                     "the confined remainder is appended to the resolved base path");
-            return new UpstreamFetcher.Fetched(OK, headers("Content-Type", "text/plain"), BODY);
+            return new UpstreamFetcher.Fetched(OK, headers("Content-Type", "text/plain"), BODY, false);
         };
 
         AssetSource.Served served =
