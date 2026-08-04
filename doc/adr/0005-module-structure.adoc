@@ -91,8 +91,8 @@ new decision* -- the Decision section above is unchanged.
 
 [IMPORTANT]
 ====
-*Pending supersession.* This ADR is expected to be *reversed* by `api-sheriff-next` (PLAN-38), on
-the operator decision _"Revert the ADR. If there is something available (quarkus) use that"_. That
+*Pending supersession.* This ADR is expected to be *reversed* by `api-sheriff-next`, on the
+operator decision _"Revert the ADR. If there is something available (quarkus) use that"_. That
 work owns the reversal and owns retiring the arch-gate; nothing here anticipates it. The snapshot
 exists precisely so the reversal can be measured against what shipped.
 ====
@@ -109,7 +109,7 @@ The Context section above names three modules. The shipped reactor carries *five
 | `integration-tests` | Coordinator module. Named in Context.
 | `benchmarks` | Coordinator module. Named in Context.
 | `demo-client` | Demo SPA plus its Playwright end-to-end suite. Added after this ADR was accepted. Carries no Java and contributes nothing to the default lane -- every npm-touching execution sits inside its own `e2e-demo` profile.
-| `deployment` | Production-shaped `docker-compose` sample. Added after this ADR was accepted. Carries no Java and builds no artifact.
+| `deployment` | Deployment-shaped `docker-compose` sample. Added after this ADR was accepted. Carries no Java and builds no artifact.
 |===
 
 *The delta does not weaken the decision.* Both added modules are packaging and demonstration
@@ -151,7 +151,7 @@ section's list: `io.quarkus..`, `io.vertx..`, `io.smallrye..`, `io.netty..`, `or
 that same coupling unchecked. `io.netty..` and `org.jboss..` arrive transitively with the
 Quarkus/Vert.x stack and are framework by any reading of this ADR.
 
-=== What PLAN-38 measures against
+=== What the reversal measures against
 
 * Five enforced agnostic packages, not six -- `routing` is framework-coupled by resolution.
 * One deployable; five reactor modules, two of which carry no Java.

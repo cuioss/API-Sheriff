@@ -517,8 +517,11 @@ collapsed or removed while reformatting the notes.
 
 ## See also
 
-- `doc/development/release-process.adoc` — the canonical narrative, including *why* the automatic
-  trigger was removed and why the guard had to merge on its own.
+- `doc/development/release-process.adoc` — the canonical process narrative, and the normative
+  **Trigger rules** it records: *dispatch is the only trigger*, and *a change that removes or
+  weakens an event-driven trigger merges on its own*. It states those rules rather than the
+  2026-07-12 incident that motivated them; that account lives in the *Coordinate history* note in
+  the repository `README.adoc`, and is summarised in *How the release is wired* above.
 - `.github/workflows/release.yml` — the dispatch-only workflow. Its in-file comments carry the
   composability, ordering and attestation caveats behind the steps above.
 - `doc/user/container-image.adoc` — the operator layer: pulling, running and verifying the image.
