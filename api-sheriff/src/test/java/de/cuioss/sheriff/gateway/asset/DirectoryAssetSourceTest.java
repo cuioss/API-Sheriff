@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.asset;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -315,6 +316,47 @@ class DirectoryAssetSourceTest {
     }
 
     @Test
+    @DisplayName("Should refuse to stat a confined entry that is not a regular file")
+    void shouldRefuseAConfinedEntryThatIsNotARegularFile() throws Exception {
+        // The path-based isRegularFile() check in serve() is taken from the filesystem root before
+        // the descent begins, so it reports what the entry WAS. NOFOLLOW_LINKS refuses a component
+        // swapped to a symlink but accepts a FIFO, and opening a FIFO for reading blocks until a
+        // writer appears — a stalled request thread rather than a served asset. Both handles
+        // therefore re-test the type on the descriptor the read will use. A FIFO cannot be staged
+        // portably; a directory exercises the same predicate, since neither is a regular file.
+        assumeSecureWalk();
+        Path realRoot = root.toRealPath();
+        DirectoryAssetSource.SecureWalkOpener walker = new DirectoryAssetSource.SecureWalkOpener();
+
+        assertAll(
+                () -> {
+                    try (DirectoryAssetSource.ConfinedAsset asset = walker.open(realRoot, Path.of("assets"))) {
+                        assertThrows(IOException.class, asset::size,
+                                "the descriptor-bound handle must refuse a non-regular entry rather "
+                                        + "than reporting a size the read would then try to open");
+                    }
+                },
+                () -> {
+                    try (DirectoryAssetSource.ConfinedAsset asset =
+                                 new DirectoryAssetSource.ResolvedPathAsset(realRoot.resolve("assets"))) {
+                        assertThrows(IOException.class, asset::size,
+                                "the resolved-path fallback must refuse it on the same grounds — the "
+                                        + "platform without a secure walk is the more exposed one, "
+                                        + "not the one that gets the weaker check");
+                    }
+                },
+                () -> {
+                    // THE CONTROL: a real regular file still stats through both handles, so the
+                    // refusals above are the entry type and not a check that fails on everything.
+                    try (DirectoryAssetSource.ConfinedAsset asset =
+                                 walker.open(realRoot, Path.of("index.html"))) {
+                        assertEquals(INDEX_BODY.length, asset.size(),
+                                "a regular file still reports its size");
+                    }
+                });
+    }
+
+    @Test
     @DisplayName("Should still serve an asset behind an in-root ancestor symlink")
     void shouldServeAssetBehindInRootAncestorSymlink() {
         // THE CONTROL for the two refusals above, at the serve() level: confinement resolves the
@@ -365,6 +407,14 @@ class DirectoryAssetSourceTest {
                                 + "supplied, never honoured by reading less than it asked for"),
                 () -> assertThrows(IllegalArgumentException.class, () -> cappedSource(Long.MAX_VALUE),
                         "an effectively unbounded cap must be refused for the same reason"),
+                () -> assertThrows(IllegalArgumentException.class, () -> cappedSource(-1L),
+                        "a negative cap is refused too — it constructs a source that answers 413 to "
+                                + "every file including an empty one, which is a misconfiguration "
+                                + "the operator should be told about rather than one that presents "
+                                + "as every asset being too large"),
+                () -> assertDoesNotThrow(() -> cappedSource(0L),
+                        "zero is a degenerate but coherent cap (serve nothing), so the lower bound "
+                                + "must refuse negatives without also refusing it"),
                 () -> {
                     AssetSource.Served served =
                             cappedSource(largestEnforceable).serve(HttpMethod.GET, "index.html");

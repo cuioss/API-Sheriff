@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -76,10 +77,24 @@ class BenchmarkRealmCredentialConsistencyTest {
     private static final Path K6_SCRIPT =
             MODULE.resolve("../benchmarks/src/main/resources/k6-scripts/bearer_proxied.js").normalize();
 
+    private static final String TOKEN_URL_CONST = "KEYCLOAK_TOKEN_URL";
     private static final String CLIENT_ID_CONST = "KEYCLOAK_CLIENT_ID";
     private static final String CLIENT_SECRET_CONST = "KEYCLOAK_CLIENT_SECRET";
     private static final String USERNAME_CONST = "KEYCLOAK_USERNAME";
     private static final String PASSWORD_CONST = "KEYCLOAK_PASSWORD";
+
+    /**
+     * The constants the comparisons in this class read. This is NOT a mirror of a set defined
+     * elsewhere — it is this file's own dependency list, so it cannot drift from the k6 script the
+     * way a hand-copied inventory of the script's declarations would. It exists so a rename fails
+     * once, by name, instead of failing each comparison separately with a less obvious cause.
+     */
+    private static final List<String> COMPARED_CONSTANTS = List.of(
+            TOKEN_URL_CONST, CLIENT_ID_CONST, CLIENT_SECRET_CONST, USERNAME_CONST, PASSWORD_CONST);
+
+    /** Matches every {@code const KEYCLOAK_X = … || '<literal>'} declaration the k6 script carries. */
+    private static final Pattern SCRIPT_LITERAL = Pattern.compile(
+            "const\\s+(KEYCLOAK_\\w+)\\s*=[^;]*?\\|\\|\\s*'([^']*)'", Pattern.DOTALL);
 
     @Test
     @DisplayName("the k6 script's client id and secret match the client the realm provisions")
@@ -122,7 +137,7 @@ class BenchmarkRealmCredentialConsistencyTest {
     @Test
     @DisplayName("the k6 token URL names the realm the import actually creates")
     void theScriptTokenUrlNamesTheImportedRealm() throws Exception {
-        String tokenUrl = scriptLiteral("KEYCLOAK_TOKEN_URL");
+        String tokenUrl = scriptLiteral(TOKEN_URL_CONST);
         Matcher realmInUrl = Pattern.compile("/realms/([^/]+)/").matcher(tokenUrl);
         assertTrue(realmInUrl.find(),
                 () -> "the token URL literal carries no /realms/<name>/ segment, so the realm it "
@@ -134,28 +149,39 @@ class BenchmarkRealmCredentialConsistencyTest {
     }
 
     @Test
-    @DisplayName("both source files resolve and every mirrored value is extracted non-empty")
+    @DisplayName("both source files resolve and every mirrored value the script declares is extracted non-empty")
     void bothSourcesResolveAndEveryValueIsExtracted() throws Exception {
         // This is what stops the three tests above from passing vacuously. If a file moves or a
         // constant is renamed, the extraction below fails by NAME rather than leaving a comparison
         // that quietly has nothing to compare.
+        //
+        // The mirrored set is DISCOVERED from the k6 script rather than listed here. A fixed list
+        // could only ever check itself: a fifth credential added to the script would be mirrored by
+        // nobody, and this guard would still report green over its own four entries. The
+        // COMPARED_CONSTANTS leg is not such a list — it names what THIS file's comparisons read, so
+        // it is a dependency check rather than a copy of an external set.
         assertAll(
                 () -> assertTrue(Files.isRegularFile(REALM_IMPORT),
                         () -> "the realm import is not where this guard looks for it: " + REALM_IMPORT),
                 () -> assertTrue(Files.isRegularFile(K6_SCRIPT),
                         () -> "the k6 benchmark script is not where this guard looks for it: " + K6_SCRIPT));
 
-        List<String> mirrored = List.of(
-                scriptLiteral(CLIENT_ID_CONST),
-                scriptLiteral(CLIENT_SECRET_CONST),
-                scriptLiteral(USERNAME_CONST),
-                scriptLiteral(PASSWORD_CONST));
+        Map<String, String> mirrored = scriptLiterals();
 
         assertAll(
-                () -> assertEquals(4, mirrored.size(), "all four mirrored credentials must be extracted"),
-                () -> assertTrue(mirrored.stream().noneMatch(String::isBlank),
-                        () -> "every extracted credential must be non-empty, got: " + mirrored.size()
-                                + " values with at least one blank"),
+                () -> assertFalse(mirrored.isEmpty(),
+                        () -> "no `const KEYCLOAK_* = … || '<literal>'` declaration was found in "
+                                + K6_SCRIPT + ", so there is nothing for this guard to check and the "
+                                + "comparisons above rest on nothing"),
+                () -> assertTrue(mirrored.keySet().containsAll(COMPARED_CONSTANTS),
+                        () -> "the k6 script no longer declares every constant the comparisons above "
+                                + "read — expected " + COMPARED_CONSTANTS + ", found "
+                                + mirrored.keySet()),
+                () -> assertAll(mirrored.entrySet().stream()
+                        .map(entry -> () -> assertFalse(entry.getValue().isBlank(),
+                                () -> "the mirrored credential " + entry.getKey() + " resolves to a "
+                                        + "blank literal in " + K6_SCRIPT + ", so the benchmark would "
+                                        + "authenticate with an empty value"))),
                 () -> assertFalse(realmImport().isEmpty(),
                         () -> "the realm import parsed to an empty document: " + REALM_IMPORT));
     }
@@ -170,18 +196,30 @@ class BenchmarkRealmCredentialConsistencyTest {
      * @throws IOException when the script cannot be read
      */
     private static String scriptLiteral(String constantName) throws IOException {
-        assertTrue(Files.isRegularFile(K6_SCRIPT),
-                () -> "the k6 benchmark script is not where this guard looks for it: " + K6_SCRIPT);
-        String source = Files.readString(K6_SCRIPT);
-        Pattern pattern = Pattern.compile(
-                "const\\s+" + Pattern.quote(constantName) + "\\s*=[^;]*?\\|\\|\\s*'([^']*)'",
-                Pattern.DOTALL);
-        Matcher matcher = pattern.matcher(source);
-        assertTrue(matcher.find(),
+        Map<String, String> literals = scriptLiterals();
+        assertTrue(literals.containsKey(constantName),
                 () -> "no `const " + constantName + " = … || '<literal>'` declaration found in "
                         + K6_SCRIPT + " — the constant was renamed or its fallback removed, so this "
                         + "guard can no longer see the value the benchmark actually uses");
-        return matcher.group(1);
+        return literals.getOrDefault(constantName, "");
+    }
+
+    /**
+     * Reads every {@code || '<literal>'} fallback the k6 script declares for a top-level
+     * {@code KEYCLOAK_*} constant, so the mirrored set is discovered rather than listed here.
+     *
+     * @return each constant name mapped to its operative literal, in declaration order
+     * @throws IOException when the script cannot be read
+     */
+    private static Map<String, String> scriptLiterals() throws IOException {
+        assertTrue(Files.isRegularFile(K6_SCRIPT),
+                () -> "the k6 benchmark script is not where this guard looks for it: " + K6_SCRIPT);
+        Matcher matcher = SCRIPT_LITERAL.matcher(Files.readString(K6_SCRIPT));
+        Map<String, String> literals = new LinkedHashMap<>();
+        while (matcher.find()) {
+            literals.put(matcher.group(1), matcher.group(2));
+        }
+        return literals;
     }
 
     /**

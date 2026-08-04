@@ -144,7 +144,10 @@ class LogMessagesCatalogueTest {
         List<Class<?>> catalogues = discoverCatalogues();
         List<Catalogued> catalogued = collectCatalogued();
 
-        List<String> discovered = catalogues.stream().map(Class::getSimpleName).sorted().toList();
+        // Binary names on BOTH sides, never simple names: erasing the package would let a catalogue
+        // the walk lost pass unnoticed whenever some other package held a compiled *LogMessages with
+        // the same simple name — which is precisely the scenario this comparison exists to catch.
+        List<String> discovered = catalogues.stream().map(Class::getName).sorted().toList();
 
         assertAll(
                 () -> assertFalse(declared.isEmpty(),
@@ -211,7 +214,9 @@ class LogMessagesCatalogueTest {
      * added catalogue is expected the moment its file lands — no second place to update by hand, and
      * therefore no second place to be silently wrong.
      *
-     * @return the simple names of every {@code *LogMessages} source file in this module, sorted
+     * @return the binary names of every {@code *LogMessages} source file in this module, sorted.
+     *         Binary rather than simple names, so the comparison keeps package identity: two
+     *         catalogues sharing a simple name across packages would otherwise let a lost one pass.
      */
     private static List<String> declaredCatalogueNames() throws Exception {
         // <module>/target/classes -> <module>. Resolved relatively rather than through getParent()
@@ -223,8 +228,9 @@ class LogMessagesCatalogueTest {
                         + "change must fail here rather than yield an empty expected set");
         try (Stream<Path> entries = Files.walk(sourceRoot)) {
             return entries
-                    .map(path -> path.getFileName().toString())
-                    .filter(name -> name.endsWith(CATALOGUE_SOURCE_SUFFIX))
+                    .filter(path -> path.getFileName().toString().endsWith(CATALOGUE_SOURCE_SUFFIX))
+                    .map(path -> sourceRoot.relativize(path).toString()
+                            .replace(File.separatorChar, '.'))
                     .map(name -> name.substring(0, name.length() - JAVA_EXTENSION.length()))
                     .sorted()
                     .toList();

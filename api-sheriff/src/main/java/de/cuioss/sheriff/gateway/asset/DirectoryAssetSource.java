@@ -147,7 +147,7 @@ public final class DirectoryAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured). Resolved once at
      *                             boot and read-only thereafter — no per-request lookup
      *                             and no shared mutable state.
-     * @throws IllegalArgumentException when {@code maxBytes} exceeds
+     * @throws IllegalArgumentException when {@code maxBytes} is negative or exceeds
      *                                  {@link #MAX_ENFORCEABLE_BYTES}
      */
     public DirectoryAssetSource(Path root, AccessLevel access, PathConfinement confinement, long maxBytes,
@@ -168,7 +168,7 @@ public final class DirectoryAssetSource implements AssetSource {
      * @param maxBytes             the maximum served-file size in bytes
      * @param operatorContentTypes the boot-resolved add-only content-type additions (mandatory)
      * @param opener               the stat-and-read seam (mandatory)
-     * @throws IllegalArgumentException when {@code maxBytes} exceeds
+     * @throws IllegalArgumentException when {@code maxBytes} is negative, or exceeds
      *                                  {@link #MAX_ENFORCEABLE_BYTES} — a cap this source could not
      *                                  hold the bytes for, and so could only honour by serving a
      *                                  prefix as a complete response
@@ -178,9 +178,10 @@ public final class DirectoryAssetSource implements AssetSource {
         this.root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
         this.access = Objects.requireNonNull(access, "access");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
-        if (maxBytes > MAX_ENFORCEABLE_BYTES) {
+        if (maxBytes < 0 || maxBytes > MAX_ENFORCEABLE_BYTES) {
             throw new IllegalArgumentException(
-                    "maxBytes must not exceed %d, got %d".formatted(MAX_ENFORCEABLE_BYTES, maxBytes));
+                    "maxBytes must be between 0 and %d, got %d"
+                            .formatted(MAX_ENFORCEABLE_BYTES, maxBytes));
         }
         this.maxBytes = maxBytes;
         this.operatorContentTypes = Map.copyOf(
@@ -308,6 +309,35 @@ public final class DirectoryAssetSource implements AssetSource {
     }
 
     /**
+     * Reports the size of an asset that is still a regular file, refusing one that is not.
+     * <p>
+     * The {@link Files#isRegularFile} test in {@link #serve} is taken on a path, from the filesystem
+     * root, before the descent even begins — so it says what the entry <em>was</em>, not what the
+     * read is about to open. That gap matters beyond symlinks: {@link LinkOption#NOFOLLOW_LINKS}
+     * refuses a component swapped to a <em>symlink</em>, but it accepts a FIFO, and opening a FIFO
+     * for reading blocks until a writer appears. On a writable asset volume — the same capability
+     * {@link #realPathWithinRoot} already reasons about — that turns a served asset into a stalled
+     * request thread.
+     * <p>
+     * Re-testing the type here, on the descriptor the read itself will use and immediately before it,
+     * NARROWS that window to the interval between this stat and the open. It does not CLOSE it:
+     * closing it needs a non-blocking open, and the JDK's NIO surface exposes no {@code O_NONBLOCK}
+     * for {@link SecureDirectoryStream#newByteChannel}. The residual is therefore a deployment-posture
+     * matter — an immutable or trusted-writer asset mount removes it entirely — and is stated here
+     * rather than left implied by the presence of a check.
+     *
+     * @param attributes the attributes read without following a symlink
+     * @return the asset's size in bytes
+     * @throws IOException when the entry is not a regular file, so no byte of it may be served
+     */
+    private static long regularFileSize(BasicFileAttributes attributes) throws IOException {
+        if (!attributes.isRegularFile()) {
+            throw new IOException("the confined entry is not a regular file");
+        }
+        return attributes.size();
+    }
+
+    /**
      * A proven-in-root asset location, split into the two halves the descent needs.
      *
      * @param realRoot the configured root resolved through its own symlink chain
@@ -328,7 +358,9 @@ public final class DirectoryAssetSource implements AssetSource {
 
         /**
          * @return the asset's size in bytes, without following a symlink
-         * @throws IOException when the asset cannot be stat-ed
+         * @throws IOException when the asset cannot be stat-ed, or is no longer a regular file — a
+         *                     type the read must refuse rather than open, since a FIFO put in an
+         *                     asset's place would block the reading thread instead of yielding bytes
          */
         long size() throws IOException;
 
@@ -463,8 +495,9 @@ public final class DirectoryAssetSource implements AssetSource {
 
         @Override
         public long size() throws IOException {
-            return dir.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
-                    .readAttributes().size();
+            return regularFileSize(dir
+                    .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+                    .readAttributes());
         }
 
         @Override
@@ -504,7 +537,8 @@ public final class DirectoryAssetSource implements AssetSource {
 
         @Override
         public long size() throws IOException {
-            return Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).size();
+            return regularFileSize(
+                    Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS));
         }
 
         @Override
