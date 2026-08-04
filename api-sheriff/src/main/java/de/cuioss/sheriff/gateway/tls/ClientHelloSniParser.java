@@ -108,6 +108,16 @@ public final class ClientHelloSniParser {
      * The terminal verdict, if any, implied by the record header at {@code pos}: too few bytes for a
      * header (keep buffering, or fail closed once the bound is passed), or a record that is not a TLS
      * handshake at all.
+     * <p>
+     * <strong>The give-up test is anchored on {@code bytes.length}</strong> — the bytes already
+     * buffered — rather than on {@code pos}, the bytes already consumed. {@link #MAX_CLIENT_HELLO_BYTES}
+     * declares its bound on the accumulated buffer, and in this branch {@code pos} trails
+     * {@code bytes.length} by up to {@code RECORD_HEADER_LENGTH - 1}: a position-anchored test would
+     * therefore still answer {@link Result#needMoreData()} for a buffer holding up to
+     * {@code MAX_CLIENT_HELLO_BYTES + 3} bytes, telling the caller to keep buffering something that
+     * has already passed the declared hard bound. Since {@code pos <= bytes.length} always holds
+     * ({@link #recordBodyVerdict(byte[], int)} advances {@code pos} only to a {@code recordEnd} it has
+     * confirmed is within the buffer), the buffer-anchored test subsumes the position-anchored one.
      *
      * @param bytes the accumulated connection bytes
      * @param pos   the offset of the record header being examined
@@ -115,7 +125,7 @@ public final class ClientHelloSniParser {
      */
     private static @Nullable Result recordHeaderVerdict(byte[] bytes, int pos) {
         if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-            return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
+            return overBound(bytes.length) ? Result.parsed(null) : Result.needMoreData();
         }
         if ((bytes[pos] & UINT8_MASK) != RECORD_TYPE_HANDSHAKE) {
             // Not a TLS handshake record — fail closed to the terminated-strict path.
@@ -161,8 +171,13 @@ public final class ClientHelloSniParser {
         return null;
     }
 
-    private static boolean overBound(int pos) {
-        return pos >= MAX_CLIENT_HELLO_BYTES;
+    /**
+     * Whether {@code byteCount} has reached the reassembly bound. Callers pass the number of bytes
+     * <em>buffered</em>, never the number consumed — see
+     * {@link #recordHeaderVerdict(byte[], int)} for why the distinction is load-bearing.
+     */
+    private static boolean overBound(int byteCount) {
+        return byteCount >= MAX_CLIENT_HELLO_BYTES;
     }
 
     /**

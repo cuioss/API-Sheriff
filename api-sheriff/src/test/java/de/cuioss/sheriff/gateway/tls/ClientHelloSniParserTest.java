@@ -223,6 +223,42 @@ class ClientHelloSniParserTest {
             assertTrue(result.complete(), "an oversize declared record is decided, never buffered");
             assertNull(result.serverName());
         }
+
+        @Test
+        @DisplayName("fails closed once the buffered bytes reach the bound, not once the consumed bytes do")
+        void bufferedBytesAtBoundFailClosed() {
+            // Arrange — MAX_CLIENT_HELLO_BYTES bytes buffered, of which only MAX - 1 have been
+            // consumed: the trailing byte opens a record header that cannot be read yet. A give-up
+            // test anchored on the consumed position answers needMoreData here, so the caller keeps
+            // buffering a buffer that has already reached the hard bound the constant declares.
+            byte[] atBound = ClientHelloFixture.incompleteHelloWithPartialNextHeader(
+                    ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES, 1);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(atBound);
+
+            // Assert
+            assertTrue(result.complete(),
+                    "a buffer at the hard bound is decided, never handed back for more buffering");
+            assertNull(result.serverName(), "reaching the buffering bound fails closed");
+        }
+
+        @Test
+        @DisplayName("still asks for more data one byte below the bound")
+        void bufferedBytesBelowBoundKeepBuffering() {
+            // Arrange — the matched control for the test above: the identical shape one byte smaller.
+            // It pins the give-up test to MAX_CLIENT_HELLO_BYTES exactly, so the fail-closed verdict
+            // above cannot be satisfied by a guard that gives up early on every fragmented ClientHello.
+            byte[] belowBound = ClientHelloFixture.incompleteHelloWithPartialNextHeader(
+                    ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES - 1, 1);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(belowBound);
+
+            // Assert
+            assertFalse(result.complete(), "a buffer below the bound is still reassembling");
+            assertNull(result.serverName(), "an incomplete ClientHello carries no server name");
+        }
     }
 
     @Nested
@@ -325,6 +361,8 @@ class ClientHelloSniParserTest {
         private static final byte RECORD_HANDSHAKE = 0x16;
         private static final byte HANDSHAKE_CLIENT_HELLO = 0x01;
         private static final int EXTENSION_TYPE_SERVER_NAME = 0x0000;
+        private static final int RECORD_HEADER_LENGTH = 5;
+        private static final int HANDSHAKE_HEADER_LENGTH = 4;
 
         private ClientHelloFixture() {
         }
@@ -415,6 +453,32 @@ class ClientHelloSniParserTest {
             for (byte[] array : arrays) {
                 out.writeBytes(array);
             }
+            return out.toByteArray();
+        }
+
+        /**
+         * A buffer of exactly {@code totalLength} bytes made of one handshake record that leaves the
+         * ClientHello incomplete, followed by {@code partialHeaderBytes} bytes of the next record
+         * header — fewer than the {@value #RECORD_HEADER_LENGTH} a full header needs, so the parser
+         * stops at the loop-head length guard.
+         * <p>
+         * This is the shape that separates the two candidate anchors of the give-up test: the bytes
+         * <em>consumed</em> stop at the first record's end, while the bytes <em>buffered</em> run on to
+         * {@code totalLength}. The first record's declared handshake body reaches the bound exactly, so
+         * the reassembled handshake is incomplete without being malformed.
+         */
+        static byte[] incompleteHelloWithPartialNextHeader(int totalLength, int partialHeaderBytes) {
+            int recordEnd = totalLength - partialHeaderBytes;
+            byte[] payload = new byte[recordEnd - RECORD_HEADER_LENGTH];
+            int declaredBody = ClientHelloSniParser.MAX_CLIENT_HELLO_BYTES - HANDSHAKE_HEADER_LENGTH;
+            payload[0] = HANDSHAKE_CLIENT_HELLO;
+            payload[1] = (byte) ((declaredBody >> 16) & 0xFF);
+            payload[2] = (byte) ((declaredBody >> 8) & 0xFF);
+            payload[3] = (byte) (declaredBody & 0xFF);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            writeRecord(out, payload);
+            out.write(new byte[]{RECORD_HANDSHAKE, 0x03, 0x01, 0x00}, 0, partialHeaderBytes);
             return out.toByteArray();
         }
 
