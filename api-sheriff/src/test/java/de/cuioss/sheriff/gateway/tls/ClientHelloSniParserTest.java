@@ -126,6 +126,42 @@ class ClientHelloSniParserTest {
         }
 
         @Test
+        @DisplayName("asks for more data when the first record header is one byte short")
+        void needsMoreDataForOneByteShortRecordHeader() {
+            // Arrange — exactly RECORD_HEADER_LENGTH - 1 bytes. The low byte of the record-length
+            // field (index 4) has not arrived, so reading it is precisely the out-of-bounds access
+            // the loop-head length guard exists to prevent.
+            byte[] hello = ClientHelloFixture.withSni("relay.internal");
+            byte[] oneByteShortHeader = Arrays.copyOf(hello, 4);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(oneByteShortHeader);
+
+            // Assert
+            assertFalse(result.complete(), "a header one byte short is buffered, never read past");
+            assertNull(result.serverName());
+        }
+
+        @Test
+        @DisplayName("asks for more data when a later record header is one byte short")
+        void needsMoreDataForOneByteShortLaterRecordHeader() {
+            // Arrange — a first handshake record that leaves the ClientHello incomplete, followed by
+            // only 4 of the 5 bytes of the second record header. The loop-back re-enters the header
+            // guard at pos > 0, which is the tail check the cognitive-complexity split delegated to
+            // the loop head.
+            byte[] twoRecords = ClientHelloFixture.withSniSplitAcrossRecords("split.example.org", 40);
+            byte[] truncated = Arrays.copyOf(twoRecords, 5 + 40 + 4);
+
+            // Act
+            ClientHelloSniParser.Result result = parser.parse(truncated);
+
+            // Assert
+            assertFalse(result.complete(),
+                    "a later header one byte short is buffered, never read past");
+            assertNull(result.serverName());
+        }
+
+        @Test
         @DisplayName("reassembles a ClientHello split across two TLS handshake records")
         void reassemblesAcrossTwoRecords() {
             // Arrange

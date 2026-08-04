@@ -198,7 +198,8 @@ class TlsEdgeProducerTest {
         try (Socket probe = new Socket()) {
             probe.connect(new InetSocketAddress("localhost", port), CONNECT_TIMEOUT_MILLIS);
             return true;
-        } catch (IOException refused) {
+        } catch (IOException _) {
+            // A refused connection IS the answer: nothing is listening on the probed port.
             return false;
         }
     }
@@ -210,7 +211,7 @@ class TlsEdgeProducerTest {
         for (int attempt = 0; attempt < 100 && isListening(port); attempt++) {
             try {
                 Thread.sleep(20);
-            } catch (InterruptedException interrupted) {
+            } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
                 break;
             }

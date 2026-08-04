@@ -249,10 +249,50 @@ public final class ClientHelloSniParser {
         return null;
     }
 
+    /**
+     * Reads the big-endian {@code uint16} at {@code offset}.
+     * <p>
+     * <strong>Bounds contract.</strong> Both call sites establish {@code 0 <= offset} and
+     * {@code offset + 1 < data.length} before calling, so neither read can run past the array:
+     * <ul>
+     * <li>{@link #parse(byte[])} evaluates {@code uint16(bytes, pos + 3)} only after
+     * {@link #recordHeaderVerdict(byte[], int)} returned {@code null}, which happens solely when
+     * {@code bytes.length - pos >= RECORD_HEADER_LENGTH} — so {@code pos + 4 <= bytes.length - 1}.
+     * {@code pos} starts at {@code 0} and only ever advances to a {@code recordEnd} that
+     * {@link #recordBodyVerdict(byte[], int)} already bounded by {@link #MAX_CLIENT_HELLO_BYTES}, so
+     * it is never negative and never overflows.</li>
+     * <li>{@link Cursor#readUint16()} evaluates {@code uint16(data, position)} only after
+     * {@link Cursor#require(int)} asserted {@code position + 2 <= data.length}, raising
+     * {@link MalformedHelloException} otherwise. {@code position} starts at
+     * {@link #HANDSHAKE_HEADER_LENGTH} and never decreases ({@link Cursor#seek(int)} refuses a
+     * backwards target), so it is never negative.</li>
+     * </ul>
+     * Both guards live in extracted helpers rather than inline in the reading method, which is why
+     * the symbolic-execution engine cannot see them; {@code ClientHelloSniParserTest} pins the
+     * {@code parse} guard at the exact one-byte-short-of-a-record-header boundary, on the first
+     * record and on the loop-back to a later record.
+     *
+     * @param data   the buffer to read from
+     * @param offset the offset of the high-order byte; the caller guarantees {@code offset + 1} is
+     *               within {@code data}
+     * @return the unsigned 16-bit big-endian value at {@code offset}
+     */
     private static int uint16(byte[] data, int offset) {
-        return ((data[offset] & UINT8_MASK) << 8) | (data[offset + 1] & UINT8_MASK);
+        int high = data[offset] & UINT8_MASK; // NOSONAR javabugs:S6466 - caller-guarded, see Javadoc
+        int low = data[offset + 1] & UINT8_MASK; // NOSONAR javabugs:S6466 - caller-guarded, see Javadoc
+        return (high << 8) | low;
     }
 
+    /**
+     * Reads the big-endian {@code uint24} at {@code offset}. The sole caller
+     * {@link #completeHandshake(byte[])} has already returned {@link HandshakeSpan#INCOMPLETE} unless
+     * {@code handshake.length >= HANDSHAKE_HEADER_LENGTH}, so offsets {@code 1..3} are always within
+     * the buffer.
+     *
+     * @param data   the buffer to read from
+     * @param offset the offset of the most significant byte
+     * @return the unsigned 24-bit big-endian value at {@code offset}
+     */
     private static int uint24(byte[] data, int offset) {
         return ((data[offset] & UINT8_MASK) << 16)
                 | ((data[offset + 1] & UINT8_MASK) << 8)
