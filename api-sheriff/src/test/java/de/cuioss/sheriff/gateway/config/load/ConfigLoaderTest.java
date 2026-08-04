@@ -776,8 +776,106 @@ class ConfigLoaderTest {
         ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", tooLargeForALong)).load();
 
         assertEquals(tooLargeForALong, loaded.gateway().oidc().clientSecret(),
-                "an all-digit substitution that overflows a long must fall back to a text node rather than "
-                        + "propagate the parse failure");
+                "client_secret is a schema-declared string, so an all-digit substitution stays text on its "
+                        + "destination type alone — the numeric parse is never attempted, let alone allowed to "
+                        + "propagate a parse failure");
+    }
+
+    /**
+     * The destination-type contract's core case: a schema-declared STRING field whose placeholder
+     * resolves to a value that merely <em>looks</em> boolean or numeric. Shape inference retyped such a
+     * value to a boolean or integer node, which schema validation then refused as a type mismatch — so
+     * an operator whose client id happened to be {@code true} or {@code 123} could not boot at all, for
+     * no reason other than how the value looked. The declared destination type is now what decides.
+     */
+    @ParameterizedTest(name = "a schema-string field resolving to ''{0}'' binds as a string")
+    @ValueSource(strings = {"true", "false", "TRUE", "123", "-7"})
+    void schemaStringFieldKeepsAShapeLookalikeSubstitutionAsText(String resolved) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "${SHERIFF_CLIENT_ID}"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  redirect_uri: "https://gw.example.com/callback"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of(
+                "SHERIFF_CLIENT_ID", resolved,
+                "OIDC_CLIENT_SECRET", "s3cr3t")).load();
+
+        // Assert
+        assertEquals(resolved, loaded.gateway().oidc().clientId(),
+                "a schema-declared string must be typed by its destination, never by the resolved value's shape");
+    }
+
+    /**
+     * The matched positive control for the rule above: where the schema really does declare a boolean,
+     * a substituted {@code true}/{@code false} must still be coerced to one. Fixing the string case by
+     * disabling coercion outright would pass the negative test and silently break every genuinely
+     * boolean-typed placeholder.
+     */
+    @ParameterizedTest(name = "a schema-boolean field resolving to ''{0}'' binds as a boolean")
+    @ValueSource(strings = {"true", "false"})
+    void schemaBooleanFieldStillCoercesASubstitutedBoolean(String resolved) throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: []
+                  trust_scheme_host: "${TRUST_SCHEME_HOST}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("TRUST_SCHEME_HOST", resolved)).load();
+
+        // Assert
+        assertEquals(Boolean.valueOf(resolved), loaded.gateway().forwarded().trustSchemeHost(),
+                "a schema-declared boolean must still coerce from its substituted value");
+    }
+
+    @Test
+    void schemaIntegerFieldRefusesANonNumericSubstitutionWithoutEchoingIt() throws Exception {
+        // Arrange — the fail-closed leg: a value that cannot carry the declared type is left as text for
+        // schema validation to refuse, rather than being force-fitted into the destination type.
+        writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION}\"\n");
+
+        // Act
+        ConfigLoader loader = loader(Map.of("CONFIG_VERSION", "s3cr3t-topsecret-value"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert — refused at its own pointer, and the refusal names TYPES rather than the resolved
+        // value: a resolved scalar may hold a secret and must never reach a collected error message.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("version")),
+                () -> "a non-numeric substitution on an integer field must be refused, got: "
+                        + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("s3cr3t-topsecret-value")),
+                () -> "no error may echo the resolved scalar, got: " + exception.errors());
+    }
+
+    @Test
+    void typesASubstitutedScalarInsideAnArrayItemFromItsDeclaredItemType() throws Exception {
+        // Arrange — the pointer walk must descend array positions too, not just object properties:
+        // /token_validation/issuers/0/name is reached through an `items` schema.
+        writeConfig("gateway.yaml", """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: "${ISSUER_NAME}"
+                      issuer: https://issuer.example.com
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("ISSUER_NAME", "123")).load();
+
+        // Assert
+        assertEquals("123", loaded.gateway().tokenValidation().issuers().getFirst().name(),
+                "a schema-string inside an array item must be typed from its declared item type");
     }
 
     @Test

@@ -83,6 +83,9 @@ import org.yaml.snakeyaml.nodes.Node;
  * snapshot, so no check-then-act window exists between them and no boot pass reads an unbounded
  * number of bytes.
  * <p>
+ * Each substituted scalar is typed from the destination type the bundled schema declares at that
+ * value's own JSON pointer, never from the resolved string's shape — see {@link #coerce}.
+ * <p>
  * The endpoint-enablement resolution, topology-alias resolution, cross-cutting
  * semantic validation, and route-table assembly steps of the full boot sequence are
  * layered on by later deliverables; this loader owns steps 1-4 (read,
@@ -134,6 +137,11 @@ public final class ConfigLoader {
      */
     private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
+    /**
+     * Bound on {@code $ref} indirections followed when resolving a destination type. The bundled
+     * schemas nest one level deep; the cap simply stops a malformed or cyclic reference from spinning.
+     */
+    private static final int MAX_SCHEMA_REF_HOPS = 10;
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key");
 
@@ -142,6 +150,8 @@ public final class ConfigLoader {
     private final ObjectMapper mapper;
     private final Schema gatewaySchema;
     private final Schema endpointSchema;
+    private final JsonNode gatewaySchemaTree;
+    private final JsonNode endpointSchemaTree;
 
     /**
      * Creates a loader for the given configuration directory.
@@ -161,6 +171,8 @@ public final class ConfigLoader {
                         .build()));
         this.gatewaySchema = loadSchema(registry, "/schema/gateway.schema.json");
         this.endpointSchema = loadSchema(registry, "/schema/endpoint.schema.json");
+        this.gatewaySchemaTree = loadSchemaTree("/schema/gateway.schema.json");
+        this.endpointSchemaTree = loadSchemaTree("/schema/endpoint.schema.json");
     }
 
     /**
@@ -188,7 +200,7 @@ public final class ConfigLoader {
             return null;
         }
         validateSecretReferences(node, errors);
-        substitute(node, GATEWAY_FILE, "", errors);
+        substitute(node, gatewaySchemaTree, GATEWAY_FILE, "", errors);
         if (hasErrorsFor(GATEWAY_FILE, errors)) {
             return null;
         }
@@ -252,7 +264,7 @@ public final class ConfigLoader {
         if (root == null) {
             return null;
         }
-        substitute(root, file, "", errors);
+        substitute(root, endpointSchemaTree, file, "", errors);
         if (hasErrorsFor(file, errors)) {
             return null;
         }
@@ -393,62 +405,183 @@ public final class ConfigLoader {
         }
     }
 
-    private void substitute(JsonNode node, String file, String pointer, List<ConfigError> errors) {
+    private void substitute(JsonNode node, JsonNode schemaTree, String file, String pointer,
+            List<ConfigError> errors) {
         if (node instanceof ObjectNode object) {
             List<String> names = new ArrayList<>();
             object.fieldNames().forEachRemaining(names::add);
             for (String name : names) {
-                substituteChild(object.get(name), file, pointer + "/" + name, errors,
+                substituteChild(object.get(name), schemaTree, file, pointer + "/" + name, errors,
                         resolved -> object.set(name, resolved));
             }
         } else if (node instanceof ArrayNode array) {
             for (int index = 0; index < array.size(); index++) {
                 int position = index;
-                substituteChild(array.get(index), file, pointer + "/" + index, errors,
+                substituteChild(array.get(index), schemaTree, file, pointer + "/" + index, errors,
                         resolved -> array.set(position, resolved));
             }
         }
     }
 
-    private void substituteChild(JsonNode child, String file, String pointer, List<ConfigError> errors,
-            Consumer<JsonNode> replacer) {
+    private void substituteChild(JsonNode child, JsonNode schemaTree, String file, String pointer,
+            List<ConfigError> errors, Consumer<JsonNode> replacer) {
         if (child.isTextual() && secretResolver.hasReference(child.asText())) {
             try {
-                replacer.accept(coerce(secretResolver.resolve(child.asText())));
+                replacer.accept(coerce(secretResolver.resolve(child.asText()),
+                        declaredScalarType(schemaTree, pointer)));
             } catch (EnvSecretResolver.MissingVariableException | EnvSecretResolver.MalformedPlaceholderException e) {
                 errors.add(new ConfigError(file, pointer, e.getMessage()));
             }
         } else {
-            substitute(child, file, pointer, errors);
+            substitute(child, schemaTree, file, pointer, errors);
         }
     }
 
     /**
-     * Re-types a substituted scalar so schema validation sees the natural JSON type
-     * the value would have carried if written literally: {@code true}/{@code false}
-     * bind to a boolean, an integer literal to an integer, everything else stays a
-     * string. Only substituted scalars pass through here — a literal (unquoted) value
-     * was already typed by the YAML parser.
+     * Re-types a substituted scalar to the type the bundled schema declares at the value's own JSON
+     * pointer, so a placeholder is typed by its <em>destination</em> rather than by the resolved
+     * string's shape.
+     * <p>
+     * Shape inference alone silently retypes a string-typed field whose {@code ${VAR}} happens to
+     * resolve to {@code true} or {@code 123}: the value would reach the binder as a boolean or an
+     * integer purely because of how it looked, which is a value-dependent change of meaning the
+     * operator never wrote. Consulting the destination type removes that coupling — a schema-declared
+     * string stays a string whatever it resolves to. Where the destination cannot be pinned to one
+     * scalar type ({@code declaredType == null}: no {@code type} keyword, a union such as
+     * {@code ["string","integer"]}, or a pointer the schema does not describe) the historical
+     * shape inference remains, since there the schema genuinely permits more than one scalar type.
+     * <p>
+     * A value that cannot be represented as the declared type is deliberately left as a
+     * {@link TextNode} rather than being coerced or reported here: schema validation runs next and
+     * refuses the type mismatch with a diagnostic naming the expected and actual <em>types</em>, never
+     * the value — which is what keeps a resolved secret out of every collected {@link ConfigError}.
+     * Only substituted scalars pass through here; a literal (unquoted) value was already typed by the
+     * YAML parser.
      */
-    private static JsonNode coerce(String value) {
+    private static JsonNode coerce(String value, @Nullable String declaredType) {
+        if (declaredType == null) {
+            return inferFromShape(value);
+        }
+        return switch (declaredType) {
+            case "string" -> TextNode.valueOf(value);
+            case "boolean" -> coerceBoolean(value);
+            case "integer", "number" -> coerceNumber(value);
+            default -> inferFromShape(value);
+        };
+    }
+
+    private static JsonNode coerceBoolean(String value) {
         if ("true".equalsIgnoreCase(value)) {
             return BooleanNode.TRUE;
         }
         if ("false".equalsIgnoreCase(value)) {
             return BooleanNode.FALSE;
         }
-        if (INTEGER.matcher(value).matches()) {
-            try {
-                long parsed = Long.parseLong(value);
-                if (parsed >= Integer.MIN_VALUE && parsed <= Integer.MAX_VALUE) {
-                    return IntNode.valueOf((int) parsed);
+        return TextNode.valueOf(value);
+    }
+
+    private static JsonNode coerceNumber(String value) {
+        if (!INTEGER.matcher(value).matches()) {
+            return TextNode.valueOf(value);
+        }
+        try {
+            long parsed = Long.parseLong(value);
+            if (parsed >= Integer.MIN_VALUE && parsed <= Integer.MAX_VALUE) {
+                return IntNode.valueOf((int) parsed);
+            }
+            return LongNode.valueOf(parsed);
+        } catch (NumberFormatException _) {
+            return TextNode.valueOf(value);
+        }
+    }
+
+    /**
+     * The legacy shape-guessed typing, retained only for pointers whose destination type the schema
+     * does not pin to a single scalar type.
+     */
+    private static JsonNode inferFromShape(String value) {
+        JsonNode asBoolean = coerceBoolean(value);
+        if (asBoolean.isBoolean()) {
+            return asBoolean;
+        }
+        return coerceNumber(value);
+    }
+
+    /**
+     * Reports the single scalar type the bundled schema declares for the instance location
+     * {@code pointer}, or {@code null} when the schema pins no single scalar type there.
+     * <p>
+     * The walk follows {@code properties}, {@code patternProperties}, {@code additionalProperties},
+     * {@code items}, and local {@code $ref}s, mirroring the structures the bundled schemas actually
+     * use. {@code null} — returned for an undescribed pointer, a union {@code type}, or an absent
+     * {@code type} keyword — is the "cannot pin it" signal that routes the caller to shape inference;
+     * it is never an error, because a pointer the schema does not describe is refused moments later by
+     * the schema validation pass itself.
+     */
+    private static @Nullable String declaredScalarType(JsonNode schemaTree, String pointer) {
+        JsonNode current = deref(schemaTree, schemaTree);
+        for (String token : pointer.split("/")) {
+            if (token.isEmpty()) {
+                continue;
+            }
+            if (current == null) {
+                return null;
+            }
+            current = deref(schemaTree, childSchema(current, token));
+        }
+        if (current == null) {
+            return null;
+        }
+        JsonNode type = current.get("type");
+        return type != null && type.isTextual() ? type.asText() : null;
+    }
+
+    /**
+     * Descends one instance-pointer token into {@code schema}. An array schema consumes the token as
+     * an index; an object schema resolves it as a property name, falling back to a matching
+     * {@code patternProperties} entry and then to a schema-valued {@code additionalProperties}.
+     */
+    private static @Nullable JsonNode childSchema(JsonNode schema, String token) {
+        JsonNode items = schema.get("items");
+        if (items != null) {
+            return items;
+        }
+        JsonNode properties = schema.get("properties");
+        if (properties != null && properties.has(token)) {
+            return properties.get(token);
+        }
+        JsonNode patternProperties = schema.get("patternProperties");
+        if (patternProperties != null) {
+            Iterator<String> patterns = patternProperties.fieldNames();
+            while (patterns.hasNext()) {
+                String pattern = patterns.next();
+                if (Pattern.compile(pattern).matcher(token).find()) {
+                    return patternProperties.get(pattern);
                 }
-                return LongNode.valueOf(parsed);
-            } catch (NumberFormatException _) {
-                return TextNode.valueOf(value);
             }
         }
-        return TextNode.valueOf(value);
+        JsonNode additional = schema.get("additionalProperties");
+        return additional != null && additional.isObject() ? additional : null;
+    }
+
+    /**
+     * Follows local {@code $ref} indirections to the schema they name. Bounded by
+     * {@link #MAX_SCHEMA_REF_HOPS} so a malformed bundled schema cannot spin here; a non-local or
+     * unresolvable reference yields {@code null}, which the caller reads as "type not pinned".
+     */
+    private static @Nullable JsonNode deref(JsonNode schemaTree, @Nullable JsonNode schema) {
+        JsonNode current = schema;
+        for (int hops = 0; current != null && current.has("$ref"); hops++) {
+            JsonNode reference = current.get("$ref");
+            if (hops >= MAX_SCHEMA_REF_HOPS || !reference.isTextual() || !reference.asText().startsWith("#/")) {
+                return null;
+            }
+            current = schemaTree.at(reference.asText().substring(1));
+            if (current.isMissingNode()) {
+                return null;
+            }
+        }
+        return current;
     }
 
     private static void applyEnabledDefault(JsonNode endpointBlock) {
@@ -536,6 +669,25 @@ public final class ConfigLoader {
                 throw new IllegalStateException("Missing bundled schema resource: " + resource);
             }
             return registry.getSchema(stream);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot read bundled schema resource: " + resource, e);
+        }
+    }
+
+    /**
+     * Parses the same bundled schema resource into a plain tree, which
+     * {@link #declaredScalarType(JsonNode, String)} walks to answer "what type does this pointer
+     * declare?". The validator's own {@link Schema} handle exposes no such lookup, so the resource is
+     * read a second time rather than reaching into the validator's internals. Both reads target a
+     * bundled classpath resource, so a plain mapper is the right reader — the hardened YAML factory
+     * guards untrusted operator input, which this is not.
+     */
+    private static JsonNode loadSchemaTree(String resource) {
+        try (InputStream stream = ConfigLoader.class.getResourceAsStream(resource)) {
+            if (stream == null) {
+                throw new IllegalStateException("Missing bundled schema resource: " + resource);
+            }
+            return new ObjectMapper().readTree(stream);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read bundled schema resource: " + resource, e);
         }
