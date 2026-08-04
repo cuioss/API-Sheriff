@@ -3,7 +3,7 @@
 :toclevels: 3
 :sectnums:
 
-The `deployment` module owns one subtree, `compose-sample/`, holding a production-shaped Docker
+The `deployment` module owns one subtree, `compose-sample/`, holding a deployment-shaped Docker
 Compose stack. This document covers why it exists as a separate stack, the decisions inside it that
 look arbitrary until you know the constraint behind them, and the build mechanism that keeps it out
 of the default lane. The link:../user/compose-sample.adoc[operator guide] covers running it.

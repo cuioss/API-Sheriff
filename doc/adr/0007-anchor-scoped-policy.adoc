@@ -125,9 +125,8 @@ Three lessons condense out:
   and erasing anchors before runtime.
 * The same-upstream-two-surfaces case costs one extra route entry per surface -- accepted; the
   two surfaces need different auth anyway.
-* Must land *before* the request pipeline (Plan 04) freezes route selection; retrofitting
-  namespace enforcement into an existing pipeline is substantially harder. See
-  link:../plan/03-endpoint-anchors.adoc[Plan 03].
+* Namespace enforcement had to land *before* the request pipeline froze route selection --
+  retrofitting it into an existing pipeline is substantially harder -- and it did.
 
 == References
 

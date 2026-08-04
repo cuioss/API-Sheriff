@@ -25,7 +25,7 @@ traffic: large responses, file downloads, Server-Sent Events, chunked/long-lived
 `HttpResult<String>` means holding the *whole* body in heap/direct memory before a single byte
 reaches the client.
 
-Plan 01's interim proxy already exhibits the hazard: it reads the upstream response with
+The early interim proxy exhibited the hazard directly: it read the upstream response with
 `HttpResponse.BodyHandlers.ofByteArray()` (whole body buffered) -- acceptable for a throwaway
 scaffold, unacceptable for the real pipeline.
 
@@ -107,7 +107,7 @@ backpressure, and forces time-to-first-byte up to time-to-last-byte.
   paths reject via the input-validation edge and never complete the forward.
 * *Streaming-specific responses pass through untouched.* SSE (`text/event-stream`), chunked
   transfer, and long-lived responses are relayed with immediate flush and no buffering;
-  WebSocket upgrades (later plan) become a byte relay after the authenticated handshake. None of
+  a WebSocket upgrade becomes a byte relay after the authenticated handshake. None of
   these are ever materialized.
 
 == Consequences
@@ -118,9 +118,8 @@ backpressure, and forces time-to-first-byte up to time-to-last-byte.
   hold-until-complete), matching every surveyed proxy's default.
 * The `HttpResult<T>` ergonomics are retained exactly where they help -- the small control-plane
   JSON calls -- without leaking their materialize-the-body cost onto the data plane.
-* Plan 04 replaces the interim `ofByteArray()` buffering proxy with the streaming pipe; the body
-  cap is re-expressed as a streaming counter (see
-  link:../plan/04-request-pipeline.adoc[Plan 04], dispatch/response stages).
+* The request pipeline's dispatch and response stages replaced the interim `ofByteArray()`
+  buffering proxy with the streaming pipe, and the body cap is a streaming counter.
 
 == References
 

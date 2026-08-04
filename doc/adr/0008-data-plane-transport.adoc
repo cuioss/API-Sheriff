@@ -14,7 +14,7 @@ named the *client* on each side. Two governing texts consequently contradicted e
 the Architecture "Downstream Client" section said upstream calls use `cui-http`'s
 `HttpHandler` ("one pooled JDK `HttpClient` per upstream tuple"), while ADR-0006's decision
 is written in Vert.x vocabulary ("pipe the client `ReadStream` to the *upstream
-`WriteStream`*"), presupposing a Vert.x upstream leg. Plan 04 inherited both.
+`WriteStream`*"), presupposing a Vert.x upstream leg. The request pipeline inherited both.
 
 Source verification (local `cui-http` checkout) sharpened this into a type-level fact rather
 than a preference: the `cui-http` client adapters are materializing *by construction*.
@@ -31,7 +31,7 @@ Meanwhile the delivered configuration model already promises per-route `304` beh
 `ResolvedRoute` -- with semantics specified in a single vague sentence. The obvious (wrong)
 implementation would have been the ETag adapter on the data plane.
 
-Forward-looking transport requirements from the later protocol plans: gRPC requires HTTP
+The protocol surfaces impose their own transport requirements: gRPC requires HTTP
 *trailers* (`grpc-status` lives there) -- the JDK `HttpClient` exposes none; WebSocket
 proxying requires the raw upgrade stream; upstream HTTP/2 multiplexing is expected. All three
 are native to the Vert.x client that already runs the gateway's edge.
@@ -82,8 +82,8 @@ are native to the Vert.x client that already runs the gateway's edge.
 
 == Consequences
 
-* The later gRPC and WebSocket plans get trailers, upgrade streams, and h2 natively -- no
-  transport swap mid-series.
+* gRPC and WebSocket get trailers, upgrade streams, and h2 natively -- no transport swap was
+  needed to add them.
 * `cui-http`'s retry/backoff (`RetryConfig`) goes unused on the data plane -- it was unusable
   there anyway (retry presupposes a replayable materialized body). The breaker was already
   specified as gateway-side; it now has a concrete, Quarkus-supported home instead of a
@@ -92,15 +92,15 @@ are native to the Vert.x client that already runs the gateway's edge.
   token-sheriff libraries). "Standardize on cui-http" remains true for what cui-http is best
   at -- inbound security filtering, forwarded-header resolution, control-plane calls -- and
   stops being over-generalized to opaque byte relay.
-* One new Quarkus extension dependency (`quarkus-smallrye-fault-tolerance`, version from the
-  Quarkus BOM), subject to the usual explicit dependency approval in Plan 04.
+* One additional Quarkus extension dependency (`quarkus-smallrye-fault-tolerance`, version from
+  the Quarkus BOM), adopted under the usual explicit dependency-approval rule.
 * Millisecond-precision timeouts become legal configuration; existing configs remain valid
   (whole seconds are a subset).
 * The exact SmallRye FT programmatic surface (`Guard`/`TypedGuard`, `CircuitBreakerMaintenance`
-  state callbacks) is verified against the shipped extension version during Plan 04
-  implementation; if a needed hook is missing, the fallback is the same policy expressed as a
-  small gateway-side component -- the *decision* (per-route guards in the edge layer,
-  stream-aware retry gate) is unchanged either way.
+  state callbacks) is used as the shipped extension version provides it; were a needed hook
+  missing, the fallback would be the same policy expressed as a small gateway-side component --
+  the *decision* (per-route guards in the edge layer, stream-aware retry gate) is unchanged
+  either way.
 
 == References
 

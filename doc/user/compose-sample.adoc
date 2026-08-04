@@ -1,11 +1,13 @@
-= Compose Sample -- a Production-Shaped Deployment You Can Run
+= Compose Sample -- a Deployment-Shaped Stack You Can Run
 :toc:
 :toclevels: 3
 :sectnums:
 
-A runnable Docker Compose stack that shows how API Sheriff is actually deployed: the published image
-pulled by tag, all configuration supplied through read-only mounts, and every runtime-hardening
-directive a production deployment should set, set explicitly rather than left to a default.
+A runnable Docker Compose stack that shows the *shape* of an API Sheriff deployment: the published
+image pulled by tag, all configuration supplied through read-only mounts, and every runtime-hardening
+directive a real deployment should set, set explicitly rather than left to a default. It is a
+teaching artifact, not a deployment you should run as-is -- see
+<<_what_must_change_before_this_is_real>>.
 
 It lives at `deployment/compose-sample/` and is a *sample*, not a test harness. It carries three
 services and nothing else -- the gateway, an identity provider whose realm mints the tokens the
@@ -167,9 +169,9 @@ The sample is deliberately loud about being a sample. Every item below is a plac
   is discarded on teardown.
 |===
 
-The gateway's own configuration under `docker/sheriff-config/` is closer to production-ready: it
-declares the `strict` inbound filter profile explicitly, a TLS floor of 1.2, one public proxy
-namespace, and a token issuer with a host-exact egress allowlist. The one endpoint is
+The gateway's own configuration under `docker/sheriff-config/` needs less adaptation than the rest
+of the stack: it declares the `strict` inbound filter profile explicitly, a TLS floor of 1.2, one
+public proxy namespace, and a token issuer with a host-exact egress allowlist. The one endpoint is
 `auth: require: none`, which is the first thing to change when adapting the sample -- switch it to
 `require: bearer` and the route is gated on a token from the declared issuer.
 

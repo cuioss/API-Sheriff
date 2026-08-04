@@ -128,10 +128,10 @@ set of things well, with zero mandatory external dependencies.
 
 | *Per-node in-memory rate limiting*
 | KrakenD CE / Traefik token-bucket -- explicitly per-node and stateless; the Redis-backed
-  distributed variant is what makes Tyk stateful. Evaluated, and *out of scope* (see the
-  link:plan/README.adoc[plan roadmap]): the `rate_limit` field stays reserved in the
-  link:configuration.adoc[configuration schema] -- accepted and ignored, no `429` is ever
-  produced.
+  distributed variant is what makes Tyk stateful. Evaluated, and *out of scope*: the
+  `rate_limit` field stays reserved in the
+  link:configuration.adoc#_rate_limit[configuration schema] -- accepted and ignored, no `429`
+  is ever produced.
 |===
 
 == Features to Avoid

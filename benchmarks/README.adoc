@@ -149,10 +149,10 @@ plain-HTTP surface remains anywhere in the stack.
 
 === Which goals actually run
 
-The CI baseline lane declares twelve goals. Until PLAN-25 it had never executed all of them: the
-job died at goal 4 (`passthroughRelay`, whose target hostname resolved nowhere) and Maven's
-fail-fast discarded goals 5-12, which had therefore never run in CI even once. Being declared in
-`pom.xml` is not evidence that a goal produces a number.
+The CI baseline lane declares twelve goals, and all twelve execute. Being declared in `pom.xml` is
+not evidence that a goal produces a number -- a single failing goal used to let Maven's fail-fast
+discard every goal sequenced after it, so the coverage gate below, not the declaration, is what
+proves a goal ran.
 
 Current disposition — the CI end-of-job coverage step (see `.github/workflows/benchmark.yml`)
 enforces this, so a goal that silently stops running fails the job. It does not read the table
@@ -169,16 +169,16 @@ documentation of that resolved set, not its source:
 
 |`healthLiveCheck`, `gatewayHealth`, `proxiedStatic`
 |runs
-|Already executing before PLAN-25.
+|The longest-standing coverage in the lane.
 
 |`passthroughRelay`, `passthroughRelayEmpty`
 |runs
-|Repaired by PLAN-25: the relay target now resolves, and the `mapped`/`empty` selector actually
- reaches the container, so the two modes are genuinely distinct runs.
+|The relay target resolves and the `mapped`/`empty` selector reaches the container, so the two
+ modes are genuinely distinct runs.
 
 |`bearerProxied`, `http2`, `graphql`, `uploadSmall`, `grpcUnary`
 |runs
-|First execution in CI under PLAN-25. Their trend series start empty here.
+|Newer CI coverage; their trend series started empty.
 
 |`uploadLarge`
 |runs
@@ -225,16 +225,17 @@ local run without editing its execution:
 === Deliberately unwired scripts
 
 `session_mediated.js` (benchmark name `sessionMediated`) is present in `k6-scripts/` but is wired to
-*no* Maven execution, **on purpose**: BFF session mediation belongs to PLAN-07A, which shipped the
-server-session variant and explicitly deferred its per-variant benchmark additions because
-`benchmarks/**` is PLAN-25's surface. The script is therefore ready but unclaimed, not forgotten.
+*no* Maven execution, **on purpose**: the server-session BFF variant shipped without its per-variant
+benchmark additions, which were deliberately deferred rather than folded into this lane. The script
+is therefore ready but unclaimed, not forgotten.
 
 The manifest generator discovers it by reading the `@unwiredReason` tag in the script's own header
 comment and reports it as `unwired`, so the CI coverage summary lists it — with that reason — in the
 "Not expected to run" table of every job rather than letting its absence read as a silent omission.
 The tag in the script is the single place that reason is written; keep it there rather than
 duplicating it into the workflow. Do not treat a missing `sessionMediated-summary.json` as a
-regression, and do not wire the script to a Maven goal without the owning plan.
+regression, and do not wire the script to a Maven goal as a drive-by change -- wiring it is a
+deliberate decision that adds a benchmark to the published series.
 
 == Running the CI baseline lane
 
@@ -601,8 +602,8 @@ know:
   body-size floor was declared under the `upload` anchor's `max_body_bytes`. `bearer`
   is genuinely new CI coverage — the wrk-era bearer runner existed on disk but was registered in no
   Maven execution. Being *wired* is not the same as *executing*, and *executing* is not the same as
-  *producing a result*: until PLAN-25 the job died at the fourth goal and goals 5-12 had never run
-  in CI even once. See _Which goals actually run_ above.
+  *producing a result*: the job once died at the fourth goal, leaving goals 5-12 unrun. See
+  _Which goals actually run_ above.
 
 === One-time gh-pages baseline restart
 
@@ -616,21 +617,22 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
 * The `error` / variability / confidence-band columns go permanently zero-width from that point
   (see the `latency_ms.stdev` limit above).
 * Every benchmark that writes a summary document for the first time begins with *no history* and
-  needs ten runs before its trend series is meaningful. Under PLAN-25 that is most of the lane:
-  eight of the twelve declared goals had never executed in CI, and all eight are expected
-  to produce a result and so start their series empty — six at the PLAN-25 commit,
-  `websocketEcho` once its blocking permit leak was fixed, and `uploadLarge` once the framework
-  body-size floor was declared. The workflow's end-of-job coverage step
-  (`.github/workflows/benchmark.yml`) is the record of which goals produced a result in a given run.
-  A flat or short trend line on a name that *did* run is an absence of history, not a regression.
+  needs ten runs before its trend series is meaningful. That was most of the lane: eight of the
+  twelve declared goals had never executed in CI, and all eight started their series empty — six
+  when the fail-fast truncation was repaired, `websocketEcho` once its blocking permit leak was
+  fixed, and `uploadLarge` once the framework body-size floor was declared. The workflow's
+  end-of-job coverage step (`.github/workflows/benchmark.yml`) is the record of which goals produced
+  a result in a given run. A flat or short trend line on a name that *did* run is an absence of
+  history, not a regression.
 
-*Two further discontinuities are coming, and they are distinct causes — do not conflate them:*
+*Two further discontinuities exist in the series, and they are distinct causes — do not conflate
+them:*
 
-. *First execution under PLAN-25* (this commit): goals that had never run and now produce a result
-  begin their series here. The cause is coverage — data that never existed now exists.
-. *PLAN-31 D6/D7 (`%it` elimination)*: that work will change the measured configuration itself, so
-  the numbers before and after are measurements of different things on the *same* names. The cause
-  is configuration, not coverage, and it will break continuity again at a later commit.
+. *First execution*: goals that had never run and then produced a result begin their series at that
+  commit. The cause is coverage — data that never existed now exists.
+. *`%it` elimination*: removing the test-shaped configuration branches changed the measured
+  configuration itself, so the numbers before and after are measurements of different things on the
+  *same* names. The cause is configuration, not coverage.
 
 A reader comparing across either boundary is comparing incomparable eras. Compare only within one.
 

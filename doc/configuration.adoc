@@ -132,8 +132,9 @@ file-and-JSON-pointer error before any immutable value object is built:
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
   `anchor`, `auth`, `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's
-  `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream`, the WebSocket-route
-  `allowed_origins` and `websocket` blocks, and reserved `rate_limit`.
+  `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream`, `asset`,
+  the WebSocket-route `websocket` block (which holds `allowed_origins` and
+  `idle_timeout_seconds`), and reserved `rate_limit`.
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -215,9 +216,8 @@ allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTT
 anchors:                           # OPTIONAL namespace-scoped policy (see "Anchors"); each
   api:                             #   anchor OWNS a disjoint path namespace and carries the
     path_prefix: /api              #   policy floor for every route inside it
-    type: proxy                    # MANDATORY classification axis (proxy | bff | asset); `proxy`
-                                   #   is the former `passthrough` value, renamed (see "Type and
-                                   #   access axes"). Unrelated to tls.passthrough_sni.
+    type: proxy                    # MANDATORY classification axis (proxy | bff | asset); see
+                                   #   "Type and access axes". Unrelated to tls.passthrough_sni.
     access: authenticated          # MANDATORY audience axis (public | authenticated); a bearer
                                    #   floor is what `authenticated` requires
     auth: { require: bearer }      # every /api route presents a bearer token; a member route
@@ -388,9 +388,8 @@ policy blocks above:
 
 * *`type`* -- what terminal behaviour the anchor's routes expose: `proxy` (a reverse-proxy
   surface), `bff` (a Backend-For-Frontend surface), or `asset` (a static-asset surface, see
-  "Asset terminal action"). `proxy` is the *former `passthrough` value, renamed*; this is an
-  anchor-`type` value rename only and does *not* touch the unrelated TLS-L4 `tls.passthrough_sni`
-  surface, which keeps its name.
+  "Asset terminal action"). The anchor-`type` value space is entirely unrelated to the TLS-L4
+  `tls.passthrough_sni` surface, despite the adjacent vocabulary.
 * *`access`* -- the audience the anchor admits: `public` (an anonymous surface, no
   authentication) or `authenticated` (requires a fully-backed auth posture).
 
@@ -1084,18 +1083,21 @@ gRPC streaming); the semantics of each protocol -- and what the security filter 
 not inspect -- are defined once in
 link:architecture.adoc#_protocol_support[Architecture -- Protocol Support].
 
-A `protocol: websocket` route carries two additional per-route fields --
+A `protocol: websocket` route carries one additional per-route block --
+link:#_websocket[`websocket`] -- holding both WebSocket keys:
 link:#_allowed_origins[`allowed_origins`] (a mandatory `Origin` allowlist on bearer WebSocket
-routes) and link:#_websocket[`websocket`] (the established-relay idle-timeout bound) -- both
+routes) and `idle_timeout_seconds` (the established-relay idle-timeout bound). Both are
 documented immediately below.
 
 [[_allowed_origins]]
-=== `allowed_origins` (WebSocket routes)
+=== `websocket.allowed_origins` (WebSocket routes)
 
 A per-route `Origin` allowlist for a `protocol: websocket` route whose *effective* auth is
-`require: bearer`. It is *`security_headers`-adjacent* -- an `Origin`-header check performed at
-the handshake, not a routing matcher -- but, unlike the gateway/anchor-scoped
-link:#_security_headers[`security_headers`] block, it is declared *per route*: the set of browser
+`require: bearer`. It is declared *inside the route's `websocket` block* -- `allowed_origins` is
+not a route-level key, and writing it as a sibling of `websocket` fails the boot as an unknown
+key. It is *`security_headers`-adjacent* -- an `Origin`-header check performed at the handshake,
+not a routing matcher -- but, unlike the gateway/anchor-scoped
+link:#_security_headers[`security_headers`] block, it is scoped *per route*: the set of browser
 origins allowed to open a socket is a property of the individual bearer WebSocket route. The
 check runs on the HTTP upgrade request, *before* the upstream is dialled.
 
@@ -1118,11 +1120,11 @@ check runs on the HTTP upgrade request, *before* the upstream is dialled.
 
 | Fail-closed / validation
 | The upgrade request's `Origin` header must *exactly match* a listed origin or the *handshake is
-  rejected* before any upstream dial. An *absent or empty* `allowed_origins` on a bearer
+  rejected* before any upstream dial. An *absent or empty* `websocket.allowed_origins` on a bearer
   WebSocket route *fails the boot* -- deny-by-default: a bearer socket with no allowlist would
-  otherwise admit every origin, which is never the intended posture. `allowed_origins` on a
-  non-`websocket` route, or on a WebSocket route whose effective auth is not `require: bearer`,
-  is a configuration error and fails the boot.
+  otherwise admit every origin, which is never the intended posture. A `websocket` block on a
+  non-`websocket` route, or `allowed_origins` on a WebSocket route whose effective auth is not
+  `require: bearer`, is a configuration error and fails the boot.
 |===
 
 [source,yaml]
@@ -1132,9 +1134,9 @@ check runs on the HTTP upgrade request, *before* the upstream is dialled.
   protocol: websocket
   match: { path_prefix: /api/stream, host: api.example.com }
   auth: { require: bearer }
-  allowed_origins:                 # MANDATORY, non-empty on a bearer WS route; exact origins
-    - https://app.example.com      #   (scheme+host+port), host case-insensitive, no wildcards
-  websocket:
+  websocket:                       # BOTH WebSocket keys live inside this block
+    allowed_origins:               # MANDATORY, non-empty on a bearer WS route; exact origins
+      - https://app.example.com    #   (scheme+host+port), host case-insensitive, no wildcards
     idle_timeout_seconds: 300      # optional; default 300 (see "websocket" below)
   upstream: { path: /stream }
 ----
@@ -1142,12 +1144,17 @@ check runs on the HTTP upgrade request, *before* the upstream is dialled.
 [[_websocket]]
 === `websocket` (WebSocket routes)
 
-Per-route tuning for an *established* `protocol: websocket` relay. Only the idle-timeout bound is
-configurable initially.
+The per-route WebSocket block. It carries *both* WebSocket keys -- the
+link:#_allowed_origins[`allowed_origins`] allowlist documented above and the idle-timeout bound
+below. It is valid only on a `protocol: websocket` route.
 
 [cols="1,3"]
 |===
 | Field | Meaning
+
+| `allowed_origins`
+| The fail-closed `Origin` allowlist -- *mandatory and non-empty* on a bearer WebSocket route.
+  Documented in full under link:#_allowed_origins[`websocket.allowed_origins`] above.
 
 | `idle_timeout_seconds`
 | *Per-route integer, default `300`.* Bounds an established bidirectional relay: when *no frame
@@ -1387,9 +1394,8 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
 
 | `issuers[].audience`
 | The expected `aud` claim (maps to `IssuerConfig.expectedAudience`). *The `aud` claim is
-  required once an audience is configured*: as of token-sheriff 0.9.3
-  `IssuerConfig.azpAudienceFallbackEnabled` defaults to `false`, so a matching `azp` no longer
-  substitutes for a missing `aud`. A token that previously passed on `azp` alone is now
+  required once an audience is configured*: `IssuerConfig.azpAudienceFallbackEnabled` is `false`,
+  so a matching `azp` does *not* substitute for a missing `aud` -- an `azp`-only token is
   rejected. If your IdP issues `azp`-only tokens, either configure it to emit `aud`, or omit
   the `audience` key entirely -- omitting it disables audience validation wholesale.
 
@@ -1918,10 +1924,9 @@ link:#_edge_hardening_defaults[Edge hardening defaults] for the full table.
 === `rate_limit`
 
 Reserved schema for per-node, in-memory token-bucket rate limiting
-(`requests_per_second`, `burst`). The feature is *out of scope* (see
-link:plan/README.adoc[the plan roadmap]); the field is documented only so the schema need not
-change should that decision ever be revisited. It is accepted and ignored, and no `429` is
-ever produced.
+(`requests_per_second`, `burst`). *The feature is not implemented*; the field is documented only
+so the schema need not change should that decision ever be revisited. It is accepted and ignored,
+and no `429` is ever produced.
 
 === `metadata`
 
@@ -2053,18 +2058,15 @@ this key: every framing rejection is preserved.
 
 [IMPORTANT]
 ====
-The former `default` value is *removed* from the mode set: it named the `cui-http` builder's
-incidental defaults rather than a policy. A configuration still declaring `profile: default` *fails
-to boot*. Migration is one line: replace `default` with `strict` (or with `lenient` to keep looser
-caps).
-
-The former `none` value is *renamed* to `minimal` -- the behaviour is unchanged, the name now states
-the residual posture instead of denying it. A configuration still declaring `profile: none` *fails to
-boot*. Migration is one line: replace `none` with `minimal`. The unrelated `auth.require: none` is a
-different key in a different value space and is untouched by the rename.
+The mode set is *closed*: `strict`, `lenient`, `minimal`, and nothing else. Any other value -- at
+any of the three declaration sites (`security_defaults`, an anchor's `security_filter`, a route's
+`security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
+warning-and-continue.
 
 The value range is enforced by the bundled JSON Schema, not by the configuration validator, so an
 out-of-range value is rejected when the document is bound.
+
+`auth.require: none` is a *different* key in a different value space and is unrelated to this set.
 ====
 
 *The mode is resolved per route*, by wholesale replacement down the chain
@@ -2320,12 +2322,14 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   valid) and uses no encryption key.
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected.
 * A `protocol: websocket` route whose *effective* auth is `require: bearer` must declare a
-  *non-empty* link:#_allowed_origins[`allowed_origins`] list; an absent or empty allowlist *fails
-  the boot* (fail-closed -- there is no "any origin" default). Each entry is an exact origin
-  (`scheme://host[:port]`, host compared case-insensitively, scheme and port exact); wildcards,
-  suffix forms, and regular expressions are rejected. `allowed_origins` declared on a
-  non-`websocket` route, or on a WebSocket route whose effective auth is not `require: bearer`,
-  fails the boot.
+  *non-empty* link:#_allowed_origins[`websocket.allowed_origins`] list; an absent or empty
+  allowlist *fails the boot* (fail-closed -- there is no "any origin" default). Each entry is an
+  exact origin (`scheme://host[:port]`, host compared case-insensitively, scheme and port exact);
+  wildcards, suffix forms, and regular expressions are rejected. Both WebSocket keys live inside
+  the route's `websocket` block -- `allowed_origins` written as a route-level sibling of
+  `websocket` fails the boot as an unknown key. A `websocket` block on a non-`websocket` route,
+  or `allowed_origins` on a WebSocket route whose effective auth is not `require: bearer`, fails
+  the boot.
 * `websocket.idle_timeout_seconds`, when declared, must be a *positive integer* (default `300`
   when omitted); it is valid only on a `protocol: websocket` route.
 * The `edge_hardening` block is optional, and so is each of its members. An omitted `admission_cap`
