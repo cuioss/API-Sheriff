@@ -10,9 +10,9 @@ Accepted.
 
 API Sheriff's production code currently lives in a single deployable Quarkus module
 (`api-sheriff`), alongside the `integration-tests` and `benchmarks` coordinator modules. As the
-request pipeline (link:../plan/04-request-pipeline.adoc[Plan 04]) lands, that module gains a
+request pipeline lands, that module gains a
 substantial body of logic that is *not* inherently Quarkus-specific: the immutable
-configuration model and validators (Plan 02, delivered),
+configuration model and validators, already delivered,
 the event/counter system, the route table and matchers, the forward policy, and the boot-time
 assembly of per-route runtime objects. Only a thin outer layer is genuinely framework-bound:
 the CDI producers/observers, the Vert.x HTTP edge, the MicroProfile-config plumbing, and the
@@ -49,7 +49,7 @@ Concretely:
   MicroProfile Config, Vert.x, or Micrometer -- e.g. `de.cuioss.sheriff.gateway.config.model`,
   `...config.validation`, `...events`, `...routing`, `...forward`, `...pipeline`. These types
   take their collaborators through *constructor parameters*, never field/CDI injection, and are
-  assembled once at boot (see link:../plan/04-request-pipeline.adoc[Plan 04]'s `RouteRuntime`).
+  assembled once at boot into the per-route `RouteRuntime`.
 * *Confine framework wiring to an edge layer.* CDI producers/observers, the Vert.x route
   handler, config-source plumbing, health/metrics binding, and the RFC 9457 exception edge live
   in dedicated packages (e.g. `...quarkus`, `...edge`) that *may* depend on the framework and
@@ -79,9 +79,84 @@ Negative / to watch:
 
 * The boundary is enforced by an arch-gate rule rather than by module compilation, so it is
   only as strong as that rule -- the rule must be present and part of the quality gate from the
-  first pipeline PR (Plan 04), or the seam silently erodes.
+  first pipeline change onward, or the seam silently erodes.
 * If the framework-agnostic surface grows large and stable, the argument for a real module
   strengthens; this ADR is explicitly a *"not yet"*, not a *"never"*.
+
+== Shipped-surface snapshot -- 0.1.0
+
+This section records the framework-agnostic surface *as 0.1.0 actually ships it*, so a later
+reversal has a measurable baseline rather than a remembered one. It is a *record of state, not a
+new decision* -- the Decision section above is unchanged.
+
+[IMPORTANT]
+====
+*Pending supersession.* This ADR is expected to be *reversed* by `api-sheriff-next` (PLAN-38), on
+the operator decision _"Revert the ADR. If there is something available (quarkus) use that"_. That
+work owns the reversal and owns retiring the arch-gate; nothing here anticipates it. The snapshot
+exists precisely so the reversal can be measured against what shipped.
+====
+
+=== The reactor at the cut
+
+The Context section above names three modules. The shipped reactor carries *five*:
+
+[cols="1,3", options="header"]
+|===
+| Module | Note
+
+| `api-sheriff` | The one deployable Quarkus module. Named in Context.
+| `integration-tests` | Coordinator module. Named in Context.
+| `benchmarks` | Coordinator module. Named in Context.
+| `demo-client` | Demo SPA plus its Playwright end-to-end suite. Added after this ADR was accepted. Carries no Java and contributes nothing to the default lane -- every npm-touching execution sits inside its own `e2e-demo` profile.
+| `deployment` | Production-shaped `docker-compose` sample. Added after this ADR was accepted. Carries no Java and builds no artifact.
+|===
+
+*The delta does not weaken the decision.* Both added modules are packaging and demonstration
+surfaces carrying no Java: neither is a second consumer of the framework-agnostic logic, which is
+the condition the Revisit-When section below actually turns on. The count of deployables is still
+one.
+
+=== The enforced package seam
+
+The boundary is enforced by `FrameworkAgnosticArchTest` (a plain JUnit 5 test, deliberately not an
+ArchUnit `@AnalyzeClasses` runner, so it runs in both `test` and `verify -Ppre-commit` and is wired
+into the quality gate).
+
+The agnostic set it protects at 0.1.0 is *five* packages:
+
+* `de.cuioss.sheriff.gateway.config.model`
+* `de.cuioss.sheriff.gateway.config.validation`
+* `de.cuioss.sheriff.gateway.events`
+* `de.cuioss.sheriff.gateway.forward`
+* `de.cuioss.sheriff.gateway.pipeline`
+
+[WARNING]
+====
+*`routing` is deliberately excluded from the enforced set, and the Decision section above still
+lists it.* That divergence is intentional and is recorded here rather than silently reconciled:
+by operator resolution of *2026-07-19*, `routing.RouteRuntime` holds the shared Vert.x `HttpClient`
+reference and the per-route SmallRye Fault-Tolerance guard *by design*, so it is framework-coupled
+and must not be asserted framework-agnostic.
+
+*The enforced set -- five packages -- is the baseline, not the Decision section's six.* A reader
+measuring the seam must read the gate, not the prose.
+====
+
+The framework set an agnostic package must never import is correspondingly wider than the Decision
+section's list: `io.quarkus..`, `io.vertx..`, `io.smallrye..`, `io.netty..`, `org.jboss..`,
+`jakarta.enterprise..`, `jakarta.inject..`, `org.eclipse.microprofile..` and `io.micrometer..`.
+`io.smallrye..` is listed *because* the Fault-Tolerance guard is exactly the coupling that keeps
+`routing` out of the agnostic set -- leaving it unlisted would let an agnostic-core class acquire
+that same coupling unchecked. `io.netty..` and `org.jboss..` arrive transitively with the
+Quarkus/Vert.x stack and are framework by any reading of this ADR.
+
+=== What PLAN-38 measures against
+
+* Five enforced agnostic packages, not six -- `routing` is framework-coupled by resolution.
+* One deployable; five reactor modules, two of which carry no Java.
+* The seam is enforced by a quality-gate test rather than by module compilation, so its strength is
+  exactly the strength of that test.
 
 == Revisit When
 
