@@ -155,6 +155,11 @@ The server-mode session store is single-node and in-memory::
 `InMemorySessionStore` is the only implementation of the `SessionStore` seam, and `session.store`
 accepts exactly one value, `memory`. There is no distributed or persistent option. A server-mode
 BFF deployment is therefore single-node or sticky-session, and every session is lost on restart.
+Capacity is also not reclaimed on its own: an expired session is removed only when its own id is
+next looked up, and no periodic sweep is scheduled, so a session abandoned without a logout holds
+its `oidc.session.max_sessions` slot until the process restarts. Size `max_sessions` against
+total logins per process lifetime rather than against peak concurrency -- once the ceiling is
+reached, new logins are refused fail-closed.
 Cookie mode is the stateless alternative by design -- subject to the schema limitation above.
 
 The cookie-mode BFF has had no systematic threat-model pass::

@@ -189,6 +189,14 @@ skip to Step 2. (This is the case for the `0.1.0` cut: `.github/project.yml` alr
 **Only if the version must change**, edit the `release` block on a `chore/` branch, open a PR and
 merge it in the normal way — and be clear about what that merge does and does not do:
 
+> **Run Step 3(i) BEFORE merging that PR — do not defer it to Step 3.** The "merging this PR
+> publishes nothing" guarantee below holds *only* while `release.yml` is `workflow_dispatch` only,
+> and this skill's own premise is that the guard is **one commit from regressing**. Merging a
+> `.github/project.yml` change is the exact action that fired the irrevocable 2026-07-12 release.
+> Read the `on:` block at the SHA you are merging into, confirm it, record that SHA — *then*
+> merge. Step 3(i) re-asserts it again at dispatch time; that later re-assertion protects the
+> dispatch, not this merge.
+
 ```bash
 git checkout -b chore/release_<version>
 # edit .github/project.yml: current-version / next-version
@@ -228,8 +236,21 @@ The working tree must be clean and `HEAD` must equal `origin/main`.
 > ancestry of what you are about to release:
 >
 > ```bash
-> git merge-base --is-ancestor origin/release/relocation-stubs origin/main && echo "STOP: stubs branch is in main" || echo "OK: stubs branch is not in main"
+> git fetch origin release/relocation-stubs:refs/remotes/origin/release/relocation-stubs
+> git merge-base --is-ancestor origin/release/relocation-stubs origin/main; case $? in
+>   0) echo "STOP: stubs branch is in main" ;;
+>   1) echo "OK: stubs branch is not in main" ;;
+>   *) echo "ERROR: the check did not evaluate - this is NOT a pass" ;;
+> esac
 > ```
+>
+> **Branch on the exit code, never on `&&` / `||`.** `git merge-base --is-ancestor` exits `0` for
+> ancestor, `1` for not-ancestor and `128` on error — and an absent
+> `origin/release/relocation-stubs` remote-tracking ref (a single-branch or shallow clone, or a
+> clone predating the branch) is exactly such an error. A `… && echo STOP || echo OK` idiom
+> collapses `1` and `128` into the same branch, so a check that never ran prints the reassuring
+> `OK`. **An error is not a pass**, and the explicit `git fetch` above is what stops the common
+> case from reaching that arm at all.
 
 ### Step 3 — Re-assert the pre-dispatch safety evidence (MANDATORY)
 

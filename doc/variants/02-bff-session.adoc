@@ -272,7 +272,10 @@ What to watch on this variant specifically:
   were introduced.
 * *`max_sessions` is a DoS guard, and it interacts with load testing.* A run whose virtual users
   each establish a session can approach the configured ceiling; a benchmark that starts refusing
-  sessions is measuring the guard, not the gateway.
+  sessions is measuring the guard, not the gateway. Expired sessions do *not* free their slot on
+  their own -- reclamation happens only when that session's id is looked up again, and no periodic
+  sweep is scheduled -- so successive runs accumulate against the ceiling instead of draining back
+  to zero. Restart the gateway between runs rather than assuming the store empties itself.
 * *Refresh is a background cost.* With `refresh.enabled: true`, a long run crosses token expiry and
   pays a refresh round trip mid-measurement. On a 60s load phase against a typical token lifetime
   this does not trigger -- but it is the first thing to suspect in a longer run that shows an
