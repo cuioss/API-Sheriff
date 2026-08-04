@@ -363,8 +363,14 @@ public final class DirectoryAssetSource implements AssetSource {
         /**
          * Walks {@code relative}'s directory components down from {@code top}, refusing to follow a
          * symlink at any of them, and hands the final directory's descriptor to the returned handle.
-         * Every intermediate stream is closed as soon as its child is open; the last one is owned by
-         * the handle.
+         * <p>
+         * The descent owns exactly ONE stream at a time — the one {@code dir} names — and the
+         * {@code finally} closes it on every path that does not hand it off. The child is adopted
+         * into {@code dir} <em>before</em> its parent is closed, so a failing parent close cannot
+         * strand the descriptor it just produced; ownership passes to the returned handle only once
+         * that handle exists. Descending still opens each child from its parent's descriptor and
+         * closes the parent immediately afterwards, so the confinement the walk exists to provide is
+         * unchanged: no component is ever looked up by name from the filesystem root a second time.
          *
          * @param top      an open, secure stream on the real root
          * @param relative the asset path relative to the real root
@@ -373,18 +379,21 @@ public final class DirectoryAssetSource implements AssetSource {
          */
         private static ConfinedAsset descend(SecureDirectoryStream<Path> top, Path relative) throws IOException {
             SecureDirectoryStream<Path> dir = top;
+            boolean owned = true;
             try {
                 for (int i = 0; i < relative.getNameCount() - 1; i++) {
-                    SecureDirectoryStream<Path> child =
-                            dir.newDirectoryStream(relative.getName(i), LinkOption.NOFOLLOW_LINKS);
-                    dir.close();
-                    dir = child;
+                    SecureDirectoryStream<Path> parent = dir;
+                    dir = parent.newDirectoryStream(relative.getName(i), LinkOption.NOFOLLOW_LINKS);
+                    parent.close();
                 }
-            } catch (IOException walkFailure) {
-                dir.close();
-                throw walkFailure;
+                ConfinedAsset asset = new DescriptorAsset(dir, relative.getFileName());
+                owned = false;
+                return asset;
+            } finally {
+                if (owned) {
+                    dir.close();
+                }
             }
-            return new DescriptorAsset(dir, relative.getFileName());
         }
     }
 

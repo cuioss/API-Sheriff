@@ -164,9 +164,9 @@ class LogMessagesCatalogueTest {
                         continue;
                     }
                     field.setAccessible(true);
-                    LogRecord record = (LogRecord) field.get(null);
+                    LogRecord logRecord = (LogRecord) field.get(null);
                     collected.add(new Catalogued(catalogue.getSimpleName(), holderName, field.getName(),
-                            record.getPrefix(), record.getIdentifier()));
+                            logRecord.getPrefix(), logRecord.getIdentifier()));
                 }
             }
         }

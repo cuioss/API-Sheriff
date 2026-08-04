@@ -316,7 +316,7 @@ class DirectoryAssetSourceTest {
 
     @Test
     @DisplayName("Should still serve an asset behind an in-root ancestor symlink")
-    void shouldServeAssetBehindInRootAncestorSymlink() throws Exception {
+    void shouldServeAssetBehindInRootAncestorSymlink() {
         // THE CONTROL for the two refusals above, at the serve() level: confinement resolves the
         // ancestor symlink BEFORE the walk, so a legitimate in-root symlinked directory keeps
         // working. Without this, an implementation that refused every symlinked ancestor — including
