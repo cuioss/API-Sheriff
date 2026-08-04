@@ -27,6 +27,8 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Verifies that a gateway configured with no {@code tls.passthrough_sni} does not serve the plain
@@ -71,8 +73,11 @@ import java.util.Optional;
  * one arm's window was stretched by a stalled VU reports a proportionally deflated rate that reads as a
  * throughput collapse which never happened; this is exactly the false 35.8% verdict PLAN-46 diagnosed.
  * The comparator therefore reads {@code start_time} / {@code end_time} from both summaries and compares
- * the two windows first, against {@link #DEFAULT_WINDOW_TOLERANCE} (overridable via
- * {@value #WINDOW_TOLERANCE_PROPERTY}).
+ * the two windows first, against a band <em>derived from the configured load-phase duration</em>
+ * (overridable via {@value #WINDOW_TOLERANCE_PROPERTY}) — see
+ * {@link #derivedWindowTolerance(double)}. It also refuses a window that is not positive at all: a
+ * zero-length or end-before-start pair is not a comparable measurement, and comparing only the two
+ * windows' absolute difference would let two such windows agree with each other and pass.
  * <p>
  * <strong>Operator ruling — refuse and fail; do not normalise.</strong> An incomparable window pair
  * FAILS the run. It is deliberately NOT rescaled to a common window, and deliberately NOT downgraded to
@@ -108,19 +113,54 @@ public final class PassthroughBaselineComparator {
     static final String TOLERANCE_PROPERTY = "passthrough.baseline.tolerance";
 
     /**
-     * The fractional band the two arms' measured windows must agree within for their rates to be
-     * comparable at all, applied when {@value #WINDOW_TOLERANCE_PROPERTY} is unset.
+     * The absolute drift the window-comparability band allows, in seconds — the quantity the band is
+     * really made of, before it is expressed as a fraction of a particular run.
      * <p>
-     * Tighter than {@link #DEFAULT_TOLERANCE} on purpose: the window is a precondition of the
-     * comparison rather than one of the compared metrics, so it must catch a drift small enough to
-     * still move the throughput verdict. It is also set above the worst case the k6 lane can now
-     * produce — the bounded 5s graceful stop caps window inflation at 5/60 = 8.3% of a 60s run — so a
-     * healthy run never trips it while a reverted or unbounded tail always does.
+     * It is the sum of the only two things that may legitimately separate the two arms' measured
+     * windows: the bounded 5s {@code gracefulStop} every aspect scenario declares (see
+     * {@code k6-scripts/lib/summary.js}), plus one second of ordinary start/stop skew. Both are
+     * <em>absolute</em> — a stalled VU adds at most the tail itself, never a fraction of the run —
+     * and that is precisely why the band cannot be a fixed fraction: the same 6s is 10% of the default
+     * 60s load phase but 20% of the 30s one the {@code quick} profile configures.
      */
-    static final double DEFAULT_WINDOW_TOLERANCE = 0.10;
+    static final double WINDOW_DRIFT_ALLOWANCE_SECONDS = 6.0;
 
-    /** System property overriding {@link #DEFAULT_WINDOW_TOLERANCE}. */
+    /**
+     * The load-phase duration assumed when {@value #LOAD_DURATION_PROPERTY} is unset, in seconds —
+     * the benchmarks POM's own {@code k6.duration} default.
+     */
+    static final double DEFAULT_LOAD_DURATION_SECONDS = 60.0;
+
+    /**
+     * System property carrying the effective k6 load-phase duration as a k6 duration string (e.g.
+     * {@code 60s}, {@code 30s}, {@code 1m30s}).
+     * <p>
+     * The benchmarks POM hands the live {@code k6.duration} value to the comparator through it, so the
+     * derived band tracks the duration the run was actually configured with instead of a compiled-in
+     * assumption about it. That is the whole point: a {@code -Pquick} run shortens the load phase to
+     * 30s without shortening the graceful-stop tail, so a band blind to the duration under-covers
+     * exactly the scenario it exists to tolerate.
+     */
+    static final String LOAD_DURATION_PROPERTY = "passthrough.baseline.load.duration";
+
+    /**
+     * The window band for the default 60s load phase — {@link #WINDOW_DRIFT_ALLOWANCE_SECONDS}
+     * expressed as a fraction of {@link #DEFAULT_LOAD_DURATION_SECONDS}, i.e. 10%.
+     * <p>
+     * It is the value {@link #derivedWindowTolerance(double)} yields when the lane runs its default
+     * duration, and the fallback used when {@value #LOAD_DURATION_PROPERTY} is unset. Tighter than
+     * {@link #DEFAULT_TOLERANCE} on purpose: the window is a precondition of the comparison rather
+     * than one of the compared metrics, so it must catch a drift small enough to still move the
+     * throughput verdict, while staying above the worst case a healthy run can produce.
+     */
+    static final double DEFAULT_WINDOW_TOLERANCE =
+            WINDOW_DRIFT_ALLOWANCE_SECONDS / DEFAULT_LOAD_DURATION_SECONDS;
+
+    /** System property overriding the derived window band outright. */
     static final String WINDOW_TOLERANCE_PROPERTY = "passthrough.baseline.window.tolerance";
+
+    /** One component of a k6 duration string: a magnitude and one of the four units k6 accepts. */
+    private static final Pattern DURATION_COMPONENT = Pattern.compile("(\\d+(?:\\.\\d+)?)(ms|s|m|h)");
 
     private static final String FIELD_REQUESTS_PER_SECOND = "requests_per_second";
     private static final String FIELD_LATENCY_MS = "latency_ms";
@@ -306,6 +346,14 @@ public final class PassthroughBaselineComparator {
     /**
      * The comparability verdict for the two arms' measured windows.
      * <p>
+     * <strong>A window that is not positive is refused before the bands are applied at all.</strong>
+     * Agreement is a necessary condition for comparability, never a sufficient one: two zero-length
+     * windows agree perfectly, and so do two windows whose {@code end_time} precedes their
+     * {@code start_time}, yet neither pair describes an interval any rate could have been measured
+     * over. Comparing only the absolute drift would pass both and hand the throughput row a quotient
+     * taken over an invalid denominator — the same class of unbelievable number this precondition
+     * exists to refuse.
+     * <p>
      * The band is applied to the BASELINE window, matching how {@link #throughputVerdict} and
      * {@link #latencyVerdict} anchor their bands, so the same override reads the same way across all
      * three. A mismatch is {@link Verdict#WINDOW_MISMATCH} and fails the run — it is never normalised
@@ -320,7 +368,10 @@ public final class PassthroughBaselineComparator {
         if (candidate.isEmpty() || baseline.isEmpty()) {
             return Verdict.NOT_MEASURED;
         }
-        double allowedDrift = Math.abs(baseline.get()) * windowTolerance;
+        if (candidate.get() <= 0.0 || baseline.get() <= 0.0) {
+            return Verdict.WINDOW_MISMATCH;
+        }
+        double allowedDrift = baseline.get() * windowTolerance;
         return Math.abs(candidate.get() - baseline.get()) <= allowedDrift
                 ? Verdict.PASS : Verdict.WINDOW_MISMATCH;
     }
@@ -467,15 +518,101 @@ public final class PassthroughBaselineComparator {
     }
 
     /**
-     * Resolves the window-comparability band from the {@code passthrough.baseline.window.tolerance}
-     * system property, falling back to {@link #DEFAULT_WINDOW_TOLERANCE}. An invalid override is fatal
-     * under the same rule {@link #resolveTolerance()} applies: a negative value would invert the
-     * precondition and a value above 1 would disable it.
+     * Resolves the window-comparability band: an explicit
+     * {@code passthrough.baseline.window.tolerance} override when one is set, else the band derived
+     * from the effective load-phase duration. An invalid override is fatal under the same rule
+     * {@link #resolveTolerance()} applies: a negative value would invert the precondition and a value
+     * above 1 would disable it.
      *
      * @return the fractional window band in {@code [0, 1]}
      */
     static double resolveWindowTolerance() {
-        return resolveFraction(WINDOW_TOLERANCE_PROPERTY, DEFAULT_WINDOW_TOLERANCE);
+        return resolveFraction(WINDOW_TOLERANCE_PROPERTY,
+                derivedWindowTolerance(resolveLoadDurationSeconds()));
+    }
+
+    /**
+     * The window-comparability band for a given load-phase duration:
+     * {@link #WINDOW_DRIFT_ALLOWANCE_SECONDS} expressed as a fraction of that duration.
+     * <p>
+     * This is what makes the precondition cover the scenario it protects rather than only the default
+     * one. The graceful-stop tail a stalled VU can add is an absolute 5s whatever the load phase is,
+     * so on the default 60s run it is 8.3% of the window and on the {@code quick} profile's 30s run it
+     * is 16.7% — above a fixed 10% band, which would have rejected a perfectly healthy quick run as a
+     * window mismatch. Deriving the band keeps that worst case inside it at every duration while
+     * keeping a reverted or unbounded tail (k6's own 30s default, at least 50% of any run this lane
+     * configures) outside it.
+     * <p>
+     * Clamped at 1: a load phase shorter than the allowance itself cannot yield a fraction above 1,
+     * which the tolerance contract forbids because it would disable the precondition outright.
+     *
+     * @param loadDurationSeconds the effective k6 load-phase duration in seconds; must be positive
+     * @return the fractional window band in {@code (0, 1]}
+     */
+    static double derivedWindowTolerance(double loadDurationSeconds) {
+        return Math.min(1.0, WINDOW_DRIFT_ALLOWANCE_SECONDS / loadDurationSeconds);
+    }
+
+    /**
+     * Resolves the effective k6 load-phase duration from {@value #LOAD_DURATION_PROPERTY}, falling
+     * back to {@link #DEFAULT_LOAD_DURATION_SECONDS}. A set-but-invalid value is fatal rather than
+     * silently defaulted, for the reason every other override here is: silently substituting the 60s
+     * default for an unreadable {@code k6.duration} would compute the band for a run that never
+     * happened.
+     *
+     * @return the load-phase duration in seconds, strictly positive
+     */
+    static double resolveLoadDurationSeconds() {
+        String raw = System.getProperty(LOAD_DURATION_PROPERTY);
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_LOAD_DURATION_SECONDS;
+        }
+        double seconds = parseDurationSeconds(raw);
+        if (seconds <= 0.0) {
+            throw new IllegalArgumentException(
+                    LOAD_DURATION_PROPERTY + " must be a positive k6 duration, got \"" + raw + "\"");
+        }
+        return seconds;
+    }
+
+    /**
+     * Parses a k6 duration string — one or more magnitude/unit components, as in {@code 60s},
+     * {@code 500ms} or {@code 1m30s} — into seconds.
+     *
+     * @param raw the duration string
+     * @return the duration in seconds
+     * @throws IllegalArgumentException when the string is not a well-formed k6 duration
+     */
+    static double parseDurationSeconds(String raw) {
+        String value = raw.strip();
+        Matcher matcher = DURATION_COMPONENT.matcher(value);
+        double seconds = 0.0;
+        int consumed = 0;
+        while (matcher.find(consumed) && matcher.start() == consumed) {
+            seconds += Double.parseDouble(matcher.group(1)) * unitSeconds(matcher.group(2));
+            consumed = matcher.end();
+        }
+        if (consumed == 0 || consumed != value.length()) {
+            throw new IllegalArgumentException(LOAD_DURATION_PROPERTY
+                    + " must be a k6 duration such as \"60s\", \"500ms\" or \"1m30s\", got \"" + raw + "\"");
+        }
+        return seconds;
+    }
+
+    /**
+     * The seconds one unit of a k6 duration component represents.
+     *
+     * @param unit one of {@code ms} / {@code s} / {@code m} / {@code h}
+     * @return the unit's length in seconds
+     */
+    private static double unitSeconds(String unit) {
+        return switch (unit) {
+            case "ms" -> 0.001;
+            case "s" -> 1.0;
+            case "m" -> 60.0;
+            // "h" — the only remaining unit DURATION_COMPONENT admits, so no other value can arrive.
+            default -> 3600.0;
+        };
     }
 
     /**

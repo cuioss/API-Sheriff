@@ -47,6 +47,14 @@ import static org.junit.jupiter.api.Assertions.*;
  * pair must be classified {@link Verdict#WINDOW_MISMATCH} and must fail the run, while an equal-window
  * collapse must still be attributed to throughput and an absent window pair must stay
  * {@link Verdict#NOT_MEASURED}.
+ * <p>
+ * Two further properties of that precondition are pinned here. First, the band is <em>derived from
+ * the configured load-phase duration</em> rather than fixed: the bounded graceful-stop tail it must
+ * tolerate is an absolute 5s and therefore a different fraction of every duration, so the fixed 10%
+ * band rejected a perfectly healthy {@code -Pquick} run (5/30 = 16.7%). Second, agreement alone never
+ * establishes comparability — two zero-length windows, and two end-before-start ones, agree perfectly
+ * while describing no interval at all, and must be refused rather than allowed to license a rate
+ * computed over an invalid denominator.
  */
 @EnableGeneratorController
 class PassthroughBaselineComparatorTest {
@@ -81,6 +89,15 @@ class PassthroughBaselineComparatorTest {
 
     /** An arbitrary but fixed window start; only the two windows' lengths are under test. */
     private static final Instant WINDOW_START = Instant.parse("2026-08-04T10:00:00Z");
+
+    /** The load phase the {@code quick} benchmark profile configures, in seconds. */
+    private static final double QUICK_LOAD_DURATION_SECONDS = 30.0;
+
+    /** The bounded graceful-stop tail every aspect scenario declares, in milliseconds. */
+    private static final double GRACEFUL_STOP_MILLIS = 5_000.0;
+
+    /** The 30s load phase a {@code -Pquick} run measures over, in milliseconds. */
+    private static final double QUICK_WINDOW_MILLIS = QUICK_LOAD_DURATION_SECONDS * 1_000.0;
 
     /** Builds a k6-shaped summary carrying a top-level throughput and both latency percentiles. */
     private static JsonObject summary(double rps, double p50, double p99) {
@@ -555,19 +572,94 @@ class PassthroughBaselineComparatorTest {
                 "an unparseable timestamp must be empty, never a zero-length window");
     }
 
+    // ---- A window that is not positive is not a measurement at all -------------------------------
+
+    @Test
+    void agreeingWindowsThatAreNotPositiveAreStillIncomparable() {
+        // Arrange -- the two pairs that agree perfectly with each other while describing no interval
+        // any rate could have been measured over: two zero-length windows, and two whose end_time
+        // precedes their start_time by the same amount.
+        double negative = -Generators.doubles(1_000.0, 60_000.0).next();
+
+        // Act
+        Verdict bothZero = PassthroughBaselineComparator.windowVerdict(
+                Optional.of(0.0), Optional.of(0.0), WINDOW_TOLERANCE);
+        Verdict bothNegative = PassthroughBaselineComparator.windowVerdict(
+                Optional.of(negative), Optional.of(negative), WINDOW_TOLERANCE);
+
+        // Assert -- absolute agreement is necessary for comparability but never sufficient. Comparing
+        // only the drift would score both pairs as a perfect match and hand the throughput row a
+        // quotient taken over an invalid denominator.
+        assertAll("non-positive windows",
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, bothZero,
+                        "two zero-length windows agree, but neither measured anything"),
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, bothNegative,
+                        () -> "two end-before-start windows (%.2f ms) agree, but neither is an interval"
+                                .formatted(negative)));
+    }
+
+    @Test
+    void aNonPositiveWindowOnEitherArmAloneIsIncomparable() {
+        // Arrange -- one healthy window, one that is not an interval, in both orders and both shapes.
+        Optional<Double> healthy = Optional.of(BASELINE_WINDOW_MILLIS);
+
+        // Act + Assert -- a valid arm never rescues an invalid one, whichever side carries it.
+        assertAll("one-sided non-positive windows",
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, PassthroughBaselineComparator.windowVerdict(
+                        Optional.of(0.0), healthy, WINDOW_TOLERANCE)),
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, PassthroughBaselineComparator.windowVerdict(
+                        healthy, Optional.of(0.0), WINDOW_TOLERANCE)),
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, PassthroughBaselineComparator.windowVerdict(
+                        Optional.of(-1_000.0), healthy, WINDOW_TOLERANCE)),
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, PassthroughBaselineComparator.windowVerdict(
+                        healthy, Optional.of(-1_000.0), WINDOW_TOLERANCE)));
+    }
+
+    @Test
+    void summariesCarryingNonPositiveWindowsFailTheRunRatherThanComparingRates() {
+        // Arrange -- two k6-shaped summaries whose start_time equals their end_time, with identical
+        // rates so nothing but the window could fail the run; and the end-before-start counterpart.
+        JsonObject zeroBaseline = summary(8_000.0, 2.0, 30.0, 0.0);
+        JsonObject zeroCandidate = summary(8_000.0, 2.0, 30.0, 0.0);
+        JsonObject invertedBaseline = summary(8_000.0, 2.0, 30.0, -5_000.0);
+        JsonObject invertedCandidate = summary(8_000.0, 2.0, 30.0, -5_000.0);
+
+        // Act
+        ComparisonResult zero = PassthroughBaselineComparator.compare(zeroCandidate, zeroBaseline, TOLERANCE);
+        ComparisonResult inverted = PassthroughBaselineComparator.compare(
+                invertedCandidate, invertedBaseline, TOLERANCE);
+
+        // Assert -- the pair is refused end to end, and it is the WINDOW row that says so. A present
+        // but invalid window is deliberately NOT treated as an absent one: absence is the pre-window
+        // summary shape and must never fail, while a measured-but-impossible interval is a broken
+        // measurement the operator ruling says to refuse.
+        assertAll("non-positive windows end to end",
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, verdictOf(zero, WINDOW_LABEL)),
+                () -> assertTrue(zero.windowMismatched(), "a zero-length window pair must be refused"),
+                () -> assertTrue(zero.regressed(), "a zero-length window pair must fail the run"),
+                () -> assertEquals(Verdict.WINDOW_MISMATCH, verdictOf(inverted, WINDOW_LABEL)),
+                () -> assertTrue(inverted.windowMismatched(),
+                        "an end-before-start window pair must be refused"),
+                () -> assertTrue(inverted.regressed(),
+                        "an end-before-start window pair must fail the run"));
+    }
+
     // ---- Window-tolerance resolution from the system property -------------------------------------
 
     @Test
-    void resolveWindowToleranceDefaultsWhenThePropertyIsUnset() {
-        // Arrange
-        String prior = System.getProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY);
+    void resolveWindowToleranceDefaultsWhenNeitherPropertyIsSet() {
+        // Arrange -- neither the explicit band nor the effective load duration is supplied.
+        String priorBand = System.getProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY);
+        String priorDuration = System.getProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY);
         System.clearProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY);
+        System.clearProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY);
         try {
-            // Act + Assert
+            // Act + Assert -- the fallback is the band for the lane's own 60s default duration.
             assertEquals(PassthroughBaselineComparator.DEFAULT_WINDOW_TOLERANCE,
                     PassthroughBaselineComparator.resolveWindowTolerance());
         } finally {
-            restoreProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY, prior);
+            restoreProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY, priorBand);
+            restoreProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, priorDuration);
         }
     }
 
@@ -582,6 +674,122 @@ class PassthroughBaselineComparatorTest {
             assertEquals(0.03, PassthroughBaselineComparator.resolveWindowTolerance());
         } finally {
             restoreProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY, prior);
+        }
+    }
+
+    // ---- The band is derived from the configured load phase, not fixed ---------------------------
+
+    @Test
+    void theDerivedBandCoversTheGracefulStopTailAtEveryConfiguredDuration() {
+        // Arrange -- the worst case a healthy run can produce is the SAME absolute 5s tail whatever
+        // the load phase is, so it is a different fraction of each one.
+        double defaultDuration = PassthroughBaselineComparator.DEFAULT_LOAD_DURATION_SECONDS;
+        double tailFractionOfDefault = 5.0 / defaultDuration;
+        double tailFractionOfQuick = 5.0 / QUICK_LOAD_DURATION_SECONDS;
+
+        // Act
+        double defaultBand = PassthroughBaselineComparator.derivedWindowTolerance(defaultDuration);
+        double quickBand = PassthroughBaselineComparator.derivedWindowTolerance(QUICK_LOAD_DURATION_SECONDS);
+
+        // Assert -- each band clears its own duration's worst case, the quick band is the wider of the
+        // two, and the 60s band is still exactly the documented default.
+        assertAll("derived window bands",
+                () -> assertEquals(PassthroughBaselineComparator.DEFAULT_WINDOW_TOLERANCE, defaultBand,
+                        "the 60s band must remain the documented default"),
+                () -> assertTrue(defaultBand > tailFractionOfDefault,
+                        () -> "%.4f must cover the 5/60 tail (%.4f)".formatted(defaultBand, tailFractionOfDefault)),
+                () -> assertTrue(quickBand > tailFractionOfQuick,
+                        () -> "%.4f must cover the 5/30 tail (%.4f)".formatted(quickBand, tailFractionOfQuick)),
+                () -> assertTrue(quickBand > defaultBand,
+                        "a shorter load phase must widen the band, not leave it unchanged"),
+                () -> assertTrue(quickBand <= 1.0, "a band above 1 would disable the precondition"));
+    }
+
+    @Test
+    void aHealthyQuickProfileRunIsNotRejectedAsAWindowMismatch() {
+        // Arrange -- the worst case a -Pquick run can legitimately produce: one arm consumed the whole
+        // bounded 5s gracefulStop on top of the profile's 30s load phase, the other consumed none.
+        double inflated = QUICK_WINDOW_MILLIS + GRACEFUL_STOP_MILLIS;
+        double quickBand = PassthroughBaselineComparator.derivedWindowTolerance(QUICK_LOAD_DURATION_SECONDS);
+
+        // Act
+        Verdict derived = PassthroughBaselineComparator.windowVerdict(
+                Optional.of(inflated), Optional.of(QUICK_WINDOW_MILLIS), quickBand);
+        Verdict underTheFixedDefault = PassthroughBaselineComparator.windowVerdict(
+                Optional.of(inflated), Optional.of(QUICK_WINDOW_MILLIS), WINDOW_TOLERANCE);
+
+        // Assert -- fail-without-fix, made explicit: the fixed 10% band rejects this perfectly healthy
+        // quick run (5/30 = 16.7% > 10%), which is the defect. The derived band accepts it, while a
+        // reverted/unbounded 30s tail on the same 30s phase (100% drift) still fails.
+        assertEquals(Verdict.PASS, derived,
+                () -> "a bounded 5s tail on a %.0fs load phase must stay inside the %.4f derived band"
+                        .formatted(QUICK_LOAD_DURATION_SECONDS, quickBand));
+        assertEquals(Verdict.WINDOW_MISMATCH, underTheFixedDefault,
+                "the fixed 60s band under-covers a quick run -- this is what the derivation fixes");
+        assertEquals(Verdict.WINDOW_MISMATCH, PassthroughBaselineComparator.windowVerdict(
+                        Optional.of(QUICK_WINDOW_MILLIS * 2.0), Optional.of(QUICK_WINDOW_MILLIS), quickBand),
+                "an unbounded tail must still trip the widened band");
+    }
+
+    @Test
+    void resolveWindowToleranceDerivesTheBandFromTheEffectiveLoadDuration() {
+        // Arrange
+        String priorBand = System.getProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY);
+        String priorDuration = System.getProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY);
+        System.clearProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY);
+        try {
+            System.setProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, "30s");
+
+            // Act + Assert -- the k6 duration string the POM forwards drives the band.
+            assertEquals(PassthroughBaselineComparator.derivedWindowTolerance(QUICK_LOAD_DURATION_SECONDS),
+                    PassthroughBaselineComparator.resolveWindowTolerance());
+
+            // And an explicit band still wins over the derived one.
+            System.setProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY, "0.05");
+            assertEquals(0.05, PassthroughBaselineComparator.resolveWindowTolerance(),
+                    "an explicit override must still take precedence over the derivation");
+        } finally {
+            restoreProperty(PassthroughBaselineComparator.WINDOW_TOLERANCE_PROPERTY, priorBand);
+            restoreProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, priorDuration);
+        }
+    }
+
+    @Test
+    void loadDurationResolutionReadsK6DurationStringsAndRejectsMalformedOnes() {
+        // Arrange
+        String prior = System.getProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY);
+        try {
+            // Act + Assert -- the k6 duration grammar the POM's k6.duration value is written in.
+            assertAll("k6 duration parsing",
+                    () -> assertEquals(60.0, PassthroughBaselineComparator.parseDurationSeconds("60s")),
+                    () -> assertEquals(30.0, PassthroughBaselineComparator.parseDurationSeconds("30s")),
+                    () -> assertEquals(0.5, PassthroughBaselineComparator.parseDurationSeconds("500ms")),
+                    () -> assertEquals(90.0, PassthroughBaselineComparator.parseDurationSeconds("1m30s")),
+                    () -> assertEquals(3600.0, PassthroughBaselineComparator.parseDurationSeconds("1h")));
+
+            System.clearProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY);
+            assertEquals(PassthroughBaselineComparator.DEFAULT_LOAD_DURATION_SECONDS,
+                    PassthroughBaselineComparator.resolveLoadDurationSeconds(),
+                    "an unset duration falls back to the lane's own default");
+
+            // A set-but-unreadable duration is fatal, never silently the 60s default: computing the
+            // band for a run that never happened is the failure mode the derivation exists to remove.
+            System.setProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, "60");
+            assertThrows(IllegalArgumentException.class,
+                    PassthroughBaselineComparator::resolveLoadDurationSeconds,
+                    "a unit-less value must be rejected rather than guessed at");
+
+            System.setProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, "not-a-duration");
+            assertThrows(IllegalArgumentException.class,
+                    PassthroughBaselineComparator::resolveLoadDurationSeconds,
+                    "a malformed value must be rejected rather than silently defaulted");
+
+            System.setProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, "0s");
+            assertThrows(IllegalArgumentException.class,
+                    PassthroughBaselineComparator::resolveLoadDurationSeconds,
+                    "a zero-length load phase has no band to derive and must be rejected");
+        } finally {
+            restoreProperty(PassthroughBaselineComparator.LOAD_DURATION_PROPERTY, prior);
         }
     }
 

@@ -753,6 +753,20 @@
                                     <arguments>
                                         <argument>${k6.output.dir}</argument>
                                     </arguments>
+                                    <systemProperties>
+                                        <!-- The SAME k6.duration every k6 execution above passes as
+                                             BENCHMARK_DURATION. The comparator's window-comparability
+                                             band must cover the bounded 5s gracefulStop tail, which is
+                                             an ABSOLUTE 5s and therefore a different FRACTION of every
+                                             duration: 8.3% of the 60s default but 16.7% of the 30s the
+                                             quick profile sets. Handing it the effective duration is
+                                             what keeps the band derived rather than assuming a 60s run
+                                             and rejecting a healthy -Pquick one as a window mismatch. -->
+                                        <systemProperty>
+                                            <key>passthrough.baseline.load.duration</key>
+                                            <value>${k6.duration}</value>
+                                        </systemProperty>
+                                    </systemProperties>
                                 </configuration>
                             </execution>
 

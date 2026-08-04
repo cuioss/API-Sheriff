@@ -275,10 +275,11 @@ proxy upstream at it (the integration tests instead point it at the `go-httpbin`
 
 |`k6.duration`
 |60s
-|Load phase per aspect. The *measured* window reported in each summary is this value plus however
- much of the scenario's 5s bounded `gracefulStop` the run actually consumes, because k6's
- `requests_per_second` is a rate over the whole run duration — see the window-comparability note
- under _Methodology_.
+|Load phase per aspect (`-Pquick` sets 30s). The *measured* window reported in each summary is this
+ value plus however much of the scenario's 5s bounded `gracefulStop` the run actually consumes,
+ because k6's `requests_per_second` is a rate over the whole run duration. The passthrough gate's
+ window-comparability band is *derived from this value* and is handed to the comparator as
+ `passthrough.baseline.load.duration` — see the window-comparability note under _Methodology_.
 |===
 
 == Methodology
@@ -361,10 +362,40 @@ the graceful-stop tail — so two arms whose windows differ in length do not pro
 at all. An arm whose tail was stretched by a single stalled virtual user reports a proportionally
 deflated rate that reads as a throughput collapse which never happened. The comparator therefore
 reads `start_time` / `end_time` from both summaries and compares the two windows *before* the
-throughput and latency rows, against a 10% window-comparability band
-(`passthrough.baseline.window.tolerance`). Every aspect script bounds its tail with an explicit
-`constant-vus` scenario and a 5s `gracefulStop`, which caps worst-case window inflation on a 60s run
-at 5/60 = 8.3% — inside that band, so a healthy run never trips it.
+throughput and latency rows.
++
+*The band is derived from the configured load phase, not fixed.* Every aspect script bounds its tail
+with an explicit `constant-vus` scenario and a 5s `gracefulStop`, so the worst-case inflation a
+healthy run can produce is an *absolute* 5 seconds — which is a different *fraction* of every
+configured duration. The comparator therefore allows a fixed absolute drift of 6s (the 5s tail plus a
+second of ordinary start/stop skew) expressed as a fraction of the effective `k6.duration`, which the
+POM hands it as `passthrough.baseline.load.duration`:
++
+[cols="1,1,1,3", options="header"]
+|===
+|`k6.duration` |Worst-case tail |Derived band |Where it comes from
+
+|60s (default)
+|5/60 = 8.3%
+|6/60 = 10%
+|The default lane. Unchanged from the previously fixed band.
+
+|30s (`-Pquick`)
+|5/30 = 16.7%
+|6/30 = 20%
+|A fixed 10% band would have rejected a perfectly healthy quick run as `WINDOW_MISMATCH`, because
+ 16.7% of window inflation is legitimate at this duration.
+|===
++
+A reverted or unbounded tail still fails at every duration — k6's own 30s `gracefulStop` default is
+at least 50% of any run this lane configures, far outside the derived band. Setting
+`passthrough.baseline.window.tolerance` explicitly overrides the derivation outright.
++
+*A window that is not positive is refused before the band is applied at all.* Agreement is necessary
+for comparability but never sufficient: two zero-length windows agree perfectly, and so do two whose
+`end_time` precedes their `start_time`, yet neither pair describes an interval a rate could have been
+measured over. Such a pair is `WINDOW_MISMATCH`, never `PASS`. This is distinct from an *absent*
+window pair, which stays `NOT_MEASURED` (see below).
 +
 The refusal *fails the run*: a mismatched window pair is deliberately **not** rescaled to a common
 window and **not** downgraded to a warning. Rescaling would republish a number the run never

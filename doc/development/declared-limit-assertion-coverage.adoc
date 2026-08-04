@@ -105,11 +105,23 @@ the *base document only* and is inherited by the overlays as the omitted-key def
 `sheriff-config-passthrough-empty/gateway.yaml` is deliberately *outside* that `×N` notation, and
 the `×4` rows are **not** re-cited as `×5`. It is not an independently authored descriptor: it is a
 verbatim copy of the base document with the `tls.passthrough_sni` block -- and only that block --
-removed, so every key the base declares it also declares, at the base's own relative order. Citing
-it per row would add a fifth line number to twelve rows to restate one fact that is better stated
-once: *derive it from the base citation.* The single consequence of the derivation is the one key it
-does **not** carry -- `tls.passthrough_sni`, whose absence is precisely the property that instance
-exists to provide (see the descriptor's own header comment).
+removed, so every key the base declares it also declares, at the base's own relative order.
+
+*Fourteen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
+`csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *seven* base-only
+`sheriff-config/gateway.yaml:N` rows (`security_defaults.profile`,
+`allow_get_with_content_length_body`, `allowed_methods`, `tls.passthrough_sni`,
+`asset_defaults.content_types`, G1, G11). Citing this overlay per row would add a *fifth* line number
+to each of the seven `×4` rows and a *second* to six of the seven base-only rows -- *thirteen* rows,
+restating one fact thirteen times where it is better stated once: *derive it from the base citation.*
+The two remaining `gateway.yaml` rows in the matrix cite an overlay only
+(`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`) and declare keys the
+base does not, so they are outside this derivation entirely.
+
+The thirteenth-versus-fourteenth row is not an off-by-one: the base-only row that would gain *no*
+citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
+absence is precisely the property the instance exists to provide (see the descriptor's own header
+comment). It is the single consequence of the derivation.
 
 The `security_defaults` block in particular is *base-only among the independently authored
 overlays*: the cookie, mTLS and ws-admission overlays declare no `security_defaults` at all and
