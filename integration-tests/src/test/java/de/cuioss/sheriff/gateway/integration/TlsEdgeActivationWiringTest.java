@@ -171,11 +171,12 @@ class TlsEdgeActivationWiringTest {
 
         // Act — the primary gateway must move its terminated Quarkus HTTPS listener to the internal
         // port so the SNI front owns the public port without a bind conflict.
-        List<String> primaryEnv = environment(services, "api-sheriff");
+        Map<String, String> primaryEnv = environmentEntries(services, PRIMARY_SERVICE);
 
         // Assert
-        assertTrue(primaryEnv.contains("QUARKUS_HTTP_SSL_PORT=8444"),
-                "the primary api-sheriff service must set QUARKUS_HTTP_SSL_PORT=8444 (internal-port split)");
+        assertEquals("8444", primaryEnv.get(INTERNAL_SSL_PORT_KEY),
+                "the primary api-sheriff service must set " + INTERNAL_SSL_PORT_KEY
+                        + "=8444 (internal-port split)");
 
         Object mtlsService = services.get("api-sheriff-mtls");
         assertNotNull(mtlsService, "a dedicated api-sheriff-mtls gateway instance must be defined");
@@ -376,16 +377,6 @@ class TlsEdgeActivationWiringTest {
                     "the '" + service + "' service depends_on must be a list or a mapping, was: " + declared);
         }
         return names;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<String> environment(Map<String, Object> services, String service) {
-        Object node = services.get(service);
-        assertNotNull(node, "docker-compose.yml must declare the '" + service + "' service");
-        Map<String, Object> serviceMap = (Map<String, Object>) node;
-        Object env = serviceMap.get("environment");
-        assertInstanceOf(List.class, env, "the '" + service + "' service environment must be a list");
-        return ((List<?>) env).stream().map(String::valueOf).toList();
     }
 
     @SuppressWarnings("unchecked")

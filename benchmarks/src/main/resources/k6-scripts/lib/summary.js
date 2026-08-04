@@ -228,18 +228,19 @@ export const DEFAULT_GRACEFUL_STOP = '5s';
  * {@link DEFAULT_GRACEFUL_STOP}). Declaring the scenario explicitly makes the tail a stated,
  * bounded part of every aspect's contract instead of an inherited default.
  *
+ * The tail is {@link DEFAULT_GRACEFUL_STOP} for every aspect, deliberately with no per-aspect
+ * override: one lane-wide value is what makes the two compared arms' measured windows commensurable
+ * in the first place. An aspect that ever needs a longer tail changes it here, for all of them.
+ *
  * @param {number} vuCount the constant VU count to hold for the run
  * @param {string} runDuration the k6 duration string the VUs are held for
- * @param {{gracefulStop?: string}} [options={}] per-aspect override of the bounded tail; an aspect
- *        whose iterations are legitimately longer than {@link DEFAULT_GRACEFUL_STOP} names its own
- *        value here rather than reverting the whole lane to the k6 default
  * @returns {{executor: string, vus: number, duration: string, gracefulStop: string}} the scenario
  */
-export function scenario(vuCount, runDuration, options = {}) {
+export function scenario(vuCount, runDuration) {
     return {
         executor: 'constant-vus',
         vus: vuCount,
         duration: runDuration,
-        gracefulStop: options.gracefulStop || DEFAULT_GRACEFUL_STOP,
+        gracefulStop: DEFAULT_GRACEFUL_STOP,
     };
 }

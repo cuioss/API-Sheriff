@@ -209,13 +209,13 @@ public final class PassthroughBaselineComparator {
         // is meaningless, so reporting it as a regression would name the wrong defect.
         if (result.windowMismatched()) {
             LOGGER.error(K6BenchmarkLogMessages.ERROR.PASSTHROUGH_BASELINE_WINDOW_MISMATCH,
-                    formatTolerance(resolveWindowTolerance()), windowMismatchDetail(result));
+                    formatTolerance(resolveWindowTolerance()), detailFor(result, Verdict.WINDOW_MISMATCH));
             throw new IllegalStateException(
                     "empty-passthrough_sni run and baseline were measured over incomparable windows");
         }
         if (result.regressed()) {
             LOGGER.error(K6BenchmarkLogMessages.ERROR.PASSTHROUGH_BASELINE_REGRESSION,
-                    formatTolerance(tolerance), regressionDetail(result));
+                    formatTolerance(tolerance), detailFor(result, Verdict.REGRESSION));
             throw new IllegalStateException("empty-passthrough_sni run regressed beyond the noise band");
         }
         LOGGER.info(K6BenchmarkLogMessages.INFO.PASSTHROUGH_BASELINE_OK, formatTolerance(tolerance));
@@ -438,20 +438,10 @@ public final class PassthroughBaselineComparator {
         return out.toString();
     }
 
-    /** Renders the regressed metrics for the failure diagnostic. */
-    private static String regressionDetail(ComparisonResult result) {
-        return detailFor(result, Verdict.REGRESSION);
-    }
-
     /**
-     * Renders the mismatched window for the failure diagnostic, naming both windows so the operator
-     * fixes the measurement rather than the threshold.
+     * Renders every metric carrying the given verdict as a single diagnostic fragment, naming both
+     * sides of each row so a failure is fixed at the measurement rather than at the threshold.
      */
-    private static String windowMismatchDetail(ComparisonResult result) {
-        return detailFor(result, Verdict.WINDOW_MISMATCH);
-    }
-
-    /** Renders every metric carrying the given verdict as a single diagnostic fragment. */
     private static String detailFor(ComparisonResult result, Verdict verdict) {
         return result.metrics().stream()
                 .filter(metric -> metric.verdict() == verdict)
