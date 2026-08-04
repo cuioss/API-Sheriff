@@ -702,13 +702,26 @@ initial metrics surface.
 (`/q/health/live`, `/q/health/ready`) on the same management port, and therefore shares whatever
 posture that single port has -- HTTPS by default, plain HTTP if the opt-out above is taken. That
 sharing is the point: health cannot be downgraded separately from metrics, because they are the
-same listener. Readiness reflects the loaded-and-validated configuration and, for the BFF variants,
-the ability to reach the configured issuer at startup.
+same listener. Readiness reflects the loaded-and-validated configuration and the boot-time
+*constructibility* of the bearer-token validator -- not live issuer reachability. The distinction is
+load-bearing: resolving the validator proves every configured issuer declared a usable JWKS source,
+but the JWKS fetch itself is lazy, so an issuer that is configured correctly and unreachable right
+now still reports ready. A deployment with no `token_validation` block has no validator to
+construct, and its `issuer_reachability` datum is reported `unverified` rather than asserted --
+a BFF `mode: server` deployment reaches its issuer lazily on the first login, and that does not
+gate boot readiness.
 
-Readiness reports *state, never cause*, consistent with the boot-time-constructibility reading of the
-`jwks` datum in
+That reading is why the DOWN branch is, in the shipped topology, effectively unreachable rather than
+a routine outcome. `TokenValidatorProducer.onStartup` performs the same eager `Instance.get()` the
+probe performs, so a validator that cannot be constructed aborts the boot before the management
+listener ever binds; a validator that constructs but whose JWKS is lazily unreachable reports UP.
+The probe is therefore hardened for a *future* relaxation of that eager assembly, not against a live
+exposure.
+
+The hardening itself stands regardless. Readiness reports *state, never cause*, consistent with the
+boot-time-constructibility reading of the `jwks` datum in
 link:adr/0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027].
-When the bearer-token validator cannot be resolved the probe marks readiness DOWN with
+Where the bearer-token validator cannot be resolved the probe marks readiness DOWN with
 `jwks: unavailable` and a fixed `error: validation-unavailable` token -- it never places the
 underlying exception message on the payload, which can name issuer URLs, internal hostnames,
 TLS/trust material and filesystem paths. Because the management interface has exactly one port and

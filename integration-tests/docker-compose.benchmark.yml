@@ -4,12 +4,20 @@
 # JSON-serializing backend (go-httpbin) polluting the numbers.
 services:
   nginx-static:
-    # Pinned to the 1.27 MINOR line rather than the floating `:alpine` tag, matching
-    # deployment/compose-sample/docker-compose.yml. A floating tag is the wrong choice here
-    # specifically: this is the FAIRNESS BACKEND the cross-gateway comparison rides, so an
-    # upstream image that silently changes between runs moves the baseline the benchmark
-    # measures against and makes two runs incomparable without anything announcing it.
-    image: nginx:1.27-alpine
+    # Pinned by CONTENT DIGEST, not by tag. This is the FAIRNESS BACKEND the cross-gateway
+    # comparison rides, so the baseline the benchmark measures against has to be byte-identical
+    # between runs; an upstream image that changes underneath makes two runs incomparable without
+    # anything announcing it. A minor-line tag like `1.27-alpine` does NOT deliver that — it stays
+    # mutable, and every 1.27.x patch republish silently moves it. The digest below is the
+    # multi-platform manifest-list (index) digest, so amd64 and arm64 runners both resolve from it.
+    # The tag is kept alongside purely for human readability; the digest is what binds.
+    #
+    # deployment/compose-sample/docker-compose.yml deliberately stays on the readable minor tag and
+    # is expected to differ from this file: an operator sample wants readability and automatic
+    # patch pickup, a fairness backend wants reproducibility. The two are different on purpose.
+    #
+    # To move the pin: `docker buildx imagetools inspect nginx:<tag>` and copy the top-level Digest.
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     ports:
       - "18081:8080"  # published only for the host-side readiness probe
     volumes:

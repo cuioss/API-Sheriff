@@ -25,8 +25,11 @@ import lombok.experimental.UtilityClass;
  * <p>
  * Structured {@code INFO} / {@code ERROR} messages carry the {@code ApiSheriff}
  * prefix and a stable numeric identifier, continuing the shared identifier space
- * used by the proxy edge, so they are greppable and assertable. {@code DEBUG} /
- * {@code TRACE} diagnostics use the logger directly and are not catalogued here.
+ * used by the proxy edge, so they are greppable and assertable. Identifiers are
+ * allocated across every catalogue sharing that prefix, not per class, and that
+ * allocation is enforced by {@code LogMessagesCatalogueTest} rather than by an
+ * inventory kept here by hand. {@code DEBUG} / {@code TRACE} diagnostics use the
+ * logger directly and are not catalogued here.
  * <p>
  * The catalogue lives in the framework-agnostic {@code ...config} package because
  * the cui-tools {@link LogRecord} abstraction carries no framework dependency

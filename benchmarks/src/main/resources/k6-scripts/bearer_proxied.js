@@ -43,6 +43,11 @@ const KEYCLOAK_TOKEN_URL = __ENV.KEYCLOAK_TOKEN_URL
 // realm JSON. Changing one without the other yields an all-401 run, which the `checks` threshold
 // above turns into a hard build failure rather than a silently fast result.
 //
+// The mirror is CHECKED, not merely documented: integration-tests carries a surefire guard,
+// BenchmarkRealmCredentialConsistencyTest, that reads both this file and the realm JSON and fails
+// the build when the two sides disagree — so changing one without the other no longer surfaces as
+// an all-401 benchmark run.
+//
 // Containment, which is what makes this acceptable rather than a finding: the realm exists only
 // inside an ephemeral Keycloak container on a local bridge network, it is created for the load test
 // and destroyed with the stack, and neither literal reaches any api-sheriff production source or

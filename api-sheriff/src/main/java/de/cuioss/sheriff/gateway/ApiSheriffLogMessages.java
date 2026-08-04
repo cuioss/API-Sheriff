@@ -25,14 +25,9 @@ import lombok.experimental.UtilityClass;
  * <p>
  * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and
- * assertable. This catalogue's identifier ranges are disjoint from the two other catalogues that
- * share the same {@code ApiSheriff} prefix —
- * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages} (the boot-time configuration
- * subsystem) and {@link de.cuioss.sheriff.gateway.bff.BffLogMessages} (the {@code require: session}
- * BFF surface). This catalogue owns {@code 1} / {@code 4} / {@code 6-7} (INFO) and {@code 100} /
- * {@code 103-109} / {@code 117} (WARN); config owns {@code 2-3} / {@code 101-102} /
- * {@code 115-116} / {@code 200-201}; BFF owns {@code 10-16} / {@code 110-114}. Never renumber one
- * catalogue without checking the others for a collision.
+ * assertable. Identifiers are allocated across every catalogue sharing the {@code ApiSheriff}
+ * prefix, not per class, and that allocation is enforced by
+ * {@code LogMessagesCatalogueTest} rather than by an inventory kept here by hand.
  * Security-relevant {@code WARN}s record only the failure <em>type</em> and route id —
  * never the raw offending payload. {@code DEBUG} / {@code TRACE} diagnostics use the logger
  * directly and are not catalogued here.

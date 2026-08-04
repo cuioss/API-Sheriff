@@ -307,7 +307,7 @@ class DirectoryAssetSourceTest {
                     // THE CONTROL: the same walker reaches the same file through the real directory
                     // name, so the refusal above is the symlink and not a walker that fails always.
                     try (DirectoryAssetSource.ConfinedAsset asset =
-                            walker.open(realRoot, Path.of("assets", "app.css"))) {
+                                 walker.open(realRoot, Path.of("assets", "app.css"))) {
                         assertTrue(asset.size() > 0,
                                 "the walker must reach an asset through its real ancestor name");
                     }
@@ -502,7 +502,7 @@ class DirectoryAssetSourceTest {
         Class<?>[] permitted = AssetSource.class.getPermittedSubclasses();
 
         assertAll(
-                () -> assertEquals(10L * 1024 * 1024, AssetSource.DEFAULT_MAX_BYTES,
+                () -> assertEquals(AssetSource.DEFAULT_MAX_BYTES, 10L * 1024 * 1024,
                         "the seam carries the 10 MiB served-asset cap"),
                 () -> assertTrue(permitted.length > 0,
                         "AssetSource must permit at least one source — an empty permitted set would "
