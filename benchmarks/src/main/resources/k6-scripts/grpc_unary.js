@@ -20,7 +20,7 @@
 import grpc from 'k6/net/grpc';
 import { check } from 'k6';
 import { Rate, Counter } from 'k6/metrics';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 import { grpcAddress } from './lib/target.js';
 
 const BENCHMARK_NAME = 'grpcUnary';
@@ -43,8 +43,7 @@ const calls = new Counter('grpc_calls');
 const grpcFailed = new Rate('grpc_req_failed');
 
 export const options = {
-    vus: vus(50),
-    duration: duration(),
+    scenarios: { default: scenario(vus(50), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     insecureSkipTLSVerify: true,
     thresholds: {

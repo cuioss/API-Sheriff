@@ -84,7 +84,7 @@ class AssetContentTypeActivationWiringTest {
      * The descriptor count committed today. The glob must match at least this many, so an empty or
      * mis-rooted glob fails loudly instead of satisfying the per-descriptor loop vacuously.
      */
-    private static final int COMMITTED_DESCRIPTOR_COUNT = 4;
+    private static final int COMMITTED_DESCRIPTOR_COUNT = 5;
 
     @Test
     @DisplayName("the base descriptor activates asset_defaults.content_types with at least one entry")

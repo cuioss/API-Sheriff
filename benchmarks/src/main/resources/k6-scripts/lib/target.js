@@ -14,6 +14,14 @@
  * An unknown target is fatal rather than defaulted. Silently falling back to API Sheriff would
  * label an API Sheriff run as the other gateway in `gateway_target`, and a mislabelled comparison
  * artifact is worse than a failed run -- it is wrong data that reads as correct.
+ *
+ * One resolver deliberately sits OUTSIDE that per-target mapping: {@link passthroughEmptyUrl}. It
+ * addresses the dedicated `api-sheriff-passthrough-empty` gateway instance, which exists only to
+ * run one API Sheriff configuration (a `gateway.yaml` declaring no `tls.passthrough_sni`) against
+ * another. Routing it through {@link gatewayTarget} would make `GATEWAY_TARGET=apisix` silently
+ * point an API-Sheriff-versus-API-Sheriff comparison at APISIX, which has no such instance and no
+ * such configuration -- the run would still produce a summary, and that summary would be nonsense.
+ * The exclusion is the point, not an oversight.
  */
 
 /**
@@ -28,6 +36,27 @@ const BASE_URLS = {
 
 /** The target assumed when `GATEWAY_TARGET` is unset, keeping the CI lane plumbing-free. */
 const DEFAULT_TARGET = 'api-sheriff';
+
+/**
+ * Base URL of the dedicated gateway instance whose `gateway.yaml` declares no
+ * `tls.passthrough_sni`, reached by compose service name on the shared `api-sheriff` network like
+ * every other edge. It is a second API Sheriff process, not a second gateway product, so it is
+ * absent from {@link BASE_URLS} and unreachable through {@link gatewayTarget} -- see the module
+ * `@fileoverview` for why that separation is deliberate.
+ *
+ * @type {string}
+ */
+export const PASSTHROUGH_EMPTY_BASE_URL = 'https://api-sheriff-passthrough-empty:8443';
+
+/**
+ * Drops a single trailing slash so a base URL concatenates with a leading-slash path exactly once.
+ *
+ * @param {string} url the base URL to normalize
+ * @returns {string} the URL without a trailing slash
+ */
+function withoutTrailingSlash(url) {
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+}
 
 /**
  * Resolves the gateway a run is taken against, validated against the supported set.
@@ -60,7 +89,7 @@ export function gatewayTarget() {
 export function baseUrl() {
     const override = __ENV.TARGET_BASE_URL;
     const resolved = override === undefined || override === '' ? BASE_URLS[gatewayTarget()] : override;
-    return resolved.endsWith('/') ? resolved.slice(0, -1) : resolved;
+    return withoutTrailingSlash(resolved);
 }
 
 /**
@@ -71,6 +100,23 @@ export function baseUrl() {
  */
 export function targetUrl(path) {
     return `${baseUrl()}${path}`;
+}
+
+/**
+ * Builds an absolute URL for a route path on the no-`passthrough_sni` gateway instance.
+ *
+ * `PASSTHROUGH_EMPTY_BASE_URL` overrides {@link PASSTHROUGH_EMPTY_BASE_URL} for a run against an
+ * edge that is not a compose service, in the same shape as `TARGET_BASE_URL` overrides the
+ * per-target mapping in {@link baseUrl}. It resolves independently of `GATEWAY_TARGET`, so this
+ * function returns the same host whichever gateway the surrounding run measures.
+ *
+ * @param {string} path the route path, with a leading slash (e.g. `/proxy/static`)
+ * @returns {string} the absolute URL to request
+ */
+export function passthroughEmptyUrl(path) {
+    const override = __ENV.PASSTHROUGH_EMPTY_BASE_URL;
+    const resolved = override === undefined || override === '' ? PASSTHROUGH_EMPTY_BASE_URL : override;
+    return `${withoutTrailingSlash(resolved)}${path}`;
 }
 
 /**

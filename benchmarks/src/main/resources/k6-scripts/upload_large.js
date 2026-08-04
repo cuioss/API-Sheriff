@@ -23,7 +23,7 @@
  */
 import http from 'k6/http';
 import { check } from 'k6';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 import { targetUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'uploadLarge';
@@ -40,8 +40,7 @@ const LARGE_UPLOAD_VUS = 5;
 const BODY = 'x'.repeat(BODY_BYTES);
 
 export const options = {
-    vus: vus(LARGE_UPLOAD_VUS),
-    duration: duration(),
+    scenarios: { default: scenario(vus(LARGE_UPLOAD_VUS), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     insecureSkipTLSVerify: true,
     thresholds: {

@@ -18,7 +18,7 @@
  */
 import http from 'k6/http';
 import { check } from 'k6';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 
 const BENCHMARK_NAME = 'gatewayHealth';
 // Hard-coded rather than routed through lib/target.js: the health benchmarks are deliberately
@@ -26,8 +26,7 @@ const BENCHMARK_NAME = 'gatewayHealth';
 const TARGET_URL = __ENV.TARGET_URL || 'https://api-sheriff:9000/q/health';
 
 export const options = {
-    vus: vus(50),
-    duration: duration(),
+    scenarios: { default: scenario(vus(50), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     // The benchmark stack terminates TLS with the self-signed localhost bundle mounted into
     // every service, so certificate verification is skipped for the load generator only.

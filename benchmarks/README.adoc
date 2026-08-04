@@ -100,8 +100,10 @@ comparison; see the passthrough methodology note under _Methodology_.
 |`passthrough_relay.js`
 |The opaque L4 TCP relay path (`mapped` mode): `k6 -> gateway public TLS port with a mapped SNI ->
  L4 relay -> TLS-enabled backend`, measuring relay throughput/latency through the active passthrough
- path. Its `empty` mode re-measures the same proxied static route with `passthrough_sni` empty (D1's
- zero-overhead default) for a no-regression check against the `unauth` baseline. *API-Sheriff-only*;
+ path. Its `empty` mode runs the *same* `/proxy/static` route against the *same* `nginx-static`
+ upstream as the `proxiedStatic` baseline, but on a *second gateway instance*
+ (`api-sheriff-passthrough-empty`) whose `gateway.yaml` declares no `passthrough_sni` — so the
+ no-regression check has a genuinely listener-free side to measure. *API-Sheriff-only*;
  like `ws`/`grpc` it rides a real backend — see the passthrough methodology note.
 |===
 
@@ -273,7 +275,11 @@ proxy upstream at it (the integration tests instead point it at the `go-httpbin`
 
 |`k6.duration`
 |60s
-|Measured window per aspect.
+|Load phase per aspect (`-Pquick` sets 30s). The *measured* window reported in each summary is this
+ value plus however much of the scenario's 5s bounded `gracefulStop` the run actually consumes,
+ because k6's `requests_per_second` is a rate over the whole run duration. The passthrough gate's
+ window-comparability band is *derived from this value* and is handed to the comparator as
+ `passthrough.baseline.load.duration` — see the window-comparability note under _Methodology_.
 |===
 
 == Methodology
@@ -317,14 +323,87 @@ gateway relays the still-encrypted stream at L4. Read it as relay overhead versu
 baseline within one run, never as an absolute throughput claim.
 It runs in two modes selected by `PASSTHROUGH_SNI`. In `mapped` mode the ClientHello names a
 `tls.passthrough_sni` host, so the gateway relays the still-encrypted byte stream at L4 without
-terminating and the run measures throughput/latency through the active relay path. In `empty` mode
-`passthrough_sni` is empty — D1's zero-overhead default, where the accept-time front listener is
-never created and the single terminated Quarkus HTTPS listener owns the public port directly — so
-the run re-measures exactly the same proxied static route as the PLAN-04 `unauth` (`proxiedStatic`)
-baseline. `PassthroughBaselineComparator` reads the empty-mode summary against that stored baseline
-and fails the run if throughput dropped, or either latency percentile rose, beyond a fixed
-percentile-band noise tolerance (k6 omits `latency_ms.stdev`, so a standard-deviation gate is not
-available — see _Known fidelity limit_). A metric a run did not measure renders `n/a`, never `0`.
+terminating and the run measures throughput/latency through the active relay path.
++
+`empty` mode is *not a second mode of the same gateway*, and cannot be: `passthrough_sni` is a
+property of the whole gateway process — declaring it non-empty is what starts the accept-time SNI
+front listener at boot — so no per-request switch can make the primary instance, which declares two
+entries for its whole lifetime, behave as though the listener were absent. The `empty` arm therefore
+runs against a *dedicated second gateway instance*, `api-sheriff-passthrough-empty`, whose overlaid
+`gateway.yaml` is the shared descriptor with the `tls.passthrough_sni` block — and only that block —
+removed. On that instance the front listener is never created and the single terminated Quarkus
+HTTPS listener owns the public port directly, which is D1's zero-overhead default.
++
+Everything else is held equal, because the comparison is only meaningful as a single-variable one
+(ADR-0012): the *same* native image, the *same* `/proxy/static` route, the *same* `nginx-static`
+upstream the benchmark overlay repoints both instances at, the *same* mounted TLS material, and the
+*same* CPU and memory limits (512M / 4.0 CPU). A difference on any of those folds its own cost into
+one side of the gate and is then read as passthrough overhead.
++
+Those parity conditions are enforced structurally rather than by review convention, by four
+assertions in `TlsEdgeActivationWiringTest`: `emptyPassthroughOverlayDeclaresNoPassthroughSni` (the
+arm's side really declares none), `emptyPassthroughInstanceSetsNoInternalSslPort` (no internal-port
+split, since there is no front listener to free the public port for),
+`emptyPassthroughOverlayDiffersFromTheBaseOnlyByPassthroughSni` (the single-variable property, as a
+parsed-structure equality against the base descriptor once `passthrough_sni` is removed) and
+`emptyPassthroughInstanceSharesThePrimaryBenchmarkUpstream` (the same-upstream property, asserted as
+an equality between the two declared `TOPOLOGY_UPSTREAM` values rather than against a hard-coded
+literal, so repointing the benchmark moves both arms together).
++
+`PassthroughBaselineComparator` reads the empty-mode summary against the primary instance's stored
+`proxiedStatic` baseline and fails the run if throughput dropped, or either latency percentile rose,
+beyond a fixed percentile-band noise tolerance (k6 omits `latency_ms.stdev`, so a standard-deviation
+gate is not available — see _Known fidelity limit_). A metric a run did not measure renders `n/a`,
+never `0`.
++
+*Window comparability is checked first, and an incomparable pair is refused rather than compared.*
+`requests_per_second` is a counter rate over the run's whole measured window — the load phase *plus*
+the graceful-stop tail — so two arms whose windows differ in length do not produce comparable rates
+at all. An arm whose tail was stretched by a single stalled virtual user reports a proportionally
+deflated rate that reads as a throughput collapse which never happened. The comparator therefore
+reads `start_time` / `end_time` from both summaries and compares the two windows *before* the
+throughput and latency rows.
++
+*The band is derived from the configured load phase, not fixed.* Every aspect script bounds its tail
+with an explicit `constant-vus` scenario and a 5s `gracefulStop`, so the worst-case inflation a
+healthy run can produce is an *absolute* 5 seconds — which is a different *fraction* of every
+configured duration. The comparator therefore allows a fixed absolute drift of 6s (the 5s tail plus a
+second of ordinary start/stop skew) expressed as a fraction of the effective `k6.duration`, which the
+POM hands it as `passthrough.baseline.load.duration`:
++
+[cols="1,1,1,3", options="header"]
+|===
+|`k6.duration` |Worst-case tail |Derived band |Where it comes from
+
+|60s (default)
+|5/60 = 8.3%
+|6/60 = 10%
+|The default lane. Unchanged from the previously fixed band.
+
+|30s (`-Pquick`)
+|5/30 = 16.7%
+|6/30 = 20%
+|A fixed 10% band would have rejected a perfectly healthy quick run as `WINDOW_MISMATCH`, because
+ 16.7% of window inflation is legitimate at this duration.
+|===
++
+A reverted or unbounded tail still fails at every duration — k6's own 30s `gracefulStop` default is
+at least 50% of any run this lane configures, far outside the derived band. Setting
+`passthrough.baseline.window.tolerance` explicitly overrides the derivation outright.
++
+*A window that is not positive is refused before the band is applied at all.* Agreement is necessary
+for comparability but never sufficient: two zero-length windows agree perfectly, and so do two whose
+`end_time` precedes their `start_time`, yet neither pair describes an interval a rate could have been
+measured over. Such a pair is `WINDOW_MISMATCH`, never `PASS`. This is distinct from an *absent*
+window pair, which stays `NOT_MEASURED` (see below).
++
+The refusal *fails the run*: a mismatched window pair is deliberately **not** rescaled to a common
+window and **not** downgraded to a warning. Rescaling would republish a number the run never
+measured, and a warning would let a lane with a broken measurement window keep producing baseline
+history that looks authoritative. The failure names both windows so the fix is applied to the
+measurement, not to the threshold. An *absent* window pair is the single exception — it renders
+`n/a`, is classified `NOT_MEASURED`, and never fails, so a summary predating these fields is not
+retroactively broken.
 
 Readiness, not warm-up discard::
 `pre-benchmark-health-check.sh` gates every run on the stack actually serving, so no run starts

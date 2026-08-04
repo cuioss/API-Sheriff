@@ -101,6 +101,8 @@ section lists only the k6-specific records, whose upstream counterparts are wrk-
 |K6Benchmark-2 |BENCHMARK |Parsed k6 summary for benchmark '%s' (target '%s') |Logged once per parsed summary document, recording the benchmark name and the gateway the run targeted
 |K6Benchmark-3 |BENCHMARK |Rendering comparison summary from %s for targets '%s' and '%s' |Logged once when the on-demand comparative side-by-side summary starts rendering
 |K6Benchmark-4 |BENCHMARK |Wrote comparison summary covering %s aspect(s) to %s |Logged once when the comparative summary artifact has been written, outside the gh-pages tree
+|K6Benchmark-5 |BENCHMARK |Comparing empty-passthrough_sni run '%s' against PLAN-04 baseline '%s' |Logged once when the empty-`passthrough_sni` no-regression comparison starts, naming both summary documents it reads
+|K6Benchmark-6 |BENCHMARK |Passthrough empty-mode no-regression check passed within the %s noise band |Logged once when the empty-mode run stayed inside the no-regression noise band and the comparison passed
 |===
 
 === ERROR Level (200-299)
@@ -116,4 +118,8 @@ section lists only the k6-specific records, whose upstream counterparts are wrk-
 |K6Benchmark-205 |BENCHMARK |Incomplete k6 summary in file %s (missing field '%s') |Logged when a summary omits a mandatory field; that file yields no benchmark rather than a partial one
 |K6Benchmark-206 |BENCHMARK |Usage: ComparisonSummaryWriter <results-root> <target-a> <target-b> |Logged when the comparison writer is invoked with the wrong argument count; the process then exits non-zero
 |K6Benchmark-207 |BENCHMARK |No results directory for target '%s' under %s |Logged when a target produced no results directory; that target's column renders `n/a` rather than being dropped
+|K6Benchmark-208 |BENCHMARK |Usage: PassthroughBaselineComparator <k6-results-dir> |Logged when the passthrough baseline comparator is invoked without the results directory; the process then exits non-zero
+|K6Benchmark-209 |BENCHMARK |Missing k6 summary '%s' under %s — cannot run the passthrough baseline comparison |Logged when either summary the comparison requires is absent; the comparison is refused rather than run against one side
+|K6Benchmark-210 |BENCHMARK |Passthrough empty-mode regressed beyond the %s noise band vs the PLAN-04 baseline: %s |Logged when the empty-mode run's throughput dropped, or a latency percentile rose, beyond the noise band; the process then exits non-zero
+|K6Benchmark-211 |BENCHMARK |Passthrough empty-mode and baseline windows disagree beyond the %s window-comparability band, so their rates are not comparable: %s |Logged when the two arms were measured over different-length windows, which makes their `requests_per_second` rates incomparable; the comparison is refused and the run fails — the pair is never rescaled to a common window and never downgraded to a warning
 |===

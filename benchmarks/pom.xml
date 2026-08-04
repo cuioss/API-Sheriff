@@ -428,10 +428,14 @@
                                 </configuration>
                             </execution>
 
-                            <!-- Run k6 passthrough-relay benchmark in EMPTY mode (passthrough_sni
-                                 empty: D1's zero-overhead default, single terminated listener on the
-                                 same proxied static route as the PLAN-04 baseline). Produces the
-                                 no-regression candidate PassthroughBaselineComparator reads. -->
+                            <!-- Run k6 passthrough-relay benchmark in EMPTY mode. The script sends
+                                 this arm to the dedicated api-sheriff-passthrough-empty instance,
+                                 whose gateway.yaml declares no passthrough_sni, so no accept-time
+                                 front listener is created and a single terminated listener owns the
+                                 public port. Same /proxy/static route and same nginx-static upstream
+                                 as the primary instance's proxiedStatic baseline, which is the only
+                                 other side of the comparison. Produces the no-regression candidate
+                                 PassthroughBaselineComparator reads. -->
                             <execution>
                                 <id>run-k6-passthrough-relay-empty-benchmark</id>
                                 <phase>integration-test</phase>
@@ -749,6 +753,20 @@
                                     <arguments>
                                         <argument>${k6.output.dir}</argument>
                                     </arguments>
+                                    <systemProperties>
+                                        <!-- The SAME k6.duration every k6 execution above passes as
+                                             BENCHMARK_DURATION. The comparator's window-comparability
+                                             band must cover the bounded 5s gracefulStop tail, which is
+                                             an ABSOLUTE 5s and therefore a different FRACTION of every
+                                             duration: 8.3% of the 60s default but 16.7% of the 30s the
+                                             quick profile sets. Handing it the effective duration is
+                                             what keeps the band derived rather than assuming a 60s run
+                                             and rejecting a healthy -Pquick one as a window mismatch. -->
+                                        <systemProperty>
+                                            <key>passthrough.baseline.load.duration</key>
+                                            <value>${k6.duration}</value>
+                                        </systemProperty>
+                                    </systemProperties>
                                 </configuration>
                             </execution>
 

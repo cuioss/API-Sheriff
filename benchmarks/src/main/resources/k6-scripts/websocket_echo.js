@@ -21,7 +21,7 @@
 import { WebSocket } from 'k6/websockets';
 import { check } from 'k6';
 import { Trend, Rate, Counter } from 'k6/metrics';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 import { wsUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'websocketEcho';
@@ -45,8 +45,7 @@ const roundtrips = new Counter('ws_roundtrips');
 const wsErrors = new Rate('ws_errors');
 
 export const options = {
-    vus: vus(50),
-    duration: duration(),
+    scenarios: { default: scenario(vus(50), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     insecureSkipTLSVerify: true,
     thresholds: {

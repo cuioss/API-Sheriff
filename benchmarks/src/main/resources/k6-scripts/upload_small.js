@@ -15,7 +15,7 @@
  */
 import http from 'k6/http';
 import { check } from 'k6';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 import { targetUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'uploadSmall';
@@ -30,8 +30,7 @@ const BODY_BYTES = 1e6;
 const BODY = 'x'.repeat(BODY_BYTES);
 
 export const options = {
-    vus: vus(50),
-    duration: duration(),
+    scenarios: { default: scenario(vus(50), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     insecureSkipTLSVerify: true,
     thresholds: {

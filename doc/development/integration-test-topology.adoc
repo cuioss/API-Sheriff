@@ -11,7 +11,7 @@ reverse-engineering `integration-tests/docker-compose.yml`.
 [IMPORTANT]
 ====
 This is the *integration-test* topology. It is not a production deployment and not a recommended
-one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend and the five variant gateway
+one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend and the six variant gateway
 instances exist to make specific tests possible. Production and Kubernetes topologies are defined by
 PLAN-27 and are deliberately not drawn here or anywhere else yet.
 ====
@@ -57,10 +57,11 @@ link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
 
 === The collapsed variant group
 
-Five further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
-overlaid `gateway.yaml` -- or, for the last one, by a single environment variable -- and their
-published ports. Drawing all six in full would bury the affordances the diagram exists to show, so
-they are collapsed into one annotated group that still names every instance and every port pair:
+Six further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
+overlaid `gateway.yaml` -- or, for `api-sheriff-plain-mgmt`, by a single environment variable -- and
+their published ports. Drawing all seven in full would bury the affordances the diagram exists to
+show, so they are collapsed into one annotated group that still names every instance and every port
+pair:
 
 [cols="2,1,1,3"]
 |===
@@ -96,6 +97,16 @@ they are collapsed into one annotated group that still names every instance and 
 | The one instance whose *management* interface serves plain HTTP, proving the supported downgrade
   path. It overlays no `gateway.yaml` at all -- the opt-out is a single environment variable -- so
   the management scheme is the only variable under test. See <<readiness-contract>>.
+
+| `api-sheriff-passthrough-empty`
+| 10449
+| 19006
+| `tls.passthrough_sni` is process-wide, and the primary instance declares it non-empty for its whole
+  lifetime -- so the benchmark's `passthroughRelayEmpty` arm, whose entire claim is that it measures
+  the *zero-overhead default where no front listener is created*, cannot be run against the primary.
+  This instance overlays a `gateway.yaml` that is the base document minus that one block, and is the
+  only instance with no front listener at all: its terminated Quarkus HTTPS listener owns `8443`
+  directly, so it sets no `QUARKUS_HTTP_SSL_PORT` relocation.
 |===
 
 === Mounted material
@@ -116,7 +127,7 @@ bring-up script waits for, what that wait actually proves, and where its retry b
 
 `integration-tests/scripts/start-integration-container.sh` waits on `/q/health/ready` for every
 discovered gateway instance, in the single Compose-model-derived wait loop. It is one loop for all
-six instances: the service set, each instance's published management port, and the scheme its
+seven instances: the service set, each instance's published management port, and the scheme its
 management interface speaks are read from the resolved Compose model, so adding, removing or
 renumbering an instance needs no edit to the script.
 
@@ -165,8 +176,9 @@ literals that can drift apart.
 
 Its value was measured, not chosen. A sub-second prober (100 ms polling, started *before*
 `docker compose up -d` so that it observes the live-to-ready transition rather than inferring it
-from a loop that only begins once both are already true) ran against all six gateway instances
-brought up concurrently with Keycloak, under CPU contention -- 24 busy workers on 16 cores:
+from a loop that only begins once both are already true) ran against the six gateway instances that
+existed when it was taken, brought up concurrently with Keycloak, under CPU contention -- 24 busy
+workers on 16 cores:
 
 [cols="2,1,1,1"]
 |===
@@ -179,6 +191,11 @@ brought up concurrently with Keycloak, under CPU contention -- 24 busy workers o
 | `api-sheriff-plain-mgmt`  | 8.94s | 8.94s | 0.00s
 | `api-sheriff-ws-admission`| 8.95s | 8.95s | 0.00s
 |===
+
+This table is evidence from a dated run, not a claim about today's instance set, so it is
+deliberately *not* restated as the set grows: `api-sheriff-passthrough-empty` -- the seventh
+instance -- is absent from it by design rather than by omission, and no row may be invented for it.
+The headroom argument below therefore stands on the six instances actually measured.
 
 The live-to-ready delta is *0.00s on every instance* -- below the prober's own 100 ms resolution.
 That is not luck; it is what the previous section describes. Because the `jwks` datum is settled at
@@ -213,7 +230,7 @@ to fix.*
 It is handled structurally rather than as a special case: each service declares the scheme its
 management interface speaks in a `de.cuioss.sheriff.management-scheme` label, and the wait loop adds
 `-k` only when that label says `https`. The scheme difference is therefore data, not a branch on a
-service name -- which is what lets one loop cover all six instances.
+service name -- which is what lets one loop cover all seven instances.
 
 The corollary is a standing assertion: this instance must be probed over `http://` with *no* `-k`.
 If it ever needs `-k`, the plain-HTTP opt-out has silently stopped working, and that is the bug --
@@ -239,11 +256,19 @@ path the wait loop probes, hoisted the retry budget into a named constant, and d
 probe URL from the Compose model. None of those is a fact the diagram depicts, so the diagram is not
 made stale by it and is deliberately not redrawn.
 
-The check did, however, surface a *pre-existing* gap that predates this change: the collapsed
-variant group in the SVG is labelled `variant instances (4)` and names only `api-sheriff-mtls`,
-`api-sheriff-cookie`, `api-sheriff-cookie-2` and `api-sheriff-ws-admission`. It omits
-`api-sheriff-plain-mgmt` -- the same omission the table above previously carried and now fixes. The
-diagram's `<desc>` accessibility text repeats the omission. Closing it means adding the fifth member
-plus its `10448 · 19005` port pair, correcting the count label and the `<desc>`, and re-rendering
-against both themes; that is diagram work rather than documentation work and is deliberately left to
-a follow-up rather than folded in here.
+The check did, however, surface a *pre-existing* gap that predated this change: the collapsed variant
+group in the SVG was labelled `variant instances (4)` and named only `api-sheriff-mtls`,
+`api-sheriff-cookie`, `api-sheriff-cookie-2` and `api-sheriff-ws-admission`, omitting
+`api-sheriff-plain-mgmt`; the diagram's `<desc>` accessibility text repeated the omission.
+
+*That gap is now closed, not deferred.* The group is labelled `variant instances (6)` and enumerates
+all six members with their port pairs -- `api-sheriff-plain-mgmt` at `10448 · 19005` and
+`api-sheriff-passthrough-empty` at `10449 · 19006` joining the original four -- and the `<desc>`
+accessibility narrative carries both the count and the full member enumeration rather than a subset.
+The enclosing group rectangle and the own-bar line extent were grown by two row heights to fit the
+added rows. The follow-up this section previously deferred therefore no longer exists.
+
+The read-back obligation is unchanged and is *not* discharged by this note: re-render and read the
+diagram back against both themes before committing any further edit to it, per the
+link:diagram-type-deployment.md[deployment diagram-type standard]. Rendered PNGs remain verification
+artifacts and are never committed.

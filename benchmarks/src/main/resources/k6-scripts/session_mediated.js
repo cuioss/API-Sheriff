@@ -28,7 +28,7 @@
  */
 import http from 'k6/http';
 import { check, fail } from 'k6';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 import { baseUrl, targetUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'sessionMediated';
@@ -55,8 +55,7 @@ const KEYCLOAK_USERNAME = __ENV.KEYCLOAK_USERNAME || 'integration-user';
 const KEYCLOAK_PASSWORD = __ENV.KEYCLOAK_PASSWORD || 'integration-password';
 
 export const options = {
-    vus: vus(50),
-    duration: duration(),
+    scenarios: { default: scenario(vus(50), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     insecureSkipTLSVerify: true,
     thresholds: {

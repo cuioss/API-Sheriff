@@ -38,3 +38,14 @@ services:
       - TOPOLOGY_UPSTREAM=http://nginx-static:8080
     depends_on:
       - nginx-static
+
+  # The empty-passthrough_sni arm is compared against the primary instance's proxiedStatic baseline,
+  # so it must be repointed at the SAME static backend. This is the ADR-0012 "identical upstreams"
+  # parity precondition: leaving this instance on go-httpbin while the primary serves from
+  # nginx-static would fold the JSON-serializing backend's cost into one side of the comparison only,
+  # and the resulting difference would be read as passthrough overhead.
+  api-sheriff-passthrough-empty:
+    environment:
+      - TOPOLOGY_UPSTREAM=http://nginx-static:8080
+    depends_on:
+      - nginx-static
