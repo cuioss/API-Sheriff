@@ -52,6 +52,35 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 public sealed interface AssetSource permits DirectoryAssetSource, UpstreamAssetSource {
 
     /**
+     * The served-asset byte cap (10 MiB) — <strong>the single derivation seam both implementations
+     * read</strong>, never re-declared per class (ADR-0026, "one derivation seam, not one per
+     * stage").
+     * <p>
+     * It lives on the sealed seam rather than on either implementation because the permitted set is
+     * exactly the two sources that enforce it: declaring it twice let the two literals drift
+     * independently, with nothing structurally tying them together, which is the seam-erosion shape
+     * ADR-0026 names. Reading one constant makes "both sources cap at the same value" true by
+     * construction instead of by coincidence.
+     * <p>
+     * <strong>This is NOT the per-route request-body cap.</strong> The two bounds are routinely
+     * conflated because both are byte ceilings on the request path, so the distinction is stated
+     * here once:
+     * <ul>
+     *   <li><strong>This cap</strong> bounds the <em>served asset</em> — the response bytes a
+     *       {@code directory} or {@code upstream} asset route returns. It is a fixed product
+     *       constant, deliberately <em>not</em> operator-configurable ({@code asset_defaults}
+     *       carries content types only), and it is enforced inside each source.</li>
+     *   <li><strong>{@code security_filter.max_body_bytes}</strong> bounds the <em>inbound request
+     *       body</em>. It is per-route and operator-configurable, it is enforced by
+     *       {@code ThoroughChecksStage} and streamed by {@code DispatchStage.ByteCappedBodyStream},
+     *       and it answers a breach with {@code 413 CONTENT_TOO_LARGE} (ADR-0023).</li>
+     * </ul>
+     * An asset route's terminal action applies no request-body cap of its own, and this cap never
+     * bounds a proxied request body — they govern opposite directions over different inputs.
+     */
+    long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
+
+    /**
      * Serves the confined asset addressed by {@code subPath}.
      *
      * @param method  the request verb; only {@code GET} and {@code HEAD} are served

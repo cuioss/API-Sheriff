@@ -321,7 +321,7 @@ class UpstreamAssetSourceTest {
         UpstreamFetcher fetcher = UpstreamAssetSource.httpFetcher(
                 UpstreamAssetSource.DEFAULT_CONNECT_TIMEOUT,
                 UpstreamAssetSource.DEFAULT_READ_TIMEOUT,
-                UpstreamAssetSource.DEFAULT_MAX_BYTES);
+                AssetSource.DEFAULT_MAX_BYTES);
 
         assertNotNull(fetcher, "the default transport fetcher is wired");
     }

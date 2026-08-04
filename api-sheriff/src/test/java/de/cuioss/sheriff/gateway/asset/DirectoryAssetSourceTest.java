@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.asset;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -52,6 +53,7 @@ class DirectoryAssetSourceTest {
     private static final int OK = 200;
     private static final int NOT_FOUND = 404;
     private static final int METHOD_NOT_ALLOWED = 405;
+    private static final int PAYLOAD_TOO_LARGE = 413;
 
     @TempDir
     Path tempDir;
@@ -261,5 +263,111 @@ class DirectoryAssetSourceTest {
         AssetSource.Served served = publicSource().serve(HttpMethod.POST, "index.html");
 
         assertEquals(METHOD_NOT_ALLOWED, served.status(), "POST must be rejected 405");
+    }
+
+    // --- Served-asset byte cap -------------------------------------------------------------------
+    // The cap had NO coverage before this suite: neither the 413 refusal nor the boundary either
+    // side of it was asserted, so the whole bound rested on inspection. The three tests below pin
+    // the boundary as a matched pair plus a control, so none of them can pass vacuously.
+
+    /**
+     * @param maxBytes the served-asset cap this source enforces
+     * @return a public directory source capped at {@code maxBytes}
+     */
+    private DirectoryAssetSource cappedSource(long maxBytes) {
+        return new DirectoryAssetSource(root, AccessLevel.PUBLIC, new PathConfinement(), maxBytes, Map.of());
+    }
+
+    @Test
+    @DisplayName("Should serve a file sitting exactly at the cap")
+    void shouldServeFileExactlyAtCap() {
+        // THE CONTROL for the two refusal tests below. Without it, a source that refused
+        // unconditionally — or one whose cap was mis-derived to zero — would satisfy both of them
+        // while serving nothing at all, and the pair would look like a working boundary.
+        AssetSource.Served served = cappedSource(INDEX_BODY.length).serve(HttpMethod.GET, "index.html");
+
+        assertAll(
+                () -> assertEquals(OK, served.status(), "a file exactly at the cap is within it and serves"),
+                () -> assertArrayEquals(INDEX_BODY, served.body(),
+                        "the at-cap file serves its complete body, not a truncated one"));
+    }
+
+    @Test
+    @DisplayName("Should refuse a file one byte over the cap with 413 and no body")
+    void shouldRefuseFileOverCap() {
+        AssetSource.Served served = cappedSource(INDEX_BODY.length - 1L).serve(HttpMethod.GET, "index.html");
+
+        assertAll(
+                () -> assertEquals(PAYLOAD_TOO_LARGE, served.status(),
+                        "a file over the cap is refused 413"),
+                () -> assertEquals(0, served.body().length,
+                        "a refused asset serves no bytes at all — never a truncated prefix, which a "
+                                + "caller would otherwise receive as a valid 200-shaped body"));
+    }
+
+    @Test
+    @DisplayName("Should refuse an over-cap file on HEAD too, without reading it")
+    void shouldRefuseOverCapFileOnHead() {
+        // HEAD never reads a body, so the size pre-check alone decides it. Asserted so the cap is
+        // known to gate the metadata-only verb as well, rather than only the body-carrying one.
+        AssetSource.Served served = cappedSource(INDEX_BODY.length - 1L).serve(HttpMethod.HEAD, "index.html");
+
+        assertEquals(PAYLOAD_TOO_LARGE, served.status(), "HEAD on an over-cap file is refused 413");
+    }
+
+    @Test
+    @DisplayName("Should bound the read so a file larger than the cap is never materialized whole")
+    void shouldBoundTheReadRatherThanTheSampledSize() throws Exception {
+        // The TOCTOU remediation, asserted on its observable consequence. serve() reads through a
+        // cap-bounded read (readNBytes of maxBytes+1) and then re-checks the length of what it
+        // ACTUALLY read, rather than trusting the size it sampled beforehand. A file that is larger
+        // than the cap therefore cannot be served whatever the earlier stat reported.
+        //
+        // The race itself cannot be forced deterministically from here — winning it needs the file
+        // to grow between the two syscalls — so this asserts the invariant the fix establishes: the
+        // refusal is driven by the bytes read. A very small cap against a much larger file makes the
+        // over-cap margin unambiguous.
+        byte[] large = new byte[8192];
+        Files.write(root.resolve("large.html"), large);
+
+        AssetSource.Served served = cappedSource(16L).serve(HttpMethod.GET, "large.html");
+
+        assertAll(
+                () -> assertEquals(PAYLOAD_TOO_LARGE, served.status(),
+                        "a file far exceeding the cap is refused"),
+                () -> assertEquals(0, served.body().length,
+                        "no prefix of an over-cap file reaches the caller"));
+    }
+
+    @Test
+    @DisplayName("Should read the asset byte cap from the single shared seam, not a per-class constant")
+    void shouldDeriveAssetCapFromTheSharedSeam() {
+        // Fitness function for the ADR-0026 'one derivation seam, not one per stage' rule, phrased
+        // positively (the seam declares the cap) plus the negative leg that makes it enforceable
+        // (neither implementation re-declares it). The cap was previously declared twice, as
+        // independent public constants carrying duplicated literals, with nothing tying them
+        // together — so a change to one would silently leave the other divergent. Deleting the
+        // duplicates fixed the instance; this test is what stops it recurring, since re-adding a
+        // per-class DEFAULT_MAX_BYTES is otherwise invisible at the point it is written.
+        assertAll(
+                () -> assertEquals(AssetSource.DEFAULT_MAX_BYTES, 10L * 1024 * 1024,
+                        "the seam carries the 10 MiB served-asset cap"),
+                () -> assertFalse(declaresOwnMaxBytes(DirectoryAssetSource.class),
+                        "DirectoryAssetSource must read AssetSource.DEFAULT_MAX_BYTES rather than "
+                                + "re-declaring the cap"),
+                () -> assertFalse(declaresOwnMaxBytes(UpstreamAssetSource.class),
+                        "UpstreamAssetSource must read AssetSource.DEFAULT_MAX_BYTES rather than "
+                                + "re-declaring the cap"));
+    }
+
+    /**
+     * @param type the asset-source implementation to inspect
+     * @return {@code true} when {@code type} declares its own {@code DEFAULT_MAX_BYTES} field —
+     *         the duplicated-literal shape the shared seam exists to prevent. Declared fields only,
+     *         so the constant inherited from {@link AssetSource} is deliberately not counted.
+     */
+    private static boolean declaresOwnMaxBytes(Class<?> type) {
+        return Stream.of(type.getDeclaredFields())
+                .anyMatch(field -> "DEFAULT_MAX_BYTES".equals(field.getName()));
     }
 }

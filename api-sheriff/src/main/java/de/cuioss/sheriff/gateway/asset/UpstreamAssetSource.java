@@ -69,8 +69,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class UpstreamAssetSource implements AssetSource {
 
-    /** The default served-asset size cap (10 MiB). */
-    public static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
     /** The default upstream connect timeout. */
     public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
     /** The default upstream read timeout. */
@@ -110,17 +108,33 @@ public final class UpstreamAssetSource implements AssetSource {
     public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access,
             Map<String, String> operatorContentTypes) {
         this(upstream, access, new PathConfinement(),
-                httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES,
-                operatorContentTypes);
+                httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, AssetSource.DEFAULT_MAX_BYTES),
+                AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes);
     }
 
     /**
      * Creates a source with an explicit confinement, fetch seam, and size cap.
+     * <p>
+     * <strong>Caller invariant — the fetch-seam cap must not be lower than {@code maxBytes}.</strong>
+     * The two bounds are separate parameters because a supplied {@code fetcher} is already built and
+     * this constructor cannot read the cap inside it, so the agreement is a caller obligation rather
+     * than a structural guarantee. It is load-bearing: {@link #httpFetcher} truncates its result to
+     * one byte past ITS OWN cap, and {@link #serve} then refuses only when
+     * {@code body.length > maxBytes}. A fetcher capped BELOW {@code maxBytes} therefore returns a
+     * silently TRUNCATED body that passes the serve-time check and is served as a normal {@code 200}
+     * — a content-integrity defect, not merely a tighter limit.
+     * <p>
+     * The production path cannot violate it: the {@linkplain
+     * #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map) three-argument constructor} passes
+     * {@link AssetSource#DEFAULT_MAX_BYTES} to both, so both derive from the one shared seam. This
+     * constructor exists for tests supplying a fake fetcher, which carries no cap of its own and so
+     * cannot truncate; a divergent pair here is a test-authoring error.
      *
      * @param upstream             the boot-resolved upstream target (mandatory)
      * @param access               the serving route's effective access level (mandatory)
      * @param confinement          the shared path confinement (mandatory)
-     * @param fetcher              the upstream fetch seam (mandatory)
+     * @param fetcher              the upstream fetch seam (mandatory); its own body cap must be at
+     *                             least {@code maxBytes} — see the caller invariant above
      * @param maxBytes             the maximum served-asset size in bytes
      * @param operatorContentTypes the boot-resolved add-only content-type additions
      *                             (mandatory; empty when unconfigured). Resolved once at

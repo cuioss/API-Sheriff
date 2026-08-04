@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.asset;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -51,9 +52,6 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
  */
 public final class DirectoryAssetSource implements AssetSource {
 
-    /** The default served-file size cap (10 MiB). */
-    public static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
-
     private static final int OK = 200;
     private static final int NOT_FOUND = 404;
     private static final int METHOD_NOT_ALLOWED = 405;
@@ -69,8 +67,8 @@ public final class DirectoryAssetSource implements AssetSource {
 
     /**
      * Creates a source rooted at {@code root} for a route of the given access level,
-     * using the default {@link PathConfinement} and {@value #DEFAULT_MAX_BYTES}-byte
-     * size cap.
+     * using the default {@link PathConfinement} and the shared
+     * {@link AssetSource#DEFAULT_MAX_BYTES} size cap.
      *
      * @param root                 the configured directory root (mandatory)
      * @param access               the serving route's effective access level (mandatory)
@@ -78,7 +76,7 @@ public final class DirectoryAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured)
      */
     public DirectoryAssetSource(Path root, AccessLevel access, Map<String, String> operatorContentTypes) {
-        this(root, access, new PathConfinement(), DEFAULT_MAX_BYTES, operatorContentTypes);
+        this(root, access, new PathConfinement(), AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes);
     }
 
     /**
@@ -134,12 +132,51 @@ public final class DirectoryAssetSource implements AssetSource {
             if (Files.size(file) > maxBytes) {
                 return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
             }
+            byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : readWithinCap(file);
+            // The authoritative cap check, on the bytes actually READ rather than on the size
+            // sampled beforehand. Same shape as UpstreamAssetSource's post-fetch check, so both
+            // sources refuse an over-cap asset on the bytes they really materialized.
+            if (body.length > maxBytes) {
+                return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
+            }
             Map<String, String> headers = AssetResponseEnvelope.governedHeaders(
                     file.getFileName().toString(), access, Map.of(), operatorContentTypes);
-            byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : Files.readAllBytes(file);
             return new Served(OK, headers, body);
         } catch (IOException _) {
             return new Served(SERVER_ERROR, Map.of(), EMPTY_BODY);
+        }
+    }
+
+    /**
+     * Reads at most {@code maxBytes + 1} bytes of {@code file} — enough for the caller's length
+     * check to detect a breach, never enough to materialize an oversized file.
+     * <p>
+     * <strong>Why the {@link Files#size(Path)} pre-check is not sufficient on its own.</strong>
+     * That check samples the size and the read happens afterwards, so a file that GROWS in between
+     * would be materialized in full by an unbounded {@code readAllBytes}: the in-memory bound would
+     * be the file's size at READ time rather than {@code maxBytes}. Winning that race needs write
+     * access to the mounted asset volume — which is exactly the attacker capability
+     * {@link #realPathWithinRoot} already reasons about (a compromised deploy step, a hostile
+     * archive extraction), so it is in-model here rather than out of scope. Bounding the read
+     * closes it: the ceiling now holds regardless of what the file does between the two calls.
+     * <p>
+     * The pre-check is deliberately KEPT as a cheap fast-reject — it refuses a known-oversized file
+     * without reading a single byte — while this bounded read is the authoritative guard. That
+     * pairing gives the directory source the same mid-flight guarantee
+     * {@code UpstreamAssetSource.CappedByteArrayBodySubscriber} gives the upstream source, so
+     * neither asset path can be outrun into an unbounded buffer.
+     *
+     * @param file the confined, in-root regular file to read
+     * @return the file's bytes, truncated to one byte past the cap when it exceeds it
+     * @throws IOException on a read failure
+     */
+    private byte[] readWithinCap(Path file) throws IOException {
+        // Clamped before the increment so a maxBytes at or near Long.MAX_VALUE cannot overflow into
+        // a negative (and then a zero-length) limit.
+        long clamped = Math.min(maxBytes, (long) Integer.MAX_VALUE - 1L);
+        int limit = (int) clamped + 1;
+        try (InputStream in = Files.newInputStream(file)) {
+            return in.readNBytes(limit);
         }
     }
 

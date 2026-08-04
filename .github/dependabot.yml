@@ -14,3 +14,34 @@ updates:
       semver-major-days: 7
       semver-minor-days: 3
       semver-patch-days: 1
+
+  # Every `uses:` in .github/workflows is pinned to a full commit SHA — which is the right posture,
+  # and is exactly why this entry is required rather than optional. A SHA pin is immutable, so it
+  # does NOT pick up upstream security fixes the way a moving tag would: without an update lane the
+  # pins silently rot, and the ones that rot are security-critical (harden-runner, trivy-action,
+  # checkout, cosign-installer). Dependabot rewrites the SHA and the trailing `# vX.Y.Z` comment
+  # together, so the pin stays readable.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 1
+
+  # The production image's base is digest-pinned in Dockerfile.native, and release.yml GATES every
+  # release on a Trivy scan of it at HIGH+CRITICAL with `ignore-unfixed: false`. Without an update
+  # lane the first unfixed CVE in that base blocks releases with no automation to relieve it, and
+  # re-pinning becomes a manual scramble under time pressure. This entry keeps the base moving
+  # ahead of the gate instead of behind it.
+  - package-ecosystem: docker
+    directory: "/api-sheriff/src/main/docker"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 1

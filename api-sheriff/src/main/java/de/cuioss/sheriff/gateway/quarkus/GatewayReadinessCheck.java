@@ -161,6 +161,36 @@ public class GatewayReadinessCheck implements HealthCheck {
             }
             return builder.up().build();
         } catch (GatewayException | CreationException failure) {
+            // NOT REACHED IN THE SHIPPED EAGER-BOOT TOPOLOGY, AND DELIBERATELY RETAINED.
+            //
+            // TokenValidatorProducer.onStartup forces the @ApplicationScoped validator into
+            // existence at StartupEvent (via a method call on the injected proxy), so boot already
+            // performs whatever gatewayValidator.get() would do here. Verified empirically against
+            // the distroless image, and there is no third outcome: a construction-FAILING JWKS
+            // aborts boot non-zero, so the management port never listens and this probe is never
+            // called; a construction-SUCCEEDING but lazily-unreachable JWKS reports UP, because the
+            // fetch is lazy. Readiness therefore flips at the same moment liveness does (ADR-0027).
+            //
+            // Kept rather than deleted as dead code, for three reasons:
+            //  (1) Removing the catch does not remove the failure path, it only moves the rendering
+            //      OUT of this class -- an escaping exception would be rendered by SmallRye's own
+            //      check-failure handling instead, outside the gateway's control and without the
+            //      fixed-token redaction below. That is precisely the disclosure this probe closed,
+            //      on a payload served by an interface that may legitimately be plain HTTP.
+            //  (2) It is the designated seam for closing the gap ADR-0027 section 4 records as open:
+            //      giving this probe a LIVE loader-status read (so an unreachable JWKS endpoint, a
+            //      stalled rotation or an expired key take readiness DOWN) needs exactly this DOWN
+            //      branch. Deleting it would mean re-adding it.
+            //  (3) The eager-boot coupling it depends on is a fail-CLOSED security property worth
+            //      more than probe independence: a misconfigured issuer must abort startup rather
+            //      than let the gateway serve traffic and fail at the first bearer request. So the
+            //      alternative disposition -- relaxing onStartup so readiness can report DOWN
+            //      independently of liveness -- is deliberately NOT taken; it would trade a boot
+            //      refusal for a runtime rejection.
+            //
+            // Consequence to state plainly: the readiness-detail redaction is defence-in-depth
+            // against a future relaxation of eager assembly, NOT closure of a live exposure.
+            //
             // The operator gets the cause through the log; the wire gets a fixed token. See
             // ERROR_VALIDATION_UNAVAILABLE for why the raw message must not travel on this payload.
             LOGGER.warn(failure, ConfigLogMessages.WARN.READINESS_VALIDATION_UNAVAILABLE);

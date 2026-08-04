@@ -56,8 +56,13 @@ jobs:
     # measured run does not approach the cap.
     timeout-minutes: 75
     permissions:
-      # Needed to upload artifacts
-      contents: write
+      # READ, not write. The former `contents: write` was justified in-comment as "needed to upload
+      # artifacts", which is not what that scope does: actions/upload-artifact uses the Actions
+      # runtime token, not GITHUB_TOKEN's contents scope. Every genuine write in this job goes to
+      # the OTHER repository (cuioss.github.io) and is authenticated by the GitHub App token minted
+      # below — the checkout of that repo passes it explicitly and the `git push` inherits it. So
+      # nothing here needs write access to THIS repository's contents.
+      contents: read
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -160,13 +165,18 @@ jobs:
             --benchmark-outcome "${BENCHMARK_OUTCOME}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
+      # The commit SHA reaches the shell through the environment, never through `${{ }}` expansion
+      # inside the script body — expression interpolation into a run block is a script-injection
+      # sink, and maven.yml and release.yml already hold this line for every value they pass.
       - name: Assemble benchmark artifacts for deployment
+        env:
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           python3 benchmarks/scripts/benchmark-pages.py assemble \
             --integration-results benchmarks/target/benchmark-results/gh-pages-ready \
             --previous-pages-dir previous-pages/api-sheriff/benchmarks \
             --output-dir gh-pages \
-            --commit-sha "${{ github.sha }}"
+            --commit-sha "${COMMIT_SHA}"
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -184,6 +194,8 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Deploy to cuioss.github.io
+        env:
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           TARGET_DIR="_pages-deploy/api-sheriff/benchmarks"
           rm -rf "$TARGET_DIR"
@@ -193,5 +205,5 @@ jobs:
           git config user.name "cuioss-release-bot[bot]"
           git config user.email "cuioss-release-bot[bot]@users.noreply.github.com"
           git add .
-          git diff --staged --quiet || git commit -m "Deploy benchmark results from ${{ github.sha }}"
+          git diff --staged --quiet || git commit -m "Deploy benchmark results from ${COMMIT_SHA}"
           git push

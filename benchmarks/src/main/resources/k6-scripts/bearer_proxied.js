@@ -28,6 +28,25 @@ const TARGET_URL = __ENV.TARGET_URL || targetUrl('/secure/get');
 // `iss` claim the gateway's benchmark-realm issuer validates against.
 const KEYCLOAK_TOKEN_URL = __ENV.KEYCLOAK_TOKEN_URL
     || 'https://keycloak:8443/realms/benchmark/protocol/openid-connect/token';
+// THROWAWAY BENCHMARK-REALM CREDENTIALS, LITERAL BY NECESSITY — read this before "fixing" it.
+//
+// These four literals are not injected secrets with a convenience default: under the compose
+// harness they are the OPERATIVE values. integration-tests/docker-compose.yml passes only
+// BENCHMARK_VUS, BENCHMARK_DURATION, BENCHMARK_MAX_ERROR_RATE, GATEWAY_TARGET and PASSTHROUGH_SNI
+// through to the k6 service, so KEYCLOAK_* is never set there and every `||` branch below is taken.
+//
+// They are literal because they must MATCH the realm import that provisions them —
+// integration-tests/src/main/docker/keycloak/benchmark-realm.json declares the `benchmark-client`
+// secret and the `benchmark-user` password verbatim. That file is the co-authoritative copy, so
+// dropping the fallbacks here and failing fast would not remove the literal from the repository;
+// it would only break the benchmark under the shipped harness while the same strings stayed in the
+// realm JSON. Changing one without the other yields an all-401 run, which the `checks` threshold
+// above turns into a hard build failure rather than a silently fast result.
+//
+// Containment, which is what makes this acceptable rather than a finding: the realm exists only
+// inside an ephemeral Keycloak container on a local bridge network, it is created for the load test
+// and destroyed with the stack, and neither literal reaches any api-sheriff production source or
+// the packaged artifact (ADR-0032). Nothing here grants access to anything outside that stack.
 const KEYCLOAK_CLIENT_ID = __ENV.KEYCLOAK_CLIENT_ID || 'benchmark-client';
 const KEYCLOAK_CLIENT_SECRET = __ENV.KEYCLOAK_CLIENT_SECRET || 'benchmark-secret';
 const KEYCLOAK_USERNAME = __ENV.KEYCLOAK_USERNAME || 'benchmark-user';

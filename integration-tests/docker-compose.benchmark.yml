@@ -4,7 +4,12 @@
 # JSON-serializing backend (go-httpbin) polluting the numbers.
 services:
   nginx-static:
-    image: nginx:alpine
+    # Pinned to the 1.27 MINOR line rather than the floating `:alpine` tag, matching
+    # deployment/compose-sample/docker-compose.yml. A floating tag is the wrong choice here
+    # specifically: this is the FAIRNESS BACKEND the cross-gateway comparison rides, so an
+    # upstream image that silently changes between runs moves the baseline the benchmark
+    # measures against and makes two runs incomparable without anything announcing it.
+    image: nginx:1.27-alpine
     ports:
       - "18081:8080"  # published only for the host-side readiness probe
     volumes:
