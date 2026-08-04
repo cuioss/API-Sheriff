@@ -11,7 +11,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">API Sheriff integration-test topology, the Docker Compose stack used by the integration-tests module</title>
-  <desc id="desc">The integration-test deployment topology, not a production deployment. A host runs a single Docker Compose bridge network named api-sheriff. Crossing from the host into the network are the published ports: the primary api-sheriff gateway on 10443 mapped to container 8443, and Keycloak on 1443 mapped to container 8443. Inside the gateway container a Vert.x SNI front listener owns the public port 8443; a matched passthrough SNI is relayed opaquely at layer 4 to the passthrough-backend and is never terminated, while every other connection is handed to the internal terminating Quarkus HTTPS listener on 8444. The management interface serves HTTPS only, on 9000. Three read-only volumes are mounted: certificates, sheriff-config and assets. The four variant gateway instances are collapsed into one annotated group; their members are api-sheriff-mtls on 10444 and 19001, api-sheriff-cookie on 10445 and 19002, api-sheriff-cookie-2 on 10446 and 19003, and api-sheriff-ws-admission on 10447 and 19004, each the same api-sheriff:distroless image with an overlaid gateway.yaml. Gateway egress crosses a second trust boundary governed by a host-exact SSRF allowlist and a named TLS trust profile, reaching Keycloak on 8443, the go-httpbin echo upstream on 8080, the asset-origin static origin on 80, and the in-repo grpc-echo upstream on 9000. Toxiproxy fronts the passthrough backend on its published admin port 8474 for mid-stream fault injection. Prometheus is published on 9090 and scrapes the management ports; k6 runs only under the benchmark compose profile. The management ports of the primary gateway, 19000, and of each variant instance are published but are not drawn as separate arrows; they are recorded in the boxes.</desc>
+  <desc id="desc">The integration-test deployment topology, not a production deployment. A host runs a single Docker Compose bridge network named api-sheriff. Crossing from the host into the network are the published ports: the primary api-sheriff gateway on 10443 mapped to container 8443, and Keycloak on 1443 mapped to container 8443. Inside the gateway container a Vert.x SNI front listener owns the public port 8443; a matched passthrough SNI is relayed opaquely at layer 4 to the passthrough-backend and is never terminated, while every other connection is handed to the internal terminating Quarkus HTTPS listener on 8444. The management interface serves HTTPS only, on 9000. Three read-only volumes are mounted: certificates, sheriff-config and assets. The six variant gateway instances are collapsed into one annotated group; their members are api-sheriff-mtls on 10444 and 19001, api-sheriff-cookie on 10445 and 19002, api-sheriff-cookie-2 on 10446 and 19003, api-sheriff-ws-admission on 10447 and 19004, api-sheriff-plain-mgmt on 10448 and 19005, and api-sheriff-passthrough-empty on 10449 and 19006. All six run the same api-sheriff:distroless image. Four of them differ by an overlaid gateway.yaml; api-sheriff-plain-mgmt overlays none and differs only by a single environment variable that takes its management interface to plain HTTP, and api-sheriff-passthrough-empty overlays a gateway.yaml that is the base document with the tls.passthrough_sni block removed, so it is the one instance that creates no SNI front listener and whose terminated Quarkus HTTPS listener owns the public port 8443 directly. Gateway egress crosses a second trust boundary governed by a host-exact SSRF allowlist and a named TLS trust profile, reaching Keycloak on 8443, the go-httpbin echo upstream on 8080, the asset-origin static origin on 80, and the in-repo grpc-echo upstream on 9000. Toxiproxy fronts the passthrough backend on its published admin port 8474 for mid-stream fault injection. Prometheus is published on 9090 and scrapes the management ports; k6 runs only under the benchmark compose profile. The management ports of the primary gateway, 19000, and of each variant instance are published but are not drawn as separate arrows; they are recorded in the boxes.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -108,18 +108,22 @@
   <text x="312" y="561" class="mount">assets/</text>
 
   <!-- ===================== depth 3 — collapsed variant group ===================== -->
-  <rect class="stroke" x="64" y="600" width="480" height="136" rx="4"/>
-  <line class="own-bar" x1="64" y1="608" x2="64" y2="728"/>
-  <text x="76" y="624" class="encl">variant instances (4)</text>
+  <rect class="stroke" x="64" y="600" width="480" height="172" rx="4"/>
+  <line class="own-bar" x1="64" y1="608" x2="64" y2="764"/>
+  <text x="76" y="624" class="encl">variant instances (6)</text>
   <text x="76" y="640" class="encl-sub">same image, overlaid gateway.yaml, own published ports</text>
   <text x="76" y="668" class="item">api-sheriff-mtls</text>
   <text x="76" y="686" class="item">api-sheriff-cookie</text>
   <text x="76" y="704" class="item">api-sheriff-cookie-2</text>
   <text x="76" y="722" class="item">api-sheriff-ws-admission</text>
-  <text x="264" y="668" class="item">10444 · 19001</text>
-  <text x="264" y="686" class="item">10445 · 19002</text>
-  <text x="264" y="704" class="item">10446 · 19003</text>
-  <text x="264" y="722" class="item">10447 · 19004</text>
+  <text x="76" y="740" class="item">api-sheriff-plain-mgmt</text>
+  <text x="76" y="758" class="item">api-sheriff-passthrough-empty</text>
+  <text x="304" y="668" class="item">10444 · 19001</text>
+  <text x="304" y="686" class="item">10445 · 19002</text>
+  <text x="304" y="704" class="item">10446 · 19003</text>
+  <text x="304" y="722" class="item">10447 · 19004</text>
+  <text x="304" y="740" class="item">10448 · 19005</text>
+  <text x="304" y="758" class="item">10449 · 19006</text>
 
   <!-- ===================== depth 3 — gateway egress targets ===================== -->
   <rect class="stroke" x="680" y="248" width="216" height="64" rx="4"/>

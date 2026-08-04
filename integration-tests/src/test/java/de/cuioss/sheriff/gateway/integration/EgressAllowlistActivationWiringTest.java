@@ -90,7 +90,7 @@ class EgressAllowlistActivationWiringTest {
      * The descriptor count committed today. The glob must match at least this many, so an empty or
      * mis-rooted glob fails loudly instead of satisfying the per-descriptor loop vacuously.
      */
-    private static final int COMMITTED_DESCRIPTOR_COUNT = 4;
+    private static final int COMMITTED_DESCRIPTOR_COUNT = 5;
 
     private static final String HTTP_SOURCE = "http";
     private static final String FILE_SOURCE = "file";

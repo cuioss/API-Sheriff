@@ -1,0 +1,317 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+#
+# ===========================================================================================
+# THE ABSENCE OF `tls.passthrough_sni` IS THE FEATURE UNDER MEASUREMENT.
+# ===========================================================================================
+#
+# This document is a copy of ../sheriff-config/gateway.yaml with the `tls.passthrough_sni`
+# block — and ONLY that block — removed. Everything else is byte-identical on purpose:
+# security_defaults, the tls min_version / cipher_suites / alpn policy, all ten anchors,
+# the token_validation issuers and the oidc block. A second difference would make the two
+# arms differ in more than the one variable the benchmark is trying to isolate.
+#
+# WHY THE VARIANT EXISTS. Declaring a non-empty `passthrough_sni` is what STARTS the
+# accept-time Vert.x SNI front listener on the public TLS port. The `passthroughRelayEmpty`
+# benchmark arm claims to measure D1's zero-overhead default — the configuration in which
+# that front listener is NEVER CREATED and the terminated Quarkus HTTPS listener owns the
+# public port directly. Against the base document that claim is false: the base declares two
+# passthrough_sni entries for the whole run, so the "empty" arm was measuring the identical
+# proxied route, through the identical listener stack, as the `proxiedStatic` baseline it was
+# being compared against. The gate could not fail for the reason it existed to catch, and it
+# could not pass for that reason either — it was comparing a configuration against itself.
+#
+# CONSEQUENCE FOR EDITS. Any change to ../sheriff-config/gateway.yaml that is NOT about
+# passthrough must be mirrored here, or the two arms start differing in a second variable and
+# the no-regression comparison silently stops being a controlled one. Do NOT add a
+# `passthrough_sni` key here to "fix" a passthrough test: this instance exists precisely to
+# have none. Because no front listener is created, this instance sets no QUARKUS_HTTP_SSL_PORT
+# either — the terminated listener keeps 8443 and needs no loopback relocation.
+#
+# Global gateway document mounted into the api-sheriff container at
+# /app/sheriff-config (SHERIFF_CONFIG_DIR). The proxy integration suite exercises
+# the single httpbin endpoint's /proxy route under the 'api' anchor; the disjoint
+# 'bff' anchor demonstrates the two-anchor namespace model (ADR-0007). Anchor
+# materialization is behaviour-neutral for this conforming config, so the existing
+# routed-request IT keeps passing.
+#
+# Every anchor carries the two mandatory classification axes (ADR-0013): `type`
+# (proxy | bff | asset) and `access` (public | authenticated), boot-validated by the
+# fail-closed access->auth matrix. A `public` anchor declares NO auth block (public is
+# the absence of auth), so the require: none postures that previously lived on the
+# public anchors now live on their endpoints; the `authenticated` anchors keep their
+# non-none auth floor. The two `asset` anchors (ADR-0014) serve static content through
+# the gateway-owned response envelope: `assets-public` (public directory + upstream
+# sources) and `assets-secure` (authenticated directory source, bearer-gated).
+version: 1
+metadata:
+  config_version: "integration-test"
+allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+# The gateway-wide inbound-filter baseline (ADR-0024). Declared EXPLICITLY rather than left to
+# the omitted-block default: the default is now `strict`, so the pinned value here documents the
+# posture the whole IT suite is measured against instead of letting it drift with the default.
+# Every route that declares no `security_filter.profile` resolves to this value — including the
+# /proxy, /bff, /graphql and asset routes — so the strict preset's caps (1 MiB body, 20 query
+# parameters, 1024-character header values and parameter values, 1024-character paths) are the
+# floor the suite proves. The single `minimal`-mode route below is the only opt-out, and it is a
+# PARTIAL one.
+#
+# `max_authorization_header_value_length` bounds the `Authorization` header VALUE only, at the
+# non-skippable pre-route floor (BasicChecksStage) that runs BEFORE route selection. The strict
+# preset's 1024-character header-value cap cannot serve that header: a Keycloak-minted access token
+# plus the `Bearer ` prefix measures above it, so without this carve-out every bearer request is
+# rejected 400 before bearer validation ever runs. The key is gateway-wide because its enforcement
+# point precedes route selection — no anchor is resolved there, so it cannot be scoped per route.
+# Declared EXPLICITLY here, per the same convention as `profile` above, so the IT and benchmark
+# suites measure a pinned value rather than the omitted-key default. A declared value below the
+# resolved baseline cap is refused at boot.
+#
+# `allow_get_with_content_length_body` admits a Content-Length-framed body on GET. Declared true here
+# so the shipped descriptor actually ACTIVATES the opt-in rather than leaving it proven by unit tests
+# alone (GetWithBodyActivationWiringTest asserts this declaration). It is a PARTIAL relaxation: only
+# the declared-Content-Length leg is skipped, and only for GET — a GET whose body carries no declared
+# Content-Length is not Content-Length-framed and stays rejected. Transfer-Encoding
+# on GET remains REJECTED unconditionally — chunked framing on an otherwise-bodyless method is the
+# request-smuggling shape the framing gate exists to constrain — and a body on HEAD stays rejected on
+# every leg. The CL+TE and Connection-header framing-strip defences are untouched.
+security_defaults:
+  profile: strict
+  max_authorization_header_value_length: 8192
+  allow_get_with_content_length_body: true
+tls:
+  # TLS POLICY for the terminated listener, single-sourced from this document and bound onto the
+  # listener by tls/TlsServerCustomizer (ADR-0025). Declared here rather than left implicit so the
+  # integration stack actually EXERCISES a gateway.yaml-sourced protocol floor and cipher allowlist
+  # — the keys these replaced were raw quarkus.tls.* properties that never reached the listener, so
+  # a fixture that declares nothing would prove only that the absence of policy is harmless.
+  #
+  # The floor is 1.2 rather than 1.3 deliberately: it enables TLSv1.2 AND TLSv1.3, so the suite's
+  # mixed clients keep negotiating and the assertion under test is that the DECLARED policy is in
+  # force, not that the strictest possible policy is survivable.
+  min_version: "1.2"
+  # The allowlist spans both enabled protocols on purpose. TLS_AES_* are TLS 1.3 suites; the
+  # ECDHE_RSA pair covers TLS 1.2 against the RSA server certificate the certificates/ scripts
+  # generate. Listing only 1.3 suites under a 1.2 floor would leave TLS 1.2 with nothing to
+  # negotiate — a listener that silently accepts no 1.2 handshake at all.
+  cipher_suites:
+    - TLS_AES_256_GCM_SHA384
+    - TLS_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  # ALPN advertises h2 alongside http/1.1 so the http2 benchmark aspect negotiates
+  # HTTP/2 at the edge instead of silently falling back to HTTP/1.1 — a fallback
+  # would report an h2 number that was never measured over h2.
+  alpn: ["h2", "http/1.1"]
+  # NO `passthrough_sni` KEY HERE — see the header. Its absence is what this instance exists to
+  # provide, and it is the ONLY difference from ../sheriff-config/gateway.yaml.
+# Add-only extension of the gateway's built-in asset content-type map, serving the asset anchors
+# declared below. Declared here so the shipped descriptor ACTIVATES the feature rather than leaving
+# it proven by unit tests alone: `webmanifest` is an extension the gateway does not map, so without
+# this block a served .webmanifest would fall back to application/octet-stream.
+#
+# The block is add-only and the gateway enforces that at BOOT: an entry naming one of the built-in
+# extensions (html, css, js, svg, png, ... — 21 in total) is refused with a message naming it, not
+# silently ignored. That bound is a security property, not an ergonomic one — remapping `svg` away
+# from image/svg+xml, or pointing any built-in at text/html, would make a served asset a stored-XSS
+# lever on a security gateway. AssetContentTypeActivationWiringTest asserts both halves against this
+# committed descriptor: the block is declared, and no declared key collides with a built-in.
+asset_defaults:
+  content_types:
+    webmanifest: application/manifest+json
+anchors:
+  api:
+    path_prefix: /proxy
+    type: proxy
+    access: public
+  bff:
+    path_prefix: /bff
+    type: proxy
+    access: public
+  # Server-mode BFF session namespace exercised by the Bff*IT suite. A require:session
+  # route lives here so an authenticated browser session mediates a bearer to the
+  # go-httpbin echo upstream (BffSessionMediationIT). type: bff forces access:
+  # authenticated (ADR-0013), and the session floor is backed by the global oidc block
+  # below (ConfigValidator rejects a session floor with no oidc block). The reserved
+  # OIDC endpoints themselves are carved out of the route table on the oidc host and
+  # live under /auth (see the oidc block), disjoint from this /bff-session proxy prefix.
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+  # Bearer-protected namespace exercised by BearerValidationIT. The gateway's own
+  # token_validation issuer loads its key set from the mounted static JWKS file
+  # (no Keycloak dependency), so the validator is ready offline at boot. The IT
+  # only drives rejection scenarios (missing / malformed token -> 401), which never
+  # reach the upstream — proving upstream count = 0 on every bearer rejection.
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+  # --- Benchmark aspect namespaces (plan 04b) -------------------------------
+  # These give the k6 aspect matrix an API Sheriff side to measure, so the
+  # on-demand APISIX comparison has a route-for-route counterpart.
+  graphql:
+    path_prefix: /graphql
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+    security_filter:
+      # 64 MiB — above the 50 MB upload aspect so the large-body run is MEASURED
+      # rather than rejected at the edge. A rejection path is faster than a
+      # transfer path, so an under-sized cap would report flatteringly good
+      # numbers instead of failing. APISIX mirrors this same limit.
+      max_body_bytes: 67108864
+  # Pre-provisioned declarations only — no behaviour is implemented here. The
+  # request pipeline still boot-rejects the ws/grpc protocols; roadmap plan 05
+  # owns that behaviour and slots it in without re-touching this topology.
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+  grpc:
+    path_prefix: /grpc
+    type: proxy
+    access: public
+  # --- Asset terminal-action namespaces (ADR-0014) --------------------------
+  # A public asset surface serving static content two ways: a directory source
+  # backed by the read-only /app/assets volume mount, and an upstream source
+  # backed by the secondary 'asset-origin' static server (topology alias
+  # ASSET_ORIGIN). Only GET/HEAD are served; the gateway-owned response envelope
+  # sets the content type from the file extension, adds X-Content-Type-Options:
+  # nosniff, and strips any upstream Set-Cookie.
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  # A bearer-gated asset surface (directory source). access: authenticated forces
+  # the envelope to Cache-Control: no-store and, crucially, enforces auth BEFORE the
+  # source is resolved — an unauthenticated request is rejected 401 and never reads
+  # a file (auth-before-source, ADR-0014). The bearer floor reuses the same offline
+  # token_validation issuers the 'secure' anchor relies on.
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    # Retained: BearerValidationIT's rejection scenarios resolve against this
+    # offline static-JWKS issuer, which needs no Keycloak at boot.
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+    # The bearer benchmark aspect mints its token from the Keycloak 'benchmark'
+    # realm. That realm's import pins frontendUrl https://keycloak:8443, so a
+    # minted token carries iss https://keycloak:8443/realms/benchmark regardless
+    # of the host-published 1443 mint port — the issuer value below MUST be that
+    # container-internal URL, not the host-published one, or every bearer request
+    # is rejected 401 and the aspect measures the rejection path while reporting
+    # it as bearer-validation throughput. JWKS is fetched over the shared
+    # api-sheriff network, where 'keycloak' resolves by service name.
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        # token-sheriff's SSRF egress guard refuses a JWKS URL that resolves to a
+        # private address. 'keycloak' is a compose service name resolving to the
+        # bridge network's site-local 172.x address, so without this entry the key
+        # set never loads and every bearer request fails — the aspect would then
+        # measure a rejection path while reporting it as bearer throughput. The
+        # allowlist is host-exact (no wildcard) and names only this one trusted,
+        # benchmark-local IdP: exactly the narrow widening GW-05 / BFF-07 permit.
+        # The 'it-static' issuer above is deliberately NOT widened — it loads from
+        # a mounted file and needs no egress at all.
+        allowed_egress_hosts: ["keycloak"]
+        # Keycloak serves a self-signed certificate here, so the JWKS client must verify it
+        # against the stack's own trust anchors rather than the JVM default store — otherwise
+        # the fetch fails PKIX path building and every bearer request is rejected 401, which
+        # would again measure a rejection path while reporting it as bearer throughput. This
+        # names a trust profile; it deliberately carries no store path and no password, so this
+        # document stays portable and secret-free. The deployment binds the name.
+        tls_profile: benchmark-idp
+    # The server-mode BFF (oidc block below) validates the id/access tokens the
+    # 'integration' realm mints for the browser session. The gateway's shared
+    # @GatewayValidator TokenValidator is built from THIS token_validation block — not
+    # from the token-sheriff extension's own sheriff.token.issuers.* property surface,
+    # which this gateway leaves unconfigured and whose health probes it excludes — so the
+    # integration issuer MUST be declared here or every mediated session token is rejected.
+    # Same container-internal iss the integration realm pins via frontendUrl
+    # https://keycloak:8443, reached over the shared api-sheriff network where 'keycloak'
+    # resolves by service name; the same narrow SSRF egress widening and self-signed trust
+    # profile the benchmark issuer uses.
+    - name: integration-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+# --- Server-mode BFF confidential-client block (BFF-* integration suite) -----------
+# Activates the server-mode BffRuntime (BffRuntimeProducer builds the active runtime
+# only when a global oidc block declares session.mode=server AND a redirect_uri). The
+# reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
+# the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
+# under /auth and never collide with the /bff-session proxy anchor above. Confidential
+# client: integration-client / integration-secret against the compose 'integration'
+# realm (standardFlowEnabled, redirectUris '*'). OIDC discovery is lazy (first engine
+# use), so boot needs no live IdP; the browser reaches the gateway on the published
+# host port 10443 and Keycloak on its published host port, while the gateway reaches
+# Keycloak container-internally at keycloak:8443.
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
+  # reserved path binds to; its origin ('https://localhost:10443') is the gateway
+  # origin used for same-origin return-URL validation and the default CSRF trusted origin.
+  redirect_uri: https://localhost:10443/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    # Lands the browser on a real public page instead of a deny-by-default 404. Served by the
+    # /assets/demo asset route (endpoints/assets.yaml), which also serves the demo SPA itself.
+    #
+    # It CANNOT simply be '/', for two independent and individually fatal reasons:
+    #   1. Serving '/' would need an anchor with path_prefix: /, which is structurally illegal —
+    #      ConfigValidator.prefixContains treats a container prefix normalizing to '/' as containing
+    #      everything, so validateAnchorPrefixDisjointness fails the boot fail-closed against every
+    #      one of the ten anchors this document already declares.
+    #   2. Even were it routable, DirectoryAssetSource performs no directory-index resolution: a bare
+    #      '/' yields an empty remainder that resolves to the directory root, fails isRegularFile and
+    #      returns 404.
+    # So final_redirect names a concrete file under an anchor that already exists. This is a
+    # per-instance value of the same class as redirect_uri and post_logout_redirect_uri, which already
+    # differ across the four overlays; the mtls and ws-admission overlays keep final_redirect: / and
+    # are deliberately untouched.
+    final_redirect: /assets/demo/landing.html
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    refresh:
+      enabled: true
+      leeway_seconds: 30
+    csrf:
+      trusted_origins: ["https://localhost:10443"]
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub", "preferred_username", "email", "groups"]
+    default_view: ["sub", "preferred_username"]
+  login:
+    path: /auth/login

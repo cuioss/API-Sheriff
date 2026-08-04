@@ -217,7 +217,7 @@ services:
       # only the logical profile (jwks.tls_profile: benchmark-idp); this mounted file binds it to a
       # concrete store, so the shipped artifact carries no benchmark-idp key and no trust password in
       # any profile. Loaded from the already-mounted certificates/ volume — no new volume is added.
-      # Every QUARKUS_PROFILE=it gateway instance sets this; the value is identical across all six.
+      # Every QUARKUS_PROFILE=it gateway instance sets this; the value is identical across all seven.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       # File logging to mounted target directory. The shipped artifact ships file logging OFF, so a
       # deployment that wants a log file switches it on here — the enable flag and the path are one
@@ -249,7 +249,7 @@ services:
       # insecure-requests — so supplying these two keys converts port 9000 itself to HTTPS. Every
       # consumer of 9000 (host readiness probes, Prometheus, the k6 health benchmarks) must speak
       # TLS with -k / insecure_skip_verify, because the certificate is the self-signed localhost
-      # bundle. Five of the six gateway instances carry this pair; api-sheriff-plain-mgmt is the one
+      # bundle. Six of the seven gateway instances carry this pair; api-sheriff-plain-mgmt is the one
       # deliberate exception, documented at its own service definition.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -380,7 +380,7 @@ services:
       # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
       # see that service's comment for the single-port mechanism. Without it this instance's
       # management port 19001 stays plain HTTP while the primary's is HTTPS, and the host-side
-      # readiness wait in start-integration-container.sh (https + -k for 19000-19004) would hang.
+      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006) would hang.
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep and is
       # gated by its own http:// block.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -476,7 +476,7 @@ services:
       # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
       # see that service's comment for the single-port mechanism. Without it this instance's
       # management port 19002 stays plain HTTP while the primary's is HTTPS, and the host-side
-      # readiness wait in start-integration-container.sh (https + -k for 19000-19004) would hang.
+      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006) would hang.
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -578,7 +578,7 @@ services:
       # Management-interface certificate, kept in lockstep with every other instance — see the
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19003 stays plain HTTP while the others are HTTPS, and the
-      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004)
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006)
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -663,7 +663,7 @@ services:
       # Management-interface certificate, kept in lockstep with every other instance — see the
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19004 stays plain HTTP while the others are HTTPS, and the
-      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004)
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006)
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -763,7 +763,7 @@ services:
       # passthrough_sni — so the SNI front listener claims the public port 8443 exactly as on the
       # primary api-sheriff service, and the terminated HTTPS listener MUST be moved to the internal
       # port or the two collide and boot fails with "Port 8443 seems to be in use by another
-      # process". The four other gateway instances escape this only because each overlays
+      # process". The five other gateway instances escape this only because each overlays
       # gateway.yaml with a variant declaring no passthrough_sni; this one deliberately does not
       # overlay, so that the management opt-out is the single variable under test. Keep in lockstep
       # with the primary service's identical setting — the invariant is documented at the
@@ -816,6 +816,106 @@ services:
     # gated host-side by start-integration-container.sh, in the same Compose-derived loop as every
     # other api-sheriff* instance — the http:// probe comes from this service's management-scheme
     # label above, not from a branch on its name.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
+  # --- The genuinely empty-passthrough_sni instance backing the benchmark's empty-mode arm --------
+  # `passthrough_sni` is a property of the whole gateway process: declaring it non-empty is what
+  # STARTS the accept-time Vert.x SNI front listener on the public TLS port, and the primary instance
+  # declares two entries for its whole lifetime. So the `passthroughRelayEmpty` benchmark arm — whose
+  # entire claim is that it measures D1's zero-overhead default, where that front listener is NEVER
+  # created — could not be run against the primary instance without measuring the exact opposite of
+  # what it names. Before this instance existed it was pointed at the primary anyway, so both arms of
+  # the no-regression gate issued the identical request to the identical listener stack on ONE
+  # gateway: the gate was comparing a configuration against itself and could neither pass nor fail
+  # for the reason it existed.
+  #
+  # This instance reuses the SAME native image and overlays a gateway.yaml that is byte-identical to
+  # the shared one except for the removed `tls.passthrough_sni` block; published on 10449. It is
+  # separate rather than a mode of the primary because the two configurations must run CONCURRENTLY
+  # for the benchmark lane to measure both arms in one run.
+  #
+  # It sets NO QUARKUS_HTTP_SSL_PORT, and that absence is load-bearing rather than an omission: with
+  # no passthrough_sni there is no front listener to claim 8443, so the terminated Quarkus HTTPS
+  # listener keeps the public port directly. Setting the loopback relocation here would move the
+  # terminated listener off 8443 with nothing left listening on it.
+  api-sheriff-passthrough-empty:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+
+    ports:
+      - "10449:8443"  # External test port for the empty-passthrough_sni benchmark arm
+      - "19006:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
+      - QUARKUS_LOG_FILE_ENABLE=true
+      - LOG_FILE_PATH=/logs/quarkus-passthrough-empty.log
+      # NO QUARKUS_HTTP_SSL_PORT here — see the service comment. The overlaid gateway.yaml declares no
+      # passthrough_sni, so no front listener is created and the terminated listener owns 8443.
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19006 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and
+      # 19006) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
+      # (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep with the primary
+      # api-sheriff service, whose gateway.yaml carries the same oidc block.
+      - OIDC_CLIENT_SECRET=integration-secret
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the no-passthrough_sni variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-passthrough-empty/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    # Identical to the primary instance's budget, per ADR-0012: the empty-mode arm is compared
+    # against the primary's proxiedStatic baseline, so a different CPU or memory limit here would
+    # make the comparison measure the budget difference rather than the passthrough configuration.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
+    # gated host-side by start-integration-container.sh probing the published management port 19006.
     networks:
       - api-sheriff
     restart: unless-stopped
