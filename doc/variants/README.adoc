@@ -68,7 +68,7 @@ that a change is a regression. Read it once here rather than three times there.
 
 === What "baseline" means here
 
-A baseline is *not* a performance promise to an operator*.* It is a **comparison fixture**: a
+A baseline is *not* a performance promise to an operator. It is a **comparison fixture**: a
 figure is only meaningful against another figure produced by the same harness, at the same load,
 on the same runner class. Absolute request rates from this suite say nothing about the throughput
 a given production deployment will see -- hardware, network, upstream latency and TLS termination

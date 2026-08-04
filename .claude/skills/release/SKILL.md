@@ -406,7 +406,7 @@ cosign verify ghcr.io/cuioss/api-sheriff@<digest> \
 > release, not to a code change, and **its lane is known-flaky**. Do **not** read it as a pass or a
 > failure of the released code, and do not block the release on it.
 
-### Step 9 — MANDATORY post-release action after the FIRST release (R3)
+### Step 9 — MANDATORY post-release action after the FIRST release
 
 **Set the GHCR `api-sheriff` package to *public*.**
 
