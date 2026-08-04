@@ -163,7 +163,7 @@ services:
     labels:
       de.cuioss.sheriff.management-scheme: "https"
     ports:
-      - "8443:8443"  # Public TLS listener — the only way into the stack
+      - "8443:8443"  # Public TLS listener — the only port published off-host
       # Management interface (health/metrics), HTTPS — bound to the LOOPBACK interface rather than to
       # every host interface. /q/health and /q/metrics carry no authentication by construction, so
       # publishing them on 0.0.0.0 hands an internal-state view to anything that can reach the host.
