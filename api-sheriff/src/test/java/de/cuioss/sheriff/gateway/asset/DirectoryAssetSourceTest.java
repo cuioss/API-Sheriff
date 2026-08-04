@@ -270,10 +270,6 @@ class DirectoryAssetSourceTest {
     // side of it was asserted, so the whole bound rested on inspection. The three tests below pin
     // the boundary as a matched pair plus a control, so none of them can pass vacuously.
 
-    /**
-     * @param maxBytes the served-asset cap this source enforces
-     * @return a public directory source capped at {@code maxBytes}
-     */
     private DirectoryAssetSource cappedSource(long maxBytes) {
         return new DirectoryAssetSource(root, AccessLevel.PUBLIC, new PathConfinement(), maxBytes, Map.of());
     }

@@ -459,14 +459,11 @@ public final class ConfigLoader {
      * YAML parser.
      */
     private static JsonNode coerce(String value, @Nullable String declaredType) {
-        if (declaredType == null) {
-            return inferFromShape(value);
-        }
         return switch (declaredType) {
             case "string" -> TextNode.valueOf(value);
             case "boolean" -> coerceBoolean(value);
             case "integer", "number" -> coerceNumber(value);
-            default -> inferFromShape(value);
+            case null, default -> inferFromShape(value);
         };
     }
 
