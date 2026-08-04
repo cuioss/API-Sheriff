@@ -181,5 +181,17 @@ public final class K6BenchmarkLogMessages {
                 .identifier(210)
                 .template("Passthrough empty-mode regressed beyond the %s noise band vs the PLAN-04 baseline: %s")
                 .build();
+
+        /**
+         * Logged when the two compared arms were measured over windows too far apart for their rates
+         * to be comparable. The comparison is refused, not rescaled — see
+         * {@link de.cuioss.sheriff.gateway.k6.benchmark.PassthroughBaselineComparator}.
+         */
+        public static final LogRecord PASSTHROUGH_BASELINE_WINDOW_MISMATCH = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(211)
+                .template("Passthrough empty-mode and baseline windows disagree beyond the %s "
+                        + "window-comparability band, so their rates are not comparable: %s")
+                .build();
     }
 }

@@ -22,6 +22,8 @@ import de.cuioss.tools.logging.CuiLogger;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -48,6 +50,23 @@ import java.util.Optional;
  * <strong>Absent metric is {@code n/a}, never {@code 0}.</strong> A metric a run did not measure is
  * rendered {@code n/a} and classified {@link Verdict#NOT_MEASURED} — never a {@code 0} that would
  * read as a measured collapse and never a false regression — mirroring {@link ComparisonSummaryWriter}.
+ * <p>
+ * <strong>Window comparability is a precondition, not a metric.</strong> {@code requests_per_second}
+ * is a counter rate over the run's whole measured window — load phase plus graceful-stop tail — so two
+ * arms measured over windows of different length do not produce comparable rates at all. A run in which
+ * one arm's window was stretched by a stalled VU reports a proportionally deflated rate that reads as a
+ * throughput collapse which never happened; this is exactly the false 35.8% verdict PLAN-46 diagnosed.
+ * The comparator therefore reads {@code start_time} / {@code end_time} from both summaries and compares
+ * the two windows first, against {@link #DEFAULT_WINDOW_TOLERANCE} (overridable via
+ * {@value #WINDOW_TOLERANCE_PROPERTY}).
+ * <p>
+ * <strong>Operator ruling — refuse and fail; do not normalise.</strong> An incomparable window pair
+ * FAILS the run. It is deliberately NOT rescaled to a common window, and deliberately NOT downgraded to
+ * a warning. Rescaling would silently republish a number the run never measured, and a warning would let
+ * a lane whose measurement window is broken keep producing baseline history that looks authoritative.
+ * The failure names the two windows so the operator fixes the measurement rather than the threshold. An
+ * ABSENT window pair is the one exception: it reads {@code n/a} / {@link Verdict#NOT_MEASURED} and never
+ * fails, so a summary shape that predates the window fields is not retroactively broken.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -71,10 +90,27 @@ public final class PassthroughBaselineComparator {
     /** System property overriding {@link #DEFAULT_TOLERANCE}. */
     static final String TOLERANCE_PROPERTY = "passthrough.baseline.tolerance";
 
+    /**
+     * The fractional band the two arms' measured windows must agree within for their rates to be
+     * comparable at all, applied when {@value #WINDOW_TOLERANCE_PROPERTY} is unset.
+     * <p>
+     * Tighter than {@link #DEFAULT_TOLERANCE} on purpose: the window is a precondition of the
+     * comparison rather than one of the compared metrics, so it must catch a drift small enough to
+     * still move the throughput verdict. It is also set above the worst case the k6 lane can now
+     * produce — the bounded 5s graceful stop caps window inflation at 5/60 = 8.3% of a 60s run — so a
+     * healthy run never trips it while a reverted or unbounded tail always does.
+     */
+    static final double DEFAULT_WINDOW_TOLERANCE = 0.10;
+
+    /** System property overriding {@link #DEFAULT_WINDOW_TOLERANCE}. */
+    static final String WINDOW_TOLERANCE_PROPERTY = "passthrough.baseline.window.tolerance";
+
     private static final String FIELD_REQUESTS_PER_SECOND = "requests_per_second";
     private static final String FIELD_LATENCY_MS = "latency_ms";
     private static final String FIELD_P50 = "p50";
     private static final String FIELD_P99 = "p99";
+    private static final String FIELD_START_TIME = "start_time";
+    private static final String FIELD_END_TIME = "end_time";
 
     private static final String NOT_AVAILABLE = "n/a";
 
@@ -82,9 +118,12 @@ public final class PassthroughBaselineComparator {
         // utility class
     }
 
-    /** Whether a single metric stayed within the band, regressed, or was not measured on either side. */
+    /**
+     * Whether a single metric stayed within the band, regressed, was not measured on either side, or —
+     * for the measurement window alone — made the whole comparison invalid.
+     */
     enum Verdict {
-        PASS, REGRESSION, NOT_MEASURED
+        PASS, REGRESSION, NOT_MEASURED, WINDOW_MISMATCH
     }
 
     /** One metric's candidate-vs-baseline comparison. */
@@ -92,12 +131,30 @@ public final class PassthroughBaselineComparator {
     Optional<Double> baseline, Verdict verdict) {
     }
 
-    /** The full comparison across the throughput and latency metrics. */
+    /** The full comparison across the measurement window and the throughput and latency metrics. */
     record ComparisonResult(List<MetricComparison> metrics) {
 
-        /** A regression on any measured metric fails the run; a not-measured metric never does. */
+        /**
+         * A regression on any measured metric fails the run, and so does an incomparable measurement
+         * window; a not-measured metric never does.
+         *
+         * @return whether the run must fail
+         */
         boolean regressed() {
-            return metrics.stream().anyMatch(metric -> metric.verdict() == Verdict.REGRESSION);
+            return metrics.stream().anyMatch(metric -> metric.verdict() == Verdict.REGRESSION
+                    || metric.verdict() == Verdict.WINDOW_MISMATCH);
+        }
+
+        /**
+         * Whether the two arms' measured windows were too far apart for their rates to be compared.
+         * <p>
+         * Reported separately from {@link #regressed()} because it is a different failure: the run did
+         * not regress, it produced a comparison that cannot be believed either way.
+         *
+         * @return whether the window precondition failed
+         */
+        boolean windowMismatched() {
+            return metrics.stream().anyMatch(metric -> metric.verdict() == Verdict.WINDOW_MISMATCH);
         }
     }
 
@@ -131,6 +188,14 @@ public final class PassthroughBaselineComparator {
         String rendered = render(result, tolerance);
         Files.writeString(resultsDir.resolve(OUTPUT_FILE_NAME), rendered);
 
+        // Checked BEFORE the regression branch: when the windows are incomparable the throughput verdict
+        // is meaningless, so reporting it as a regression would name the wrong defect.
+        if (result.windowMismatched()) {
+            LOGGER.error(K6BenchmarkLogMessages.ERROR.PASSTHROUGH_BASELINE_WINDOW_MISMATCH,
+                    formatTolerance(resolveWindowTolerance()), windowMismatchDetail(result));
+            throw new IllegalStateException(
+                    "empty-passthrough_sni run and baseline were measured over incomparable windows");
+        }
         if (result.regressed()) {
             LOGGER.error(K6BenchmarkLogMessages.ERROR.PASSTHROUGH_BASELINE_REGRESSION,
                     formatTolerance(tolerance), regressionDetail(result));
@@ -166,6 +231,13 @@ public final class PassthroughBaselineComparator {
      * @return the per-metric comparison
      */
     static ComparisonResult compare(JsonObject candidate, JsonObject baseline, double tolerance) {
+        // The window row leads the list because it is the comparison's precondition: when it fails, the
+        // rows beneath it describe rates taken over different denominators and mean nothing.
+        Optional<Double> candidateWindow = windowMillis(candidate);
+        Optional<Double> baselineWindow = windowMillis(baseline);
+        MetricComparison window = new MetricComparison("measurement window", "ms",
+                candidateWindow, baselineWindow,
+                windowVerdict(candidateWindow, baselineWindow, resolveWindowTolerance()));
         MetricComparison rps = new MetricComparison("throughput", "RPS",
                 topLevelMetric(candidate, FIELD_REQUESTS_PER_SECOND),
                 topLevelMetric(baseline, FIELD_REQUESTS_PER_SECOND),
@@ -173,7 +245,67 @@ public final class PassthroughBaselineComparator {
                         topLevelMetric(baseline, FIELD_REQUESTS_PER_SECOND), tolerance));
         MetricComparison p50 = latencyComparison("latency p50", candidate, baseline, FIELD_P50, tolerance);
         MetricComparison p99 = latencyComparison("latency p99", candidate, baseline, FIELD_P99, tolerance);
-        return new ComparisonResult(List.of(rps, p50, p99));
+        return new ComparisonResult(List.of(window, rps, p50, p99));
+    }
+
+    /**
+     * Reads a summary's measured window in milliseconds from its {@code start_time} / {@code end_time}
+     * ISO-8601 pair.
+     * <p>
+     * An absent, non-string or unparseable pair is treated as NOT MEASURED rather than as a zero-length
+     * window: a {@code 0} here would read as a maximally mismatched window and would fail every run
+     * whose summaries predate these fields.
+     *
+     * @param summary the parsed summary
+     * @return the window length in milliseconds, or empty when the pair is absent or unparseable
+     */
+    static Optional<Double> windowMillis(JsonObject summary) {
+        Optional<Instant> start = instantField(summary, FIELD_START_TIME);
+        Optional<Instant> end = instantField(summary, FIELD_END_TIME);
+        if (start.isEmpty() || end.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of((double) (end.get().toEpochMilli() - start.get().toEpochMilli()));
+    }
+
+    /**
+     * Parses one ISO-8601 instant field, treating an absent, non-string or malformed value as absent.
+     *
+     * @param summary the parsed summary
+     * @param field   the field name
+     * @return the parsed instant, or empty
+     */
+    private static Optional<Instant> instantField(JsonObject summary, String field) {
+        if (!summary.has(field) || !summary.get(field).isJsonPrimitive()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Instant.parse(summary.get(field).getAsString()));
+        } catch (DateTimeParseException e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * The comparability verdict for the two arms' measured windows.
+     * <p>
+     * The band is applied to the BASELINE window, matching how {@link #throughputVerdict} and
+     * {@link #latencyVerdict} anchor their bands, so the same override reads the same way across all
+     * three. A mismatch is {@link Verdict#WINDOW_MISMATCH} and fails the run — it is never normalised
+     * away and never downgraded to a warning (see the class javadoc's operator ruling).
+     *
+     * @param candidate       the candidate window in milliseconds, when measured
+     * @param baseline        the baseline window in milliseconds, when measured
+     * @param windowTolerance the fractional band the two windows must agree within
+     * @return {@link Verdict#NOT_MEASURED} when either side is absent, else PASS / WINDOW_MISMATCH
+     */
+    static Verdict windowVerdict(Optional<Double> candidate, Optional<Double> baseline, double windowTolerance) {
+        if (candidate.isEmpty() || baseline.isEmpty()) {
+            return Verdict.NOT_MEASURED;
+        }
+        double allowedDrift = Math.abs(baseline.get()) * windowTolerance;
+        return Math.abs(candidate.get() - baseline.get()) <= allowedDrift
+                ? Verdict.PASS : Verdict.WINDOW_MISMATCH;
     }
 
     private static MetricComparison latencyComparison(String label, JsonObject candidate, JsonObject baseline,
@@ -268,7 +400,11 @@ public final class PassthroughBaselineComparator {
                 .append("Empty-`passthrough_sni` proxied route (`").append(CANDIDATE_SUMMARY)
                 .append("`) vs the PLAN-04 plain-proxy baseline (`").append(BASELINE_SUMMARY).append("`). ")
                 .append("Noise band: ").append(formatTolerance(tolerance))
-                .append(". `n/a` means the run did not measure the metric.\n\n")
+                .append("; window-comparability band: ").append(formatTolerance(resolveWindowTolerance()))
+                .append(". The measurement-window row is a PRECONDITION, not a metric: a "
+                        + "`WINDOW_MISMATCH` means the two arms were measured over different-length "
+                        + "windows, so their rates are not comparable and the run fails rather than "
+                        + "being rescaled. `n/a` means the run did not measure the metric.\n\n")
                 .append("| Metric | Unit | Empty-mode | Baseline | Verdict |\n")
                 .append("|---|---|---|---|---|\n");
         for (MetricComparison metric : result.metrics()) {
@@ -284,8 +420,21 @@ public final class PassthroughBaselineComparator {
 
     /** Renders the regressed metrics for the failure diagnostic. */
     private static String regressionDetail(ComparisonResult result) {
+        return detailFor(result, Verdict.REGRESSION);
+    }
+
+    /**
+     * Renders the mismatched window for the failure diagnostic, naming both windows so the operator
+     * fixes the measurement rather than the threshold.
+     */
+    private static String windowMismatchDetail(ComparisonResult result) {
+        return detailFor(result, Verdict.WINDOW_MISMATCH);
+    }
+
+    /** Renders every metric carrying the given verdict as a single diagnostic fragment. */
+    private static String detailFor(ComparisonResult result, Verdict verdict) {
         return result.metrics().stream()
-                .filter(metric -> metric.verdict() == Verdict.REGRESSION)
+                .filter(metric -> metric.verdict() == verdict)
                 .map(metric -> "%s (empty-mode %s vs baseline %s %s)".formatted(metric.label(),
                         render(metric.candidate()), render(metric.baseline()), metric.unit()))
                 .reduce((left, right) -> left + ", " + right)
@@ -304,20 +453,44 @@ public final class PassthroughBaselineComparator {
      * @return the fractional noise band in {@code [0, 1]}
      */
     static double resolveTolerance() {
-        String raw = System.getProperty(TOLERANCE_PROPERTY);
+        return resolveFraction(TOLERANCE_PROPERTY, DEFAULT_TOLERANCE);
+    }
+
+    /**
+     * Resolves the window-comparability band from the {@code passthrough.baseline.window.tolerance}
+     * system property, falling back to {@link #DEFAULT_WINDOW_TOLERANCE}. An invalid override is fatal
+     * under the same rule {@link #resolveTolerance()} applies: a negative value would invert the
+     * precondition and a value above 1 would disable it.
+     *
+     * @return the fractional window band in {@code [0, 1]}
+     */
+    static double resolveWindowTolerance() {
+        return resolveFraction(WINDOW_TOLERANCE_PROPERTY, DEFAULT_WINDOW_TOLERANCE);
+    }
+
+    /**
+     * Resolves one fraction-valued system property, rejecting a set-but-invalid override rather than
+     * silently defaulting it.
+     *
+     * @param property the system-property name
+     * @param fallback the value used when the property is unset or blank
+     * @return the resolved fraction in {@code [0, 1]}
+     */
+    private static double resolveFraction(String property, double fallback) {
+        String raw = System.getProperty(property);
         if (raw == null || raw.isBlank()) {
-            return DEFAULT_TOLERANCE;
+            return fallback;
         }
         double value;
         try {
             value = Double.parseDouble(raw.strip());
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(
-                    TOLERANCE_PROPERTY + " must be a fraction in [0, 1], got \"" + raw + "\"", e);
+                    property + " must be a fraction in [0, 1], got \"" + raw + "\"", e);
         }
         if (!Double.isFinite(value) || value < 0.0 || value > 1.0) {
             throw new IllegalArgumentException(
-                    TOLERANCE_PROPERTY + " must be a fraction in [0, 1], got \"" + raw + "\"");
+                    property + " must be a fraction in [0, 1], got \"" + raw + "\"");
         }
         return value;
     }

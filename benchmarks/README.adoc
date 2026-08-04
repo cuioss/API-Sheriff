@@ -273,7 +273,10 @@ proxy upstream at it (the integration tests instead point it at the `go-httpbin`
 
 |`k6.duration`
 |60s
-|Measured window per aspect.
+|Load phase per aspect. The *measured* window reported in each summary is this value plus however
+ much of the scenario's 5s bounded `gracefulStop` the run actually consumes, because k6's
+ `requests_per_second` is a rate over the whole run duration — see the window-comparability note
+ under _Methodology_.
 |===
 
 == Methodology
@@ -325,6 +328,25 @@ baseline. `PassthroughBaselineComparator` reads the empty-mode summary against t
 and fails the run if throughput dropped, or either latency percentile rose, beyond a fixed
 percentile-band noise tolerance (k6 omits `latency_ms.stdev`, so a standard-deviation gate is not
 available — see _Known fidelity limit_). A metric a run did not measure renders `n/a`, never `0`.
++
+*Window comparability is checked first, and an incomparable pair is refused rather than compared.*
+`requests_per_second` is a counter rate over the run's whole measured window — the load phase *plus*
+the graceful-stop tail — so two arms whose windows differ in length do not produce comparable rates
+at all. An arm whose tail was stretched by a single stalled virtual user reports a proportionally
+deflated rate that reads as a throughput collapse which never happened. The comparator therefore
+reads `start_time` / `end_time` from both summaries and compares the two windows *before* the
+throughput and latency rows, against a 10% window-comparability band
+(`passthrough.baseline.window.tolerance`). Every aspect script bounds its tail with an explicit
+`constant-vus` scenario and a 5s `gracefulStop`, which caps worst-case window inflation on a 60s run
+at 5/60 = 8.3% — inside that band, so a healthy run never trips it.
++
+The refusal *fails the run*: a mismatched window pair is deliberately **not** rescaled to a common
+window and **not** downgraded to a warning. Rescaling would republish a number the run never
+measured, and a warning would let a lane with a broken measurement window keep producing baseline
+history that looks authoritative. The failure names both windows so the fix is applied to the
+measurement, not to the threshold. An *absent* window pair is the single exception — it renders
+`n/a`, is classified `NOT_MEASURED`, and never fails, so a summary predating these fields is not
+retroactively broken.
 
 Readiness, not warm-up discard::
 `pre-benchmark-health-check.sh` gates every run on the stack actually serving, so no run starts
