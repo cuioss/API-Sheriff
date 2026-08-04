@@ -176,8 +176,9 @@ literals that can drift apart.
 
 Its value was measured, not chosen. A sub-second prober (100 ms polling, started *before*
 `docker compose up -d` so that it observes the live-to-ready transition rather than inferring it
-from a loop that only begins once both are already true) ran against all six gateway instances
-brought up concurrently with Keycloak, under CPU contention -- 24 busy workers on 16 cores:
+from a loop that only begins once both are already true) ran against the six gateway instances that
+existed when it was taken, brought up concurrently with Keycloak, under CPU contention -- 24 busy
+workers on 16 cores:
 
 [cols="2,1,1,1"]
 |===
@@ -190,6 +191,11 @@ brought up concurrently with Keycloak, under CPU contention -- 24 busy workers o
 | `api-sheriff-plain-mgmt`  | 8.94s | 8.94s | 0.00s
 | `api-sheriff-ws-admission`| 8.95s | 8.95s | 0.00s
 |===
+
+This table is evidence from a dated run, not a claim about today's instance set, so it is
+deliberately *not* restated as the set grows: `api-sheriff-passthrough-empty` -- the seventh
+instance -- is absent from it by design rather than by omission, and no row may be invented for it.
+The headroom argument below therefore stands on the six instances actually measured.
 
 The live-to-ready delta is *0.00s on every instance* -- below the prober's own 100 ms resolution.
 That is not luck; it is what the previous section describes. Because the `jwks` datum is settled at
