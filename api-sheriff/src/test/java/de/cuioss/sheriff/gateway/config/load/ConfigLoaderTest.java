@@ -67,6 +67,14 @@ class ConfigLoaderTest {
                     + "set quarkus.management.port (environment QUARKUS_MANAGEMENT_PORT, default 9000) "
                     + "instead — see ADR-0025";
 
+    /**
+     * Mirrors the loader's private {@code MAX_CONFIG_FILE_BYTES}. The value is pinned from both
+     * directions rather than by widening the constant's visibility:
+     * {@link #bindsAConfigFileExactlyAtTheByteCap} fails if the loader's cap ever drops below this
+     * number, and {@link #rejectsAConfigFileOneByteOverTheByteCap} fails if it ever rises above it.
+     */
+    private static final int MAX_CONFIG_FILE_BYTES = 512 * 1024;
+
     @TempDir
     Path configDir;
 
@@ -87,6 +95,20 @@ class ConfigLoaderTest {
         Path target = configDir.resolve(relativeTarget);
         Files.createDirectories(target.getParent());
         Files.writeString(target, content);
+    }
+
+    /**
+     * Builds a {@code gateway.yaml}-shaped document of exactly {@code totalBytes} bytes by padding a
+     * YAML comment. A comment contributes no keys, so the padding cannot perturb schema validation or
+     * binding — only the document's size. The text is pure ASCII, so its character count is its UTF-8
+     * byte count. Under the cap the document binds; over it, size is the only thing about it that is
+     * ever examined.
+     */
+    private static String configDocumentOfExactly(int totalBytes) {
+        String head = "version: 1\n# ";
+        int padding = totalBytes - head.length() - 1;
+        assertTrue(padding > 0, "requested size is too small to hold the padded document");
+        return head + "x".repeat(padding) + "\n";
     }
 
     @Test
@@ -945,6 +967,95 @@ class ConfigLoaderTest {
 
         assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
                 () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void bindsAConfigFileExactlyAtTheByteCap() throws Exception {
+        // Arrange — the inclusive boundary: the cap refuses what EXCEEDS it, so a document sitting
+        // exactly on it must still load.
+        writeConfig("gateway.yaml", configDocumentOfExactly(MAX_CONFIG_FILE_BYTES));
+        assertEquals(MAX_CONFIG_FILE_BYTES, Files.size(configDir.resolve("gateway.yaml")),
+                "the fixture must sit exactly on the cap for the boundary to be the thing under test");
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Assert
+        assertEquals(1, loaded.gateway().version(),
+                "a document exactly at the byte cap must bind normally");
+    }
+
+    @Test
+    void rejectsAConfigFileOneByteOverTheByteCap() throws Exception {
+        // Arrange — the matched negative half of the boundary pair: one byte more than the cap allows.
+        writeConfig("gateway.yaml", configDocumentOfExactly(MAX_CONFIG_FILE_BYTES + 1));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+                "a configuration file one byte over the cap must fail the boot");
+
+        // Assert — the refusal is a collected error, and it is the ONLY error for the file: a schema or
+        // binding error alongside it would mean the over-cap document was partially bound anyway.
+        List<ConfigError> gatewayErrors = exception.errors().stream()
+                .filter(error -> "gateway.yaml".equals(error.file()))
+                .toList();
+        assertEquals(1, gatewayErrors.size(),
+                () -> "the size refusal must be the only error reported for the file, got: "
+                        + exception.errors());
+        assertTrue(gatewayErrors.getFirst().message().contains(String.valueOf(MAX_CONFIG_FILE_BYTES)),
+                () -> "the refusal must name the byte cap it enforced, got: " + gatewayErrors);
+    }
+
+    @Test
+    void overCapAliasBombIsRefusedBySizeAloneProvingBothPassesShareOneSnapshot() throws Exception {
+        // Arrange — an alias bomb padded past the byte cap. The size check gates the ONE snapshot that
+        // both the compose-only bomb pre-pass and the bind consume, so this document must never reach
+        // the composer. Were the pre-pass to reopen the file itself — the second, unbounded read this
+        // deliverable removed — it would compose the whole document and report the alias diagnostic
+        // alongside the size refusal. The absence of that diagnostic is what pins the single-read
+        // contract against a silent reintroduction.
+        StringBuilder yaml = new StringBuilder("version: 1\nanchor_def: &a [1, 2, 3]\naliases:\n");
+        for (int i = 0; i < 60; i++) {
+            yaml.append("  - *a\n");
+        }
+        yaml.append("# ").append("x".repeat(MAX_CONFIG_FILE_BYTES)).append('\n');
+        writeConfig("gateway.yaml", yaml.toString());
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("bomb protection tripped")),
+                () -> "an over-cap document must be refused before the composer ever sees it; an alias "
+                        + "diagnostic here means a second, unbounded read of the file survived, got: "
+                        + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.message().contains(String.valueOf(MAX_CONFIG_FILE_BYTES))),
+                () -> "expected the byte-cap refusal to be the reported failure, got: "
+                        + exception.errors());
+    }
+
+    @Test
+    void appliesTheByteCapToEndpointFilesToo() throws Exception {
+        // Arrange — the cap is a property of "a configuration file", not of gateway.yaml specifically;
+        // endpoints/*.yaml are read through the same single-snapshot path and must be bounded alike.
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", configDocumentOfExactly(MAX_CONFIG_FILE_BYTES + 1));
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
+                                && error.message().contains(String.valueOf(MAX_CONFIG_FILE_BYTES))),
+                () -> "an over-cap endpoint file must be refused by the same byte cap, got: "
                         + exception.errors());
     }
 

@@ -17,8 +17,9 @@ package de.cuioss.sheriff.gateway.config.load;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Reader;
 import java.io.Serializable;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -77,6 +78,11 @@ import org.yaml.snakeyaml.nodes.Node;
  * {@link de.cuioss.sheriff.gateway.config.model} records. Every problem is collected —
  * never fail on the first — and raised together as a {@link ConfigLoadException}.
  * <p>
+ * Every file is read <em>exactly once</em> into a snapshot bounded by
+ * {@link #MAX_CONFIG_FILE_BYTES}; the expansion-bomb pre-pass and the bind both consume that one
+ * snapshot, so no check-then-act window exists between them and no boot pass reads an unbounded
+ * number of bytes.
+ * <p>
  * The endpoint-enablement resolution, topology-alias resolution, cross-cutting
  * semantic validation, and route-table assembly steps of the full boot sequence are
  * layered on by later deliverables; this loader owns steps 1-4 (read,
@@ -103,6 +109,21 @@ public final class ConfigLoader {
     private static final int MAX_YAML_NESTING_DEPTH = 100;
     private static final int MAX_YAML_ALIASES = 50;
     private static final int MAX_YAML_STRING_LENGTH = 1024 * 1024;
+    /**
+     * Total-byte cap on a single configuration file, enforced while the file is read into the
+     * in-memory snapshot that both the bomb pre-pass and the bind consume. This is the only cap on
+     * the <em>whole document</em>: the nesting and alias caps bound the composed node graph rather
+     * than the input, so neither bounds the bytes a boot pass is willing to pull into memory.
+     * Exceeding it is a collected {@link ConfigError}, never a fail-fast throw.
+     * <p>
+     * It sits deliberately <em>below</em> {@link #MAX_YAML_STRING_LENGTH}, which SnakeYAML applies as
+     * a code-point budget over the whole incoming stream: were the byte cap the larger of the two, the
+     * code-point budget would always trip first and this cap could never fire with its own diagnostic —
+     * an over-sized file would be reported as a bomb rather than as an over-sized file. Since a UTF-8
+     * document never has more code points than bytes, keeping this cap the smaller value makes it the
+     * binding constraint on document size.
+     */
+    private static final int MAX_CONFIG_FILE_BYTES = 512 * 1024;
     /**
      * Enables the validator's {@code errorMessage} extension, which is OFF unless the keyword is
      * named on the registry configuration. Naming it lets a schema attach an operator-facing sentence
@@ -267,16 +288,50 @@ public final class ConfigLoader {
         }
     }
 
+    /**
+     * Reads a configuration file <em>exactly once</em> into a byte-bounded snapshot and drives both
+     * boot passes from it.
+     * <p>
+     * Reading the file a second time for the bind would reopen a check-then-act (TOCTOU) window: the
+     * document the bomb pre-pass cleared would not provably be the document Jackson binds. Both passes
+     * therefore consume the same {@code byte[]}, so the bytes the alias / nesting caps were evaluated
+     * against are exactly the bytes that reach {@link ObjectMapper#readTree(byte[])}.
+     */
     private @Nullable JsonNode readYaml(Path path, String file, List<ConfigError> errors) {
         if (!Files.isRegularFile(path)) {
             errors.add(new ConfigError(file, "", "configuration file not found"));
             return null;
         }
-        if (!withinExpansionLimits(path, file, errors)) {
+        byte[] snapshot = readBoundedSnapshot(path, file, errors);
+        if (snapshot == null || !withinExpansionLimits(snapshot, file, errors)) {
             return null;
         }
-        try (Reader reader = Files.newBufferedReader(path)) {
-            return mapper.readTree(reader);
+        try {
+            return mapper.readTree(snapshot);
+        } catch (IOException e) {
+            errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
+            return null;
+        }
+    }
+
+    /**
+     * Reads at most {@link #MAX_CONFIG_FILE_BYTES} bytes plus one probe byte from {@code path}; the
+     * probe byte is what makes an over-cap file detectable without ever buffering it whole. A file
+     * over the cap is rejected as a collected {@link ConfigError}, upholding the loader's
+     * collect-all-errors contract.
+     *
+     * @return the file's bytes, or {@code null} when the cap tripped or the file could not be read
+     *         (an error was recorded in either failing case)
+     */
+    private static byte @Nullable [] readBoundedSnapshot(Path path, String file, List<ConfigError> errors) {
+        try (InputStream stream = Files.newInputStream(path)) {
+            byte[] snapshot = stream.readNBytes(MAX_CONFIG_FILE_BYTES + 1);
+            if (snapshot.length > MAX_CONFIG_FILE_BYTES) {
+                errors.add(new ConfigError(file, "",
+                        "configuration file exceeds the %d-byte maximum".formatted(MAX_CONFIG_FILE_BYTES)));
+                return null;
+            }
+            return snapshot;
         } catch (IOException e) {
             errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
             return null;
@@ -298,17 +353,20 @@ public final class ConfigLoader {
      * forces the {@code Composer} to run and makes the alias-count and nesting-depth
      * caps actually fire. A tripped limit is reported as a collected {@link ConfigError}
      * so the boot fails with the aggregate rather than throwing fail-fast.
+     * <p>
+     * The pass reads the caller's in-memory {@code snapshot} rather than reopening the file, so it
+     * provably inspects the same bytes the subsequent bind consumes (see {@link #readYaml}).
      *
+     * @param snapshot the file's bytes, decoded as UTF-8 — the same bytes the bind will parse
      * @return {@code true} when the document is within the expansion / nesting limits,
-     *         {@code false} when a limit tripped or the file could not be read (an error
-     *         was recorded in either failing case)
+     *         {@code false} when a limit tripped (an error was recorded)
      */
-    private static boolean withinExpansionLimits(Path path, String file, List<ConfigError> errors) {
+    private static boolean withinExpansionLimits(byte[] snapshot, String file, List<ConfigError> errors) {
         LoaderOptions loaderOptions = new LoaderOptions();
         loaderOptions.setMaxAliasesForCollections(MAX_YAML_ALIASES);
         loaderOptions.setNestingDepthLimit(MAX_YAML_NESTING_DEPTH);
         loaderOptions.setCodePointLimit(MAX_YAML_STRING_LENGTH);
-        try (Reader reader = Files.newBufferedReader(path)) {
+        try (StringReader reader = new StringReader(new String(snapshot, StandardCharsets.UTF_8))) {
             // Advancing the iterator forces the Composer to walk the node graph; the
             // alias-count and nesting-depth caps throw a YAMLException from next() if the
             // document is a bomb. The composed nodes themselves carry no information this
@@ -321,9 +379,6 @@ public final class ConfigLoader {
         } catch (YAMLException e) {
             errors.add(new ConfigError(file, "",
                     "YAML expansion/nesting bomb protection tripped: " + e.getMessage()));
-            return false;
-        } catch (IOException e) {
-            errors.add(new ConfigError(file, "", "cannot read configuration file: " + e.getMessage()));
             return false;
         }
     }
