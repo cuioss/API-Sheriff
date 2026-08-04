@@ -91,6 +91,12 @@ function round(value, digits = 2) {
  * clock captured in `setup()`: `handleSummary()` receives no setup data, and
  * `data.state.testRunDurationMs` is the engine's authoritative measured duration.
  *
+ * "Measured duration" means the WHOLE run, load phase plus graceful-stop tail -- and
+ * `requests_per_second` is the request counter's rate over that same denominator. A single VU
+ * that stalls at cutoff therefore stretches the denominator without adding requests and deflates
+ * the reported rate, which is why the tail is bounded at the scenario level; see
+ * {@link DEFAULT_GRACEFUL_STOP}.
+ *
  * A body-transfer aspect additionally opts into `throughput_mbps` via `options.throughput`. It is
  * derived from k6's own `data_sent` rate rather than from the body size times the request rate,
  * so a partially-transferred or rejected body cannot be counted as fully delivered bytes. The
@@ -187,4 +193,53 @@ export function vus(fallback) {
  */
 export function duration(fallback = '60s') {
     return __ENV.BENCHMARK_DURATION || fallback;
+}
+
+/**
+ * The graceful-stop window every aspect scenario bounds its tail with.
+ *
+ * The value is neither `0` nor k6's own default, and both exclusions are load-bearing:
+ *
+ *   * **Not `0`.** A zero-length graceful stop interrupts every in-flight iteration at cutoff.
+ *     Interrupted iterations register as failed requests, so at a high enough concurrency they
+ *     can breach the `0.01` {@link maxErrorRate} ceiling (`BENCHMARK_MAX_ERROR_RATE`) and fail a
+ *     run that measured perfectly well. The tail must exist; it must merely be bounded.
+ *   * **Not k6's 30s default.** `requests_per_second` is a counter rate over
+ *     `state.testRunDurationMs`, which spans the graceful-stop tail (see the module header). A
+ *     single stalled VU keeps the run alive to the hard cap and adds the whole tail to the
+ *     denominator while adding no requests, so on a 60s run the 30s default inflates the measured
+ *     window by up to 50% and deflates the reported rate by the same factor -- large enough to
+ *     read as a ~35% throughput regression that never happened.
+ *
+ * At `5s` the worst case a stalled VU can produce is `5/60` = 8.3% of window inflation, which
+ * stays inside the comparator's 10% window band and well inside its 15% throughput band, so a
+ * stall can no longer manufacture a regression verdict.
+ *
+ * @type {string}
+ */
+export const DEFAULT_GRACEFUL_STOP = '5s';
+
+/**
+ * Builds the explicit `constant-vus` scenario every aspect script declares.
+ *
+ * The scenario form is chosen over k6's `vus` / `duration` shorthand precisely because the
+ * shorthand offers no way to bound the graceful stop: it silently applies the 30s default, and
+ * that default is what lets one stalled VU inflate the measured window (see
+ * {@link DEFAULT_GRACEFUL_STOP}). Declaring the scenario explicitly makes the tail a stated,
+ * bounded part of every aspect's contract instead of an inherited default.
+ *
+ * @param {number} vuCount the constant VU count to hold for the run
+ * @param {string} runDuration the k6 duration string the VUs are held for
+ * @param {{gracefulStop?: string}} [options={}] per-aspect override of the bounded tail; an aspect
+ *        whose iterations are legitimately longer than {@link DEFAULT_GRACEFUL_STOP} names its own
+ *        value here rather than reverting the whole lane to the k6 default
+ * @returns {{executor: string, vus: number, duration: string, gracefulStop: string}} the scenario
+ */
+export function scenario(vuCount, runDuration, options = {}) {
+    return {
+        executor: 'constant-vus',
+        vus: vuCount,
+        duration: runDuration,
+        gracefulStop: options.gracefulStop || DEFAULT_GRACEFUL_STOP,
+    };
 }

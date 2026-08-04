@@ -23,7 +23,7 @@
  */
 import http from 'k6/http';
 import { check } from 'k6';
-import { buildSummary, duration, maxErrorRate, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
 import { targetUrl } from './lib/target.js';
 
 /** The passthrough mode this run measures, defaulting to the active relay path. */
@@ -63,8 +63,7 @@ function resolveMode() {
 const { benchmarkName: BENCHMARK_NAME, url: TARGET_URL } = resolveMode();
 
 export const options = {
-    vus: vus(50),
-    duration: duration(),
+    scenarios: { default: scenario(vus(50), duration()) },
     summaryTrendStats: SUMMARY_TREND_STATS,
     insecureSkipTLSVerify: true,
     thresholds: {
