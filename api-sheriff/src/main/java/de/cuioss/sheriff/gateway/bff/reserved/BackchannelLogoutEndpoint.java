@@ -134,18 +134,26 @@ public final class BackchannelLogoutEndpoint {
         if (rawFormBody == null || rawFormBody.isBlank()) {
             return Optional.empty();
         }
+        // Single-exit loop body: the two skip conditions are folded into one positive match test so
+        // the scan carries no continue statements. Behaviour is unchanged and still fails closed — a
+        // pair without a name (equals <= 0), a name whose percent-encoding is malformed, and a name
+        // that is not logout_token are all simply not matched, so the scan falls through to an absent
+        // value and the caller answers 400.
         for (String pair : rawFormBody.split("&")) {
             int equals = pair.indexOf('=');
-            if (equals <= 0) {
-                continue;
+            if (equals > 0 && isLogoutTokenName(pair.substring(0, equals))) {
+                return decode(pair.substring(equals + 1)).filter(value -> !value.isBlank());
             }
-            Optional<String> name = decode(pair.substring(0, equals));
-            if (name.isEmpty() || !LOGOUT_TOKEN_PARAM.equals(name.get())) {
-                continue;
-            }
-            return decode(pair.substring(equals + 1)).filter(value -> !value.isBlank());
         }
         return Optional.empty();
+    }
+
+    /**
+     * @return {@code true} when {@code rawName} decodes to exactly the {@code logout_token} parameter
+     *         name; a malformed percent-encoded name decodes to an absent value and is never a match.
+     */
+    private static boolean isLogoutTokenName(String rawName) {
+        return decode(rawName).filter(LOGOUT_TOKEN_PARAM::equals).isPresent();
     }
 
     private static Optional<String> decode(String value) {
