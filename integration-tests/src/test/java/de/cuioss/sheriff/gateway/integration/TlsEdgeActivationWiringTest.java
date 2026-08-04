@@ -337,20 +337,20 @@ class TlsEdgeActivationWiringTest {
         assertInstanceOf(Map.class, node, "the '" + service + "' service must be a mapping");
         Object env = ((Map<?, ?>) node).get("environment");
         Map<String, String> entries = new LinkedHashMap<>();
-        if (env instanceof Map<?, ?> mapForm) {
-            mapForm.forEach((key, value) -> entries.put(String.valueOf(key), String.valueOf(value)));
-        } else if (env instanceof Iterable<?> listForm) {
-            for (Object entry : listForm) {
-                String text = String.valueOf(entry);
-                int split = text.indexOf('=');
-                if (split < 0) {
-                    entries.put(text, "");
-                } else {
-                    entries.put(text.substring(0, split), text.substring(split + 1));
+        switch (env) {
+            case Map<?, ?> mapForm -> mapForm.forEach((key, value) -> entries.put(String.valueOf(key), String.valueOf(value)));
+            case Iterable<?> listForm -> {
+                for (Object entry : listForm) {
+                    String text = String.valueOf(entry);
+                    int split = text.indexOf('=');
+                    if (split < 0) {
+                        entries.put(text, "");
+                    } else {
+                        entries.put(text.substring(0, split), text.substring(split + 1));
+                    }
                 }
             }
-        } else {
-            assertNull(env, "the '" + service + "' service environment must be a list or a mapping, was: " + env);
+            case null, default -> assertNull(env, "the '" + service + "' service environment must be a list or a mapping, was: " + env);
         }
         return entries;
     }
@@ -369,12 +369,10 @@ class TlsEdgeActivationWiringTest {
         assertInstanceOf(Map.class, node, "the '" + service + "' service must be a mapping");
         Object declared = ((Map<?, ?>) node).get("depends_on");
         Set<String> names = new LinkedHashSet<>();
-        if (declared instanceof Map<?, ?> mapForm) {
-            mapForm.keySet().forEach(key -> names.add(String.valueOf(key)));
-        } else if (declared instanceof Iterable<?> listForm) {
-            listForm.forEach(entry -> names.add(String.valueOf(entry)));
-        } else {
-            assertNull(declared,
+        switch (declared) {
+            case Map<?, ?> mapForm -> mapForm.keySet().forEach(key -> names.add(String.valueOf(key)));
+            case Iterable<?> listForm -> listForm.forEach(entry -> names.add(String.valueOf(entry)));
+            case null, default -> assertNull(declared,
                     "the '" + service + "' service depends_on must be a list or a mapping, was: " + declared);
         }
         return names;

@@ -418,10 +418,13 @@ public final class PassthroughBaselineComparator {
                 .append("`) vs the PLAN-04 plain-proxy baseline (`").append(BASELINE_SUMMARY).append("`). ")
                 .append("Noise band: ").append(formatTolerance(tolerance))
                 .append("; window-comparability band: ").append(formatTolerance(resolveWindowTolerance()))
-                .append(". The measurement-window row is a PRECONDITION, not a metric: a "
-                        + "`WINDOW_MISMATCH` means the two arms were measured over different-length "
-                        + "windows, so their rates are not comparable and the run fails rather than "
-                        + "being rescaled. `n/a` means the run did not measure the metric.\n\n")
+                .append("""
+                        . The measurement-window row is a PRECONDITION, not a metric: a \
+                        `WINDOW_MISMATCH` means the two arms were measured over different-length \
+                        windows, so their rates are not comparable and the run fails rather than \
+                        being rescaled. `n/a` means the run did not measure the metric.
+                        
+                        """)
                 .append("| Metric | Unit | Empty-mode | Baseline | Verdict |\n")
                 .append("|---|---|---|---|---|\n");
         for (MetricComparison metric : result.metrics()) {
