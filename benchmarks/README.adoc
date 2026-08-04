@@ -100,8 +100,10 @@ comparison; see the passthrough methodology note under _Methodology_.
 |`passthrough_relay.js`
 |The opaque L4 TCP relay path (`mapped` mode): `k6 -> gateway public TLS port with a mapped SNI ->
  L4 relay -> TLS-enabled backend`, measuring relay throughput/latency through the active passthrough
- path. Its `empty` mode re-measures the same proxied static route with `passthrough_sni` empty (D1's
- zero-overhead default) for a no-regression check against the `unauth` baseline. *API-Sheriff-only*;
+ path. Its `empty` mode runs the *same* `/proxy/static` route against the *same* `nginx-static`
+ upstream as the `proxiedStatic` baseline, but on a *second gateway instance*
+ (`api-sheriff-passthrough-empty`) whose `gateway.yaml` declares no `passthrough_sni` — so the
+ no-regression check has a genuinely listener-free side to measure. *API-Sheriff-only*;
  like `ws`/`grpc` it rides a real backend — see the passthrough methodology note.
 |===
 
@@ -320,14 +322,38 @@ gateway relays the still-encrypted stream at L4. Read it as relay overhead versu
 baseline within one run, never as an absolute throughput claim.
 It runs in two modes selected by `PASSTHROUGH_SNI`. In `mapped` mode the ClientHello names a
 `tls.passthrough_sni` host, so the gateway relays the still-encrypted byte stream at L4 without
-terminating and the run measures throughput/latency through the active relay path. In `empty` mode
-`passthrough_sni` is empty — D1's zero-overhead default, where the accept-time front listener is
-never created and the single terminated Quarkus HTTPS listener owns the public port directly — so
-the run re-measures exactly the same proxied static route as the PLAN-04 `unauth` (`proxiedStatic`)
-baseline. `PassthroughBaselineComparator` reads the empty-mode summary against that stored baseline
-and fails the run if throughput dropped, or either latency percentile rose, beyond a fixed
-percentile-band noise tolerance (k6 omits `latency_ms.stdev`, so a standard-deviation gate is not
-available — see _Known fidelity limit_). A metric a run did not measure renders `n/a`, never `0`.
+terminating and the run measures throughput/latency through the active relay path.
++
+`empty` mode is *not a second mode of the same gateway*, and cannot be: `passthrough_sni` is a
+property of the whole gateway process — declaring it non-empty is what starts the accept-time SNI
+front listener at boot — so no per-request switch can make the primary instance, which declares two
+entries for its whole lifetime, behave as though the listener were absent. The `empty` arm therefore
+runs against a *dedicated second gateway instance*, `api-sheriff-passthrough-empty`, whose overlaid
+`gateway.yaml` is the shared descriptor with the `tls.passthrough_sni` block — and only that block —
+removed. On that instance the front listener is never created and the single terminated Quarkus
+HTTPS listener owns the public port directly, which is D1's zero-overhead default.
++
+Everything else is held equal, because the comparison is only meaningful as a single-variable one
+(ADR-0012): the *same* native image, the *same* `/proxy/static` route, the *same* `nginx-static`
+upstream the benchmark overlay repoints both instances at, the *same* mounted TLS material, and the
+*same* CPU and memory limits (512M / 4.0 CPU). A difference on any of those folds its own cost into
+one side of the gate and is then read as passthrough overhead.
++
+Those parity conditions are enforced structurally rather than by review convention, by four
+assertions in `TlsEdgeActivationWiringTest`: `emptyPassthroughOverlayDeclaresNoPassthroughSni` (the
+arm's side really declares none), `emptyPassthroughInstanceSetsNoInternalSslPort` (no internal-port
+split, since there is no front listener to free the public port for),
+`emptyPassthroughOverlayDiffersFromTheBaseOnlyByPassthroughSni` (the single-variable property, as a
+parsed-structure equality against the base descriptor once `passthrough_sni` is removed) and
+`emptyPassthroughInstanceSharesThePrimaryBenchmarkUpstream` (the same-upstream property, asserted as
+an equality between the two declared `TOPOLOGY_UPSTREAM` values rather than against a hard-coded
+literal, so repointing the benchmark moves both arms together).
++
+`PassthroughBaselineComparator` reads the empty-mode summary against the primary instance's stored
+`proxiedStatic` baseline and fails the run if throughput dropped, or either latency percentile rose,
+beyond a fixed percentile-band noise tolerance (k6 omits `latency_ms.stdev`, so a standard-deviation
+gate is not available — see _Known fidelity limit_). A metric a run did not measure renders `n/a`,
+never `0`.
 +
 *Window comparability is checked first, and an incomparable pair is refused rather than compared.*
 `requests_per_second` is a counter rate over the run's whole measured window — the load phase *plus*

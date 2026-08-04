@@ -9,14 +9,19 @@
  *              the backend completes the handshake and presents its *own* certificate. Measures
  *              relay throughput/latency through the active passthrough path. Emits `passthroughRelay`.
  *
- *   empty   -> drive the *same proxied static route* the PLAN-04 `unauth` baseline uses, but with
- *              `passthrough_sni` empty — D1's zero-overhead default, where the front listener is
- *              never created and the terminated Quarkus HTTPS listener owns the public port directly.
- *              This is the no-regression comparison side: `PassthroughBaselineComparator` reads its
- *              summary against the stored PLAN-04 `proxiedStatic` baseline. Emits `passthroughRelayEmpty`.
+ *   empty   -> drive the *same proxied static route* against a *different gateway instance*: the
+ *              dedicated `api-sheriff-passthrough-empty` service, whose overlaid `gateway.yaml`
+ *              declares no `tls.passthrough_sni` at all. `passthrough_sni` is a property of the
+ *              whole gateway process — declaring it non-empty is what starts the accept-time SNI
+ *              front listener — so emptiness cannot be selected per request on the primary
+ *              instance, which declares two entries for its whole lifetime. On this instance the
+ *              front listener is never created and Quarkus terminates TLS on the public port
+ *              directly. This is the no-regression comparison side: `PassthroughBaselineComparator`
+ *              reads its summary against the primary instance's `proxiedStatic` baseline over the
+ *              same route and the same nginx-static upstream. Emits `passthroughRelayEmpty`.
  *
  * One script body drives both modes so the two runs share identical VU/duration/threshold plumbing
- * and only the SNI/route differs. Native k6 thresholds (`http_req_failed`, `checks`) gate the run,
+ * and only the target edge and route differ. Native k6 thresholds (`http_req_failed`, `checks`) gate the run,
  * exactly as the other aspects: a run that starts rejecting every request exits non-zero rather than
  * benchmarking as an improvement. An unknown `PASSTHROUGH_SNI` value is fatal rather than defaulted,
  * mirroring `lib/target.js` — a mislabelled run is worse than a failed one.
@@ -24,7 +29,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
-import { targetUrl } from './lib/target.js';
+import { passthroughEmptyUrl } from './lib/target.js';
 
 /** The passthrough mode this run measures, defaulting to the active relay path. */
 const MODE = (__ENV.PASSTHROUGH_SNI || 'mapped').toLowerCase();
@@ -54,7 +59,7 @@ function resolveMode() {
         case 'mapped':
             return { benchmarkName: 'passthroughRelay', url: __ENV.TARGET_URL || PASSTHROUGH_TARGET_URL };
         case 'empty':
-            return { benchmarkName: 'passthroughRelayEmpty', url: __ENV.TARGET_URL || targetUrl('/proxy/static') };
+            return { benchmarkName: 'passthroughRelayEmpty', url: __ENV.TARGET_URL || passthroughEmptyUrl('/proxy/static') };
         default:
             throw new Error(`PASSTHROUGH_SNI must be one of mapped, empty, got "${__ENV.PASSTHROUGH_SNI}"`);
     }

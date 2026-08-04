@@ -29,15 +29,29 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Verifies that the empty-{@code passthrough_sni} proxied route does not regress beyond the run's
- * noise band against the stored PLAN-04 plain-proxy baseline.
+ * Verifies that a gateway configured with no {@code tls.passthrough_sni} does not serve the plain
+ * proxied route measurably worse than the primary gateway, which declares one.
  * <p>
- * When {@code tls.passthrough_sni} is empty the accept-time front listener is never created (D1's
- * zero-overhead default) and the terminated Quarkus HTTPS listener owns the public port directly, so
- * the empty-mode run measures exactly the same proxied static route as the PLAN-04 {@code unauth}
- * ({@code proxiedStatic}) aspect. This comparator reads the {@code passthroughRelayEmpty} summary
- * against the {@code proxiedStatic} summary produced in the same lane and asserts no regression
- * beyond a percentile-band tolerance.
+ * The two summaries come from two <em>different gateway instances</em> running concurrently in the
+ * same lane, not from two modes of one process: {@code passthrough_sni} is a property of the whole
+ * gateway — declaring it non-empty is what starts the accept-time SNI front listener at boot — so
+ * emptiness cannot be selected per request. The {@code passthroughRelayEmpty} candidate is measured
+ * against the dedicated {@code api-sheriff-passthrough-empty} instance, whose overlaid
+ * {@code gateway.yaml} declares no {@code passthrough_sni} and where the front listener is therefore
+ * never created (D1's zero-overhead default, terminated Quarkus HTTPS listener owning the public
+ * port directly). The {@code proxiedStatic} baseline is measured against the primary instance, which
+ * declares two {@code passthrough_sni} entries for its whole lifetime. Both arms drive the same
+ * {@code /proxy/static} route to the same {@code nginx-static} upstream on the same image under the
+ * same resource limits, so the two runs differ in exactly one thing: the presence of the accept-time
+ * front listener.
+ * <p>
+ * <strong>The bound is one-sided, and deliberately so.</strong> On the baseline instance the front
+ * listener owns the public port, so every connection — including the plain proxied ones this route
+ * carries — pays an accept-time ClientHello peek and an L4 relay hop to the internal terminated
+ * listener. The candidate instance pays neither. The expected result is therefore that the candidate
+ * measures <em>at or above</em> the baseline, and the gate asserts only
+ * {@code candidate >= baseline * (1 - tolerance)}: it exists to catch the front listener's absence
+ * somehow costing throughput, never to cap the headroom its absence yields.
  * <p>
  * <strong>Noise band, not a point comparison.</strong> These are single-node, containerized,
  * local-network measurements, so a small run-to-run delta is noise rather than signal. The band is a
@@ -75,10 +89,13 @@ public final class PassthroughBaselineComparator {
 
     private static final CuiLogger LOGGER = new CuiLogger(PassthroughBaselineComparator.class);
 
-    /** The empty-mode candidate summary, produced by {@code passthrough_relay.js} with {@code PASSTHROUGH_SNI=empty}. */
+    /**
+     * The candidate summary, produced by {@code passthrough_relay.js} with
+     * {@code PASSTHROUGH_SNI=empty} against the no-{@code passthrough_sni} gateway instance.
+     */
     static final String CANDIDATE_SUMMARY = "passthroughRelayEmpty-summary.json";
 
-    /** The stored PLAN-04 plain-proxy baseline summary the candidate is read against. */
+    /** The plain-proxy baseline summary from the primary instance, taken in the same lane. */
     static final String BASELINE_SUMMARY = "proxiedStatic-summary.json";
 
     /** Name of the rendered artifact, written directly under the results directory. */

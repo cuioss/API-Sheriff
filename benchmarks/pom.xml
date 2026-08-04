@@ -428,10 +428,14 @@
                                 </configuration>
                             </execution>
 
-                            <!-- Run k6 passthrough-relay benchmark in EMPTY mode (passthrough_sni
-                                 empty: D1's zero-overhead default, single terminated listener on the
-                                 same proxied static route as the PLAN-04 baseline). Produces the
-                                 no-regression candidate PassthroughBaselineComparator reads. -->
+                            <!-- Run k6 passthrough-relay benchmark in EMPTY mode. The script sends
+                                 this arm to the dedicated api-sheriff-passthrough-empty instance,
+                                 whose gateway.yaml declares no passthrough_sni, so no accept-time
+                                 front listener is created and a single terminated listener owns the
+                                 public port. Same /proxy/static route and same nginx-static upstream
+                                 as the primary instance's proxiedStatic baseline, which is the only
+                                 other side of the comparison. Produces the no-regression candidate
+                                 PassthroughBaselineComparator reads. -->
                             <execution>
                                 <id>run-k6-passthrough-relay-empty-benchmark</id>
                                 <phase>integration-test</phase>
