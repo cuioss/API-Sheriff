@@ -58,3 +58,104 @@ The two BFF variants share the same login handshake (see the sequence diagram in
 section) and the same upstream `Authorization: Bearer` injection; they differ only in *where
 the token lives*, as compared side by side in
 link:02-bff-session.adoc#_steady_state_api_call[the mediation diagram].
+
+[#benchmark-baselines]
+== Benchmark baselines and regression thresholds
+
+Each variant section carries a *Performance baseline* subsection. This section states the
+measurement contract they share -- what is measured, under what load, and which thresholds decide
+that a change is a regression. Read it once here rather than three times there.
+
+=== What "baseline" means here
+
+A baseline is *not* a performance promise to an operator*.* It is a **comparison fixture**: a
+figure is only meaningful against another figure produced by the same harness, at the same load,
+on the same runner class. Absolute request rates from this suite say nothing about the throughput
+a given production deployment will see -- hardware, network, upstream latency and TLS termination
+all dominate.
+
+What the numbers are *for* is answering one question: **did this change make it slower?**
+
+=== The measurement contract
+
+All figures come from the k6 suite in the `benchmarks` module, run by the `-Pbenchmark` profile.
+
+[cols="1,2", options="header"]
+|===
+| Parameter | Value
+
+| Load phase | `60s` (`k6.duration`)
+| Concurrency | `50` virtual users (`k6.vus`)
+| Concurrency, `uploadLarge` | `5` virtual users (`k6.vus.upload.large`) -- transfer-bound, not request-rate-bound
+| Graceful stop | `5s` per scenario
+| Runner | GitHub-hosted `ubuntu-latest`
+|===
+
+The load phase is *measured, not assumed*. Each summary records `start_time` and `end_time`, and
+the comparator derives the real window from them -- because a stalled virtual unit inflates the
+window and, with it, the rate denominator, manufacturing a regression verdict out of a
+measurement artifact.
+
+=== Regression thresholds
+
+[cols="1,1,2", options="header"]
+|===
+| Gate | Threshold | Override
+
+| Throughput noise band
+| *15%* -- a drop beyond it is reported as a regression
+| `passthrough.baseline.tolerance`
+
+| Measurement-window band
+| *6s absolute*, i.e. *10%* of the default 60s load phase. Derived from the *live* `k6.duration`, so a shortened run tightens the band rather than under-covering it
+| `passthrough.baseline.window.tolerance`
+
+| Error-rate ceiling
+| *1%* (`0.01`) -- breaching it fails the run outright
+| `BENCHMARK_MAX_ERROR_RATE`
+|===
+
+[IMPORTANT]
+====
+*The window band is a precondition of the comparison, not one of the compared metrics.* When two
+runs' windows differ beyond the band the comparator *fails* with a `WINDOW_MISMATCH` rather than
+rescaling them into agreement. Normalising would restore the gate to green in exactly the case
+where a stalled VU inflated the window -- masking the defect the gate exists to catch.
+====
+
+=== Status at 0.1.0 -- no per-variant figures are published
+
+*This release publishes no per-variant baseline numbers.* That is a reported gap, not an omission,
+and the reason is stated plainly so nobody mistakes silence for a clean result:
+
+* The acceptance run (`30383723057`) *exists and reports no failed jobs*, so the suite did not
+  fail.
+* But its per-scenario k6 summaries are *not retrievable*. They are written only into the
+  successful job's log and are **never uploaded as run artifacts**, so there is no durable
+  artifact to read a figure out of.
+
+Publishing figures that cannot be traced back to a retrievable run would be fiction, and a
+baseline nobody can re-derive is worse than none -- it acquires authority it has not earned. The
+thresholds above are *config-derived* and therefore stated with confidence; the figures are not,
+and are therefore omitted.
+
+*To establish the baselines*, upload the k6 summary JSONs as run artifacts so the numbers survive
+the job log, then record them per variant.
+
+=== The comparative baseline (API Sheriff vs APISIX)
+
+A cross-gateway comparison against APISIX runs as a *deliberately on-demand lane* -- it is not
+part of the post-merge benchmark run and does not gate anything. It answers "how does this
+gateway's overhead compare to an established one?", which is a positioning question, not a
+regression question, and it is reported per variant in the variant sections rather than as a
+single headline number.
+
+The same no-published-figures status above applies to it at 0.1.0.
+
+[NOTE]
+====
+*A benchmark run attached to a release tag is not a regression signal.* `benchmark.yml` fires on
+`push: tags: ["*"]`, so cutting a release starts a benchmark run. That run belongs to the release,
+its lane is known-flaky, and it must not be read as either a pass or a failure of the released
+code.
+====

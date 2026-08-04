@@ -16,8 +16,8 @@ Use this variant when the caller is a service or a client that already holds its
 token (machine-to-machine, or an SPA that manages tokens elsewhere) and simply needs a
 hardened, validating entry point in front of the upstream.
 
-NOTE: *Protocol scope complete.* With link:../plan/05-protocol-processors.adoc[Plan 05]
-delivered, the base gateway serves all four initial-scope protocols -- HTTP/1.1 and HTTP/2,
+NOTE: *Protocol scope complete.* With the protocol-processor work delivered,
+the base gateway serves all four initial-scope protocols -- HTTP/1.1 and HTTP/2,
 GraphQL (over HTTP), *WebSocket* (full pipeline on the handshake, `Origin` allowlist validation,
 then opaque bidirectional relay bounded by a per-route idle timeout), and *gRPC* (forced-h2
 upstream, trailer relay, trailers-only rejection mapping). This closes the
@@ -155,6 +155,47 @@ rather than fetched over HTTP.
 * *Stateless* -- no session, no store, horizontally scalable with no coordination.
 * *Self-contained* -- no database, no Redis, no etcd.
 * *Fail-secure* -- deny-by-default routing, filtering, and scope enforcement.
+
+== Performance baseline
+
+The shared measurement contract, the load parameters and the regression thresholds are stated once
+in link:README.adoc#benchmark-baselines[Deployment Variants -- Benchmark baselines]. This section
+records only what is specific to Variant 1.
+
+*Variant 1 is the reference posture for the whole suite.* Every cross-gateway matrix aspect is
+measured against a bearer or unauthenticated route, so the base gateway's numbers are the
+denominator the two BFF variants are read against -- a BFF figure is only interesting as a *delta*
+from the equivalent Variant 1 figure.
+
+What the suite exercises on this variant:
+
+[cols="1,3", options="header"]
+|===
+| Aspect | What it isolates
+
+| `unauth` | The pipeline with *no* token validation -- filter, route, forward. The floor cost of proxying.
+| `bearer` | The same path *plus* offline validation and scope enforcement. Against `unauth`, the delta is the true cost of token validation.
+| `http2` | HTTP/2 upstream forwarding.
+| `graphql` | GraphQL over HTTP.
+| `ws` | The WebSocket handshake (full pipeline) and the opaque relay that follows it.
+| `grpc` | Forced-h2 upstream with trailer relay.
+| `upload-1MB` / `upload-50MB` | Body streaming. `upload-50MB` runs at *5* VUs, not 50 -- it is transfer-bound, so its figure is not comparable with a request-rate aspect.
+|===
+
+The `bearer` − `unauth` delta is the single most useful number this variant produces: validation is
+offline and cache-backed, so that delta should stay small and *stable*. A widening delta points at
+JWKS cache behaviour, not at the proxy path.
+
+[NOTE]
+====
+*Passthrough SNI is measured as its own arm.* A dedicated gateway instance runs with the
+`tls.passthrough_sni` block removed, so the empty-passthrough arm genuinely exercises an instance
+that creates no SNI front listener. Both arms otherwise face the same upstream. Comparing a
+passthrough figure against a non-passthrough instance's is not a like-for-like comparison.
+====
+
+*No figures are published at 0.1.0* -- see the status note in
+link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.
 
 == Relationship to the BFF Variants
 
