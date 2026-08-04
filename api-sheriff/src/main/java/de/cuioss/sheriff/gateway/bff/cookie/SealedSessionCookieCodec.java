@@ -400,6 +400,20 @@ public final class SealedSessionCookieCodec {
 
     /**
      * The successful outcome of {@link #unseal(String)}: the authenticated session payload.
+     * <p>
+     * <strong>Load-bearing — do not remove.</strong> This record is the payload wrapper of
+     * {@link #unseal(String)}'s return type, and its production consumer is the
+     * {@code readSealedValue(…).flatMap(codec::unseal).filter(…).map(…)} chain in
+     * {@code CookieSessionBinding.resolve}. That call site uses the <em>method-reference</em> form
+     * {@code codec::unseal}, so a reachability search for the call form {@code unseal(} alone reports
+     * this API as having no production consumer — a false "unused" verdict that would justify an
+     * unsafe removal. Search both forms before re-opening the question.
+     * <p>
+     * The {@code Optional<Unsealed>} return type is <em>not</em> a residue of the PLAN-36 sweep:
+     * {@link de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec#unseal(String)} is a
+     * computed method return, and ADR-0033 retires {@code Optional} only from <em>stored</em>
+     * positions — fields, declared parameters and record components. A computed return is explicitly
+     * sanctioned, so a future sweep should not re-flag it.
      *
      * @param payload the authenticated session payload
      * @author API Sheriff Team

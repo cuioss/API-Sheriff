@@ -81,41 +81,103 @@ public final class ClientHelloSniParser {
         ByteArrayOutputStream handshake = new ByteArrayOutputStream();
         int pos = 0;
         while (true) {
-            if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-                return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
-            }
-            if ((bytes[pos] & UINT8_MASK) != RECORD_TYPE_HANDSHAKE) {
-                // Not a TLS handshake record — fail closed to the terminated-strict path.
-                return Result.parsed(null);
+            Result headerVerdict = recordHeaderVerdict(bytes, pos);
+            if (headerVerdict != null) {
+                return headerVerdict;
             }
             int recordLength = uint16(bytes, pos + 3);
             int recordEnd = pos + RECORD_HEADER_LENGTH + recordLength;
-            if (recordEnd > MAX_CLIENT_HELLO_BYTES) {
-                return Result.parsed(null);
-            }
-            if (bytes.length < recordEnd) {
-                return Result.needMoreData();
+            Result bodyVerdict = recordBodyVerdict(bytes, recordEnd);
+            if (bodyVerdict != null) {
+                return bodyVerdict;
             }
             handshake.write(bytes, pos + RECORD_HEADER_LENGTH, recordLength);
             pos = recordEnd;
 
-            byte[] handshakeBytes = handshake.toByteArray();
-            HandshakeSpan span = completeHandshake(handshakeBytes);
-            if (span == HandshakeSpan.MALFORMED) {
-                return Result.parsed(null);
+            Result reassembledVerdict = reassembledVerdict(handshake.toByteArray());
+            if (reassembledVerdict != null) {
+                return reassembledVerdict;
             }
-            if (span == HandshakeSpan.COMPLETE) {
-                return Result.parsed(extractServerName(handshakeBytes));
-            }
-            // span == INCOMPLETE: keep reading records if any remain, else ask for more bytes.
-            if (bytes.length - pos < RECORD_HEADER_LENGTH) {
-                return overBound(pos) ? Result.parsed(null) : Result.needMoreData();
-            }
+            // The handshake is still incomplete: loop back and consume the next record. The
+            // "is another record header even present?" question is the loop head's own first check,
+            // so it is asked there rather than repeated here.
         }
     }
 
-    private static boolean overBound(int pos) {
-        return pos >= MAX_CLIENT_HELLO_BYTES;
+    /**
+     * The terminal verdict, if any, implied by the record header at {@code pos}: too few bytes for a
+     * header (keep buffering, or fail closed once the bound is passed), or a record that is not a TLS
+     * handshake at all.
+     * <p>
+     * <strong>The give-up test is anchored on {@code bytes.length}</strong> — the bytes already
+     * buffered — rather than on {@code pos}, the bytes already consumed. {@link #MAX_CLIENT_HELLO_BYTES}
+     * declares its bound on the accumulated buffer, and in this branch {@code pos} trails
+     * {@code bytes.length} by up to {@code RECORD_HEADER_LENGTH - 1}: a position-anchored test would
+     * therefore still answer {@link Result#needMoreData()} for a buffer holding up to
+     * {@code MAX_CLIENT_HELLO_BYTES + 3} bytes, telling the caller to keep buffering something that
+     * has already passed the declared hard bound. Since {@code pos <= bytes.length} always holds
+     * ({@link #recordBodyVerdict(byte[], int)} advances {@code pos} only to a {@code recordEnd} it has
+     * confirmed is within the buffer), the buffer-anchored test subsumes the position-anchored one.
+     *
+     * @param bytes the accumulated connection bytes
+     * @param pos   the offset of the record header being examined
+     * @return the verdict to return from {@code parse}, or {@code null} to consume this record
+     */
+    private static @Nullable Result recordHeaderVerdict(byte[] bytes, int pos) {
+        if (bytes.length - pos < RECORD_HEADER_LENGTH) {
+            return overBound(bytes.length) ? Result.parsed(null) : Result.needMoreData();
+        }
+        if ((bytes[pos] & UINT8_MASK) != RECORD_TYPE_HANDSHAKE) {
+            // Not a TLS handshake record — fail closed to the terminated-strict path.
+            return Result.parsed(null);
+        }
+        return null;
+    }
+
+    /**
+     * The terminal verdict, if any, implied by the declared record body: a record running past the
+     * size bound fails closed, and a body that has not fully arrived means keep buffering.
+     *
+     * @param bytes     the accumulated connection bytes
+     * @param recordEnd the offset one past the declared end of this record
+     * @return the verdict to return from {@code parse}, or {@code null} to consume this record
+     */
+    private static @Nullable Result recordBodyVerdict(byte[] bytes, int recordEnd) {
+        if (recordEnd > MAX_CLIENT_HELLO_BYTES) {
+            return Result.parsed(null);
+        }
+        if (bytes.length < recordEnd) {
+            return Result.needMoreData();
+        }
+        return null;
+    }
+
+    /**
+     * The terminal verdict, if any, implied by the handshake bytes reassembled so far: a wrong
+     * handshake type or an over-bound body fails closed, a complete {@code client_hello} yields the
+     * extracted SNI.
+     *
+     * @param handshakeBytes the handshake bytes reassembled across the records consumed so far
+     * @return the verdict to return from {@code parse}, or {@code null} while the body is incomplete
+     */
+    private static @Nullable Result reassembledVerdict(byte[] handshakeBytes) {
+        HandshakeSpan span = completeHandshake(handshakeBytes);
+        if (span == HandshakeSpan.MALFORMED) {
+            return Result.parsed(null);
+        }
+        if (span == HandshakeSpan.COMPLETE) {
+            return Result.parsed(extractServerName(handshakeBytes));
+        }
+        return null;
+    }
+
+    /**
+     * Whether {@code byteCount} has reached the reassembly bound. Callers pass the number of bytes
+     * <em>buffered</em>, never the number consumed — see
+     * {@link #recordHeaderVerdict(byte[], int)} for why the distinction is load-bearing.
+     */
+    private static boolean overBound(int byteCount) {
+        return byteCount >= MAX_CLIENT_HELLO_BYTES;
     }
 
     /**
@@ -168,7 +230,7 @@ public final class ClientHelloSniParser {
                 cursor.seek(next);
             }
             return null;
-        } catch (MalformedHelloException e) {
+        } catch (MalformedHelloException _) {
             return null;
         }
     }
@@ -202,10 +264,50 @@ public final class ClientHelloSniParser {
         return null;
     }
 
+    /**
+     * Reads the big-endian {@code uint16} at {@code offset}.
+     * <p>
+     * <strong>Bounds contract.</strong> Both call sites establish {@code 0 <= offset} and
+     * {@code offset + 1 < data.length} before calling, so neither read can run past the array:
+     * <ul>
+     * <li>{@link #parse(byte[])} evaluates {@code uint16(bytes, pos + 3)} only after
+     * {@link #recordHeaderVerdict(byte[], int)} returned {@code null}, which happens solely when
+     * {@code bytes.length - pos >= RECORD_HEADER_LENGTH} — so {@code pos + 4 <= bytes.length - 1}.
+     * {@code pos} starts at {@code 0} and only ever advances to a {@code recordEnd} that
+     * {@link #recordBodyVerdict(byte[], int)} already bounded by {@link #MAX_CLIENT_HELLO_BYTES}, so
+     * it is never negative and never overflows.</li>
+     * <li>{@link Cursor#readUint16()} evaluates {@code uint16(data, position)} only after
+     * {@link Cursor#require(int)} asserted {@code position + 2 <= data.length}, raising
+     * {@link MalformedHelloException} otherwise. {@code position} starts at
+     * {@link #HANDSHAKE_HEADER_LENGTH} and never decreases ({@link Cursor#seek(int)} refuses a
+     * backwards target), so it is never negative.</li>
+     * </ul>
+     * Both guards live in extracted helpers rather than inline in the reading method, which is why
+     * the symbolic-execution engine cannot see them; {@code ClientHelloSniParserTest} pins the
+     * {@code parse} guard at the exact one-byte-short-of-a-record-header boundary, on the first
+     * record and on the loop-back to a later record.
+     *
+     * @param data   the buffer to read from
+     * @param offset the offset of the high-order byte; the caller guarantees {@code offset + 1} is
+     *               within {@code data}
+     * @return the unsigned 16-bit big-endian value at {@code offset}
+     */
     private static int uint16(byte[] data, int offset) {
-        return ((data[offset] & UINT8_MASK) << 8) | (data[offset + 1] & UINT8_MASK);
+        int high = data[offset] & UINT8_MASK; // NOSONAR javabugs:S6466 - caller-guarded, see Javadoc
+        int low = data[offset + 1] & UINT8_MASK; // NOSONAR javabugs:S6466 - caller-guarded, see Javadoc
+        return (high << 8) | low;
     }
 
+    /**
+     * Reads the big-endian {@code uint24} at {@code offset}. The sole caller
+     * {@link #completeHandshake(byte[])} has already returned {@link HandshakeSpan#INCOMPLETE} unless
+     * {@code handshake.length >= HANDSHAKE_HEADER_LENGTH}, so offsets {@code 1..3} are always within
+     * the buffer.
+     *
+     * @param data   the buffer to read from
+     * @param offset the offset of the most significant byte
+     * @return the unsigned 24-bit big-endian value at {@code offset}
+     */
     private static int uint24(byte[] data, int offset) {
         return ((data[offset] & UINT8_MASK) << 16)
                 | ((data[offset + 1] & UINT8_MASK) << 8)

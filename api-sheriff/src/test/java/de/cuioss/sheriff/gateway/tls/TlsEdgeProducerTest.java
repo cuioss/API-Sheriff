@@ -15,8 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.Map;
 
 
@@ -38,14 +43,19 @@ import org.junit.jupiter.api.Test;
  * Boot-wiring contract of {@link TlsEdgeProducer}: the relay map is built from {@code
  * tls.passthrough_sni} against the resolved topology, the accept-time front listener is started only
  * when at least one passthrough SNI resolves, and shutdown is a clean no-op when nothing was started.
- * An unresolved passthrough alias is defensively skipped rather than aborting boot (ADR-0009). The
- * front binds an ephemeral port so the test never contends for a fixed public port.
+ * An unresolved passthrough alias is defensively skipped rather than aborting boot (ADR-0009).
+ * <p>
+ * Every case is asserted against the <em>public port itself</em> rather than against the absence of an
+ * exception: each test allocates a currently-free port, hands it to the producer, and probes whether
+ * anything accepts a connection on it. A quiet {@code onStartup} is not evidence that a front listener
+ * started, and is equally not evidence that one was deliberately skipped — the port is. The port is
+ * allocated per test rather than fixed, so the suite never contends for a well-known public port.
  */
 @DisplayName("TlsEdgeProducer — accept-time front listener boot wiring")
 class TlsEdgeProducerTest {
 
-    private static final int EPHEMERAL_PORT = 0;
     private static final int INTERNAL_HTTPS_PORT = 8444;
+    private static final int CONNECT_TIMEOUT_MILLIS = 2000;
     private static final String RESOLVED_ALIAS = "backend-alias";
     private static final String UNRESOLVED_ALIAS = "missing-alias";
 
@@ -67,10 +77,12 @@ class TlsEdgeProducerTest {
 
         @Test
         @DisplayName("starts the front listener and shuts it down cleanly when a passthrough SNI resolves")
-        void startsAndStopsFrontListener() {
+        void startsAndStopsFrontListener() throws Exception {
             // Arrange — one SNI maps to a resolvable alias, one to an alias absent from the topology.
             // The resolvable entry makes the relay map non-empty (front started); the unresolved entry
-            // exercises the defensive skip branch.
+            // exercises the defensive skip branch. A concrete free port is used rather than the
+            // ephemeral 0 so that "is the front actually bound?" is an observable fact.
+            int port = freePort();
             TlsConfig tls = TlsConfig.builder()
                     .passthroughSni(Map.of(
                             "sni.resolved.example", RESOLVED_ALIAS,
@@ -80,15 +92,24 @@ class TlsEdgeProducerTest {
                     .tls(tls).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of(
                     RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, EPHEMERAL_PORT,
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
                     INTERNAL_HTTPS_PORT);
+            assertFalse(isListening(port), "control precondition: nothing owns the port before startup");
 
-            // Act + Assert — the front binds the ephemeral port on startup, then shutdown stops the
-            // started listener and closes the backend client without error.
-            assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
-                    "a resolvable passthrough SNI starts the front listener on an ephemeral port");
-            assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
-                    "shutdown stops the started listener and closes the backend client");
+            // Act
+            producer.onStartup(new StartupEvent());
+
+            // Assert — the front is genuinely accepting connections on the public port. Absence of an
+            // exception would not say this: a startup that silently skipped the front (an empty relay
+            // map, a swallowed bind failure) completes just as quietly.
+            assertTrue(isListening(port),
+                    "a resolvable passthrough SNI starts the front listener on the public port");
+
+            // Act — and shutdown releases it
+            producer.onShutdown(new ShutdownEvent());
+
+            // Assert
+            awaitNotListening(port, "shutdown stops the started listener and releases the public port");
         }
     }
 
@@ -98,40 +119,103 @@ class TlsEdgeProducerTest {
 
         @Test
         @DisplayName("never starts the front listener when passthrough_sni is empty")
-        void noFrontListenerWhenPassthroughEmpty() {
+        void noFrontListenerWhenPassthroughEmpty() throws Exception {
             // Arrange — no tls block at all, so the relay map is empty.
+            int port = freePort();
             GatewayConfig config = GatewayConfig.builder().version(1).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of());
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, EPHEMERAL_PORT,
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
                     INTERNAL_HTTPS_PORT);
 
-            // Act + Assert — an empty relay map short-circuits startup; the later shutdown is a clean
-            // no-op because neither the listener nor the backend client was ever created.
-            assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
+            // Act
+            producer.onStartup(new StartupEvent());
+
+            // Assert — the public port is left untouched. The matched control for this negative claim
+            // is startsAndStopsFrontListener above, which binds the same kind of port from a resolvable
+            // configuration: without it, "no exception" could not distinguish a deliberate short-circuit
+            // from a front that started perfectly well.
+            assertFalse(isListening(port),
                     "an empty passthrough map never starts the front listener");
-            assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
-                    "shutdown is a no-op when nothing was started");
+
+            // Act + Assert — shutdown is a clean no-op because nothing was ever created
+            producer.onShutdown(new ShutdownEvent());
+            assertFalse(isListening(port), "shutdown leaves the unbound port unbound");
         }
 
         @Test
         @DisplayName("skips a passthrough SNI whose alias does not resolve, leaving the map empty")
-        void skipsUnresolvedAlias() {
+        void skipsUnresolvedAlias() throws Exception {
             // Arrange — the only passthrough SNI maps to an alias absent from the resolved topology, so
-            // the defensive skip leaves the relay map empty and no front listener is started.
+            // the defensive skip leaves the relay map empty and no front listener is started. This
+            // differs from noFrontListenerWhenPassthroughEmpty in the arrange that matters: a
+            // passthrough entry IS declared here, and only the alias lookup empties the map.
+            int port = freePort();
             TlsConfig tls = TlsConfig.builder()
                     .passthroughSni(Map.of("sni.unresolved.example", UNRESOLVED_ALIAS))
                     .build();
             GatewayConfig config = GatewayConfig.builder().version(1)
                     .tls(tls).build();
             ResolvedTopology topology = new ResolvedTopology(Map.of());
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, EPHEMERAL_PORT,
+            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
                     INTERNAL_HTTPS_PORT);
 
-            // Act + Assert
-            assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
+            // Act
+            producer.onStartup(new StartupEvent());
+
+            // Assert — the declared-but-unresolvable entry contributed no relay target, so the map
+            // stayed empty and the front was never started
+            assertFalse(isListening(port),
                     "an unresolved alias is skipped, so no front listener is started");
-            assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
-                    "shutdown is a no-op when the only alias was skipped");
+
+            // Act + Assert
+            producer.onShutdown(new ShutdownEvent());
+            assertFalse(isListening(port), "shutdown is a no-op when the only alias was skipped");
         }
+    }
+
+    /**
+     * A port no process owns at the moment of the call. The socket is closed before the port is
+     * handed back, which is what makes the pre-startup {@code assertFalse(isListening(port))} control
+     * meaningful.
+     *
+     * @return a currently-free localhost port
+     * @throws IOException when no ephemeral port can be allocated
+     */
+    private static int freePort() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
+    /**
+     * Whether something accepts a TCP connection on {@code port}. A refused connection is the
+     * observation, not an error, so it is reported as {@code false} rather than raised.
+     *
+     * @param port the localhost port to probe
+     * @return {@code true} when the connection is accepted
+     */
+    private static boolean isListening(int port) {
+        try (Socket probe = new Socket()) {
+            probe.connect(new InetSocketAddress("localhost", port), CONNECT_TIMEOUT_MILLIS);
+            return true;
+        } catch (IOException _) {
+            // A refused connection IS the answer: nothing is listening on the probed port.
+            return false;
+        }
+    }
+
+    // Thread.sleep is load-bearing: SniFrontListener.stop() completes on the Vert.x event loop, so the
+    // unbind is a real asynchronous release with no virtual clock to advance.
+    @SuppressWarnings("java:S2925")
+    private static void awaitNotListening(int port, String message) {
+        for (int attempt = 0; attempt < 100 && isListening(port); attempt++) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        assertFalse(isListening(port), message);
     }
 }

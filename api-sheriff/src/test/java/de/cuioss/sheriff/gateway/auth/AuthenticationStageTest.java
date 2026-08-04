@@ -62,17 +62,6 @@ class AuthenticationStageTest {
     private static final String MEDIATED_TOKEN = "mediated-access-token";
 
     @Test
-    @DisplayName("passes a require:none route without inspecting any token")
-    void passesRequireNone() {
-        // Arrange
-        AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = request(authConfig("none", List.of()), Map.of());
-
-        // Act + Assert
-        assertDoesNotThrow(() -> stage.process(request));
-    }
-
-    @Test
     @DisplayName("passes a require:none route without ever resolving the lazy validator")
     void passesRequireNoneWithoutResolvingValidator() {
         // Arrange — a provider that fails when resolved proves that a require:none route never

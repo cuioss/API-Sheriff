@@ -1,0 +1,865 @@
+= Test-Corpus Integrity -- Assertions That Assert Nothing
+:toc:
+:toclevels: 3
+:sectnums:
+
+Which test methods in the API Sheriff corpus carry assertions that *cannot support the behaviour
+their names claim*, what verdict each one received, which twenty were strengthened, and -- the part
+that makes this note auditable rather than anecdotal -- exactly how much of the surface was left
+un-classified, counted.
+
+The companion note link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
+does the same job for declared gateway limits; this one does it for assertion *strength*. Both follow
+the same discipline: enumerate the whole surface first, credit what already exists by name, derive
+the cap against the real gap count, and record the remainder as a *countable* standing backlog.
+
+== Why This Note Exists
+
+A test that calls production code and asserts only `assertDoesNotThrow(...)` or
+`assertNotNull(result)` reports as coverage while proving almost nothing. It stays green when the
+behaviour its `@DisplayName` promises is deleted, inverted, or never implemented. The corpus is
+large enough that "we read everything and it looked fine" is not a claim anyone can check -- so this
+note is built from *mechanical censuses whose counts are reproducible* plus a *targeted read of the
+ranked candidates*, and it says plainly which files were read and which were not.
+
+== Method
+
+Census-then-targeted-read, deliberately -- not a linear 135-file pass. A linear pass over a corpus
+this size degrades into spot-checks, which is precisely the apparent-vs-real-coverage failure this
+sweep exists to catch. The three steps:
+
+. *Mechanical census* over the module-attributed inventory (`architecture search --content`),
+  recording occurrence counts and complete-coverage evidence.
+. *Targeted read* of the ranked candidate files (100% of them) plus a *control sample* of the
+  un-ranked remainder, to measure whether the ranking actually selected the vacuous ones.
+. *Classify* every flagged method with exactly one verdict, cite `file:line`, then strengthen a
+  capped subset highest-risk-first and count what is left.
+
+[IMPORTANT]
+====
+*Coverage claims in this note cite census counts.* Where a file was not read, this note says so and
+counts it into the backlog. There is no "the whole corpus was reviewed" assertion anywhere below,
+because no such claim could be verified.
+====
+
+=== Search-form constraint (load-bearing)
+
+Every symbol-reachability census in this sweep searched *both* the call form `name(` *and* the
+method-reference form `::name` before recording any "unused" / "unreached" verdict.
+
+This is not a formality. During outline a literal `unseal(` search returned *no production consumer*
+for `SealedSessionCookieCodec.unseal`, while the real production call site is `codec::unseal` inside
+`CookieSessionBinding.resolve()`. A call-form-only census would have produced a false "dead API"
+verdict and an unsafe removal -- the exact apparent-vs-real failure this note is about, turned on the
+note's own method.
+
+== Census
+
+Measured at `ec6f7e4` (`main`) over the D1 surface: `api-sheriff/src/test/**` (93 files) plus
+`integration-tests/src/test/**` (42 files). `benchmarks/src/test/**` (3 files) is outside the surveyed
+surface by deliberate scope decision; `demo-client/**` carries Playwright specs, not JUnit.
+
+=== Declared surface -- the test-method denominator
+
+[cols="2,1,1,3",options="header"]
+|===
+| Marker | Files | Occurrences | Role
+
+| `@Test`
+| 135
+| 1271
+| test-method denominator, part 1
+
+| `@ParameterizedTest`
+| 35
+| 97
+| test-method denominator, part 2
+
+| *Declared surface (union)*
+| *135*
+| *1368*
+| *the full test-method population*
+|===
+
+*Both annotations are part of the denominator.* A `@Test`-only count under-states the real test-method
+population by 97 methods (7.1%). Of the 35 `@ParameterizedTest`-carrying files, 34 are under
+`api-sheriff/src/test/**` (95 occurrences) and one is
+`integration-tests/.../grpc/GrpcEchoServiceTest.java` (2).
+
+[NOTE]
+====
+*The `~1273` figure carried into this plan resolves to exactly 1271.* The earlier count used the
+loose pattern `@Test`, which also matches `@Test`-prefixed annotations. The strict pattern
+`@Test(?![A-Za-z0-9_])` yields 1271, and a separate census for `@Test[A-Za-z0-9_]` returns exactly
+two hits -- the Quarkus `@TestProfile` annotations in
+`api-sheriff/src/test/java/de/cuioss/sheriff/gateway/auth/MountedTlsMapKeyTest.java` and
+`api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/CookieModeBootTest.java`. 1271 + 2 = 1273.
+The approximation is now an exact number with its two false positives named.
+====
+
+=== Vacuous-shape markers
+
+[cols="2,1,1,1,3",options="header"]
+|===
+| Marker | Files | Occurrences | Call sites | Role
+
+| `assertDoesNotThrow`
+| 28
+| 120
+| 92
+| primary vacuous-shape marker -- asserts nothing whatsoever about an outcome
+
+| `assertNotNull`
+| 40
+| 147
+| 107
+| secondary (weaker) marker -- a construction test can be legitimately scoped around it
+|===
+
+*Occurrences vs call sites.* The occurrence count is the raw marker census and includes the
+`import static` line in each file; the call-site count uses the pattern `marker\(`. For
+`assertDoesNotThrow` the delta is exactly 28 -- one import line per file. For `assertNotNull` the
+delta is 40, made up of the import lines plus one prose occurrence in
+`api-sheriff/src/test/java/de/cuioss/sheriff/gateway/auth/JwksTrustProfileResolverTest.java`, which
+carries no `assertNotNull` import at all (see <<report-only>>).
+
+*The published gates below are stated against the raw occurrence counts*, because that is the census
+the selection was reproduced from. Both numbers are given so nothing is hidden behind a single figure.
+
+*Union of the two marker sets over the D1 surface: 58 files, 267 marker occurrences.*
+
+=== Complete-coverage evidence
+
+Every census above ran under complete coverage. The inventory reports, per run:
+
+[cols="3,1,1,1,1",options="header"]
+|===
+| Census | Files scanned | Unreadable | Truncated | Elided
+
+| `@Test(?![A-Za-z0-9_])`      | 300 | 0 | no | 0
+| `@Test[A-Za-z0-9_]`          | 300 | 0 | no | 0
+| `@ParameterizedTest`         | 300 | 0 | no | 0
+| `assertDoesNotThrow`         | 300 | 0 | no | 0
+| `assertDoesNotThrow\(`       | 300 | 0 | no | 0
+| `assertNotNull`              | 300 | 0 | no | 0
+| `assertNotNull\(`            | 300 | 0 | no | 0
+|===
+
+`files_scanned: 300` is the whole `test`-category inventory (the D1 surface plus `benchmarks` and the
+duplicate `api-sheriff-parent` module attribution, both filtered out when the per-module rows are
+de-duplicated by path).
+
+=== Re-census rule (mandatory, both annotations)
+
+*Any post-change re-census MUST count both annotations.* This sweep converts the six
+`BenignPassThrough` `@Test` methods in `PassthroughHostGuardStageTest` into parameterized form, so a
+`@Test`-only re-census would report a phantom six-method drop *in the very file the sweep
+strengthens* -- a measurement artefact read as a regression. That file already mixes both forms (it
+carries one `@ParameterizedTest` before this change and after it).
+
+== Taxonomy
+
+=== What counts as flagged
+
+A test method is *flagged* when its assertions cannot support what it claims. Two classes:
+
+F1:: *Wholly vacuous* -- the method's entire assert-block consists only of `assertDoesNotThrow`
+and/or `assertNotNull`.
+F2:: *Partially vacuous* -- the method mixes a substantive assertion with one or more additional
+*distinct scenarios* whose only assertion is a vacuous marker.
+
+=== The four shapes
+
+[cols="1,3",options="header"]
+|===
+| Shape | Description
+
+| (a) | construction / wiring-only evidence -- the object was built, nothing about it was inspected
+| (b) | call returned without inspecting the return value
+| (c) | tautological given the arrange block -- the assertion is entailed by the setup
+| (d) | *highest risk* -- named or documented for a behaviour its assertions do not exercise
+|===
+
+Shape (d) is ranked highest because it is the only shape that actively *misleads*: the
+`@DisplayName` reads as a specification and the green result reads as its proof.
+
+=== The three verdicts
+
+strengthen:: The claim is not supported. Applies when the name promises a specific post-condition the
+assertion cannot distinguish (d), when a value-returning call discards its return (b), or when the
+assertion is entailed by the arrange block (c).
+keep:: *Correctly scoped.* The named behaviour genuinely *is* "completes without throwing" or "is
+constructible", AND the admission is *attributable* -- either a matched negative control exists (a
+sibling test whose arrange differs in exactly the dimension under test and which fails), or the
+fixture itself is neutralised so a wrong implementation would throw (e.g. a provider that raises when
+resolved, proving a code path never reached it).
+delete:: The test is fully subsumed by a strictly stronger sibling and carries no distinct arrange.
+
+The *matched-control* requirement is what keeps `keep` from becoming a rubber stamp. It is the same
+standard
+link:../adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+sets for machine-checked invariants -- that ADR names the *always-passing assertion* as one of four
+vacuity sources ("a rule that asserts only the absence of something passes when the subject is
+renamed, moved, or deleted") and requires a *negative control* leg before a gate may be trusted as
+enforcement. This note applies the same two ideas to ordinary unit tests.
+
+== Selection
+
+=== The cap
+
+*20 methods maximum: 8 mandatory + up to 12 discretionary.* The cap is a deliberate bound on this
+sweep, not a quota to fill. Everything above it is a countable backlog, not an invitation.
+
+*Actually strengthened: 18 (8 mandatory + 10 discretionary).* The discretionary pool yielded ten
+`strengthen` verdicts, not twelve -- the remaining flagged methods in the pool earned `keep` on the
+matched-control test. Padding to twelve would have meant strengthening tests that were already
+correctly scoped, which is churn, not integrity.
+
+=== The mandatory eight
+
+[cols="3,2,1",options="header"]
+|===
+| Method | File | Shape
+
+| `buildsFromHttpIssuerWithAudience`, `buildsFromHttpIssuerWithoutAudience`
+| `TokenValidatorProducerTest`
+| (d)
+
+| `passesBenignHost`, `passesNullHost`, `passesSuffixLookalikeHost`,
+  `passesHostWithNonNumericPort`, `passesHostWithEmptyPort`, `passesHostWithMultipleColons`
+| `PassthroughHostGuardStageTest`
+| (d)
+|===
+
+The `TokenValidatorProducerTest` pair is the archetype of shape (d): the two `@DisplayName` s promise
+a *contrast* -- "with an explicit expected audience" vs "configures no audience (validation
+disabled)" -- while both assert only `assertNotNull(validator, ...)`. Swap the arrange blocks and both
+still pass.
+
+The six `PassthroughHostGuardStageTest` methods are the two `java:S5976` triples. They require
+*parameterize AND strengthen* -- both operations. Parameterizing alone closes the Sonar rule while
+leaving all six vacuous under this note's own taxonomy: the gate would go green and these rows would
+*look* handled, which is exactly the failure mode this note exists to catch.
+
+=== The two discretionary gates (applied in order)
+
+The discretionary pool is *not* a raw density ranking over the whole surface. Its membership is not
+reproducible from density alone, so both gates are stated here.
+
+==== Gate 1 -- verification reachability
+
+*The mutation pool is restricted to `api-sheriff/src/test/**`.* This sweep's verification command is
+`test -pl api-sheriff -am`, which does not run the `integration-tests` module. Strengthening an IT
+assertion would leave it *unverifiable under this sweep's own gate* -- a strengthened assertion that
+nothing runs is precisely the vacuity being eliminated.
+
+Three IT files meet or exceed the pool's density maximum and are excluded by this gate alone. Their
+exclusion is a *verification-scope decision, not a risk judgement*:
+
+[cols="3,1,3",options="header"]
+|===
+| File | `assertNotNull` | Note
+
+| `integration-tests/.../BffCookieSessionIT.java`
+| 11
+| the single highest `assertNotNull` density in the entire D1 surface
+
+| `integration-tests/.../BffCookieActivationWiringTest.java`
+| 8
+| clears gate 2's weaker leg; blocked by gate 1 only
+
+| `integration-tests/.../TlsEdgeActivationWiringTest.java`
+| 8
+| clears gate 2's weaker leg; blocked by gate 1 only
+|===
+
+All three are routed to the <<backlog>>.
+
+==== Gate 2 -- density threshold within the reachable set
+
+Admit a file when `assertDoesNotThrow >= 5` *OR* `assertNotNull >= 8` (raw occurrence counts).
+
+The two legs carry different thresholds deliberately. `assertDoesNotThrow` asserts nothing whatsoever
+about an outcome and is the primary vacuity marker; `assertNotNull` is weaker evidence -- a
+construction test can be legitimately scoped around it -- so the weaker marker must clear a higher
+bar.
+
+*Reachable files excluded by gate 2, named explicitly* so the boundary is auditable rather than
+implicit:
+
+[cols="3,1,1,3",options="header"]
+|===
+| File | `assertDoesNotThrow` | `assertNotNull` | Why excluded
+
+| `api-sheriff/.../quarkus/SheriffMetricsTest.java`
+| 0
+| 7
+| below the `assertNotNull >= 8` leg; carries no `assertDoesNotThrow` at all
+
+| `api-sheriff/.../config/model/ConfigModelContractTest.java`
+| 0
+| 6
+| below the `assertNotNull >= 8` leg; carries no `assertDoesNotThrow` at all
+|===
+
+Both are survey-only and enter the <<backlog>>. Their exclusion is reproducible arithmetic from the
+published census -- no read is required to justify it.
+
+==== The resulting mutation pool (12 files, all read in full)
+
+[cols="3,1,1,1,1",options="header"]
+|===
+| File | `aDNT` | `aNN` | Admitted by | Flagged
+
+| `pipeline/ThoroughChecksStageTest.java`        | 15 | 0 | gate 2, leg A | 9
+| `pipeline/PassthroughHostGuardStageTest.java`  |  8 | 0 | mandatory     | 7
+| `edge/GatewayEdgeRouteTest.java`               |  8 | 3 | gate 2, leg A | 5
+| `pipeline/BasicChecksStageTest.java`           |  7 | 2 | gate 2, leg A | 7
+| `tls/TlsEdgeProducerTest.java`                 |  7 | 0 | gate 2, leg A | 3
+| `quarkus/ConfigProducerTest.java`              |  7 | 8 | gate 2, both  | 3
+| `auth/TokenValidatorProducerTest.java`         |  6 | 4 | mandatory     | 7
+| `bff/csrf/CsrfDefenceTest.java`                |  6 | 0 | gate 2, leg A | 4
+| `edge/RouteRuntimeAssemblerTest.java`          |  6 | 6 | gate 2, leg A | 1
+| `auth/AuthenticationStageTest.java`            |  5 | 0 | gate 2, leg A | 3
+| `bff/runtime/SessionAuthenticationStageTest.java` | 5 | 0 | gate 2, leg A | 0
+| `quarkus/BffRuntimeProducerTest.java`          |  2 | 8 | gate 2, leg B | 1
+| *Total*                                        | *82* | *31* |          | *50*
+|===
+
+Both mandatory files also clear gate 2 independently (`TokenValidatorProducerTest` at 6 `aDNT`,
+`PassthroughHostGuardStageTest` at 8) -- they are listed as `mandatory` because that is the route by
+which they entered the mutation scope, not because the gate would have missed them.
+
+=== Did the ranking work? -- the control sample
+
+Three files from the un-ranked remainder were read in full as a control, spanning both markers and
+both modules (3 of 46 un-ranked marker-carrying files, a 6.5% sample):
+
+[cols="3,1,1,1,1",options="header"]
+|===
+| Control file | `aDNT` | `aNN` | Flagged | `strengthen`
+
+| `api-sheriff/.../pipeline/FramingGateTest.java`                         | 4 | 0 | 3 | 0
+| `api-sheriff/.../pipeline/OriginValidationStageTest.java`               | 4 | 0 | 3 | 0
+| `integration-tests/.../EgressAllowlistActivationWiringTest.java`        | 0 | 6 | 0 | 0
+| *Total*                                                                | *8* | *6* | *6* | *0*
+|===
+
+*The ranking selected correctly.* The ranked pool yielded a 36% strengthen rate over its flagged
+methods (18 of 50); the control sample yielded 0% (0 of 6). Every flagged method in the control
+sample carried a matched negative control in the same file. This is evidence that the density gate is
+a working screen -- and equally, evidence for the finding below that density alone is not a verdict.
+
+== Classification
+
+One row per flagged method, with a `file:line` citation and exactly one verdict.
+
+=== `auth/TokenValidatorProducerTest.java` -- 7 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `buildsFromHttpIssuerWithAudience`      | 67  | *strengthen* | (d) name promises an audience contrast the assertion cannot distinguish
+| `buildsFromHttpIssuerWithoutAudience`   | 85  | *strengthen* | (d) the mirror of the above; swapping the arrange blocks leaves both green
+| `listedHostIsExempted`                  | 193 | keep         | matched control `exemptionIsScopedToTheListedHost`:211
+| `severalHostsAreAllowlisted`            | 229 | keep         | matched control `exemptionIsScopedToTheListedHost`:211
+| `allowlistSurvivesTheProducerPath`      | 247 | *strengthen* | (d) claims the allowlist "is carried through the full producer path"; `assertNotNull(validator)` shows only that a validator was built
+| `omittedProfileNeverConsultsTheResolver`| 302 | keep         | neutralised fixture -- the registry throws on any lookup, so completing IS the proof
+| `completesForAValidlyConfiguredValidator`| 413 | keep        | matched control `forcesEagerAssemblyByInvokingTheValidator`:398
+|===
+
+=== `pipeline/PassthroughHostGuardStageTest.java` -- 7 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `passesBenignHost`                | 116 | *strengthen* | (d)/(c) mandatory -- `java:S5976` triple 1; a Host sharing nothing with the reserved SNI cannot match under any normalization, so the assertion is entailed by the arrange
+| `passesNullHost`                  | 126 | *strengthen* | (d) mandatory -- `java:S5976` triple 1
+| `passesSuffixLookalikeHost`       | 136 | *strengthen* | (d) mandatory -- `java:S5976` triple 1
+| `passesHostWithNonNumericPort`    | 146 | *strengthen* | (d) mandatory -- `java:S5976` triple 2
+| `passesHostWithEmptyPort`         | 157 | *strengthen* | (d) mandatory -- `java:S5976` triple 2
+| `passesHostWithMultipleColons`    | 167 | *strengthen* | (d) mandatory -- `java:S5976` triple 2
+| `inertWhenPassthroughSetEmpty`    | 185 | keep         | matched control `rejectsSmuggledHost`:54 -- same Host, non-empty set, rejects
+|===
+
+The precise gap across all six: each `@DisplayName` names a *positive* post-condition -- "passes … *through to route selection*", "so the Host *no longer matches the SNI*" -- and the assertion checks neither. `assertDoesNotThrow` cannot distinguish "the normalized Host genuinely does not match" from an inert guard, a swallowed exception, or a `process()` that stopped inspecting the `Host` at all, and it says nothing about the routing state the request is supposed to reach stage 2 in.
+
+=== `pipeline/ThoroughChecksStageTest.java` -- 9 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `acceptsLegitimateRequestUnderDivergentFilter` | 95  | keep         | matched control `rejectsDivergentFilterViolation`:80
+| `skipsReRunWhenRouteConfigEqualsDefault`       | 112 | *strengthen* | (d) cannot distinguish "the re-run was skipped" from "the re-run ran and passed"
+| `fallsBackToBaselineWhenRouteDeclaresNoConfig` | 123 | *strengthen* | (d) cannot distinguish "fell back to the baseline" from "did nothing"
+| `admitsWildcardWhitelistMatch`                 | 170 | keep         | matched control `rejectsWildcardSegmentCountMismatch`:180
+| `acceptsParameterValidationTheModeDisables`    | 329 | keep         | matched control `strictRouteStillRejectsWhatMinimalAccepts`:355
+| `skipsPipelineReRun`                           | 343 | keep         | matched control `strictRouteStillRejectsWhatMinimalAccepts`:355
+| `skipsHeaderNameValidationUnderMinimal`        | 405 | keep         | matched control `rejectsHeaderNameUnderDivergentConfig`:387
+| `skipsHeaderNameReRunWhenConfigEqualsBaseline` | 418 | keep         | neutralised fixture -- the stage's own baseline refuses the name, so a re-run would throw
+| `admitsLongCookieOnCookieModeGateway`          | 525 | keep         | matched control `bearerOnlyGatewayStillRejectsLongCookie`:539
+|===
+
+=== `tls/TlsEdgeProducerTest.java` -- 3 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `startsAndStopsFrontListener`      | 70  | *strengthen* | (d) cannot distinguish "the front listener started" from "it was never started"
+| `noFrontListenerWhenPassthroughEmpty` | 101 | *strengthen* | (d) cannot show the listener was *not* started
+| `skipsUnresolvedAlias`             | 118 | *strengthen* | (d) cannot show the relay map is empty
+|===
+
+This file is the *sharpest* instance in the corpus: all three of its test methods are wholly vacuous,
+none has a control, and swapping the arrange blocks of `noFrontListenerWhenPassthroughEmpty` and
+`skipsUnresolvedAlias` leaves both green.
+
+=== `pipeline/BasicChecksStageTest.java` -- 7 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `acceptsLegitimatePath`                       | 111 | *strengthen* | (b)/(d) name claims it "records the single canonical path"; `assertNotNull` never says *which*
+| `doesNotValidateParameterNamesOrValues`       | 124 | keep         | the arrange is a value the post-route stage rejects, so the admission is discriminating
+| `acceptsCookieHeaderAtBudget`                 | 191 | keep         | matched control `rejectsCookieHeaderBeyondCap`:213
+| `strictBaselineAcceptsCookieHeaderAtBudget`   | 202 | keep         | matched control `strictBaselineRejectsCookieHeaderBeyondCap`:226
+| `admitsBearerTokenAboveBaselineCap`           | 300 | keep         | matched control `rejectsAuthorizationBeyondConfiguredCap`:315
+| `matchesHeaderNameCaseInsensitively`          | 328 | keep         | a case-sensitive implementation rejects, so the test can fail
+| `extendedAsciiIsAdmittedUnderAPermissiveBaseline` | 389 | keep     | *is itself* the declared matched control for :356 and :372
+|===
+
+=== `quarkus/ConfigProducerTest.java` -- 3 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `shouldBootWhenTheDeclaredBodyCapEqualsTheFrameworkLimit` | 259 | keep | matched control `shouldRefuseBootWhenADeclaredBodyCapExceedsTheFrameworkLimit`:239 -- a boundary pair, the PR #148 precedent
+| `shouldAssembleEagerlyOnStartupForValidConfig`            | 287 | *strengthen* | (d) cannot distinguish eager assembly at `onStartup` from lazy assembly at the later `gatewayConfig()` call
+| `shouldResolvePassthroughSniAliasValueRatherThanHostKey`  | 335 | keep | matched control `shouldFailBootWhenPassthroughSniAliasIsUnresolvable`:346; a `keySet()` swap fails this test
+|===
+
+=== `quarkus/BffRuntimeProducerTest.java` -- 1 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `shouldAssembleWithoutDiscovery` | 97 | *strengthen* | (d) claims assembly resolves *no OIDC discovery*; not throwing cannot show discovery was skipped
+|===
+
+=== `edge/RouteRuntimeAssemblerTest.java` -- 1 flagged (F2)
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `shouldAssembleSessionRoutes` | 163 | *strengthen* | (b) F2 -- three further scenarios (WebSocket+session, gRPC, WebSocket+none) each assemble a route table and discard the result, asserted only by `assertDoesNotThrow`
+|===
+
+=== `auth/AuthenticationStageTest.java` -- 3 flagged
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `passesRequireNone`                         | 66 | *delete* | strictly subsumed by `passesRequireNoneWithoutResolvingValidator`:77, which has the same arrange plus a throwing validator provider -- a strictly stronger assertion over the same path
+| `passesRequireNoneWithoutResolvingValidator`| 77 | keep     | neutralised fixture -- the provider raises when resolved, so completing proves the validator was never resolved
+| `acceptsValidBearerToken`                   | 91 | keep     | matched controls at :103 (missing), :118 (malformed), :133 (missing scope)
+|===
+
+=== `bff/csrf/CsrfDefenceTest.java` -- 4 flagged, all `keep`
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `safeMethodsBypass`                  | 73  | keep | matched control `bothHeadersAbsentRejected`:126 -- same absent headers, unsafe method, rejects
+| `unsafeMethodTrustedOriginAccepted`  | 83  | keep | matched control `unsafeMethodUntrustedOriginRejected`:92
+| `trustedOriginMatchIsCaseInsensitive`| 100 | keep | matched control :92; a case-sensitive match rejects this input
+| `absentOriginSameOriginFetchAccepted`| 109 | keep | matched control `absentOriginCrossSiteFetchRejected`:118
+|===
+
+=== `edge/GatewayEdgeRouteTest.java` -- 5 flagged, all `keep`
+
+[cols="3,1,1,4",options="header"]
+|===
+| Method | Line | Verdict | Evidence
+
+| `bootsCleanlyOverEmptyRouteTable` | 121 | keep | (a) construction test, correctly scoped -- the claim IS "assembles without error"; `registersCatchAllRoute`:132 asserts on the assembled edge
+| `bootsSessionAuthRoute`           | 147 | keep | regression guard for a *removed* boot rejection -- restoring the rejection fails this test
+| `bootsGrpcProtocol`               | 161 | keep | same shape, gRPC
+| `bootsWebSocketProtocol`          | 174 | keep | same shape, WebSocket
+| `bootsSessionAuthWebSocketRoute`  | 187 | keep | same shape, WebSocket + session
+|===
+
+=== `bff/runtime/SessionAuthenticationStageTest.java` -- 0 flagged
+
+Five `assertDoesNotThrow` occurrences, and *every one* is followed by a substantive `assertEquals` on
+the mediated bearer, the short-circuit status, or the emitted `Set-Cookie` list. The file clears gate
+2 on raw density and contributes nothing to the vacuity population. See <<density-finding>>.
+
+=== Control-sample rows
+
+[cols="3,1,1,1,3",options="header"]
+|===
+| Method | File | Line | Verdict | Evidence
+
+| `acceptsWellFramedPost`              | `FramingGateTest`           | 139 | keep | seven matched rejection controls in the same class
+| `onAdmitsGetWithContentLengthBody`   | `FramingGateTest`           | 187 | keep | eight "STILL rejects" controls pin the single relaxed leg
+| `onAdmitsCleanGet`                   | `FramingGateTest`           | 271 | keep | same control block
+| `emptyAllowlistEnforcesNothing`      | `OriginValidationStageTest` | 66  | keep | matched control `foreignOriginRejected`:92
+| `allowlistedOriginProceeds`          | `OriginValidationStageTest` | 75  | keep | matched control `foreignOriginRejected`:92
+| `matchingIsCaseInsensitiveOnHost`    | `OriginValidationStageTest` | 83  | keep | matched control :92; a case-sensitive match rejects this input
+|===
+
+`EgressAllowlistActivationWiringTest` contributes no rows: its six `assertNotNull` occurrences sit
+inside parsing helpers, each paired with `assertInstanceOf` / `assertEquals`, and both of its `@Test`
+methods carry explicit anti-vacuity issuer counters.
+
+=== Classification totals
+
+[cols="3,1,1",options="header"]
+|===
+| Population | Methods | Note
+
+| Flagged in the mutation pool (12 files, read in full) | 50 |
+| Flagged in the control sample (3 files, read in full) |  6 |
+| *Total classified*                                    | *56* | every row carries a `file:line` and exactly one verdict
+| -- verdict `strengthen`                               | *18* | 8 mandatory + 10 discretionary; cap 20, not exceeded
+| -- verdict `keep`                                     | *37* | 31 in the pool + 6 in the control sample
+| -- verdict `delete`                                   |  *1* | `AuthenticationStageTest.passesRequireNone`:66
+|===
+
+*Every classified row has a terminal verdict.* The un-strengthened remainder is therefore not made of
+classified rows -- it is the un-classified surface, counted in the next section.
+
+== What Was Strengthened
+
+Eighteen methods, one `delete`. Each row names the observable the strengthened assertion reaches --
+the thing that was previously unchecked and now has to hold.
+
+[cols="3,1,4",options="header"]
+|===
+| Method (file:line, pre-change) | Kind | The observable the strengthening now asserts
+
+| `TokenValidatorProducerTest`:67, :85
+| mandatory
+| The audience posture, *behaviourally*: a real generated token is validated through the produced
+  validator over an offline `file` JWKS source. A declared audience the token lacks now *refuses* it;
+  an audience-less issuer *admits* it and the admitted token's audience claim is asserted. Swap the
+  two arrange blocks and both tests fail.
+
+| `PassthroughHostGuardStageTest`:116, :126, :136, :146, :157, :167
+| mandatory
+| Parameterized *and* strengthened. Two assertions per benign Host shape: the request reaches route
+  selection *untouched* (`host()` unrewritten, `selectedRoute()` and `canonicalPath()` still unset),
+  and -- the attribution control -- a guard reserving that very Host *rejects* it, so the pass cannot
+  be explained by an inert guard.
+
+| `TokenValidatorProducerTest`:247
+| discretionary
+| The egress allowlist reaches the policy the producer path builds, with a matched control: the same
+  path over an otherwise-identical issuer declaring no allowlist still refuses the host.
+
+| `ThoroughChecksStageTest`:112
+| discretionary
+| A stage whose *own* baseline refuses the path admits a baseline-equal route (the skip fired), while
+  a route diverging in one dimension is re-run and rejected.
+
+| `ThoroughChecksStageTest`:123
+| discretionary
+| The fallback is observed through the unconditional body cap: a config-less route is governed by the
+  baseline's cap -- one byte over rejects, exactly at the cap passes.
+
+| `TlsEdgeProducerTest`:70, :101, :118
+| discretionary
+| The *public port itself*. Each case allocates a free port and probes it: the resolvable
+  configuration binds it and releases it on shutdown; the empty map and the unresolved alias leave it
+  unbound. "onStartup did not throw" is evidence for neither claim.
+
+| `BasicChecksStageTest`:111
+| discretionary
+| The canonical path's *value*, not its presence -- a canonicalizer emitting `/` satisfied the old
+  non-null check while breaking every route match downstream.
+
+| `ConfigProducerTest`:287
+| discretionary
+| The `CONFIG_LOADED` record is observed while *no bean accessor has been called*, which is what pins
+  assembly to the startup event rather than to first use.
+
+| `BffRuntimeProducerTest`:97
+| discretionary
+| The issuer is moved to RFC 5737 TEST-NET-1 (unroutable) under a preemptive time bound, so a
+  discovery round-trip would exhaust the connect timeout; the assembled runtime is then asserted
+  active and its reserved endpoints reachable.
+
+| `RouteRuntimeAssemblerTest`:163
+| discretionary
+| Each of the three previously result-discarding legs now asserts on the runtime it produced --
+  an `assemble()` that quietly dropped a route returns an empty list and satisfied the old no-throw
+  assertion.
+
+| `AuthenticationStageTest`:66
+| *delete*
+| Removed. `passesRequireNoneWithoutResolvingValidator`:77 has the same arrange plus a throwing
+  validator provider, so it is a strictly stronger assertion over the same path.
+|===
+
+Count: *8 mandatory + 10 discretionary = 18 strengthened*, against a cap of 20 (8 + 12). The
+discretionary budget was not filled to twelve because the pool yielded ten `strengthen` verdicts;
+the remaining flagged methods there earned `keep` on the matched-control test.
+
+=== The inversion audit
+
+A strengthened assertion is only worth the diff if it *fails* when the behaviour it claims is broken.
+Three transient production mutations were applied together, the affected suites were run, and the
+mutations were reverted. Each mutation targets a different strengthening technique, so the audit
+covers the argument for all three rather than only one instance of it:
+
+[cols="2,2,3",options="header"]
+|===
+| Transient mutation | Expected to break | Observed
+
+| `PassthroughHostGuardStage.normalize` strips *any* `:suffix` rather than only a purely-numeric port
+| the three colon rows of `passesBenignHostToRouteSelection`
+| rows [3], [4], [5] failed with `PASSTHROUGH_HOST_SMUGGLED`; rows [1], [2], `passesNullHost` and
+  every attribution-control row correctly stayed green
+
+| `TlsEdgeProducer.onStartup` returns before creating the front listener
+| `startsAndStopsFrontListener`
+| failed: `a resolvable passthrough SNI starts the front listener on the public port ==> expected:
+  <true> but was: <false>`
+
+| `TokenValidatorProducer.toValidationIssuer` drops the `audienceValidationDisabled(true)` opt-out
+| `audienceLessIssuerDisablesAudienceValidation`
+| failed: `expectedAudience must be non-empty for issuer 'Token-Test-testIssuer'` -- the exact
+  library refusal the opt-out branch exists to prevent
+|===
+
+Each mutation is invisible to the *pre-change* form of the same test: the six `assertDoesNotThrow`
+bodies, the three `TlsEdgeProducerTest` no-throw bodies and the two `assertNotNull(validator)` bodies
+all stay green under all three mutations. That contrast is the whole point of the sweep.
+
+The audit was run *after* the deliverable was committed rather than before, deliberately: with the
+strengthened files already in `HEAD`, reverting the transient mutations is a `git checkout` against
+committed content rather than a destructive discard of uncommitted work. The mutations touched only
+production files, which this deliverable does not modify, so the revert restored them exactly.
+
+=== Post-change re-census (both annotations)
+
+Run under the same complete coverage as the baseline (300 files scanned, 0 unreadable, no elision,
+not truncated):
+
+[cols="2,1,1,1,3",options="header"]
+|===
+| Marker | Before | After | Delta | Attribution
+
+| `@Test`
+| 1271
+| 1265
+| -6
+| -5 in `PassthroughHostGuardStageTest` (converted to parameterized form), -1 in
+  `AuthenticationStageTest` (the `delete` verdict)
+
+| `@ParameterizedTest`
+| 97
+| 99
+| +2
+| the two new parameterized methods in `PassthroughHostGuardStageTest`
+
+| *Declared surface (union)*
+| *1368*
+| *1364*
+| *-4*
+| net of the conversion (-5 +2) and the one deletion (-1); the file count is unchanged at 135
+|===
+
+*This is what the re-census rule exists for.* A `@Test`-only re-census would have reported
+`PassthroughHostGuardStageTest` dropping five methods and read it as a regression, when five `@Test`
+methods became two `@ParameterizedTest` methods covering the same five Host shapes plus a new
+attribution control. Counting both annotations shows the file's real movement: 12 methods before, 9
+after, with strictly more asserted per shape.
+
+[[backlog]]
+== The Countable Backlog
+
+*43 files carrying 140 vacuous-shape marker occurrences were censused but not individually
+classified.* That is the standing backlog, and it is the honest measure of what this sweep did not
+cover.
+
+Derivation, reproducible from the censuses above:
+
+[cols="4,1,1",options="header"]
+|===
+| Population | Files | Marker occurrences
+
+| Marker-carrying files in the D1 surface (`assertDoesNotThrow` union `assertNotNull`) | 58 | 267
+| -- read in full: the mutation pool                                                  | 12 | 113
+| -- read in full: the control sample                                                 |  3 |  14
+| *-- censused, not individually classified (the backlog)*                            | *43* | *140*
+|===
+
+=== Backlog rows -- `api-sheriff/src/test/**` (24 files, 73 occurrences)
+
+[cols="4,1,1,2",options="header"]
+|===
+| File | `aDNT` | `aNN` | Note
+
+| `arch/NativeRuntimeInitRegistrationArchTest.java`  | 2 | 3 |
+| `arch/NoStoredOptionalArchTest.java`               | 2 | 0 |
+| `asset/UpstreamAssetSourceTest.java`               | 2 | 2 |
+| `auth/JwksTrustProfileResolverTest.java`           | 0 | 1 | prose occurrence only -- see <<report-only>>
+| `auth/MountedTlsMapKeyTest.java`                   | 0 | 3 |
+| `bff/cookie/SealedSessionCookieCodecTest.java`     | 2 | 0 |
+| `bff/refresh/TokenRefreshCoordinatorTest.java`     | 0 | 2 |
+| `bff/reserved/CallbackEndpointTest.java`           | 2 | 0 |
+| `config/RouteTableBuilderTest.java`                | 2 | 3 |
+| `config/load/ConfigLoaderTest.java`                | 0 | 4 |
+| `config/model/ConfigModelContractTest.java`        | 0 | 6 | *named gate-2 exclusion*
+| `config/topology/TopologyResolverTest.java`        | 2 | 0 |
+| `edge/GatewayEdgePipelineTest.java`                | 0 | 3 |
+| `edge/GatewayEdgeRouteBffWiringTest.java`          | 2 | 0 |
+| `edge/GrpcDispatchStageTest.java`                  | 2 | 0 |
+| `edge/ReservedBodyCeilingTest.java`                | 4 | 0 |
+| `pipeline/CanonicalPathGuardTest.java`             | 2 | 0 |
+| `pipeline/RouteSelectionStageTest.java`            | 0 | 2 |
+| `pipeline/VerbGateStageTest.java`                  | 2 | 0 |
+| `quarkus/ConfigFailFastTest.java`                  | 2 | 2 |
+| `quarkus/ConfigModelReflectionTest.java`           | 0 | 2 |
+| `quarkus/CookieModeBootTest.java`                  | 0 | 3 |
+| `quarkus/SheriffMetricsTest.java`                  | 0 | 7 | *named gate-2 exclusion*
+| `tls/MtlsServerCustomizerTest.java`                | 0 | 2 |
+| *Total*                                            | *28* | *45* |
+|===
+
+=== Backlog rows -- `integration-tests/src/test/**` (19 files, 67 occurrences)
+
+Every file below is additionally blocked from the mutation pool by *gate 1* (verification
+reachability), regardless of density.
+
+[cols="4,1,1,2",options="header"]
+|===
+| File | `aDNT` | `aNN` | Note
+
+| `BearerValidationIT.java`                      | 0 | 2  |
+| `BffCookieActivationWiringTest.java`           | 0 | 8  | *named gate-1 exclusion*
+| `BffCookieSessionIT.java`                      | 0 | 11 | *named gate-1 exclusion* -- highest `assertNotNull` density in the surface
+| `BffCookieStatelessnessIT.java`                | 0 | 4  |
+| `BffLoginInitiationIT.java`                    | 0 | 3  |
+| `BffLogoutIT.java`                             | 0 | 2  |
+| `BffSessionMediationIT.java`                   | 0 | 3  |
+| `BodyLimitActivationWiringTest.java`           | 0 | 4  |
+| `CipherSuiteFixtureWiringTest.java`            | 0 | 2  |
+| `DeclaredLimitBoundaryIT.java`                 | 0 | 3  |
+| `DescriptorInventoryWiringTest.java`           | 0 | 2  |
+| `GetWithBodyActivationWiringTest.java`         | 0 | 2  |
+| `ItProfileConfigBindingWiringTest.java`        | 0 | 2  |
+| `LargeBodyIT.java`                             | 0 | 2  |
+| `ManagementPlainHttpActivationWiringTest.java` | 0 | 2  |
+| `MtlsHandshakeIT.java`                         | 2 | 0  |
+| `TlsEdgeActivationWiringTest.java`             | 0 | 8  | *named gate-1 exclusion*
+| `TlsPassthroughIT.java`                        | 0 | 2  |
+| `WsAdmissionActivationWiringTest.java`         | 0 | 3  |
+| *Total*                                        | *2* | *65* |
+|===
+
+=== What the backlog is not
+
+It is *not* "various remaining tests". Every entry is a named file with its measured marker density
+and the gate that excluded it. Draining it means reading those 43 files and classifying their flagged
+methods -- work that is bounded and countable, not open-ended.
+
+The control sample suggests the backlog's *yield* is low (0 strengthen verdicts from 6 flagged methods
+across 3 sampled files), but a 6.5% sample is a signal, not a proof, and this note does not claim
+otherwise.
+
+== Findings
+
+[[density-finding]]
+=== Density is a screen, not a verdict
+
+Three files cleared gate 2 on raw density and produced *zero* strengthen verdicts:
+
+[cols="3,1,1,1",options="header"]
+|===
+| File | Density admitting it | Flagged | `strengthen`
+
+| `bff/runtime/SessionAuthenticationStageTest.java` | 5 `aDNT`  | 0 | 0
+| `bff/csrf/CsrfDefenceTest.java`                   | 6 `aDNT`  | 4 | 0
+| `edge/GatewayEdgeRouteTest.java`                  | 8 `aDNT`  | 5 | 0
+|===
+
+In each case the marker count is high because the *subject* is an admit/reject gate, and every
+admission is paired with a matched rejection control in the same class. Counting markers finds
+candidates; only reading finds vacuity. A future sweep that ranks by density and then acts *without
+reading* would have rewritten seventeen correctly-scoped tests in these three files alone.
+
+=== The `assertNotNull` companion pattern
+
+Three of the strengthen verdicts (`ConfigProducerTest`:287, `BffRuntimeProducerTest`:97,
+`TokenValidatorProducerTest`:247) share a shape worth naming: `assertDoesNotThrow(() -> act())`
+followed by `assertNotNull(someAccessor())`. Two vacuous markers stacked read as *two* assertions and
+still prove only that an object exists. Under the F1 rule such a method is flagged exactly as a
+single-marker method is.
+
+[[report-only]]
+=== Report-only observations
+
+Per this sweep's standing boundary, defects found outside its write scope are *reported here, never
+absorbed*.
+
+`JwksTrustProfileResolverTest` -- `assertNotNull` prose occurrence::
+`api-sheriff/src/test/java/de/cuioss/sheriff/gateway/auth/JwksTrustProfileResolverTest.java` matches
+the raw `assertNotNull` census once while carrying *no* `assertNotNull` static import and *no* call
+site. The occurrence is textual (prose/identifier context), not an assertion. Recorded so the
+147-vs-107 delta is fully accounted for and so a future census does not read it as a call site.
+
+`EgressPolicy` equality does not carry the host allowlist::
+While strengthening `TokenValidatorProducerTest`:247, an `EgressPolicy` built with
+`allowedEgressHost("localhost")` was found to compare *equal* to `EgressPolicy.secureDefault()` --
+both render as `EgressPolicy(allowLoopback=false)`. The allowlist is therefore invisible to
+`equals` / `toString`. Consequence for this codebase: `assertEquals(EgressPolicy.secureDefault(), …)`
+is a weak assertion that cannot detect an unintended widening, and the *inverse* assertion cannot
+detect a dropped allowlist at all. The existing tests survive because each pairs the equality check
+with a behavioural `policy.check(uri)` assertion; the strengthened row uses the behavioural form
+exclusively. The type is third-party (`de.cuioss.sheriff.token.commons.transport`) and outside this
+sweep's write boundary, so this is reported, not changed.
+
+`TokenValidator` exposes no view of its issuer configs::
+`de.cuioss.sheriff.token.validation.TokenValidator`'s public surface is `createAccessToken` /
+`createIdToken` / `createRefreshToken`, `close`, `getSecurityEventCounter` and
+`getPerformanceMonitor` -- there is no accessor for the `IssuerConfig` list it was built from. The
+producer's audience decision (expected audience vs the explicit opt-out) is therefore *structurally
+unobservable* on the built validator, which is why the strengthened pair asserts it behaviourally by
+validating a real token over offline key material. The same limit is why
+`allowlistSurvivesTheProducerPath` asserts its last hop at the producer's own
+`toHttpJwksLoaderConfig` seam rather than on the validator: the public entry point is driven first to
+prove the whole graph assembles, and the policy assertions prove the allowlist survived.
+
+Production write boundary held::
+This sweep modified *no* production file. Its production write boundary is exactly three files, none
+of which belongs to this deliverable:
+`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/ClientHelloSniParser.java`,
+`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java` and
+`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/FramingGate.java`. A production edit
+anywhere else would be a scope breach, not a judgement call.
+
+== Standard for a Strengthened Assertion
+
+Every strengthened method must satisfy the anti-vacuity contract
+link:../adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+sets for fitness functions, applied to an ordinary unit test:
+
+* the assertion must be *capable of failing* on the behaviour the method's name claims;
+* it must not degrade to an always-passing form when the subject is renamed or moved;
+* where the claim is an *admission*, the strengthening either inspects the post-state directly or is
+  paired with a matched negative control that makes the admission attributable.
+
+Inverting the asserted behaviour locally must turn the strengthened test red. A strengthening that
+survives its own inversion has not strengthened anything.
