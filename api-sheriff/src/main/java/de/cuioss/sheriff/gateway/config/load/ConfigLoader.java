@@ -80,8 +80,14 @@ import org.yaml.snakeyaml.nodes.Node;
  * <p>
  * Every file is read <em>exactly once</em> into a snapshot bounded by
  * {@link #MAX_CONFIG_FILE_BYTES}; the expansion-bomb pre-pass and the bind both consume that one
- * snapshot, so no check-then-act window exists between them and no boot pass reads an unbounded
- * number of bytes.
+ * snapshot, so no check-then-act window exists between them and no single boot read is unbounded.
+ * The bound is <em>per file</em>, and deliberately so: the loader reads {@code gateway.yaml} plus
+ * every {@code endpoints/*.yaml} entry the directory holds, so the aggregate a boot pulls into
+ * memory is bounded by the cap times the endpoint-file count, not by the cap alone. Capping the
+ * file count would be an operator-visible limit on how many endpoints a deployment may declare, so
+ * it is not imposed here — the configuration directory is a deployment-supplied, read-only mount
+ * (ADR-0032), and an operator able to place ten thousand files in it can already stop the boot by
+ * simpler means.
  * <p>
  * Each substituted scalar is typed from the destination type the bundled schema declares at that
  * value's own JSON pointer, never from the resolved string's shape — see {@link #coerce}.

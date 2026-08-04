@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.asset;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
@@ -125,14 +126,18 @@ public final class DirectoryAssetSource implements AssetSource {
         if (!Files.isRegularFile(file)) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
-        if (!realPathWithinRoot(file)) {
+        Optional<Path> inRoot = realPathWithinRoot(file);
+        if (inRoot.isEmpty()) {
             return new Served(NOT_FOUND, Map.of(), EMPTY_BODY);
         }
+        // Every subsequent filesystem call targets the RESOLVED path, never the requested one, so
+        // the bytes served are the bytes whose location was proven in-root — see readWithinCap.
+        Path real = inRoot.get();
         try {
-            if (Files.size(file) > maxBytes) {
+            if (Files.size(real) > maxBytes) {
                 return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
             }
-            byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : readWithinCap(file);
+            byte[] body = method == HttpMethod.HEAD ? EMPTY_BODY : readWithinCap(real);
             // The authoritative cap check, on the bytes actually READ rather than on the size
             // sampled beforehand. Same shape as UpstreamAssetSource's post-fetch check, so both
             // sources refuse an over-cap asset on the bytes they really materialized.
@@ -165,24 +170,36 @@ public final class DirectoryAssetSource implements AssetSource {
      * pairing gives the directory source the same mid-flight guarantee
      * {@code UpstreamAssetSource.CappedByteArrayBodySubscriber} gives the upstream source, so
      * neither asset path can be outrun into an unbounded buffer.
+     * <p>
+     * <strong>Why the read is {@link LinkOption#NOFOLLOW_LINKS} on the RESOLVED path.</strong> The
+     * same volume-write capability that motivates the byte bound also defeats
+     * {@link #realPathWithinRoot} if the open re-walks the requested path: the check resolves the
+     * symlink chain, and a chain re-pointed outside root before the open would then be followed
+     * again by the read, serving a file the check never approved (CWE-367 against the confinement
+     * itself, not merely against the size). Two changes close that: the open targets the ALREADY
+     * RESOLVED path — which by construction contains no symlink, so refusing to follow one costs
+     * legitimate in-root symlinked assets nothing — and {@code NOFOLLOW_LINKS} makes a final
+     * component swapped to a symlink after resolution an {@link IOException} (a {@code 500}) rather
+     * than a silent out-of-root read.
      *
-     * @param file the confined, in-root regular file to read
+     * @param file the in-root, symlink-resolved real path to read
      * @return the file's bytes, truncated to one byte past the cap when it exceeds it
-     * @throws IOException on a read failure
+     * @throws IOException on a read failure, or when the target was replaced by a symlink after
+     *                     resolution
      */
     private byte[] readWithinCap(Path file) throws IOException {
         // Clamped before the increment so a maxBytes at or near Long.MAX_VALUE cannot overflow into
         // a negative (and then a zero-length) limit.
         long clamped = Math.min(maxBytes, (long) Integer.MAX_VALUE - 1L);
         int limit = (int) clamped + 1;
-        try (InputStream in = Files.newInputStream(file)) {
+        try (InputStream in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
             return in.readNBytes(limit);
         }
     }
 
     /**
-     * Verifies the confined {@code file}'s symlink-resolved real path still lies inside the
-     * configured root's real path.
+     * Resolves the confined {@code file} to its real path and reports it only when it still lies
+     * inside the configured root's real path.
      * <p>
      * {@link PathConfinement} closes the encoding/traversal class <em>lexically</em>: it proves
      * the requested path's normalized string starts with the root's normalized string. A symlink
@@ -193,12 +210,22 @@ public final class DirectoryAssetSource implements AssetSource {
      * {@link Path#toRealPath(java.nio.file.LinkOption...)} (default: follow symlinks) and
      * comparing the real paths closes that spelling too. Fails closed: any I/O failure resolving
      * either real path (a TOCTOU removal, an unresolvable symlink cycle) is treated as an escape.
+     * <p>
+     * The resolved path is RETURNED rather than discarded so the caller can drive every subsequent
+     * filesystem call from it. Re-walking the requested path for the stat and the open would let a
+     * symlink re-pointed after this check be followed again, which is the check-then-act window
+     * {@link #readWithinCap} documents and closes.
+     *
+     * @param file the confined, lexically in-root request target
+     * @return the symlink-resolved real path when it is inside the root, otherwise
+     *         {@link Optional#empty()}
      */
-    private boolean realPathWithinRoot(Path file) {
+    private Optional<Path> realPathWithinRoot(Path file) {
         try {
-            return file.toRealPath().startsWith(root.toRealPath());
+            Path real = file.toRealPath();
+            return real.startsWith(root.toRealPath()) ? Optional.of(real) : Optional.empty();
         } catch (IOException _) {
-            return false;
+            return Optional.empty();
         }
     }
 }

@@ -92,7 +92,13 @@ assert_fails_to_boot() {
         -v "${config_dir}:/app/sheriff-config:ro"
     )
     if [[ -n "${mgmt_probe_port}" ]]; then
-        run_args+=(-p "${mgmt_probe_port}:${MANAGEMENT_CONTAINER_PORT}")
+        # Bound to the LOOPBACK interface, not to every host interface. This leg exists precisely
+        # for the case where the container DOES serve an unauthenticated management interface it
+        # should never have opened — publishing that on 0.0.0.0 would make the regression this
+        # assertion is hunting reachable from off-host for the whole boot window, on whatever CI or
+        # developer machine happens to run the suite. The probe below targets localhost, so the
+        # narrower bind costs the assertion nothing.
+        run_args+=(-p "127.0.0.1:${mgmt_probe_port}:${MANAGEMENT_CONTAINER_PORT}")
     fi
     run_args+=("${IMAGE}")
     docker run "${run_args[@]}" >/dev/null

@@ -52,10 +52,18 @@ services:
       - KC_HOSTNAME=localhost
       - KC_HOSTNAME_STRICT=false
     ports:
-      # Published so an operator can reach the admin console and mint a token from the host. The
-      # gateway does NOT use this published port — it reaches Keycloak container-internally as
+      # Published so an operator can reach the admin console and mint a token from the host, and
+      # bound to the LOOPBACK interface for the same reason the gateway's management port below is:
+      # this is the Keycloak ADMIN CONSOLE, reachable with the sample bootstrap credentials three
+      # lines above, on the IdP that mints every token the gateway trusts. Publishing it on 0.0.0.0
+      # would hand full control of the stack's trust root to anything that can reach the host — a
+      # strictly worse exposure than the unauthenticated metrics view that made 9000 loopback-only.
+      # Nothing is lost: doc/user/compose-sample.adoc documents the console as
+      # https://localhost:1443, which still resolves.
+      #
+      # The gateway does NOT use this published port — it reaches Keycloak container-internally as
       # keycloak:8443, which is why the realm below pins that URL as its frontend.
-      - "1443:8443"
+      - "127.0.0.1:1443:8443"
     volumes:
       - ./docker/keycloak:/opt/keycloak/data/import:ro
       - ./docker/certificates:/opt/keycloak/certificates:ro
