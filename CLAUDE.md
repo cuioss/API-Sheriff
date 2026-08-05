@@ -132,8 +132,8 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
 2. Commit changes: `git add <files> && git commit -m "<message>"`
 3. Push the branch: `git push -u origin <branch-name>`
 4. Create a PR: `gh pr create --repo cuioss/API-Sheriff --head <branch-name> --base main --title "<title>" --body "<body>"`
-5. Wait for CI and the three automated reviewers — CodeRabbit, Sourcery and PR-Agent (waits until checks complete): `gh pr checks --watch`
-6. **Handle the automated review comments from all three reviewers** — CodeRabbit, Sourcery and PR-Agent each comment independently, so treat the union of their comments as the work list. Fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each comment, whichever bot authored it:
+5. Wait for CI and the automated reviewers — CodeRabbit and PR-Agent gate the merge; Sourcery is **optional** (`.plan/marshal.json` records `required_bots: coderabbit,pr-agent`, `optional_bots: sourcery`), so a Sourcery skip, absence or rate-limit never blocks (waits until checks complete): `gh pr checks --watch`
+6. **Handle the automated review comments from every reviewer that commented** — CodeRabbit, PR-Agent and, when it reviews, Sourcery each comment independently, so treat the union of their comments as the work list. Sourcery being optional governs only whether it *gates the merge*: comments it does post owe a reply-and-resolve exactly like any other. Fetch with `gh api repos/cuioss/API-Sheriff/pulls/<pr-number>/comments` and for each comment, whichever bot authored it:
    - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment — a bot-fix commit is a commit, so the **Pre-Commit Process** section above applies unchanged
    - If disagree or out of scope: reply explaining why, then resolve the comment
    - If uncertain (not 100% confident): **ask the user** before acting
