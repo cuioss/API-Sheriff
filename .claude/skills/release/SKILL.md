@@ -176,6 +176,19 @@ organisation.** See Step 9 — for the 0.1.0 cut this is live, not hypothetical.
 
 ## Workflow
 
+> **EVERY GUARDED BLOCK BELOW TERMINATES ON FAILURE — run each one as a script, not pasted
+> line-by-line into a login shell.** The `STOP` / `ERROR` branches all end in `exit 1` on `stderr`.
+> That is the guard mechanism: a message an operator has to notice is not a guard, because the very
+> failure mode being guarded against is *continuing anyway*. Run each block through the Bash tool
+> (or `bash -c`, or save it and `bash the-block.sh`) so the non-zero status is what stops the
+> procedure. Pasting an `exit 1` into an interactive shell would close that shell — which is why
+> the blocks are scripts, not paste-ins.
+>
+> **Each block is its own shell, so shell variables do not carry across blocks.** That is why every
+> block that captures a value (`MAIN_SHA`, `PREV_RUN_ID`, `RUN_ID`, the image digests) also `echo`s
+> it: the echo is the hand-off. A later block that needs one re-declares it at the top from the
+> echoed value. Assuming a variable survived from an earlier block is how `RUN_ID` ends up empty.
+
 ### Step 1 — Determine and confirm the version
 
 Read the release block in `.github/project.yml`:
@@ -247,11 +260,12 @@ The working tree must be clean and `HEAD` must equal `origin/main`.
 > ancestry of what you are about to release:
 >
 > ```bash
-> git fetch origin release/relocation-stubs:refs/remotes/origin/release/relocation-stubs
+> git fetch origin release/relocation-stubs:refs/remotes/origin/release/relocation-stubs \
+>   || { echo "ERROR: could not fetch the stubs branch - the check did not evaluate" >&2; exit 1; }
 > git merge-base --is-ancestor origin/release/relocation-stubs origin/main; case $? in
->   0) echo "STOP: stubs branch is in main" ;;
+>   0) echo "STOP: stubs branch is in main" >&2; exit 1 ;;
 >   1) echo "OK: stubs branch is not in main" ;;
->   *) echo "ERROR: the check did not evaluate - this is NOT a pass" ;;
+>   *) echo "ERROR: the check did not evaluate - this is NOT a pass" >&2; exit 1 ;;
 > esac
 > ```
 >
@@ -309,24 +323,32 @@ Zero open PRs means an empty merge queue (a queue entry requires an open PR).
 > branch because `cuioss-release-bot` is a queue bypass actor. **A force push racing a merge-queue
 > landing can discard commits.**
 >
-> The window is **not** closed by ordering — it is closed **by procedure, here**:
+> The window is **not** closed by ordering. It is **bounded** — partly mechanically, partly by
+> procedure — and the two halves are not equally strong:
 > 1. Assert quiescence **immediately before** dispatching, not minutes earlier.
-> 2. **Nothing merges until the release run completes.** Tell the team, and do not merge anything
->    yourself, from dispatch until Step 7 reports the run finished.
+> 2. **The pre-dispatch half has a mechanism.** Step 5 re-reads `origin/main` and aborts non-zero
+>    unless it still equals the `$MAIN_SHA` Step 4 gated on, so a landing between the gate and the
+>    dispatch stops the release instead of publishing an unverified commit.
+> 3. **The post-dispatch half has none: nothing merges until the release run completes.** Tell the
+>    team, and do not merge anything yourself, from dispatch until Step 7 reports the run finished.
+>    No branch policy, merge freeze or workflow check enforces this — it is an operator obligation,
+>    and a merge landing inside that window can still race the release force-push. Treat it as a
+>    residual operator risk, not a closed safeguard (ADR-0034 records it as one).
 
 **(iv) Confirm no tag for the release version already exists.**
 
 ```bash
-git fetch --tags --force
+git fetch --tags --force \
+  || { echo "ERROR: git fetch --tags failed - both checks below would read a stale tag view" >&2; exit 1; }
 git rev-parse --verify --quiet 'refs/tags/<version>'; case $? in
-  0) echo "STOP: local tag <version> already exists" ;;
+  0) echo "STOP: local tag <version> already exists" >&2; exit 1 ;;
   1) echo "OK: no local tag <version>" ;;
-  *) echo "ERROR: the check did not evaluate - this is NOT a pass" ;;
+  *) echo "ERROR: the check did not evaluate - this is NOT a pass" >&2; exit 1 ;;
 esac
 git ls-remote --exit-code --tags origin 'refs/tags/<version>'; case $? in
-  0) echo "STOP: remote tag <version> already exists" ;;
+  0) echo "STOP: remote tag <version> already exists" >&2; exit 1 ;;
   2) echo "OK: no remote tag <version>" ;;
-  *) echo "ERROR: the check did not evaluate - this is NOT a pass" ;;
+  *) echo "ERROR: the check did not evaluate - this is NOT a pass" >&2; exit 1 ;;
 esac
 ```
 
@@ -381,13 +403,42 @@ PREV_RUN_ID=$(gh run list --repo cuioss/API-Sheriff --workflow "Release" --limit
 echo "$PREV_RUN_ID"
 ```
 
-Then dispatch:
+**Then re-assert that `main` has not moved, and dispatch in the same block.** The dispatch builds
+whatever `main` points at *at dispatch time* — not the SHA Step 4 proved green. Between the Step 4
+gate and this command, a merge-queue landing can move `main`, and the release would then publish an
+unverified commit:
 
 ```bash
+MAIN_SHA=<the SHA Step 4 echoed>   # re-declare it: this block is its own shell
+
+git fetch origin main \
+  || { echo "ERROR: could not re-read origin/main - the drift check did not evaluate" >&2; exit 1; }
+test "$(git rev-parse origin/main)" = "$MAIN_SHA" \
+  || { echo "STOP: origin/main moved since the Step 4 gate - re-run Steps 3(iii), 4 and 5" >&2; exit 1; }
+
 gh workflow run "Release" --repo cuioss/API-Sheriff --ref main
 ```
 
-(Equivalently, in the UI: **Actions → Release → Run workflow**.)
+(Equivalently, in the UI: **Actions → Release → Run workflow** — but the UI has no drift check, so
+run the two guarded commands above first and dispatch immediately after.)
+
+> **Why `--ref main` and not `--ref "$MAIN_SHA"`.** Dispatching at the gated SHA looks like the
+> tighter fix, and it is the wrong one here — for three independent reasons:
+> 1. **The signature identity is bound to `refs/heads/main`.** Step 8 verifies the Cosign signature
+>    against `--certificate-identity …/release.yml@refs/heads/main`. That value is the OIDC
+>    `job_workflow_ref` of the `publish-image` job, so it changes with the dispatch ref. A dispatch
+>    at a SHA produces a certificate this runbook's own verification would reject.
+> 2. **The release force-pushes to a branch.** `maven-release-plugin` commits the version transition
+>    and the workflow force-pushes it to `main`; a dispatch at a detached SHA has no branch to push.
+> 3. **`ref` is documented as a branch or tag name.** The workflow-dispatch API documents exactly
+>    that, and SHA acceptance is at best undocumented behaviour. The single irreversible act in this
+>    repository is the last place to depend on it.
+>
+> So the window is narrowed the other way: by **re-asserting the SHA immediately before the dispatch
+> and aborting non-zero on drift**, which is what the block above does. It is narrowed, not closed —
+> the residual is the few milliseconds between the `test` and the API call. The next step is what
+> catches that residual: the `--commit "$MAIN_SHA"` filter means a run built at a drifted commit
+> yields no match and stops the procedure.
 
 **This is the only way a release is cut on this repository.** There is no auto-trigger to fall back
 on and none to wait for.
@@ -395,11 +446,15 @@ on and none to wait for.
 Capture the run — **bound to this dispatch, and failing closed when the match is not unique**:
 
 ```bash
+MAIN_SHA=<the SHA Step 4 echoed>            # re-declare both: this block is its own shell
+PREV_RUN_ID=<the id the block above echoed>
+
 RUN_ID=$(gh run list --repo cuioss/API-Sheriff --workflow "Release" \
   --event workflow_dispatch --commit "$MAIN_SHA" --limit 20 \
   --json databaseId --jq "[.[] | select(.databaseId > ${PREV_RUN_ID}) | .databaseId] | \
     if length == 1 then .[0] else empty end")
-test -n "$RUN_ID" || { echo "STOP: no unique new Release run for $MAIN_SHA - do NOT proceed"; }
+test -n "$RUN_ID" \
+  || { echo "STOP: no unique new Release run for $MAIN_SHA - do NOT proceed" >&2; exit 1; }
 echo "$RUN_ID"
 ```
 
@@ -409,19 +464,32 @@ echo "$RUN_ID"
 > empty selection is worse than a wrong one: `gh run watch "$RUN_ID"` with `RUN_ID` unset does not
 > fail cleanly, so a silent miss becomes a confident watch of the wrong thing. Requiring **exactly
 > one** run that is newer than the high-water mark, on the `workflow_dispatch` event, at the SHA
-> Step 4 gated on, is what makes the identification provable. **If the check prints `STOP`, do not
-> continue** — find the run in the Actions UI and confirm which dispatch it belongs to before
-> watching anything. A brand-new run can take a moment to appear; re-run the selection once before
-> treating an empty result as a real miss.
+> Step 4 gated on, is what makes the identification provable. **The check exits non-zero, so the
+> block stops there** — find the run in the Actions UI and confirm which dispatch it belongs to
+> before watching anything. A brand-new run can take a moment to appear; re-run the selection once
+> before treating an empty result as a real miss.
+>
+> **An empty selection has a second meaning, and it is the serious one.** Because the filter is
+> `--commit "$MAIN_SHA"`, a run that exists but was built at a *different* commit does not match
+> either. That is the residual of the pre-dispatch drift check above: it means `main` moved inside
+> the last few milliseconds and the release is publishing an unverified commit. Check the Actions UI
+> for a `Release` run newer than `$PREV_RUN_ID` at *any* commit before concluding the dispatch
+> simply has not appeared yet — and if one exists at another SHA, treat it as an in-flight
+> unverified release and cancel it immediately.
 
 ### Step 6 — Hold the quiescence window
 
-**From dispatch until the run completes, nothing merges to `main`.** This is the second half of the
-(iii) mitigation and is not optional — the release force-pushes to `main` twice.
+**From dispatch until the run completes, nothing merges to `main`.** This is point 3 of the (iii)
+mitigation and is not optional — the release force-pushes to `main` twice. **It is also the half
+with no mechanism behind it:** Step 5's drift check covers only the pre-dispatch window, and nothing
+in the repository rejects a merge landing inside this one. Holding it is on you.
 
 ### Step 7 — Wait for the run
 
 ```bash
+RUN_ID=<the id Step 5 echoed>   # re-declare it: this block is its own shell
+
+test -n "$RUN_ID" || { echo "STOP: RUN_ID is empty - gh run watch would not fail cleanly" >&2; exit 1; }
 gh run watch "$RUN_ID" --repo cuioss/API-Sheriff
 ```
 
@@ -448,10 +516,19 @@ Expected artifact set at `<version>`:
 **1 — one git tag** (bare, no prefix; `cui-parent-pom` sets `<tagNameFormat>@{project.version}</tagNameFormat>`):
 
 ```bash
-git fetch --tags --force
-git tag --list '<version>'
-git ls-remote --tags origin | grep -w '<version>'
+git fetch --tags --force \
+  || { echo "ERROR: git fetch --tags failed - the counts below would read a stale view" >&2; exit 1; }
+test "$(git tag --list '<version>' | wc -l)" -eq 1 \
+  || { echo "STOP: expected exactly one LOCAL tag <version>" >&2; exit 1; }
+test "$(git ls-remote --refs --tags origin 'refs/tags/<version>' | wc -l)" -eq 1 \
+  || { echo "STOP: expected exactly one REMOTE tag <version>" >&2; exit 1; }
+echo "OK: exactly one tag <version>, local and remote"
 ```
+
+> **`| grep -w '<version>'` would be the wrong check here** — for the reasons Step 3(iv) already
+> gives: `.` is a regex any-character and `-w` treats `-` as a word boundary, so `-w '0.1.0'` also
+> matches `0.1.0-rc1`. The exact `refs/tags/<version>` pattern plus `--refs` (which drops the
+> `^{}` peeled ref an annotated tag also publishes) counts one ref and nothing else.
 
 **2 — one GitHub release:**
 
@@ -487,7 +564,8 @@ echo "sha tag     -> $SHA_DIGEST"
 if [ -n "$VERSION_DIGEST" ] && [ "$VERSION_DIGEST" = "$SHA_DIGEST" ]; then
   echo "OK: one digest, two tags"
 else
-  echo "STOP: the tags disagree, or a digest did not resolve - this release is NOT verified"
+  echo "STOP: the tags disagree, or a digest did not resolve - this release is NOT verified" >&2
+  exit 1
 fi
 ```
 
@@ -604,8 +682,11 @@ collapsed or removed while reformatting the notes.
   and **MUST NOT** fire a release. Never reintroduce an event-driven trigger.
 - **Re-assert items (i), (iii) and (iv) at cut time.** They are time-varying and are never inherited
   from a recorded baseline.
+- **Dispatch only after re-reading `origin/main`.** Step 5 aborts non-zero unless it still equals
+  the `$MAIN_SHA` Step 4 gated on — the dispatch builds `main` as it is *then*, not as it was gated.
 - **Nothing merges to `main` between dispatch and run completion** — the release force-pushes to
-  `main` twice as a queue bypass actor.
+  `main` twice as a queue bypass actor. This one is unenforced: it is an operator obligation, not a
+  mechanism.
 - **`release/relocation-stubs` must NEVER be merged**, and the release must not pick it up.
 - **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
   image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only

@@ -66,7 +66,9 @@ The mechanisms that realise this:
   merges by itself, ahead of any change that would fire that trigger, and the trigger's absence is
   verified on the base branch before it is relied upon. This is stated once as a normative rule
   rather than rediscovered per occurrence, because base-branch evaluation makes the naive ordering
-  actively wrong.
+  actively wrong. *This rule is carried by human ordering alone -- no check rejects a change that
+  both removes a trigger and edits the paths it watches.* It is a residual operator risk, recorded
+  as such under Consequences -> Risks below, not a closed safeguard.
 * *The procedure is a standalone runbook, not a lifecycle step.* The steps that perform the dispatch
   live in a user-invocable runbook carried in the repository. It is deliberately *not* a step of any
   automated delivery pipeline and is registered with no pipeline configuration; it is followed start
@@ -77,11 +79,21 @@ The mechanisms that realise this:
   names no commit is unverifiable later -- that the release workflow remains the only invocation of
   the reusable release workflow, that the shared branch is quiesced, and that no tag for the version
   already exists. Recorded evidence from earlier work supplies the *method*, never the *fact*.
-* *The check-then-act window is closed by procedure.* The publication force-pushes to the protected
-  branch as a queue-bypass actor, so a force push racing a queue landing can discard commits.
-  Quiescence is therefore asserted immediately before dispatching and nothing merges until the run
-  completes -- a procedural bound at the instant of the act, not a structural adjacency to some
-  other event.
+* *The check-then-act window is bounded at the instant of the act -- half mechanically, half by
+  procedure.* The publication force-pushes to the protected branch as a queue-bypass actor, so a
+  force push racing a queue landing can discard commits. Quiescence is therefore asserted
+  immediately before dispatching, and nothing merges until the run completes -- a bound at the
+  instant of the act rather than a structural adjacency to some other event. The two halves are not
+  equally strong, and the ADR does not claim they are:
+** *Pre-dispatch -- mechanically checked.* The runbook re-reads the shared branch immediately before
+   dispatching and *aborts non-zero* unless it still equals the commit the green-branch gate proved.
+   A landing between the gate and the dispatch stops the release rather than publishing an
+   unverified commit. The dispatch itself names the branch, not that commit, because the signature
+   identity, the release plugin's push target and the documented shape of the dispatch reference are
+   all bound to the branch -- so the drift is closed by re-assertion, not by pinning the reference.
+** *Post-dispatch -- unenforced.* "Nothing merges until the run completes" has no mechanism behind
+   it: no branch policy, merge freeze or workflow check rejects a merge inside that window. It is an
+   operator obligation and a residual risk, recorded as such under Consequences -> Risks below.
 * *Verification is "exactly one of each", not "it worked".* One tag, one release entry, one
   repository deployment, one image digest carrying both published tags. A force-pushed tag and a
   re-runnable workflow both make duplication a genuine outcome, and a duplicate is far harder to
@@ -100,8 +112,10 @@ The mechanisms that realise this:
 * *The procedure outlives the work that produced it.* A standalone runbook is invocable at any time,
   by anyone, with no pipeline in flight and no lifecycle slot to occupy. Nothing has to be scheduled
   for a release to become possible, and nothing expires.
-* *Retreat stays available.* Because the merge-on-its-own rule is normative rather than folklore, a
-  future trigger change can be made safely instead of springing the base-branch trap.
+* *Retreat stays possible.* Because the merge-on-its-own rule is normative rather than folklore, a
+  future trigger change has a known-safe ordering instead of springing the base-branch trap. Knowing
+  the ordering is not the same as being held to it -- see the Risks below -- but a rule that is
+  written down can be followed and reviewed against, where folklore cannot.
 
 === Negative
 
@@ -114,10 +128,29 @@ The mechanisms that realise this:
 
 === Risks
 
+Every entry below is a *residual risk*, not a closed safeguard. The first three are specifically
+*residual operator risks* -- rules carried by human ordering or human restraint, with no check that
+rejects the violating action. They are listed here rather than folded into the Decision precisely so
+that the mechanisms above are never read as covering them.
+
 * *The dispatch-only guarantee is one commit from regressing.* It is a property of a workflow file,
   not a mechanically enforced invariant: the defence is the normative rule plus an in-file
   instruction, and a determined change overwrites both. This is why the guarantee is re-read, at a
   named commit, on every cut rather than assumed.
+* *Nothing rejects a mixed trigger-removal change.* The merges-on-its-own rule is normative prose;
+  no pull-request check inspects whether a change both removes or weakens an event-driven trigger
+  and edits the paths that trigger watches. Because such a workflow is evaluated from the base
+  branch, a mixed change still fires the *old* definition on the very merge that removes it -- and
+  the failure is invisible until the trigger it was supposed to have removed fires an irreversible
+  act. Closing this needs an executable check under `.github/workflows/`; until one exists the rule
+  is operator discipline, and a reviewer approving such a change is the only thing standing in the
+  way.
+* *Nothing enforces the post-dispatch merge hold.* No branch protection rule, merge-queue freeze or
+  workflow check prevents a merge from landing between the dispatch and the run's completion, so a
+  queue landing can still race the release's force-push to the protected branch and discard commits.
+  The quiescence assertion bounds only the *pre*-dispatch half, and only because the runbook aborts
+  non-zero on branch drift; after the dispatch the bound is a request to the team. Closing this
+  needs an enforced merge freeze or an equivalent branch-policy control.
 * *A step performed from memory instead of from the runbook silently loses the checks that make the
   act safe,* and the loss is invisible until the failure those checks exist to prevent occurs.
 * *Post-publication actions outside the repository cannot be verified by the release run itself.*

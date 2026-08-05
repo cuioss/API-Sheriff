@@ -20,9 +20,11 @@ link:../security-threat-model.adoc[threat model].
 Three forces shape how the check is configured:
 
 * *A bearer WebSocket route has no existing origin allowlist to reuse.* The BFF variants already
-  carry `session.csrf.trusted_origins`, and a `require: session` WS route
-  reuses it -- the WS Origin check and the stage-0 CORS/CSRF posture are the same trust decision
-  there. A *bearer* WS route has no such set.
+  carry `session.csrf.trusted_origins`, and the *intended* posture for a `require: session` WS route
+  is to reuse it -- the WS Origin check and the stage-0 CORS/CSRF posture are the same trust decision
+  there. *That reuse is not wired at 0.1.0* -- see the WARNING in the Decision section below; it is
+  recorded here as the force that shaped the field's scope, not as shipped behaviour. A *bearer* WS
+  route has no such set to reuse under either reading.
 * *CORS `allowed_origins` is a different trust decision.* `security_headers.cors.allowed_origins`
   governs what the *browser* is told it may do with an XHR/`fetch` response (the preflight answer);
   it is gateway/anchor-scoped and is about response-header emission. The WS `Origin` check is a

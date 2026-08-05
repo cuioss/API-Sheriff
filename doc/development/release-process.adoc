@@ -72,12 +72,28 @@ a step runs "before anything is pushed", read it as *before anything is pushed t
 
 . *Do not re-run the whole workflow.* A second dispatch would attempt another Maven release of a
   version that is already published.
-. Fix the cause on `main` and merge it.
-. Re-run the failed `publish-image` job alone from the Actions UI (*Re-run failed jobs*). It reads
-  its version from `.github/project.yml` at the dispatch SHA and checks out the release tag, so it
-  reproduces the same inputs without touching Maven Central.
+. *Classify the failure first -- a re-run cannot pick up a fix.* *Re-run failed jobs* creates a new
+  *attempt of the same run*: it reuses the original event context and the original workflow
+  definition, and `publish-image` checks out the *release tag*, not `main`. A commit merged to `main`
+  after the dispatch is therefore invisible to it. "Fix it on `main`, then re-run" does not work
+  here and must not be attempted.
++
+--
+Transient job or runtime failure::
+A registry timeout, a runner flake, a Maven Central propagation race. *Re-run the failed
+`publish-image` job alone* from the Actions UI. It reads its version from `.github/project.yml` at
+the dispatch SHA and checks out the release tag, so it reproduces the same inputs without touching
+Maven Central.
+
+Anything carried in the tree or the workflow::
+The source, the Dockerfile, the base-image pin, a `.trivyignore`, `release.yml` itself. A re-run
+reproduces the same inputs and so fails the same way, every time. Fix the cause on `main` and *cut a
+new patch version*. Do not re-run.
+--
 . If the failure was the Trivy gate on an unfixable base-image CVE, see
-  <<unfixable-base-image-cve>> before re-running.
+  <<unfixable-base-image-cve>>. Note that both remedies there -- re-pinning the base and adding a
+  `.trivyignore` -- are *tree* changes, so they fall under the second case above and need a new patch
+  version rather than a re-run.
 . If a version must be abandoned, *cut a patch version and publish relocation stubs* under the
   abandoned coordinates. Maven Central artifacts are never deleted, so a published coordinate can
   only be superseded, never withdrawn.
