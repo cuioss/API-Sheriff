@@ -10,9 +10,22 @@ finished artifact to be configured and operated, distinct from the
 link:../README.adoc[design documentation] under `doc/` (which defines *what* is built) and the
 link:../development/README.adoc[contributor guide] (which describes how to *build* it).
 
-This tree is seeded here and grows as operator-facing material lands; the 1.0 operator
-configuration guide (link:../plan/09-release-readiness.adoc[plan 09]) is authored into this
-layer.
+The link:../configuration.adoc[Configuration Reference] is the authoritative `gateway.yaml`
+contract; the guides in this layer are task-oriented entry points into it.
+
+[IMPORTANT]
+====
+*0.1.0 is an ALPHA release.* The `gateway.yaml` surface and the APIs *may change without a
+migration path*: keys may be renamed or removed and values may change meaning between releases,
+with no deprecation shim and no upgrade tooling. A descriptor that boots today may fail to boot on
+the next release -- deliberately and loudly, rather than silently changing behaviour.
+
+Alpha is a statement about *surface stability*, not about code quality or security posture. The
+intended use is evaluation, integration and feedback; do not deploy where an unannounced breaking
+change between releases would be costly. The verified limitations at this cut -- including the
+single-node in-memory session store and the cookie-mode schema gap -- are listed in
+link:../../README.adoc#_known_limitations[Known Limitations].
+====
 
 == Contents
 
@@ -78,7 +91,7 @@ layer.
   vulnerability scan do and do not guarantee, and the complete `cosign verify` recipe with both
   mandatory flags. Links to the release process for the artifact policy.
 
-| link:compose-sample.adoc[Compose Sample -- a Production-Shaped Deployment You Can Run]
+| link:compose-sample.adoc[Compose Sample -- a Deployment-Shaped Stack You Can Run]
 | The runnable sample under `deployment/compose-sample`: three containers on one network, brought up
   with generated sample certificates and gated on a real readiness probe. Covers both routes to the
   gateway image (the pinned GHCR default and the `API_SHERIFF_IMAGE` local-build override), the
@@ -174,72 +187,31 @@ specific public route that needs it.
 
 === An unrecognized `profile` value is a hard boot failure
 
-The mode set is exactly `strict`, `lenient`, `minimal`. Any other value -- including the *removed*
-`default` and the former `none`, now spelled `minimal` -- makes the gateway *refuse to start*. There
-is no fallback and no warning-and-continue.
+The mode set is exactly `strict`, `lenient`, `minimal`. Any other value makes the gateway *refuse to
+start*, with a value-range violation naming the offending site. There is no fallback and no
+warning-and-continue.
 
-[IMPORTANT]
-====
-*Migration from `default`.* The `default` value has been removed. Replace it with `strict`:
+The refusal applies at every site the key appears -- `security_defaults`, an anchor's
+`security_filter`, and a route's `security_filter`. `auth.require: none` is a *different* key in a
+different value space and is unrelated to this set.
 
-[source,yaml]
-----
-security_defaults:
-  profile: strict     # was: default
-----
+=== An omitted `security_defaults` block means `strict`
 
-Choose `lenient` instead if you need to keep the looser caps `default` happened to provide.
-====
+A `gateway.yaml` that declares no `security_defaults` block -- or declares one without `profile` --
+resolves to `strict`. That is the fail-closed choice: the tightest posture is what you get when you
+say nothing.
 
-[IMPORTANT]
-====
-*Migration from `none`.* The mode formerly spelled `none` is now spelled `minimal`. The behaviour is
-unchanged -- only the name is -- but the old spelling is *not* accepted: a `gateway.yaml` still
-declaring `profile: none` *fails to boot* with a value-range violation, at every site the key appears
-(`security_defaults`, an anchor's `security_filter`, a route's `security_filter`).
-
-*Remedy: rename the value.* One line per declaration site:
-
-[source,yaml]
-----
-security_defaults:
-  profile: minimal    # was: none
-----
-
-`auth.require: none` is a *different* key in a different value space and is *not* affected.
-====
-
-=== An omitted `security_defaults` block now means `strict`
-
-*This is a tightening relative to previous releases.* A `gateway.yaml` that declares no
-`security_defaults` block -- or declares one without `profile` -- now resolves to `strict`, where it
-previously resolved to a looser incidental baseline.
-
-*Symptom to look for after upgrading:* requests that previously succeeded start returning `400` --
-or `413` when it is the body cap that dropped. The caps that dropped are:
-
-[cols="2,1,1"]
-|===
-| Cap | Previously | Now (`strict`)
-
-| Request body | 5 MiB | 1 MiB
-| Query-parameter count | 100 | 20
-| Header value length | 2048 chars | 1024 chars
-| Parameter value length | 2048 chars | 1024 chars
-| Path length | 4096 chars | 1024 chars
-| Suspicious-pattern rejection | off | *on*
-|===
-
-If a previously-working request now returns `400` -- or `413` on an over-cap body -- check it against
-that table first. Two remedies, in order of preference:
+`strict` is genuinely strict, so a route that legitimately needs headroom must say so. If a request
+is rejected `400` -- or `413` when it is the body cap -- check it against the `strict` caps in the
+mode table above. Two remedies, in order of preference:
 
 . *Raise only the cap you need*, on the specific route that needs it -- e.g.
   `security_filter: { max_body_bytes: 5242880 }`. This keeps the strict posture everywhere else.
-. *Restore the looser baseline explicitly* with `security_defaults: { profile: lenient }`. This is a
+. *Select the looser baseline explicitly* with `security_defaults: { profile: lenient }`. This is a
   gateway-wide loosening; prefer option 1 unless you genuinely want it everywhere.
 
 Declaring the value you want -- rather than relying on the omitted-block default -- is the durable
-fix either way.
+choice either way.
 
 == Admitting a Body on `GET` (`security_defaults.allow_get_with_content_length_body`)
 
@@ -265,8 +237,8 @@ security_defaults:
 ----
 
 The key is gateway-wide, not per-route, because the framing gate runs before route selection --
-there is no route resolved yet to scope it to. Omit the key (or set `false`) and every framing
-rejection behaves exactly as it did before the key existed.
+there is no route resolved yet to scope it to. Omit the key, or set it `false`, and a
+`Content-Length`-framed `GET` body is rejected like every other smuggling shape.
 
 *Decide it as a gateway-wide posture change, not an upstream-local one.* Since it cannot be scoped,
 enabling it for the one upstream that needs a `GET` body also admits a `Content-Length`-framed `GET`

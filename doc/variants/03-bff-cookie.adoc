@@ -230,3 +230,38 @@ session identity. See
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
 for the architectural
 decision behind the identity model.
+
+== Performance baseline
+
+The shared measurement contract, the load parameters and the regression thresholds are stated once
+in link:README.adoc#benchmark-baselines[Deployment Variants -- Benchmark baselines]. This section
+records only what is specific to Variant 3.
+
+*Read this variant as a delta from link:01-base-gateway.adoc#_performance_baseline[Variant 1], and
+against link:02-bff-session.adoc#_performance_baseline[Variant 2].* The three-way comparison is the
+point: Variant 2 and Variant 3 run the *same login handshake* and differ only in where the token
+lives, so their steady-state delta isolates *store lookup versus cookie unseal* and nothing else.
+
+The defining cost of this variant:
+
+* *Per-request AES-256-GCM decryption.* Variant 2 pays a store lookup once per request; Variant 3
+  pays a cookie *unseal* once per request. That is the trade the variant exists to make -- CPU in
+  place of state -- and the steady-state delta between the two variants is exactly its price.
+* *The cost scales with cookie size, not with session count.* Variant 2's lookup cost is a function
+  of how many sessions exist; Variant 3's unseal cost is a function of how large the sealed payload
+  is. A benchmark that grows the session population stresses Variant 2 and leaves Variant 3 flat --
+  which is the whole reason this variant is the preferred long-term target.
+* *Login is not portable; steady state is.* Only the login leg needs session affinity. Because a
+  benchmark's virtual users typically log in against one instance and then drive requests, a
+  multi-replica run that balances the *login* leg will produce failures that look like performance
+  faults and are actually affinity faults.
+
+[NOTE]
+====
+*Do not read a cookie-format version bump as a regression.* Bumping the sealed-cookie format
+invalidates existing sessions, so the first run after such a deploy re-executes the login handshake
+for every user. That is a one-off re-authentication cost, not a change in steady-state throughput.
+====
+
+*No figures are published at 0.1.0* -- see the status note in
+link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.

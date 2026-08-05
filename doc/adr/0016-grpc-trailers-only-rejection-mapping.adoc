@@ -75,5 +75,3 @@ has no mapping.
   -- the doc-first mapping table this decision records.
 * link:../architecture.adoc#_error_contract[Architecture -- Error Contract] -- the HTTP-route
   problem+json envelope this decision translates for gRPC.
-* link:../plan/05-protocol-processors.adoc[Plan 05] -- the gRPC processor implementation and its
-  per-row unit tests.

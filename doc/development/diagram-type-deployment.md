@@ -433,5 +433,5 @@ are both marked, protocol-and-port edge labels, mounted material as pills, and a
 component carrying the `own-bar` accent among external ones. It uses no collapsed group, and the
 skeleton's collapsed-group placeholder is deleted rather than left in place.
 
-**The Kubernetes topology is deliberately not drawn here.** It arrives with PLAN-41, which defines
-it; drawing it before it is defined would document an intention as though it were a fact.
+**The Kubernetes topology is deliberately not drawn here.** No Kubernetes deployment is defined
+yet; drawing one before it is defined would document an intention as though it were a fact.

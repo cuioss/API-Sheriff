@@ -62,8 +62,8 @@ the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-C
   outbound path to audit, not two. A hostile or compromised upstream cannot dictate the
   gateway's response metadata.
 * Path traversal is closed for the whole asset surface by canonicalize-then-contain plus the
-  adversarial corpus; the threat-model path-traversal entry is reopened and re-closed to reflect
-  the new surface (link:../plan/10-anchor-types-assets.adoc[Plan 10]).
+  adversarial corpus; the threat-model path-traversal entry (GW-11) records the surface as
+  reopened and re-closed.
 * Asset serving gets a declared home through the `asset` anchor `type`
   (link:0013-anchor-type-access-axes.adoc[ADR-0013]); an asset surface's audience is boot-enforced
   like any other anchor.
@@ -80,5 +80,3 @@ the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-C
   inherit.
 * link:../security-threat-model.adoc[Threat Model] -- the path-traversal class and GW-05 this
   decision reopens and closes.
-* link:../plan/10-anchor-types-assets.adoc[Plan 10] -- the implementation plan for the asset
-  action, its sources, envelope, and path safety.

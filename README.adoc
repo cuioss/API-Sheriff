@@ -32,6 +32,24 @@ https://github.com/cuioss/TokenSheriff/blob/main/benchmarking/doc/benchmark-metr
 
 A security-focused API Gateway with a lightweight approach, built with Quarkus.
 
+[IMPORTANT]
+====
+*0.1.0 is an ALPHA release.* The configuration surface and the APIs *may change without a
+migration path*. Per this project's pre-1.0 rules, breaking changes are made freely: keys are
+renamed or removed, values change meaning, and no deprecation shim, compatibility alias or
+upgrade tooling is provided. A `gateway.yaml` that boots today may fail to boot on the next
+release, deliberately and loudly.
+
+*What alpha does not mean.* It does not mean the code is untested or the security posture is
+provisional -- the gateway is boot-validated fail-closed, covered by unit and containerised
+integration suites, and gated on a blocking quality gate. It means the *surface is not frozen*.
+
+*Intended use: evaluation, integration and feedback.* Try it, build against it, and report what
+breaks. Do not deploy it where an unannounced breaking change between releases would be costly.
+
+See <<_known_limitations>> for what is known to be missing or constrained at this cut.
+====
+
 toc::[]
 
 == Maven Coordinates
@@ -57,7 +75,9 @@ truthfully reflects its pre-1.0 maturity. Artifact IDs did not change.
 
 Anything still resolving `de.cuioss.sheriff.api` is redirected by relocation-only stubs
 published at `1.0.1`, which carry no code and point at the current coordinates.
-See link:doc/development/release-process.adoc[Release Process] for the full account.
+link:doc/development/release-process.adoc[Release Process] records the standing rule this
+leaves behind: a version that must be abandoned is superseded by a patch version carrying
+relocation stubs, because Maven Central artifacts are never deleted.
 ====
 
 == Modules
@@ -110,6 +130,60 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
   itself to HTTPS; there is no simultaneous plain-HTTP listener. It is additionally bound to
   `127.0.0.1` (loopback only) so the unauthenticated management interface is not exposed on all
   host interfaces, matching the security posture documented in `doc/architecture.adoc`
+
+[[_known_limitations]]
+== Known Limitations
+
+Verified as still open at the 0.1.0 cut. Each is a deliberate boundary or a known gap, not a
+surprise waiting to be discovered.
+
+Upstream response headers are relayed verbatim::
+The forward policy is deny-by-default on the *request* side, but the gateway does not strip
+identifying *response* headers an upstream emits -- `Server`, `X-Powered-By` and their kin reach
+the client unchanged. There is no response-header allowlist, and no configuration knob suppresses
+them. Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to
+you.
+
+Cookie-mode BFF cannot be configured as documented::
+`oidc.session.max_cookie_size` is implemented in the model, enforced by the configuration
+validator and documented as a supported key, but it is *absent from the bundled
+`schema/gateway.schema.json`*, which rejects unknown keys. A `gateway.yaml` declaring it therefore
+fails schema validation before binding. Until the schema is corrected, use *server* session mode
+(Variant 2) rather than cookie mode (Variant 3).
+
+The server-mode session store is single-node and in-memory::
+`InMemorySessionStore` is the only implementation of the `SessionStore` seam, and `session.store`
+accepts exactly one value, `memory`. There is no distributed or persistent option. A server-mode
+BFF deployment is therefore single-node or sticky-session, and every session is lost on restart.
+Capacity is also not reclaimed on its own: an expired session is removed only when its own id is
+next looked up, and no periodic sweep is scheduled, so a session abandoned without a logout holds
+its `oidc.session.max_sessions` slot until the process restarts. Size `max_sessions` against
+total logins per process lifetime rather than against peak concurrency -- once the ceiling is
+reached, new logins are refused fail-closed.
+Cookie mode is the stateless alternative by design -- subject to the schema limitation above.
+
+The cookie-mode BFF has had no systematic threat-model pass::
+The threat model covers the cookie-mode surface through individual catalogue entries (the AES-GCM
+sealing posture, the login-cookie replay window, per-instance refresh-token reuse detection), but
+no dedicated end-to-end review of the cookie variant has been performed. The entries that exist
+are sound; the *coverage* is not claimed to be exhaustive.
+
+Integration-test coverage has recorded gaps::
+Two contributor documents enumerate them rather than leaving them implicit:
+link:doc/development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
+records which declared gateway limits have a boundary assertion and which do not, and
+link:doc/development/test-corpus-integrity.adoc[Test-Corpus Integrity] records test methods whose
+assertions cannot support the behaviour their names claim. Read both before treating a green suite
+as proof of a specific bound.
+
+FAPI 2.0 is not conformant::
+Three mandatory client requirements are unmet -- PAR, sender-constrained tokens, and a
+FAPI-permitted client authentication method are not wired, even though the underlying engine
+supports them. See link:doc/fapi_status.adoc[FAPI 2.0 Conformance Status]. *No FAPI conformance
+may be claimed for this release.*
+
+Rate limiting is not implemented::
+The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced.
 
 == External Resources
 

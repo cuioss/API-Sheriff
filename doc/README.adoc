@@ -12,8 +12,18 @@ token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
 distributed configuration (the last deferred past the initial release --
 link:adr/0002-initial-scope.adoc[ADR-0002]).
 
-This directory holds the design documentation; these documents define *what will be
-built* and *how the parts fit together*.
+This directory holds the design documentation; these documents define *what is built* and
+*how the parts fit together*.
+
+[IMPORTANT]
+====
+*0.1.0 is an ALPHA release.* The configuration surface and the APIs described here *may change
+without a migration path* -- pre-1.0 rules apply, so breaking changes are made freely and no
+deprecation shim or upgrade tooling is provided. Alpha is a statement about the *stability of the
+surface*, not about code quality: the intended use is evaluation, integration and feedback. The
+verified limitations at this cut are listed in link:../README.adoc#_known_limitations[Known
+Limitations].
+====
 
 == Source Requirements
 
@@ -98,7 +108,7 @@ built* and *how the parts fit together*.
   covers the artifact set, the two-tag scheme, and why the image version equals the Maven version.
 
 | Compose Sample (two-layer topic)
-| The production-shaped Docker Compose sample under `deployment/compose-sample`, documented across
+| The deployment-shaped Docker Compose sample under `deployment/compose-sample`, documented across
   two layers. There is deliberately no reference layer: the sample introduces no runtime component
   and no `gateway.yaml` key -- it is an *arrangement* of the artifact
   link:architecture.adoc[Architecture] already describes, so neither that document nor
@@ -142,18 +152,8 @@ configuration. Each has its own design section:
   link:development/bff-cookie.adoc[contributor guide] (build, test, and extend it).
 |===
 
-== Implementation Plans
-
-Sequenced plans for building what these documents describe live under
-link:plan/README.adoc[`plan/`]: base implementation and configuration management (delivered),
-a doc/code reconciliation & quality-debt sweep, then endpoint anchors, the request pipeline,
-protocol processors, the TLS edge, the two BFF
-variants (server-session first), and release readiness -- the full sequence to the 1.0 cut.
-A later feature plan (link:plan/10-anchor-types-assets.adoc[plan 10]) adds two required anchor
-classification axes (`type`/`access`) with a fail-closed boot matrix and asset serving as a
-second terminal action (`directory` and `upstream` sources).
-Rate limiting is out of scope. Each plan names the design documents that must be read before
-implementing it.
+Rate limiting is out of scope: the `rate_limit` field is reserved and ignored, and no `429` is
+ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_limit`]).
 
 == Architecture Decisions
 
@@ -190,7 +190,7 @@ implementing it.
 | Anchors: namespace-scoped policy in `gateway.yaml` -- disjoint path namespaces carrying an
   inherited, non-weakenable policy floor (auth/filter/headers/methods), single declared
   membership per route, wholesale replacement, erased into the route table at boot.
-  *(Status: proposed.)*
+  *(Status: accepted.)*
 
 | link:adr/0008-data-plane-transport.adoc[ADR-0008]
 | Data plane: Vert.x `HttpClient` (streams, trailers, upgrades) shared per upstream tuple;
@@ -228,8 +228,8 @@ implementing it.
 | link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]
 | Anchor type/access axes: two required, orthogonal classification axes on every anchor --
   `type` (`proxy`/`bff`/`asset`) and `access` (`public`/`authenticated`) -- validated
-  fail-closed at boot, extending link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]. The
-  `passthrough -> proxy` value rename does not touch `tls.passthrough_sni`.
+  fail-closed at boot, extending link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]. The anchor
+  `type` value space is unrelated to `tls.passthrough_sni`.
   *(Status: accepted.)*
 
 | link:adr/0014-asset-serving-terminal-action.adoc[ADR-0014]
@@ -240,10 +240,10 @@ implementing it.
   *(Status: accepted.)*
 
 | link:adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]
-| WebSocket `Origin` fail-closed exact-match allowlist: a new per-route `allowed_origins` field
-  on bearer WebSocket routes (exact origins, host case-insensitive, no wildcards) rejects an
-  unlisted or missing-allowlist upgrade before any upstream dial -- closing CSWSH (GW-09) without
-  overloading CORS. *(Status: accepted.)*
+| WebSocket `Origin` fail-closed exact-match allowlist: the per-route
+  `websocket.allowed_origins` field on bearer WebSocket routes (exact origins, host
+  case-insensitive, no wildcards) rejects an unlisted or missing-allowlist upgrade before any
+  upstream dial -- closing CSWSH (GW-09) without overloading CORS. *(Status: accepted.)*
 
 | link:adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]
 | gRPC gateway rejections are emitted as trailers-only gRPC responses (a gRPC client cannot

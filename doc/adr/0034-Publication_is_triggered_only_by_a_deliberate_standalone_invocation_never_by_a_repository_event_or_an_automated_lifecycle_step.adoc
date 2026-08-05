@@ -1,0 +1,218 @@
+= ADR-0034: Publication is triggered only by a deliberate standalone invocation, never by a repository event or an automated lifecycle step
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: The release workflow carries workflow_dispatch as its only trigger, the procedure that fires it is a standalone human-invoked runbook rather than a step of any automated lifecycle, and the time-varying safety evidence is re-established at the instant of the dispatch rather than inherited from a recorded baseline.
+// tags: release, publication, irreversibility, workflow-trigger, deliberate-action, runbook, supply-chain, check-then-act, artifact-immutability
+// affects: api-sheriff-parent, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+Some acts a repository performs are irreversible *outside* the repository. Publishing a GA
+coordinate to a public Maven repository and pushing a signed image to a public registry both leave
+this project's control the moment they succeed: a published coordinate can be superseded, never
+withdrawn. Abandoning one costs a fresh patch version and a set of relocation stubs, and the
+abandoned coordinate stays visible forever.
+
+Every irreversible act needs a trigger, and the trigger's *shape* decides who can fire it and on
+what evidence. Four structural properties make that choice non-obvious.
+
+*The convenient trigger already exists.* A release needs a version declaration to land somewhere in
+the repository, so the natural-seeming design is to let that merge also publish. It removes a step
+and needs no new mechanism. It also makes every merge touching that file a publication, and turns
+review of a declaration into review of an irrevocable act -- without anyone involved framing it that
+way.
+
+*An event trigger on an irreversible act is hazardous to remove, not merely hazardous to have.* For
+a `pull_request` event -- including `types: [closed]` -- the workflow definition is evaluated from
+the *base* branch, not from the pull request's head. A pull request that both deletes such a trigger
+and edits the paths that trigger watches is therefore still evaluated against the old definition,
+and the very merge that removes the trigger fires it one last time. Retreat from this design is a
+trap laid by the design itself.
+
+*Part of the safety evidence is a property of a moment, not of the repository.* Whether the trigger
+is still dispatch-only, whether the shared branch is quiesced, and whether a tag for the version
+already exists are all true-at-an-instant. A record of any of them is indistinguishable in shape
+from a record of a durable fact, and ages the moment it is written.
+
+*The publication lane is not atomic.* The artifact publication completes before any image step
+runs, so a failure anywhere downstream -- a scan gate, a registry push, a signature -- leaves a
+*partial* release whose published half is already irrevocable. The lane cannot be reordered to fix
+this: the released version does not exist until the publication has happened.
+
+Together these produce one structural choice point: *where does the authority to fire an
+irreversible act live, and what has to be true at the instant it fires?*
+
+== Decision
+
+*An irreversible publication is fired only by a person deciding to fire it, and the evidence that
+makes it safe is established at that instant. Automation prepares a release; it never triggers one.*
+
+The mechanisms that realise this:
+
+* *Dispatch is the only trigger.* The release workflow declares `workflow_dispatch` and nothing
+  else. No merge -- of any pull request, touching any path -- can cut a release. The scope of that
+  guarantee is stated narrowly on purpose: a merge to the main branch is not inert, since the
+  main-branch build publishes a *snapshot*. What a merge cannot do is reach the irrevocable act.
+* *A trigger removal merges on its own.* A change that removes or weakens an event-driven trigger
+  merges by itself, ahead of any change that would fire that trigger, and the trigger's absence is
+  verified on the base branch before it is relied upon. This is stated once as a normative rule
+  rather than rediscovered per occurrence, because base-branch evaluation makes the naive ordering
+  actively wrong. *This rule is carried by human ordering alone -- no check rejects a change that
+  both removes a trigger and edits the paths it watches.* It is a residual operator risk, recorded
+  as such under Consequences -> Risks below, not a closed safeguard.
+* *The procedure is a standalone runbook, not a lifecycle step.* The steps that perform the dispatch
+  live in a user-invocable runbook carried in the repository. It is deliberately *not* a step of any
+  automated delivery pipeline and is registered with no pipeline configuration; it is followed start
+  to finish by whoever decides to release, and is written to read correctly whether it is executed
+  as a skill or followed as a document.
+* *Time-varying evidence is re-established, never inherited.* At cut time the runbook re-asserts
+  that the trigger is still dispatch-only -- naming the commit it read it at, because a claim that
+  names no commit is unverifiable later -- that the release workflow remains the only invocation of
+  the reusable release workflow, that the shared branch is quiesced, and that no tag for the version
+  already exists. Recorded evidence from earlier work supplies the *method*, never the *fact*.
+* *The check-then-act window is bounded at the instant of the act -- half mechanically, half by
+  procedure.* The publication force-pushes to the protected branch as a queue-bypass actor, so a
+  force push racing a queue landing can discard commits. Quiescence is therefore asserted
+  immediately before dispatching, and nothing merges until the run completes -- a bound at the
+  instant of the act rather than a structural adjacency to some other event. The two halves are not
+  equally strong, and the ADR does not claim they are:
+** *Pre-dispatch -- mechanically checked.* The runbook re-reads the shared branch immediately before
+   dispatching and *aborts non-zero* unless it still equals the commit the green-branch gate proved.
+   A landing between the gate and the dispatch stops the release rather than publishing an
+   unverified commit. The dispatch itself names the branch, not that commit, because the signature
+   identity, the release plugin's push target and the documented shape of the dispatch reference are
+   all bound to the branch -- so the drift is closed by re-assertion, not by pinning the reference.
+** *Post-dispatch -- unenforced.* "Nothing merges until the run completes" has no mechanism behind
+   it: no branch policy, merge freeze or workflow check rejects a merge inside that window. It is an
+   operator obligation and a residual risk, recorded as such under Consequences -> Risks below.
+* *Verification is "exactly one of each", not "it worked".* One tag, one release entry, one
+  repository deployment, one image digest carrying both published tags. A force-pushed tag and a
+  re-runnable workflow both make duplication a genuine outcome, and a duplicate is far harder to
+  notice than an absence.
+
+== Consequences
+
+=== Positive
+
+* *Publication is unreachable by accident.* No path leads from a merge to a GA coordinate, so
+  reviewing a version declaration is reviewing a declaration -- not silently authorising a
+  publication.
+* *The safety evidence is contemporaneous with the act.* Because the runbook re-derives the
+  time-varying items instead of reading a baseline, a stale record cannot be mistaken for a live
+  guarantee.
+* *The procedure outlives the work that produced it.* A standalone runbook is invocable at any time,
+  by anyone, with no pipeline in flight and no lifecycle slot to occupy. Nothing has to be scheduled
+  for a release to become possible, and nothing expires.
+* *Retreat stays possible.* Because the merge-on-its-own rule is normative rather than folklore, a
+  future trigger change has a known-safe ordering instead of springing the base-branch trap. Knowing
+  the ordering is not the same as being held to it -- see the Risks below -- but a rule that is
+  written down can be followed and reviewed against, where folklore cannot.
+
+=== Negative
+
+* *Releasing costs a deliberate human act and cannot be scheduled.* There is no automatic release
+  lane, and none can be added without reversing this decision.
+* *The evidence is re-established by hand at every cut.* That cost is paid every time, by design.
+* *The runbook restates operative facts that also live in the process narrative,* so the two can
+  drift. The duplication is deliberate -- a runbook must be followable cold -- and the narrative
+  remains canonical, but the drift is a maintenance obligation this decision accepts.
+
+=== Risks
+
+Every entry below is a *residual risk*, not a closed safeguard. The first three are specifically
+*residual operator risks* -- rules carried by human ordering or human restraint, with no check that
+rejects the violating action. They are listed here rather than folded into the Decision precisely so
+that the mechanisms above are never read as covering them.
+
+* *The dispatch-only guarantee is one commit from regressing.* It is a property of a workflow file,
+  not a mechanically enforced invariant: the defence is the normative rule plus an in-file
+  instruction, and a determined change overwrites both. This is why the guarantee is re-read, at a
+  named commit, on every cut rather than assumed.
+* *Nothing rejects a mixed trigger-removal change.* The merges-on-its-own rule is normative prose;
+  no pull-request check inspects whether a change both removes or weakens an event-driven trigger
+  and edits the paths that trigger watches. Because such a workflow is evaluated from the base
+  branch, a mixed change still fires the *old* definition on the very merge that removes it -- and
+  the failure is invisible until the trigger it was supposed to have removed fires an irreversible
+  act. Closing this needs an executable check under `.github/workflows/`; until one exists the rule
+  is operator discipline, and a reviewer approving such a change is the only thing standing in the
+  way.
+* *Nothing enforces the post-dispatch merge hold.* No branch protection rule, merge-queue freeze or
+  workflow check prevents a merge from landing between the dispatch and the run's completion, so a
+  queue landing can still race the release's force-push to the protected branch and discard commits.
+  The quiescence assertion bounds only the *pre*-dispatch half, and only because the runbook aborts
+  non-zero on branch drift; after the dispatch the bound is a request to the team. Closing this
+  needs an enforced merge freeze or an equivalent branch-policy control.
+* *A step performed from memory instead of from the runbook silently loses the checks that make the
+  act safe,* and the loss is invisible until the failure those checks exist to prevent occurs.
+* *Post-publication actions outside the repository cannot be verified by the release run itself.*
+  Registry package visibility is the standing case: the in-workflow smoke step pulls with the run's
+  own credentials, so an unfinished visibility change leaves every check green while consumers
+  outside the organisation cannot pull at all.
+
+== Alternatives Considered
+
+*Event-driven trigger on the version-declaration file.* Publication fires when a pull request
+touching the release-version declaration merges. It collapses two steps into one and introduces no
+new mechanism, and it is the shape a sibling project in the same ecosystem uses. Rejected because it
+makes every merge touching that file an irrevocable publication and relocates the publication
+decision into ordinary code review, where it is invisible; the failure mode is a GA coordinate that
+cannot be withdrawn. The rejection compounds rather than balances: because such a trigger is
+evaluated from the base branch, adopting it also makes it hazardous to remove later, so the option
+is not merely risky to operate -- it is difficult to retreat from.
+
+*A publication step inside an automated delivery lifecycle.* The publication runs as a step of the
+same automated pipeline that lands the work, firing when that pipeline reaches its end. It places
+the release adjacent to the change being released, and that adjacency can close a check-then-act
+window on the shared branch by ordering alone. Rejected because it makes an irreversible external
+act a consequence of an unrelated pipeline succeeding: the trigger degenerates into "the automation
+got this far", which is a statement about the automation rather than a decision to publish. It
+further requires registering the step in the pipeline's configuration, so the authority to publish
+becomes a configuration entry that any later configuration change can relocate or drop. The ordering
+benefit it buys is real but replaceable -- a check-then-act window can be closed procedurally at the
+instant of the act, whereas a misplaced trigger cannot be closed at all.
+
+*Inheriting recorded pre-dispatch evidence.* The evidence that makes a cut safe is established once,
+recorded, and simply read at cut time. It moves verification off the critical path and yields an
+auditable artefact. Rejected because most of that evidence describes a moment rather than the
+repository, and a record of a momentary property is shaped exactly like a record of a durable one --
+so inheriting it substitutes a confident claim for a check, in the one place where a wrong answer is
+unrecoverable. The recorded baseline keeps its full value as a statement of *method*: what to check,
+and how to check it soundly.
+
+Each rejected option substitutes a *proxy* for the decision to publish -- a file edit, a pipeline's
+success, an earlier moment's observation. An irreversible act admits no proxy: the trigger must be
+the decision itself, and the evidence must be contemporaneous with it.
+
+== Generalisation
+
+An operation whose effects escape the system's control is bounded by *when its trigger fires* and by
+*when its preconditions were last observed*, and those two instants must coincide. Two diagnostic
+questions separate such an operation from an ordinary one: can the system undo the effect using only
+its own mechanisms, and is any precondition true-at-an-instant rather than true-of-the-system? A
+"no" to the first forbids an event or a pipeline outcome as the trigger, because both fire on
+something other than the decision. A "yes" to the second forbids inheriting a recorded observation,
+because a record cannot distinguish a momentary property from a durable one. Where both hold, the
+trigger belongs to a deliberate, separately invocable procedure that re-establishes the momentary
+preconditions as its own first act.
+
+== References
+
+* link:../development/release-process.adoc[Release Process] -- the canonical process narrative and
+  the two normative trigger rules: dispatch is the only trigger, and a trigger removal merges on its
+  own.
+* link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] -- the dispatch-only
+  workflow, including the version-identity assertion that binds the image version to the released
+  artifact version.
+* link:../user/container-image.adoc[Container Image] -- the operator layer for the published image:
+  digest pinning and signature verification.
+* The repository's standalone `release` runbook under `.claude/skills/release/` -- the deliberate
+  invocation procedure, the pre-dispatch re-assertion, and the "exactly one of each" verification.

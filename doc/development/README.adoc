@@ -10,18 +10,11 @@ and how to work in it, distinct from the link:../README.adoc[design documentatio
 defines *what* is built) and the link:../user/README.adoc[operator guide] (which describes how
 to *run* the finished gateway).
 
-This tree is seeded here and grows as contributor-facing material lands.
-
 == Contents
 
 [cols="1,3"]
 |===
 | Document | Purpose
-
-| link:../plan/README.adoc[Implementation Plans]
-| The sequenced plans that build the design, each naming its required-reading design docs, the
-  shared execution workflow, and the project *conventions* (integration-tests-in-plan,
-  benchmarks, dependency approvals, the three-layer documentation convention, pre-1.0 rules).
 
 | link:../technical_aspects.adoc[Technical Aspects]
 | The CUI libraries the codebase builds on -- `cui-http` (inbound security filtering,
@@ -42,9 +35,8 @@ This tree is seeded here and grows as contributor-facing material lands.
   the Release workflow -- what one dispatch produces (Maven coordinates, the GHCR image, its SBOM
   and its Cosign signature), why the image version is a checked fact rather than a convention, the
   test-which-builds/push-that-digest inversion that makes "push exactly what was tested" true by
-  construction, the two-tag scheme and the deliberate absence of `:latest`, and why the
-  `pull_request` trigger was removed after the 2026-07-12 accidental release, including the
-  base-branch workflow-evaluation rule that forced the guard to merge first.
+  construction, the two-tag scheme and the deliberate absence of `:latest`, and the two trigger
+  rules -- dispatch is the only trigger, and a trigger removal merges on its own.
 
 | link:protocol-processors.adoc[Protocol Processors -- SPI and dispatch seam]
 | The `ProtocolProcessor` SPI, the boot-time registry that binds a protocol to its processor, and
@@ -126,8 +118,8 @@ Documents in `doc/development/` cover:
   coverage floor.
 * *Module layout* -- package structure, the framework-agnostic seam
   (link:../adr/0005-module-structure.adoc[ADR-0005]), and the arch-gate that guards it.
-* *Conventions* -- the project-wide rules recorded in the link:../plan/README.adoc[plan
-  conventions] and `CLAUDE.md`.
+* *Conventions* -- the project-wide rules recorded in `CLAUDE.md` (build commands, the
+  pre-commit process, the pre-1.0 rules, and the code, logging, testing and Javadoc standards).
 
 Design rationale lives in the link:../README.adoc[design documentation]; this layer describes
 how to *work in* the codebase that implements it.
@@ -191,8 +183,7 @@ on, rather than inheriting a skip decision made elsewhere. Do not "optimise" the
 === Where the profile value-range gate lives
 
 In the *bundled JSON Schema*, at each of its three symmetric `profile` declaration sites -- *not* in
-`ConfigValidator`. An out-of-range value (the removed `default` included) fails when the document is
-bound.
+`ConfigValidator`. An out-of-range value fails when the document is bound.
 
 `ConfigValidator` deliberately carries *no* profile-range rule. A second copy of the enumeration would
 be a second thing to keep in sync, and the failure mode of drift is that the looser gate silently

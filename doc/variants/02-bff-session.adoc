@@ -242,3 +242,46 @@ endpoint:
 * *Stateful* -- requires a server-side token store.
 * *Strong isolation* -- the token never leaves the server in any form.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
+
+== Performance baseline
+
+The shared measurement contract, the load parameters and the regression thresholds are stated once
+in link:README.adoc#benchmark-baselines[Deployment Variants -- Benchmark baselines]. This section
+records only what is specific to Variant 2.
+
+*Read this variant as a delta from link:01-base-gateway.adoc#_performance_baseline[Variant 1], not
+in isolation.* The filter, routing, forward and observability stages are shared and unchanged; what
+this variant adds on the steady-state path is a *session-store lookup* in place of the client's own
+bearer token.
+
+The two costs to keep separate:
+
+[cols="1,3", options="header"]
+|===
+| Path | What dominates
+
+| *Login handshake* | The OIDC authorization-code exchange -- network round trips to the identity provider. It happens *once per session*, so amortising it into a per-request figure misrepresents both numbers. Measure and report it separately.
+| *Steady-state API call* | The session cookie read and validated and resolved to a session id, then the store lookup it keys, then the mediated `Authorization: Bearer` injection, then the shared forward path. This is the figure that belongs next to Variant 1's `bearer` aspect.
+|===
+
+What to watch on this variant specifically:
+
+* *The store lookup is the variant's dominant overhead* on the steady-state path -- dominant, not
+  sole: the cookie read, validation and resolution sit in front of it and are paid on every request
+  too, so a delta from Variant 1 attributed entirely to the store would over-attribute. With
+  `session.store: memory` -- the only initial option -- the lookup is in-process, so the delta from
+  Variant 1 should be small. It is the term that would change first if a networked store were
+  introduced, which is why it is called out separately from the cookie work that precedes it.
+* *`max_sessions` is a DoS guard, and it interacts with load testing.* A run whose virtual users
+  each establish a session can approach the configured ceiling; a benchmark that starts refusing
+  sessions is measuring the guard, not the gateway. Expired sessions do *not* free their slot on
+  their own -- reclamation happens only when that session's id is looked up again, and no periodic
+  sweep is scheduled -- so successive runs accumulate against the ceiling instead of draining back
+  to zero. Restart the gateway between runs rather than assuming the store empties itself.
+* *Refresh is a background cost.* With `refresh.enabled: true`, a long run crosses token expiry and
+  pays a refresh round trip mid-measurement. On a 60s load phase against a typical token lifetime
+  this does not trigger -- but it is the first thing to suspect in a longer run that shows an
+  unexplained latency tail.
+
+*No figures are published at 0.1.0* -- see the status note in
+link:README.adoc#benchmark-baselines[the shared section] for why, and for what would establish them.

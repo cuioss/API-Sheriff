@@ -12,8 +12,9 @@ reverse-engineering `integration-tests/docker-compose.yml`.
 ====
 This is the *integration-test* topology. It is not a production deployment and not a recommended
 one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend and the six variant gateway
-instances exist to make specific tests possible. Production and Kubernetes topologies are defined by
-PLAN-27 and are deliberately not drawn here or anywhere else yet.
+instances exist to make specific tests possible. For a deployment-shaped stack, read
+link:compose-sample.adoc[the Compose sample] instead -- it is drawn and documented separately for
+exactly this reason. No Kubernetes topology is drawn.
 ====
 
 == The Topology

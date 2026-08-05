@@ -5,7 +5,7 @@
 
 How a release of API Sheriff is cut. Releases are *never* triggered by merging a pull request:
 the Release workflow runs only when a maintainer deliberately dispatches it. This page states the
-process and records *why* the automatic trigger was removed.
+process and the rules that keep it deliberate.
 
 == Cutting a release
 
@@ -35,9 +35,10 @@ One dispatch produces one coherent set of artifacts, all carrying the same versi
 * *An SPDX SBOM* for that image, retained as an artifact of the release run.
 * *A Cosign signature* over that image's digest, stored in the registry next to the image.
 
-A Helm chart and a Compose deployment sample are *explicitly out of scope* until the deployment
-artifacts change (PLAN-27) lands. They are named here so their absence reads as a known gap rather
-than an oversight.
+That list is exhaustive. *No Helm chart is published*, and the Compose deployment sample is *not a
+release artifact*: it lives in the repository at `deployment/compose-sample/` and is consumed from
+the source tree rather than pulled from a registry. Both are named here so their absence from the
+artifact list reads as a known boundary rather than an oversight.
 
 image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one dispatch drives the Maven release and a single image build whose output is scanned, pushed, smoked and signed, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
 
@@ -71,14 +72,31 @@ a step runs "before anything is pushed", read it as *before anything is pushed t
 
 . *Do not re-run the whole workflow.* A second dispatch would attempt another Maven release of a
   version that is already published.
-. Fix the cause on `main` and merge it.
-. Re-run the failed `publish-image` job alone from the Actions UI (*Re-run failed jobs*). It reads
-  its version from `.github/project.yml` at the dispatch SHA and checks out the release tag, so it
-  reproduces the same inputs without touching Maven Central.
+. *Classify the failure first -- a re-run cannot pick up a fix.* *Re-run failed jobs* creates a new
+  *attempt of the same run*: it reuses the original event context and the original workflow
+  definition, and `publish-image` checks out the *release tag*, not `main`. A commit merged to `main`
+  after the dispatch is therefore invisible to it. "Fix it on `main`, then re-run" does not work
+  here and must not be attempted.
++
+--
+Transient job or runtime failure::
+A registry timeout, a runner flake, a Maven Central propagation race. *Re-run the failed
+`publish-image` job alone* from the Actions UI. It reads its version from `.github/project.yml` at
+the dispatch SHA and checks out the release tag, so it reproduces the same inputs without touching
+Maven Central.
+
+Anything carried in the tree or the workflow::
+The source, the Dockerfile, the base-image pin, a `.trivyignore`, `release.yml` itself. A re-run
+reproduces the same inputs and so fails the same way, every time. Fix the cause on `main` and *cut a
+new patch version*. Do not re-run.
+--
 . If the failure was the Trivy gate on an unfixable base-image CVE, see
-  <<unfixable-base-image-cve>> before re-running.
-. If the version has to be abandoned, follow the relocation-stub precedent set on 2026-07-12: cut a
-  patch version and publish relocation stubs. Maven Central artifacts are never deleted.
+  <<unfixable-base-image-cve>>. Note that both remedies there -- re-pinning the base and adding a
+  `.trivyignore` -- are *tree* changes, so they fall under the second case above and need a new patch
+  version rather than a re-run.
+. If a version must be abandoned, *cut a patch version and publish relocation stubs* under the
+  abandoned coordinates. Maven Central artifacts are never deleted, so a published coordinate can
+  only be superseded, never withdrawn.
 
 === One build, and why the step order is inverted
 
@@ -180,48 +198,35 @@ or by digest for production.
 link:../user/container-image.adoc[The container image guide] covers pulling, running and
 cryptographically verifying the published image.
 
-== Why the pull_request trigger was removed
+== Trigger rules
 
-The workflow previously also carried a `pull_request` trigger scoped to `types: [closed]` and
-`paths: ['.github/project.yml']`, with the release job guarded by
-`github.event.pull_request.merged == true`. The intent was convenience: merging a version bump
-would publish it.
+Two rules govern how the release workflow may be triggered, and how a trigger may be changed. Both
+are normative, and both are load-bearing for the dispatch-only guarantee.
 
-On *2026-07-12* that trigger fired for real. A merged pull request that touched
-`.github/project.yml` cut a genuine Maven Central release, publishing
-`de.cuioss.sheriff.api:*:1.0.0` from a project that was still in pre-1.0 development. Maven Central
-releases are immutable -- a published GA coordinate cannot be withdrawn, only superseded.
+=== Dispatch is the only trigger
 
-The consequences were structural and are still visible in the project today:
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares
+`on: workflow_dispatch` and nothing else. *No merge -- of any pull request, touching any path --
+can cut a release.* Releasing is always an explicit act by a maintainer.
 
-* The `1.0.0` GA was *abandoned* -- it was never an intentional release and does not describe a
-  supported version of the gateway.
-* Relocation-only stubs were published at *`1.0.1`* under the abandoned coordinates, so any consumer
-  that resolved `de.cuioss.sheriff.api` is redirected to the current coordinates rather than left on
-  a dead line.
-* The project's Maven coordinates moved to *`de.cuioss.sheriff.gateway`*, leaving the accidentally
-  published groupId behind.
-* The version line was restarted at *`0.1.0-SNAPSHOT`*, restoring an honest pre-1.0 version that is
-  not shadowed by the accidental GA.
+The scope of that statement is *release publication*, and it is stated narrowly on purpose. A merge
+to `main` is not inert: link:../../.github/workflows/maven.yml[`maven.yml`] runs on
+`push: branches: [main]`, and its snapshot deployment runs on that push (it is skipped on pull
+requests). So a merge can publish a *snapshot* -- what it cannot do is cut a release. The
+irrevocable act, a Maven Central GA coordinate, is reachable only through the dispatch.
 
-Making the release deliberate is the fix that prevents a repeat: with `workflow_dispatch` as the
-sole trigger, no merge -- of any pull request, touching any path -- can publish anything.
+Do not add an event-driven trigger to the release workflow. A `pull_request` trigger scoped to
+`.github/project.yml` reads as a convenience -- merge the version bump, get the release -- but it
+makes every merge that touches that file a publication, and a Maven Central publication is
+irrevocable. Convenience is not worth an unintended GA.
 
-== Why the guard had to merge before anything else
-
-The removal of the `pull_request` trigger could not be bundled with the coordinate and version
-changes in a single pull request, and the reason is a property of GitHub Actions rather than a
-matter of taste.
+=== A trigger removal merges on its own
 
 For a `pull_request` event -- including `types: [closed]` -- GitHub evaluates the workflow
 definition *from the base branch*, not from the pull request's head. A pull request that both
-removed the trigger *and* edited `.github/project.yml` would therefore still be evaluated against
-the *old* workflow definition living on `main` at merge time. The very merge that deleted the
-trigger would have fired it one last time, cutting another unintended release.
-
-The guard change was consequently landed *first*, as its own pull request. Only after it was merged
-to `main` -- so that `main` itself no longer carried the `pull_request` trigger -- was it safe for a
-later change to touch `.github/project.yml`.
+removes a trigger *and* edits the paths that trigger watches is therefore still evaluated against
+the *old* workflow definition on `main` at merge time, and the very merge that deletes the trigger
+fires it one last time.
 
 The general rule this leaves behind: *a change that removes or weakens an event-driven workflow
 trigger must merge on its own, before any change that would fire that trigger.* Verify the trigger

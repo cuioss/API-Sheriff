@@ -319,9 +319,9 @@ stays.
 
 === Inbound filter modes
 
-* *Default:* an omitted `security_defaults` block resolves to `strict`. This is a *tightening*
-  relative to earlier releases -- see the "Inbound Filter Modes" migration notes in the
-  link:README.adoc[Operator Guide index].
+* *Default:* an omitted `security_defaults` block resolves to `strict` -- the fail-closed choice. The
+  operator's decision guide for the three modes is in
+  link:README.adoc[the Operator Guide index, "Inbound Filter Modes"].
 * *Posture:* secure by default, and the weakest mode is bounded rather than open-ended. `minimal` is a
   *partial* disable: it turns off exactly the url-parameter name/value validation and the per-route
   pipeline re-run, and nothing else -- the pre-route floor, the body cap and the path allowlist all
@@ -382,12 +382,14 @@ stays.
 
 === What the sweep did not find
 
-No key in the shipped `application.properties` was found to be *inert* -- declared or bound with no
-production consumer -- after the changes this document accompanies. The inert keys that motivated the
-neutral surface (`quarkus.tls.protocols`, `quarkus.tls.cipher-suites`, `quarkus.tls.alpn`,
-`quarkus.http.ssl.client-auth`) are gone, and their reappearance is now a failing build rather than a
-review-time catch. The two neutral port keys (`sheriff.tls.public-port`,
-`sheriff.tls.internal-https-port`) were checked and do have production consumers.
+No key in the shipped `application.properties` is *inert* -- declared or bound with no production
+consumer. The raw TLS keys a neutral surface would otherwise compete with (`quarkus.tls.protocols`,
+`quarkus.tls.cipher-suites`, `quarkus.tls.alpn`, `quarkus.http.ssl.client-auth`) are absent. Their
+absence is *asserted by nothing*: no build rule, no CI check and no config-source validation
+currently fails on their reappearance, so it is a review-time catch and only a review-time catch.
+Adding that enforcement is open work, and until it lands this paragraph is a statement of the
+current state rather than of a guarantee. The two neutral port keys (`sheriff.tls.public-port`,
+`sheriff.tls.internal-https-port`) both have production consumers.
 
 That is a statement about this file at this revision, not a general guarantee. The sweep read the
 shipped runtime properties, the TLS and configuration subsystems, and the operator-facing defaults

@@ -79,8 +79,8 @@ The *single-URL-per-alias* decision above is unchanged. What A1 supersedes is th
 channel*: the convention-named environment variable (`TOPOLOGY_<ALIAS>` wins over the file),
 which was implemented as an invisible Java-class-level lookup a reader cannot discover from
 the artifact. It is replaced by the unified in-file substitution mechanism decided with the
-anchors work (link:../plan/03-endpoint-anchors.adoc[Plan 03], D4): every override point is a
-visible shell-style placeholder in the artifact it affects --
+anchors work: every override point is a visible shell-style placeholder in the artifact it
+affects --
 
 [source,properties]
 ----
@@ -92,8 +92,8 @@ value as default, environment wins" -- the role the convention override played. 
 `TOPOLOGY_<ALIAS>` variable *names* survive as a sample-config convention; the *mechanism* is
 the placeholder, resolved once before schema validation. Everything else in this ADR
 (one URL per alias, decompose-on-read, no component split, no concrete host in endpoint
-files) stands. Implementation lands with Plan 03; `configuration.adoc`'s topology section is
-rewritten in the same PR.
+files) stands. The mechanism is implemented, and `configuration.adoc`'s
+link:../configuration.adoc#_topology[topology section] documents it.
 
 == References
 
