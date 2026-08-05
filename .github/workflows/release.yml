@@ -20,9 +20,11 @@ name: Release
 # rather than restating it here.
 on:
   workflow_dispatch:
-  # PREFILTER ONLY, NEVER THE DECISION. Every non-release key in .github/project.yml (maven-build,
-  # sonar, pages, github-automation) matches this path too, so a merge arriving here proves nothing
-  # about the version. The central guard is what decides; this only keeps unrelated merges out.
+  # PREFILTER ONLY, NEVER THE DECISION. This path matches EVERY edit to .github/project.yml, not just
+  # a version bump: the file's non-release keys today include name, description, maven-build, sonar,
+  # pages and github-automation, and that list is open — a key added tomorrow matches too. So a merge
+  # arriving here proves nothing about the version. The central guard is what decides; this only
+  # keeps unrelated merges out.
   pull_request:
     types: [closed]
     paths: ['.github/project.yml']
@@ -381,16 +383,33 @@ jobs:
       # the registry alongside the image (the Sigstore sha256-<digest>.sig convention); there is no
       # key store, no COSIGN_PRIVATE_KEY and no new secret. `id-token: write` is declared on this job.
       #
-      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES. Both are derived from THIS job's identity
-      # and will change silently if this workflow file is renamed or a release is dispatched from a
-      # ref other than main:
+      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES:
       #
-      #   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-      #   --certificate-identity    https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main
+      #   --certificate-oidc-issuer      https://token.actions.githubusercontent.com
+      #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$
       #
-      # The identity names release.yml ITSELF, not the org reusable workflow, because publish-image
-      # is a local job in this caller. doc/user/container-image.adoc publishes the same two strings
-      # to operators; this comment is what keeps the two copies from drifting.
+      # THE IDENTITY HAS TWO LEGITIMATE REFS, NOT ONE. Fulcio puts the OIDC `job_workflow_ref` claim
+      # in the certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
+      # workflow — so that claim names release.yml ITSELF (never the org reusable workflow) at the ref
+      # the run was triggered on, i.e. GITHUB_REF. This lane has two release paths and they carry
+      # different refs:
+      #
+      #   * workflow_dispatch from main  -> GITHUB_REF = refs/heads/main
+      #   * merge of a .github/project.yml PR -> GITHUB_REF = refs/pull/<N>/merge
+      #
+      # The merge ref is a FIRST-CLASS release path, not an anomaly to be excluded: the org
+      # version-changed guard plus `merged == true` already decided that this merge is a real release
+      # (see the trigger comment at the top of this file), and this job only runs when
+      # needs.release.outputs.released-version is non-empty. Pinning the accepted identity to
+      # @refs/heads/main alone would therefore reject the signature of a perfectly legitimate release.
+      #
+      # The regexp is TIGHTLY ANCHORED, not a wildcard: anchored at both ends, bound to this exact
+      # repository and this exact workflow file, and the PR number is digits-only. It admits exactly
+      # the two refs above and nothing else. Do NOT relax it to a `.*` — a loose identity would accept
+      # a signature from any workflow in any repository and the check would prove nothing.
+      #
+      # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
+      # below RUNS them — the lane proves its own signing identity rather than asserting it in prose.
       #
       # SLSA provenance and any further attestation are deliberately out of scope.
       - name: Sign the published digest (keyless)
@@ -398,6 +417,42 @@ jobs:
           DIGEST: ${{ steps.digest.outputs.value }}
         run: |
           cosign sign --yes "ghcr.io/cuioss/api-sheriff@${DIGEST}"
+
+      # PROVE WHAT WAS JUST SIGNED. This is the step whose absence let the identity drift ship: the
+      # lane signed, went green, and NOTHING ever asserted that the signature it had just produced was
+      # acceptable to the verification command this project publishes. A release that signs under an
+      # identity no operator command accepts is a supply-chain break that stays invisible until a
+      # consumer hits it.
+      #
+      # So this step runs EXACTLY the two values doc/user/container-image.adoc gives operators,
+      # against the digest just signed. If an operator's verification would fail, this job fails
+      # first — before the release is called done.
+      #
+      # The bounded retry covers Rekor/Fulcio propagation ONLY. A wrong identity fails identically on
+      # every attempt, so the retry cannot launder one into a pass; it just delays the loud failure by
+      # under a minute.
+      - name: Verify the signature under the published identity
+        env:
+          DIGEST: ${{ steps.digest.outputs.value }}
+          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
+        run: |
+          set -euo pipefail
+          REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
+          for attempt in 1 2 3 4 5; do
+            if cosign verify \
+              --certificate-identity-regexp "$IDENTITY_REGEXP" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$REF"; then
+              echo "Signature verified under the published operator identity."
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              echo "Verification attempt ${attempt} failed; retrying in 10s (signature propagation)."
+              sleep 10
+            fi
+          done
+          echo "::error::cosign verify failed for ${REF} using the identity published in doc/user/container-image.adoc. The lane signed under an identity operators cannot verify — treat this as a supply-chain failure, not a flake."
+          exit 1
 
       # `|| true` is a deliberate guard, not sloppiness: this step runs on EVERY outcome, including
       # the paths where the smoke step failed before `docker run` and there is nothing to remove.
