@@ -32,7 +32,8 @@ import java.util.Set;
  * Sessions are keyed by their opaque id in a primary map. Two secondary indexes — by IdP
  * {@code sid} and by {@code sub} — give O(1) back-channel logout destruction without scanning
  * the primary map. Every removal path (direct destroy, back-channel destroy, lazy TTL eviction,
- * at-capacity sweep) keeps the indexes consistent through a single {@link #removeInternal} seam.
+ * at-capacity sweep, and the eviction of the record an upsert replaces) keeps the indexes consistent
+ * through a single {@link #removeInternal} seam.
  * <p>
  * The absolute TTL is enforced two ways, with <strong>no per-session timer threads, no scheduler,
  * and no periodic task</strong>: lazily on {@link #resolve} (an expired session is evicted as it is
@@ -86,18 +87,13 @@ public final class InMemorySessionStore implements SessionStore {
                 throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
             }
         }
-        SessionRecord previous = byId.put(session.sessionId(), session);
-        if (previous != null) {
-            // An upsert may carry a different sub or sid than the record it replaces. The previous
-            // record's own index memberships must go, or the stale key keeps resolving to this id:
-            // a later destroyBySub/destroyBySid on it would destroy the replacement and report a
-            // phantom deletion, since removeInternal only deindexes under the NEW sub/sid.
-            deindex(bySub, previous.sub(), session.sessionId());
-            String previousSid = previous.sid();
-            if (previousSid != null) {
-                deindex(bySid, previousSid, session.sessionId());
-            }
-        }
+        // An upsert may carry a different sub or sid than the record it replaces, and a deindex is
+        // only ever keyed by the record's OWN sub/sid — so the previous record leaves through the
+        // same removeInternal seam every other removal path uses. Left indexed, its stale sub/sid
+        // would keep resolving to this id, and a later destroyBySub/destroyBySid on that stale key
+        // would destroy the replacement and report a phantom deletion.
+        removeInternal(session.sessionId());
+        byId.put(session.sessionId(), session);
         index(bySub, session.sub(), session.sessionId());
         String sid = session.sid();
         if (sid != null) {
