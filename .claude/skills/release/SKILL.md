@@ -167,7 +167,9 @@ A GHCR package created by a `GITHUB_TOKEN` push is **private by default**, and t
 step pulls with the job's own credentials — **so it cannot detect this**.
 
 **After the first release, open the organisation's package settings and set the `api-sheriff`
-package to *public*.**
+package to *public*.** **Public — not *Internal*.** Internal leaves anonymous pulls failing while
+every org-member check passes, so it looks done and is not; Step 9 carries the full trap and the
+assertion that catches it.
 
 Until that is done, **every check stays green while `docker pull` fails for everyone outside the
 organisation.** See Step 9 — for the 0.1.0 cut this is live, not hypothetical.
@@ -260,7 +262,7 @@ The working tree must be clean and `HEAD` must equal `origin/main`.
 > ancestry of what you are about to release:
 >
 > ```bash
-> git fetch origin release/relocation-stubs:refs/remotes/origin/release/relocation-stubs \
+> git fetch origin '+refs/heads/release/relocation-stubs:refs/remotes/origin/release/relocation-stubs' \
 >   || { echo "ERROR: could not fetch the stubs branch - the check did not evaluate" >&2; exit 1; }
 > git merge-base --is-ancestor origin/release/relocation-stubs origin/main; case $? in
 >   0) echo "STOP: stubs branch is in main" >&2; exit 1 ;;
@@ -269,13 +271,27 @@ The working tree must be clean and `HEAD` must equal `origin/main`.
 > esac
 > ```
 >
+> **FULLY QUALIFY THE SOURCE REF, AND FORCE IT — `+refs/heads/…`, never the bare branch name.**
+> The unqualified form `git fetch origin release/relocation-stubs:refs/remotes/origin/…` **DELETES
+> the remote-tracking ref instead of creating it** on any clone with `fetch.prune=true` (or
+> `remote.origin.prune=true`), which is a common global setting. `git fetch` then reports
+> `- [deleted] (none) -> origin/release/relocation-stubs`, the very next line dies with
+> `fatal: Not a valid object name origin/release/relocation-stubs`, and the guard lands on its
+> `*)` arm. Observed on the 0.1.0 cut: the branch was present on the remote the whole time.
+>
+> **That failure looks exactly like the branch having been deleted, and it is not.** Before
+> concluding anything from an `ERROR` here, check the remote directly — `git ls-remote --heads
+> origin | grep relocation` — and re-run with the qualified refspec above. Never "resolve" it by
+> skipping the check or appending `|| true`; the whole point of this boundary is that it fails
+> closed.
+>
 > **Branch on the exit code, never on `&&` / `||`.** `git merge-base --is-ancestor` exits `0` for
 > ancestor, `1` for not-ancestor and `128` on error — and an absent
-> `origin/release/relocation-stubs` remote-tracking ref (a single-branch or shallow clone, or a
-> clone predating the branch) is exactly such an error. A `… && echo STOP || echo OK` idiom
-> collapses `1` and `128` into the same branch, so a check that never ran prints the reassuring
-> `OK`. **An error is not a pass**, and the explicit `git fetch` above is what stops the common
-> case from reaching that arm at all.
+> `origin/release/relocation-stubs` remote-tracking ref (a single-branch or shallow clone, a clone
+> predating the branch, or the prune misfire above) is exactly such an error. A
+> `… && echo STOP || echo OK` idiom collapses `1` and `128` into the same branch, so a check that
+> never ran prints the reassuring `OK`. **An error is not a pass**, and the explicit `git fetch`
+> above is what stops the common case from reaching that arm at all.
 
 ### Step 3 — Re-assert the pre-dispatch safety evidence (MANDATORY)
 
@@ -570,8 +586,8 @@ fi
 ```
 
 **An empty digest is a failed check, not a passed one** — hence the `-n` guard: an unauthenticated
-pull of a still-private package (Step 9) returns nothing, and comparing two empty strings would
-otherwise report success.
+pull of a still-private *or still-internal* package (Step 9) returns nothing, and comparing two
+empty strings would otherwise report success.
 
 Then confirm the version label on the resolved digest:
 
@@ -612,14 +628,86 @@ This is a GitHub UI action; it cannot be done from the repository, and the in-wo
 > **The `0.1.0` cut IS the first release, so this section is live, not hypothetical.** Until it is
 > done, every check stays green while `docker pull` fails for everyone outside the organisation.
 
-Confirm afterwards — ideally unauthenticated, from outside the org:
+> **PICK *PUBLIC*, NOT *INTERNAL* — the dialog offers all three and `Internal` is the trap.** On the
+> 0.1.0 cut the first attempt landed on `Internal`, which reads as "not private, job done" and is
+> not. Internal grants every `cuioss` member a pull, so **an org member's `docker pull` succeeds,
+> `imagetools inspect` resolves, and `cosign verify` passes** — while anonymous consumers still get
+> `401`. Every authenticated check an operator is likely to reach for confirms the wrong thing.
+> Internal is also the default landing spot for org-owned packages under some enterprise settings,
+> so it is easy to select without noticing.
+
+Confirm afterwards. **Assert the field, then prove the anonymous path — both, in this order.** The
+API check names the exact failure (`internal` vs `public`); the anonymous pull is what actually
+proves an outside consumer can get the image:
 
 ```bash
+# 1. ASSERT THE FIELD. Requires a token with read:packages
+#    (`gh auth refresh -h github.com -s read:packages` if yours lacks it).
+VIS=$(gh api /orgs/cuioss/packages/container/api-sheriff --jq .visibility)
+test "$VIS" = "public" \
+  || { echo "STOP: package visibility is '${VIS}', not 'public' - outside consumers cannot pull" >&2; exit 1; }
+echo "OK: package visibility is public"
+
+# 2. PROVE THE ANONYMOUS PATH. `docker logout` first, or a cached credential
+#    silently turns this into an authenticated check that passes while internal.
 docker logout ghcr.io
 docker pull ghcr.io/cuioss/api-sheriff:<version>
 ```
 
-### Step 10 — Reformat the generated release notes
+> **A still-`401` anonymous probe right after the change is usually `internal`, not propagation
+> lag.** The visibility switch takes effect immediately. Re-read the `visibility` field before
+> waiting on a delay that is not happening — on the 0.1.0 cut, ten polls over ~150 s all returned
+> `401` and the field said `internal` the whole time. A quick unauthenticated corroboration:
+>
+> ```bash
+> curl -sS -o /dev/null -w "%{http_code}\n" \
+>   "https://ghcr.io/token?scope=repository%3Acuioss%2Fapi-sheriff%3Apull&service=ghcr.io"
+> ```
+>
+> `200` means public; `401` means it is not, whatever the settings page appears to show.
+
+### Step 10 — Update the version-bearing examples
+
+**Every example that names a concrete version must name the version just released.** These are the
+files a new user copy-pastes first, so a stale pin here is the most visible possible defect: it
+sends them to an image that either does not exist or is not the release they think they are running.
+
+**This step runs AFTER the image is verified (Step 8) and public (Step 9), never before.** Pointing
+an example at a version that has not finished publishing is the same defect aimed forward instead
+of backward.
+
+Enumerate the current pins rather than trusting this list — files move:
+
+```bash
+grep -rn --include='*.adoc' --include='*.md' --include='*.env' --include='*.yml' --include='*.yaml' \
+  -e 'ghcr\.io/cuioss/api-sheriff:[0-9]' . \
+  | grep -v node_modules | grep -v '/target/' | grep -v '^\./\.plan/'
+```
+
+Known version-bearing locations, as of the 0.1.0 cut:
+
+| file | what carries the version |
+|---|---|
+| `deployment/compose-sample/.env` | `API_SHERIFF_IMAGE=ghcr.io/cuioss/api-sheriff:<version>` — the sample's single image pin |
+| `doc/user/compose-sample.adoc` | the `docker pull ghcr.io/cuioss/api-sheriff:<version>` in *Route A* |
+| `README.adoc` | the ALPHA/maturity callout and the known-limitations preamble, both naming the cut |
+| `doc/user/README.adoc` | the same maturity callout, stated for the user-doc layer |
+
+> **Do NOT "fix" `doc/user/container-image.adoc`.** It uses a literal `<version>` placeholder
+> throughout, deliberately — it is the reference layer and is written to stay true across releases.
+> Substituting a concrete version there would make it wrong at the *next* cut. A placeholder is not
+> a stale pin; leave it alone.
+
+**Never leave an example carrying a caveat the release has overtaken.** The 0.1.0 cut shipped
+`deployment/compose-sample/.env` still reading *"0.1.0 is not published yet"* — accurate when
+written, false the moment the release landed, and contradicted by the pin on the very next line.
+When a release makes such a note obsolete, delete the note rather than leaving it to be puzzled over.
+
+If the version-bearing files are already correct — the common case, since they are usually written
+during the cycle leading up to the cut — say so explicitly in the Step 12 report rather than
+silently skipping the step. "Checked, already correct" and "forgot to check" must not look alike.
+
+### Step 11 — Reformat the generated release notes
 
 The release is created with **auto-generated** notes (a flat `## What's Changed` list). Rewrite them
 in place using the house format below.
@@ -634,6 +722,14 @@ gh release edit '<version>' --repo cuioss/API-Sheriff --notes-file .plan/temp/re
 **Cross-check coverage BEFORE editing the release.** Extract the `pull/<n>` numbers from both files
 and confirm that every original PR is either kept, collapsed into a chain, or intentionally dropped,
 and that **no PR appears in the new file that was not in the original**.
+
+> **THE INITIAL RELEASE IS THE ONE EXCEPTION — it gets no changelog at all.** The house format below
+> describes what changed *since the previous release*, which for the first cut is meaningless:
+> everything is new, so a "changelog" is just the build history. The 0.1.0 notes were deliberately
+> rewritten as a short statement of what the project is, what ALPHA means for surface stability, how
+> to get the artifact, and where the docs are — the auto-generated 152-PR list was dropped whole.
+> Apply the per-theme rules below to **every subsequent** release; do not reconstruct a PR list for a
+> first release just because the generator emitted one.
 
 #### House format rules (apply exactly)
 
@@ -667,12 +763,18 @@ and that **no PR appears in the new file that was not in the original**.
    PR's line and adjust only the version span.
 8. **Keep the trailing `**Full Changelog**: ...compare/<prev>...<version>` line.**
 
-### Step 11 — Report
+### Step 12 — Report
 
 Report: the released version; the SHA recorded in Step 3(i); the release URL; the resolved image
-digest; confirmation that **exactly one** of each expected artifact exists; whether the GHCR
-public-package action (Step 9) is done or still outstanding; and how many dependency PRs were
-collapsed or removed while reformatting the notes.
+digest; confirmation that **exactly one** of each expected artifact exists; the GHCR package's
+observed `visibility` value (Step 9) — report the field verbatim, `public` / `internal` / `private`,
+never a bare "done", since `internal` is exactly the outcome that reads as done and is not; which
+version-bearing examples (Step 10) were updated, or that they were **checked and already correct**;
+and how many dependency PRs were collapsed or removed while reformatting the notes.
+
+State plainly which image checks were made **anonymously** and which were authenticated. An
+authenticated check is not evidence about outside consumers, and on an `internal` package every
+authenticated check passes.
 
 ---
 
@@ -687,7 +789,14 @@ collapsed or removed while reformatting the notes.
 - **Nothing merges to `main` between dispatch and run completion** — the release force-pushes to
   `main` twice as a queue bypass actor. This one is unenforced: it is an operator obligation, not a
   mechanism.
-- **`release/relocation-stubs` must NEVER be merged**, and the release must not pick it up.
+- **`release/relocation-stubs` must NEVER be merged**, and the release must not pick it up. Fetch it
+  with the **fully-qualified forced refspec** (`+refs/heads/…`); the bare branch name self-prunes
+  under `fetch.prune=true` and the guard then reports `ERROR` for a branch that is still there.
+- **Set the GHCR package to *public*, not *internal*, and assert the `visibility` field** rather than
+  inferring it from a pull. Internal passes every authenticated check while anonymous pulls 401.
+- **Update the version-bearing examples (Step 10) after the image is public**, and delete any caveat
+  the release has overtaken. `doc/user/container-image.adoc` is exempt — its `<version>` is a
+  deliberate placeholder, not a stale pin.
 - **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
   image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only
   for a *transient* failure. A re-run replays the original event context and checks out the release
@@ -720,8 +829,11 @@ collapsed or removed while reformatting the notes.
 - `doc/development/release-process.adoc` — the canonical process narrative, and the normative
   **Trigger rules** it records: *dispatch is the only trigger*, and *a change that removes or
   weakens an event-driven trigger merges on its own*. It states those rules rather than the
-  2026-07-12 incident that motivated them; that account lives in the *Coordinate history* note in
-  the repository `README.adoc`, and is summarised in *How the release is wired* above.
+  2026-07-12 incident that motivated them. **This file is now the surviving account of that
+  incident** — see *How the release is wired* above. The former *Coordinate history* note in
+  `README.adoc` was removed once `de.cuioss.sheriff.api` had been abandoned long enough that the
+  history was of no use to a reader arriving at the project; ADR-0034 records the decision the
+  incident produced.
 - `.github/workflows/release.yml` — the dispatch-only workflow. Its in-file comments carry the
   composability, ordering and attestation caveats behind the steps above.
 - `doc/user/container-image.adoc` — the operator layer: pulling, running and verifying the image.

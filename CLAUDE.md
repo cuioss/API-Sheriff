@@ -49,10 +49,26 @@ docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:lat
 
 ### Pre-Commit Process
 
-**CRITICAL** — run before every commit; both must pass with zero errors/warnings:
+**CRITICAL** — run before every commit that touches build inputs; both must pass with zero errors/warnings:
 
 1. Quality gate (canonical `quality-gate` command above)
 2. Full verify (canonical `verify` command above)
+
+**Documentation-only commits skip both.** A commit whose entire footprint is prose or agent
+instructions cannot change build output, so a Maven run proves nothing and only burns minutes.
+Skip when **every** changed file is one of:
+
+- `*.adoc`, `*.md` (including `README.adoc`, `CLAUDE.md`, `doc/**`)
+- `.claude/**` — skills, agent instructions
+- non-build config carrying no code and no build wiring (e.g. `deployment/compose-sample/.env`)
+
+**Run the full process if the footprint touches anything else** — any `*.java`, `pom.xml`, `*.js`,
+`*.ts`, `*.css`, `src/main/resources/**`, `.github/workflows/**`, `Dockerfile*`, `docker-compose*.yml`
+or a build script. A mixed commit is *not* documentation-only: one Java file in an otherwise-prose
+change makes the whole commit subject to the gate.
+
+Doubt resolves toward running it. The cost of an unnecessary build is minutes; the cost of a skipped
+one is a red `main`.
 
 ## Pre-1.0 Rules (HIGHEST PRIORITY)
 
