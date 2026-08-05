@@ -137,7 +137,7 @@ All cuioss repositories have branch protection on `main`. Direct pushes to `main
    - If clearly valid and fixable: fix it, commit, push, then reply explaining the fix and resolve the comment — a bot-fix commit is a commit, so the **Pre-Commit Process** section above applies unchanged
    - If disagree or out of scope: reply explaining why, then resolve the comment
    - If uncertain (not 100% confident): **ask the user** before acting
-   - Every comment MUST get a reply (reason for fix or reason for not fixing) and MUST be resolved
+   - Every comment MUST get a reply (reason for fix or reason for not fixing). Resolution applies to **resolvable threads only** — the rows carrying a non-empty `thread_id`. The `review_body`, `review` and `issue_comment` kinds carry an empty `thread_id` and cannot be resolved at all, so they owe a reply where one is warranted and nothing more; do not treat them as a blocking work list (see step 8)
    - **Re-review after pushing fixes is not uniform**: CodeRabbit and Sourcery re-review automatically on push; PR-Agent deliberately does **not** (`.github/workflows/pr-agent.yml` triggers only on `opened`/`reopened`/`ready_for_review` plus on-demand `issue_comment` commands). Re-request a PR-Agent pass explicitly by posting a `/review` comment on the PR after the fix push.
 7. Do **NOT** enable auto-merge unless explicitly instructed. Wait for user approval.
 8. **Assert zero unresolved review threads, then report the merge and stop.**
