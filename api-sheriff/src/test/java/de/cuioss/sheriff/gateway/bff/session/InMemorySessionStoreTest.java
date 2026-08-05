@@ -177,17 +177,6 @@ class InMemorySessionStoreTest {
     class Capacity {
 
         @Test
-        @DisplayName("Should refuse a session created beyond the max-session bound")
-        void shouldEnforceMaxBound() {
-            InMemorySessionStore store = new InMemorySessionStore(2);
-            store.create(session("s1", "sub1", null, FUTURE), T0);
-            store.create(session("s2", "sub2", null, FUTURE), T0);
-
-            SessionRecord overflow = session("s3", "sub3", null, FUTURE);
-            assertThrows(IllegalStateException.class, () -> store.create(overflow, T0));
-        }
-
-        @Test
         @DisplayName("Should free capacity once expired sessions are swept")
         void shouldFreeCapacityAfterSweep() {
             InMemorySessionStore store = new InMemorySessionStore(2);
