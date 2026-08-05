@@ -57,7 +57,7 @@
              covers through its **/target pattern — no new ignore rule is needed for the toolchain. -->
         <node.version>v22.14.0</node.version>
         <npm.version>10.9.2</npm.version>
-        <version.frontend-maven-plugin>1.15.1</version.frontend-maven-plugin>
+        <version.frontend-maven-plugin>2.0.2</version.frontend-maven-plugin>
 
         <!-- ==== The opt-in switch ========================================================= -->
         <!-- Defaults to SKIP. Every execution in the e2e-demo profile carries this as its <skip>,
