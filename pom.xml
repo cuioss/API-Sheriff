@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>de.cuioss</groupId>
@@ -11,7 +9,7 @@
     </parent>
     <groupId>de.cuioss.sheriff.gateway</groupId>
     <artifactId>api-sheriff-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
     <packaging>pom</packaging>
     <name>API Sheriff Parent</name>
     <description>An API-Gateway focused on Security and a lightweight approach.
@@ -41,7 +39,7 @@
         <developerConnection>
             scm:git:https://github.com/cuioss/api-sheriff/
         </developerConnection>
-        <tag>HEAD</tag>
+        <tag>0.1.0</tag>
     </scm>
     <issueManagement>
         <url>https://github.com/cuioss/api-sheriff/issues</url>
