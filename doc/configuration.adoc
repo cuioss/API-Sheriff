@@ -311,7 +311,9 @@ oidc:                              # only used by the BFF variants (2 and 3)
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
     store: memory                  # REQUIRED for server mode; memory is the only initial option
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
-                                   #   sessions -- a DoS guard on the in-memory store
+                                   #   sessions -- a DoS guard on the in-memory store. Reaching
+                                   #   the bound sweeps the expired sessions and admits the login
+                                   #   if that freed a slot; no scheduler or periodic sweep exists
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
                                    #   generate a key on startup (sessions die on restart)
@@ -1659,6 +1661,15 @@ ignored when no route's effective auth is `require: session`.
   denial-of-service guard on the in-memory store, so an unbounded stream of logins cannot exhaust
   node memory. Unused in `cookie` mode (there is no server-side store to bound). Optional; omit it
   to leave the store unbounded.
+
+  The bound counts *live* sessions, not accumulated ones. An expired session keeps its slot until
+  something reclaims it, and reaching the bound is that trigger: a login arriving at a full store
+  sweeps the sessions expired at that instant and is admitted if the sweep freed a slot. A store
+  still full afterwards is genuinely full of live sessions and the login is refused fail-closed.
+  Nothing schedules that sweep -- there is no scheduler, timer thread or periodic task, and no knob
+  configures one -- so size this against expected peak concurrency. Re-storing an id already held
+  (how a rotated session is persisted) consumes no new capacity and is admitted at the bound
+  without consulting it.
 
 | `session.cookie_name`
 | Cookie name; the `+__Host-+` prefix (implying `Secure`, `Path=/`, no `Domain`) is the default

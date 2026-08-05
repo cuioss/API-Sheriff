@@ -130,10 +130,11 @@ In-memory store keyed by opaque session id, holding access + refresh + raw ID to
 metadata (`expiry`, `acr`, `auth_time`, `sid`); secondary index by `sid`/`sub` for O(1)
 back-channel destruction (variant doc, Token Storage). `memory` is the only store --
 single-node / sticky-session deployments; a shared store is deliberately unsupported.
-TTL (`ttl_seconds`) is absolute from login; eviction is lazy on access plus a periodic
-sweep (no per-session timer threads), and the store carries a documented max-session bound
-(sessions are created only after a successful IdP login, but the ceiling still belongs in
-the operator's capacity math). Session cookie: `HttpOnly`, `Secure`, `SameSite=Lax`,
+TTL (`ttl_seconds`) is absolute from login; eviction is lazy on access plus an opportunistic
+sweep triggered at capacity (no per-session timer threads, no scheduler, no periodic sweep),
+and the store carries a documented max-session bound (sessions are created only after a
+successful IdP login, but the ceiling still belongs in the operator's capacity math).
+Session cookie: `HttpOnly`, `Secure`, `SameSite=Lax`,
 `__Host-` prefix, opaque id only.
 
 === D4 -- `require: session` runtime (stage 4)
