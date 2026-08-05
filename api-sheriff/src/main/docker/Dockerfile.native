@@ -6,7 +6,7 @@
 # deployment supplies QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES / _KEY_FILES (ADR-0025), with plain
 # HTTP reachable only through the named opt-out
 # quarkus.management.tls-configuration-name=plain-management.
-FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:0278fd70d9627df836295570da0fd22034ea664efc12a834a0532cea7556a87b
+FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:58c30907e6d4417251c90963e1d14e6918a0baa6f8a7d046497584972dc2a378
 
 # Supplied by the build (docker compose build.args.APP_VERSION). The `dev` default is deliberate and
 # honest: a locally or PR-built image is never published, and a version-shaped default would lie the
