@@ -190,12 +190,12 @@ jobs:
       # explicit, recorded decision.
       #
       # SCOPE HONESTY — what this scan can and cannot see. The image is the pinned distroless base
-      # plus exactly ONE layer: a GraalVM native executable
-      # (`COPY --chmod=0755 target/*-runner /app/application`). It is dynamically linked — no
-      # --static and no --libc=musl is configured in quarkus.native.additional-build-args — which is
-      # why the base is the glibc-bearing quarkus-distroless-image rather than scratch. The
-      # load-bearing property is not how it is linked but that it carries NO PACKAGE METADATA AND NO
-      # JARS, so
+      # plus exactly TWO layers: `WORKDIR /app` (~8 kB) and the GraalVM native executable
+      # (`COPY --chmod=0755 target/*-runner /app/application`, ~95 MB). The executable is dynamically
+      # linked — no --static and no --libc=musl is configured in quarkus.native.additional-build-args
+      # — which is why the base is the glibc-bearing quarkus-distroless-image rather than scratch. The
+      # load-bearing property is not how it is linked but that NEITHER LAYER CARRIES PACKAGE METADATA
+      # OR JARS, so
       # Trivy's Java analyzer finds nothing and this is in substance a scan of the pinned base
       # image's OS packages. Java dependency CVEs are covered by the PR-lane filesystem scan in
       # maven.yml and by the Sonar and Dependabot lanes — NOT here. A clean result here is not
