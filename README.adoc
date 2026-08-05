@@ -144,23 +144,17 @@ the client unchanged. There is no response-header allowlist, and no configuratio
 them. Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to
 you.
 
-Cookie-mode BFF cannot be configured as documented::
-`oidc.session.max_cookie_size` is implemented in the model, enforced by the configuration
-validator and documented as a supported key, but it is *absent from the bundled
-`schema/gateway.schema.json`*, which rejects unknown keys. A `gateway.yaml` declaring it therefore
-fails schema validation before binding. Until the schema is corrected, use *server* session mode
-(Variant 2) rather than cookie mode (Variant 3).
-
 The server-mode session store is single-node and in-memory::
 `InMemorySessionStore` is the only implementation of the `SessionStore` seam, and `session.store`
 accepts exactly one value, `memory`. There is no distributed or persistent option. A server-mode
 BFF deployment is therefore single-node or sticky-session, and every session is lost on restart.
-Capacity is also not reclaimed on its own: an expired session is removed only when its own id is
-next looked up, and no periodic sweep is scheduled, so a session abandoned without a logout holds
-its `oidc.session.max_sessions` slot until the process restarts. Size `max_sessions` against
-total logins per process lifetime rather than against peak concurrency -- once the ceiling is
-reached, new logins are refused fail-closed.
-Cookie mode is the stateless alternative by design -- subject to the schema limitation above.
+Capacity is reclaimed at the ceiling rather than continuously: an expired session is removed when
+its own id is next looked up, and otherwise keeps its slot until a new login finds the store at
+its `oidc.session.max_sessions` bound, which sweeps the expired entries and admits the login if
+that freed a slot. No scheduler, timer thread or periodic sweep is involved. Size `max_sessions`
+against expected peak concurrency -- the ceiling refuses new logins fail-closed only when that
+many sessions are genuinely still live.
+Cookie mode is the stateless alternative by design.
 
 The cookie-mode BFF has had no systematic threat-model pass::
 The threat model covers the cookie-mode surface through individual catalogue entries (the AES-GCM

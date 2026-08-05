@@ -130,7 +130,7 @@ class TokenRefreshCoordinatorTest {
         void shouldReturnCurrentWhenNotNearExpiry() {
             AtomicInteger calls = new AtomicInteger();
             SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live);
+            store.create(live, NOW);
             TokenRefreshCoordinator coordinator = coordinator(NOT_NEAR, rt -> {
                 calls.incrementAndGet();
                 return rotation();
@@ -148,7 +148,7 @@ class TokenRefreshCoordinatorTest {
         void shouldReturnCurrentWhenNoRefreshToken() {
             AtomicInteger calls = new AtomicInteger();
             SessionRecord live = session(null);
-            store.create(live);
+            store.create(live, NOW);
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
                 calls.incrementAndGet();
                 return rotation();
@@ -169,7 +169,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should refresh through the engine and persist the rotated token material")
         void shouldRefreshAndPersist() {
             SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live);
+            store.create(live, NOW);
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> rotation());
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
@@ -186,7 +186,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should pass the session's current refresh token to the engine")
         void shouldPresentCurrentRefreshToken() {
             SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live);
+            store.create(live, NOW);
             AtomicInteger calls = new AtomicInteger();
             TokenRefreshCoordinator coordinator = coordinator(NEAR, presented -> {
                 calls.incrementAndGet();
@@ -210,7 +210,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should destroy the session and fail when the engine refresh is rejected")
         void shouldFailAndDestroyOnEngineRejection() {
             SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live);
+            store.create(live, NOW);
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
                 throw new ClientProtocolException("token endpoint rejected the refresh grant");
             });
@@ -227,7 +227,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should destroy the session when the engine reports refresh-token reuse (family revoked)")
         void shouldFailOnReuseDetection() {
             SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live);
+            store.create(live, NOW);
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
                 throw new ClientProtocolException("refresh token family is revoked");
             });
@@ -259,7 +259,7 @@ class TokenRefreshCoordinatorTest {
         @DisplayName("Should coalesce concurrent refreshes on one session into a single engine call")
         void shouldCoalesceConcurrentRefreshes() throws Exception {
             SessionRecord live = session(CURRENT_REFRESH);
-            store.create(live);
+            store.create(live, NOW);
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch proceed = new CountDownLatch(1);
             AtomicInteger calls = new AtomicInteger();

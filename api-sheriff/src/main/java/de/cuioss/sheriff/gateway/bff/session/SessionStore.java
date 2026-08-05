@@ -42,11 +42,20 @@ public interface SessionStore {
     /**
      * Stores a session, upserting by its opaque id — re-creating an existing id replaces the record
      * in place, which is how a rotated session is persisted without a destroy-then-create window.
+     * An upsert consumes no new capacity, so it is admitted even at the bound.
+     * <p>
+     * {@code now} is the reference instant capacity is reclaimed against. When a <em>new</em> id
+     * arrives while the store sits at its max-session bound, the implementation sweeps the sessions
+     * expired at {@code now} and admits the session if that freed a slot. A store genuinely full of
+     * <em>live</em> sessions still refuses fail-closed — the bound caps concurrent live sessions,
+     * never accumulated dead ones.
      *
      * @param session the session to store
-     * @throws IllegalStateException when the store is at its max-session capacity bound
+     * @param now     the reference instant expired capacity is reclaimed against
+     * @throws IllegalStateException when the store is at its max-session capacity bound and no
+     *                               expired session could be reclaimed to admit this one
      */
-    void create(SessionRecord session);
+    void create(SessionRecord session, Instant now);
 
     /**
      * Resolves a live session by its opaque id, enforcing the absolute TTL lazily: an expired
@@ -84,8 +93,13 @@ public interface SessionStore {
     int destroyBySub(String sub);
 
     /**
-     * Removes every session expired at {@code now}. Invoked by a periodic sweep so eviction does
-     * not rely on access alone — there are no per-session timer threads.
+     * Removes every session expired at {@code now}.
+     * <p>
+     * No scheduler, timer thread, or periodic task drives this. Its one automatic trigger is
+     * {@link #create(SessionRecord, Instant)} reaching the max-session bound, which is what lets an
+     * expired session release the slot it still occupies. Expiry itself never depends on the sweep:
+     * {@link #resolve} evicts an expired session as it is looked up, so an expired session is
+     * unresolvable whether or not it has been swept.
      *
      * @param now the reference instant
      * @return the number of sessions swept

@@ -33,7 +33,10 @@
  *       {@link de.cuioss.sheriff.gateway.bff.session.SessionStore} (implemented only by
  *       {@link de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore} — keyed by opaque id,
  *       with secondary indexes by {@code sid}/{@code sub} for O(1) back-channel destruction, an
- *       absolute TTL enforced lazily plus by a periodic sweep, and a documented max-session bound)
+ *       absolute TTL enforced lazily on resolve plus an opportunistic sweep triggered when a
+ *       capacity-consuming create — one introducing a session id the store does not yet hold, never
+ *       an upsert of an already-stored one — arrives at the max-session bound — no scheduler and no
+ *       timer threads — and a documented max-session bound capping live sessions)
  *       and {@link de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec}, which sets and reads
  *       the hardened {@code __Host-} session cookie carrying only the opaque id. In this mode the
  *       token material never leaves the server.</li>

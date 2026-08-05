@@ -116,7 +116,9 @@ site. See link:../variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 == Operate
 
 * *Sessions are in-memory.* A gateway restart drops all sessions and users re-authenticate. Size
-  `max_sessions` for expected concurrency; it caps memory against a login flood.
+  `max_sessions` for expected concurrency; it caps memory against a login flood. Expired sessions
+  release their slot when the bound is reached -- a login arriving at a full store sweeps the
+  expired entries first, so only genuinely live sessions hold the ceiling.
 * *Absolute TTL.* `ttl_seconds` is counted from login and is not extended by refresh; on expiry the
   user re-authenticates.
 * *IdP reachability.* Provider metadata is discovered lazily on first use, so the gateway boots
