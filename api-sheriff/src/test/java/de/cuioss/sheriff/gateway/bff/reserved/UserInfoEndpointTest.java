@@ -88,7 +88,7 @@ class UserInfoEndpointTest {
                 .acr(ACR)
                 .authTime(AUTH_TIME)
                 .build();
-        sessionStore.create(session);
+        sessionStore.create(session, T0);
         cookieHeader = sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];
     }
 

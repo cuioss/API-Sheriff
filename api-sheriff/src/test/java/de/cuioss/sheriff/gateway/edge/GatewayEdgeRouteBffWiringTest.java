@@ -330,7 +330,7 @@ class GatewayEdgeRouteBffWiringTest {
             SessionStore store = new InMemorySessionStore(16);
             String sessionId = SessionRecord.newSessionId();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build());
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
             sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
 
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
@@ -449,7 +449,7 @@ class GatewayEdgeRouteBffWiringTest {
         void shouldDispatchLogin() {
             String sessionId = SessionRecord.newSessionId();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(now.plus(Duration.ofHours(1))).build());
+                    .expiresAt(now.plus(Duration.ofHours(1))).build(), now);
             String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);

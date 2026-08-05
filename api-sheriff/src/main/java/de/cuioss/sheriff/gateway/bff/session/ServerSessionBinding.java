@@ -61,7 +61,7 @@ public final class ServerSessionBinding implements SessionBinding {
     public BoundSession bind(SessionRecord session, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(now, "now");
-        sessionStore.create(session);
+        sessionStore.create(session, now);
         return new BoundSession(session, List.of(sessionCookieCodec.toSetCookieHeader(session.sessionId())));
     }
 
@@ -78,9 +78,10 @@ public final class ServerSessionBinding implements SessionBinding {
         Objects.requireNonNull(now, "now");
         // create() upserts by session id (SessionStore contract; InMemorySessionStore is a keyed map
         // put), so no pre-destroy is needed. Destroying first would open a window where a concurrent
-        // resolve() misses the rotating session. The opaque handle is unchanged, so the browser needs
-        // no new Set-Cookie.
-        sessionStore.create(rotated);
+        // resolve() misses the rotating session. An upsert consumes no new capacity, so this call is
+        // admitted even at the max-session bound. The opaque handle is unchanged, so the browser
+        // needs no new Set-Cookie.
+        sessionStore.create(rotated, now);
         return new BoundSession(rotated, List.of());
     }
 

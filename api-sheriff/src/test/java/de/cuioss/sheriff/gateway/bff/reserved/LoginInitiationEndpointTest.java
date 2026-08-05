@@ -107,7 +107,7 @@ class LoginInitiationEndpointTest {
                 .acr(null)
                 .authTime(null)
                 .build();
-        sessionStore.create(session);
+        sessionStore.create(session, T0);
         return sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];
     }
 

@@ -385,7 +385,7 @@ class SessionAuthenticationStageTest {
 
     private static SessionBinding bindingWith(SessionRecord session) {
         InMemorySessionStore store = new InMemorySessionStore(16);
-        store.create(session);
+        store.create(session, NOW);
         return new ServerSessionBinding(store, CODEC);
     }
 

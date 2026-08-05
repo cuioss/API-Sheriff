@@ -181,7 +181,7 @@ class AuthenticationStageTest {
                 .idToken("id-token")
                 .sub("subject")
                 .expiresAt(NOW.plusSeconds(3600))
-                .build());
+                .build(), NOW);
         SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
         return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
                 (session, cookieHeader, now) -> Optional.of(new SessionBinding.BoundSession(session, List.of())),

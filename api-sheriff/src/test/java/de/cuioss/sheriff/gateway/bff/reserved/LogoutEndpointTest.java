@@ -74,7 +74,7 @@ class LogoutEndpointTest {
                 .sub("user-sub-1")
                 .expiresAt(NOW.plus(Duration.ofHours(8)))
                 .build();
-        store.create(session);
+        store.create(session, NOW);
         cookieHeader = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
     }
 

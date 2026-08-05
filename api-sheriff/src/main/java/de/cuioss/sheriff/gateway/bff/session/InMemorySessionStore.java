@@ -32,13 +32,19 @@ import java.util.Set;
  * Sessions are keyed by their opaque id in a primary map. Two secondary indexes — by IdP
  * {@code sid} and by {@code sub} — give O(1) back-channel logout destruction without scanning
  * the primary map. Every removal path (direct destroy, back-channel destroy, lazy TTL eviction,
- * periodic sweep) keeps the indexes consistent through a single {@link #removeInternal} seam.
+ * at-capacity sweep) keeps the indexes consistent through a single {@link #removeInternal} seam.
  * <p>
- * The absolute TTL is enforced two ways with <strong>no per-session timer threads</strong>:
- * lazily on {@link #resolve} (an expired session is evicted as it is looked up) and by an
- * operator/scheduler-driven {@link #sweepExpired}. A documented {@code maxSessions} bound caps
- * the live-session count (a capacity ceiling for the operator's memory math); creating a session
- * beyond the bound is refused fail-closed. Every operation is guarded by the instance monitor.
+ * The absolute TTL is enforced two ways, with <strong>no per-session timer threads, no scheduler,
+ * and no periodic task</strong>: lazily on {@link #resolve} (an expired session is evicted as it is
+ * looked up) and opportunistically by {@link #sweepExpired}, whose one automatic trigger is
+ * {@link #create} finding the store at its {@code maxSessions} bound.
+ * <p>
+ * That trigger is what makes the bound a ceiling on <em>live</em> sessions rather than on
+ * accumulated ones. An expired session that nothing has resolved since it lapsed still occupies its
+ * slot, so without a reclaiming trigger a store could sit permanently full of dead sessions and
+ * refuse every login. Creation therefore sweeps once at the bound and re-tests it; only a store
+ * still full of live sessions afterwards is refused, fail-closed. Every operation is guarded by the
+ * instance monitor.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -64,10 +70,19 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     @Override
-    public synchronized void create(SessionRecord session) {
+    public synchronized void create(SessionRecord session, Instant now) {
         Objects.requireNonNull(session, "session");
-        if (byId.size() >= maxSessions) {
-            throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
+        Objects.requireNonNull(now, "now");
+        // An upsert replaces a record already counted against the bound, so it consumes no new
+        // capacity and must not be refused at the ceiling — that is the path a rotated session takes.
+        if (!byId.containsKey(session.sessionId()) && byId.size() >= maxSessions) {
+            // Sweep once, then re-test: expired sessions still hold their slots until something
+            // reclaims them, and reaching the bound is the trigger. A store still at the bound after
+            // the sweep is genuinely full of live sessions, and refusing it is the fail-closed guard.
+            sweepExpired(now);
+            if (byId.size() >= maxSessions) {
+                throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
+            }
         }
         byId.put(session.sessionId(), session);
         index(bySub, session.sub(), session.sessionId());
