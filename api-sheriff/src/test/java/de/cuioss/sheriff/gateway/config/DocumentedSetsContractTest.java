@@ -163,6 +163,25 @@ class DocumentedSetsContractTest {
     private static final String COOKIE_BUDGET_KEY = "max_cookie_size:";
 
     /**
+     * The undeclared key the {@code oidc.session} negative control injects, and the JSON pointer the
+     * validator reports it against. Both must stay in step with the control's own document literal.
+     * <p>
+     * A rendered error is {@code "<instanceLocation>: <message>"}, and only these two parts are
+     * locale-stable: the message wording is emitted in the JVM's default locale (it reads
+     * {@code "Eigenschaft 'max_cookie_sizes' ist im Schema nicht definiert…"} on a German JVM), while
+     * the pointer and the key name interpolated into it are not translated. The control's predicate
+     * is therefore built from these alone — asserting any translated wording would make the guard
+     * fail on a machine whose locale merely differs.
+     * <p>
+     * The pointer names the {@code oidc.session} node rather than the key itself because that is
+     * where {@code additionalProperties: false} reports the violation.
+     */
+    private static final String INJECTED_SESSION_KEY = "max_cookie_sizes";
+
+    /** The JSON pointer the injected key's rejection is reported against; see {@link #INJECTED_SESSION_KEY}. */
+    private static final String INJECTED_SESSION_KEY_LOCATION = "/oidc/session";
+
+    /**
      * The single root key the bundled schema requires. The cookie exhibit is a fragment rooted at
      * {@code oidc}, so it is wrapped with this line to become a document the schema can judge.
      */
@@ -332,11 +351,18 @@ class DocumentedSetsContractTest {
         List<String> errors = validationErrors(document, "the oidc.session negative control");
 
         // Assert
-        assertFalse(errors.isEmpty(), "the bundled gateway schema accepted 'max_cookie_sizes' under"
-                + " oidc.session, which it does not declare. The two exhibit guards above assert zero"
-                + " errors through this same code path, so without a demonstrated rejection they would"
-                + " pass just as happily against a schema that validates nothing at all. The"
-                + " oidc.session node sets additionalProperties: false and must refuse an undeclared key");
+        assertTrue(errors.stream().anyMatch(error -> error.contains(INJECTED_SESSION_KEY_LOCATION)
+                        && error.contains(INJECTED_SESSION_KEY)),
+                "no reported error points at '" + INJECTED_SESSION_KEY + "' under "
+                        + INJECTED_SESSION_KEY_LOCATION + ", so the bundled gateway schema did not reject"
+                        + " the key it does not declare. The two exhibit guards above assert zero"
+                        + " errors through this same code path, so without a demonstrated rejection they would"
+                        + " pass just as happily against a schema that validates nothing at all. The"
+                        + " oidc.session node sets additionalProperties: false and must refuse an undeclared key."
+                        + " Asserting on the injected key rather than merely on a non-empty list is what keeps"
+                        + " this control honest: any unrelated schema error — a new required key at the root or"
+                        + " under oidc — would otherwise keep it green after it had stopped proving anything."
+                        + " Observed errors: " + errors);
     }
 
     // --- helpers ---------------------------------------------------------------------------------
