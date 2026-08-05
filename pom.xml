@@ -9,7 +9,7 @@
     </parent>
     <groupId>de.cuioss.sheriff.gateway</groupId>
     <artifactId>api-sheriff-parent</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>API Sheriff Parent</name>
     <description>An API-Gateway focused on Security and a lightweight approach.
@@ -39,7 +39,7 @@
         <developerConnection>
             scm:git:https://github.com/cuioss/api-sheriff/
         </developerConnection>
-        <tag>0.1.0</tag>
+        <tag>HEAD</tag>
     </scm>
     <issueManagement>
         <url>https://github.com/cuioss/api-sheriff/issues</url>
