@@ -17,8 +17,13 @@ Throughout, the epic under close-out is:
 EPIC=.plan/local/orchestrator/<slug>
 ```
 
-Every step operates on that tree. **Nothing in this file names a particular epic, round number,
-defect id or lesson id** — see *Mechanism vs state* below; that is the design, not an omission.
+That tree is the **default** root, and steps 1, 2 and 4 write only there. **Steps 3, 5, 6, 7 and 8
+deliberately reach beyond it** — into repository source, project-scoped memory, and the successor
+epics' trees — and each says so where it does. Read the write scope from the step, not from this
+line.
+
+**Nothing in this file names a particular epic, round number, defect id or lesson id** — see
+*Mechanism vs state* below; that is the design, not an omission.
 
 ---
 
@@ -33,7 +38,7 @@ A close-out that ran and a close that happened must never look alike.
 
 ## Not runnable by accident
 
-Four preconditions, all of them before any write:
+Five preconditions, all of them before any write:
 
 1. **The slug is given explicitly.** Never infer it from "the current epic", the most recently
    touched tree, or the only one that looks active. `ls .plan/local/orchestrator/` and confirm the
@@ -45,10 +50,20 @@ Four preconditions, all of them before any write:
    undrained OUTBOX. **Any plan not yet in a terminal state stops the close-out.**
 3. **The operator has asked for it, on this epic.** Say which slug you are about to close out and
    what the sweep will touch — the successor epics' trees included — before touching anything.
-4. **Read the epic's own close-out state document first**, if it has one (conventionally
-   `$EPIC/epic-closeout.md`). That is where this epic's *state* lives: which round is next, which
+4. **The epic's close-out state document exists and has been read** — conventionally
+   `$EPIC/epic-closeout.md`. That is where this epic's *state* lives: which round is next, which
    defects owe verification, how many lessons are in the corpus. This skill supplies the *how*; that
    document supplies the *what*, and it is authoritative over any recollection.
+
+   **It is required, not optional.** Without it the counts and the outstanding items have no
+   authoritative source and every step below runs on recollection. If it is absent — a successor
+   that never received one under step 7, or an epic predating the convention — **stop and compile it
+   first**, from the epic's own artifacts and nothing else: the next round and its row count from
+   `$EPIC/bundle-handoff-index.md`, the open defects and watches from the anchor, the corpus count
+   from `manage-lessons list`. Then have the operator confirm it before step 1 writes anything.
+5. **Only one close-out runs at a time.** Step 3 drains a corpus that is global to the repository, so
+   two concurrent close-outs can each read the same lesson as unconsumed and dispose of it twice.
+   Nothing locks it — the ordering in step 3 makes a *re-run* safe, not a concurrent run.
 
 ## Mechanism vs state — the whole design
 
@@ -69,8 +84,9 @@ mechanism document living in a closed-and-archived tree.
 
 The **Ledger Write-Boundary** forbids an executing plan from creating or editing *any* file under
 `.plan/local/orchestrator/{epic}/`; its only channels back are its PR and its `inbox/` OUTBOX. Steps
-1, 2, 4, 6 and 7 below are ledger writes and step 5 is outside the repository entirely, so a
-plan-marshall call is **structurally incapable** of performing them.
+1, 2 and 4 write this epic's ledger; steps 6, 7 and 8 write the successors' ledgers; step 5 is
+outside the repository entirely. A plan-marshall call is **structurally incapable** of performing
+any of them.
 
 **The one genuine plan-shaped slice** is step 3's tail: where a consumed lesson must land in
 *repository source* — documentation, an ADR, `CLAUDE.md`. That is spawned **from** the triage as its
@@ -92,7 +108,13 @@ Compile and deliver the outstanding round of plan-marshall bundle findings for t
 - **Flip `UNSENT` → sent in the SAME action as the send**, and relocate the carrier into
   `$EPIC/archive/bundle-handoffs/` in that same action. Nothing does this automatically. An index
   that is accurate right up until the moment it matters is worse than no index, because it is
-  believed — a round has already been compiled twice for want of this flip.
+  believed — a round has already been compiled twice because the flip was deferred.
+
+  **This is a rule about not deferring the flip; it is not a claim of atomicity.** The send is
+  external and the flip is a file edit, so an interruption between them can still leave a delivered
+  round with unflipped rows, or the reverse. What catches that is the next round's dedup pass
+  against this index — which is why the pass is mandatory before compiling, and why a suspected
+  interruption is reconciled against the delivered carriers rather than assumed either way.
 - **Round numbering restarts at 1 per epic**, and the epic's name distinguishes the carriers
   (`V02-round-1 item 3`, `V03-round-1 item 2`). A sequence shared across epics makes a carrier's
   provenance unreadable.
@@ -325,5 +347,4 @@ the operator's separate decision.
 
 - `$EPIC/epic-closeout.md` — this epic's *state*: what is outstanding, right now.
 - `$EPIC/bundle-handoff-index.md` — the durable dedup base for step 1.
-- `.claude/skills/release/SKILL.md` — the same shape one level down: a procedure that stops short of
-  the irreversible act and leaves it to a deliberate operator decision.
+- `.plan/local/lessons-learned/` — the repository-wide corpus step 3 drains.
