@@ -25,7 +25,9 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
@@ -36,6 +38,14 @@ import java.util.regex.Pattern;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
+import com.networknt.schema.Error;
+import com.networknt.schema.InputFormat;
+import com.networknt.schema.Schema;
+import com.networknt.schema.SchemaRegistry;
+import com.networknt.schema.SchemaRegistryConfig;
+import com.networknt.schema.SpecificationVersion;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -67,10 +77,24 @@ import org.junit.jupiter.api.Test;
  * adjectives, so a sentence like "with minimal overhead" satisfies one while the mode it names has
  * no entry at all.
  * <p>
+ * <strong>Shipped exhibits round-trip through the bundled schema.</strong> The same drift problem has
+ * a second shape: a document may restate not a <em>set</em> but a whole <em>configuration example</em>
+ * an operator is invited to copy. Such an exhibit has no mechanical tie to the schema that governs
+ * the file it exemplifies, so a key the schema never declares reads as supported while the gateway
+ * refuses it at boot — the failure mode this guard was written for, where the shipped cookie-mode
+ * exhibits declared {@code oidc.session.max_cookie_size} against a schema whose
+ * {@code additionalProperties: false} rejected it. The two shipped exhibits are therefore validated
+ * against the bundled schema through the same {@code com.networknt} code path {@code ConfigLoader}
+ * boots with, and must produce zero errors.
+ * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a literal sentence fragment held
  * in a named constant. When an anchor cannot be located, or locates an empty set, the test fails
  * naming both the document and the anchor rather than asserting over nothing. A guard that stops
  * matching after a rewrite must break loudly; one that quietly matches nothing is worse than absent.
+ * The exhibit guards carry the same discipline in two parts: each extracted exhibit must be non-empty
+ * and must still carry the budget key whose absence from the schema motivated the guard, and a
+ * negative control drives an undeclared {@code oidc.session} key through the identical code path to
+ * prove that path can still reject.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -83,6 +107,7 @@ class DocumentedSetsContractTest {
 
     private static final Path CONFIGURATION_ADOC = repoRoot().resolve("doc/configuration.adoc");
     private static final Path USER_README_ADOC = repoRoot().resolve("doc/user/README.adoc");
+    private static final Path BFF_COOKIE_ADOC = repoRoot().resolve("doc/user/bff-cookie.adoc");
 
     /** The bundled schema, read off the classpath so the assertion sees the shipped copy. */
     private static final String SCHEMA_RESOURCE = "/schema/gateway.schema.json";
@@ -110,6 +135,45 @@ class DocumentedSetsContractTest {
      * whose own line also carries a {@code #} comment containing the {@code |}-separated mode list.
      */
     private static final String CONFIG_PROFILE_ANCHOR = "profile: strict";
+
+    /**
+     * Anchor for the cookie-mode exhibit in {@code doc/user/bff-cookie.adoc} — the sentence that
+     * introduces it. The {@code [source,yaml]} block that follows is the fragment operators copy.
+     */
+    private static final String COOKIE_EXHIBIT_ANCHOR = "A minimal cookie-based configuration:";
+
+    /**
+     * Anchor for the annotated {@code gateway.yaml} skeleton in {@code doc/configuration.adoc} — the
+     * section heading it opens. Unlike the cookie exhibit this block is already a whole document.
+     */
+    private static final String SKELETON_ANCHOR = "== Gateway Configuration";
+
+    /** Opens an AsciiDoc YAML listing; the delimited block itself follows on the next line. */
+    private static final String YAML_BLOCK_OPEN = "[source,yaml]";
+
+    /** The AsciiDoc listing-block delimiter enclosing an exhibit's body. */
+    private static final String YAML_FENCE = "----";
+
+    /**
+     * The key whose absence from the bundled schema motivated these exhibit guards. Only the key is
+     * asserted, never its value: the numeric bounds are owned by {@code SealedSessionCookieCodec} and
+     * enforced by {@code ConfigValidator}, so restating a numeral here would create the third copy
+     * this plan exists to avoid.
+     */
+    private static final String COOKIE_BUDGET_KEY = "max_cookie_size:";
+
+    /**
+     * The single root key the bundled schema requires. The cookie exhibit is a fragment rooted at
+     * {@code oidc}, so it is wrapped with this line to become a document the schema can judge.
+     */
+    private static final String MINIMAL_DOCUMENT_ROOT = "version: 1\n";
+
+    /**
+     * Enables the validator's {@code errorMessage} extension, mirroring {@code ConfigLoader}'s
+     * registry configuration so these guards judge the exhibits through the boot code path rather
+     * than through a differently-configured validator of their own.
+     */
+    private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
 
     private static final Pattern BACKTICKED = Pattern.compile("`([^`]+)`");
 
@@ -214,6 +278,67 @@ class DocumentedSetsContractTest {
         }
     }
 
+    @Test
+    @DisplayName("doc/user/bff-cookie.adoc's cookie-mode exhibit validates against the bundled schema")
+    void cookieExhibitValidatesAgainstTheBundledSchema() throws Exception {
+        // Arrange — the exhibit is a fragment rooted at 'oidc', so it is wrapped into the minimal
+        // document the schema accepts; 'version' is the only key it requires at the root
+        String exhibit = yamlBlockAfter(read(BFF_COOKIE_ADOC), COOKIE_EXHIBIT_ANCHOR,
+                BFF_COOKIE_ADOC.toString());
+        assertCarriesBudgetKey(exhibit, BFF_COOKIE_ADOC.toString());
+
+        // Act
+        List<String> errors = validationErrors(MINIMAL_DOCUMENT_ROOT + exhibit, BFF_COOKIE_ADOC.toString());
+
+        // Assert
+        assertEquals(List.of(), errors, BFF_COOKIE_ADOC + " ships a cookie-mode configuration exhibit"
+                + " that the bundled gateway schema rejects. An operator copying it would have the"
+                + " boot refused, so either the exhibit or the schema is wrong — they are not allowed"
+                + " to disagree");
+    }
+
+    @Test
+    @DisplayName("doc/configuration.adoc's annotated gateway.yaml skeleton validates against the bundled schema")
+    void configurationSkeletonValidatesAgainstTheBundledSchema() throws Exception {
+        // Arrange — this exhibit already begins at 'version: 1', so it needs no wrapping
+        String skeleton = yamlBlockAfter(read(CONFIGURATION_ADOC), SKELETON_ANCHOR,
+                CONFIGURATION_ADOC.toString());
+        assertCarriesBudgetKey(skeleton, CONFIGURATION_ADOC.toString());
+
+        // Act
+        List<String> errors = validationErrors(skeleton, CONFIGURATION_ADOC.toString());
+
+        // Assert
+        assertEquals(List.of(), errors, CONFIGURATION_ADOC + " ships an annotated gateway.yaml skeleton"
+                + " that the bundled gateway schema rejects. The skeleton is the reference document"
+                + " every other example is derived from, so a key it declares must be a key the schema"
+                + " declares");
+    }
+
+    @Test
+    @DisplayName("the exhibit code path still rejects an undeclared key under oidc.session")
+    void undeclaredSessionKeyIsRejectedByTheSameCodePath() {
+        // Arrange — the negative control: the same shape as the exhibits above, with one key
+        // deliberately misspelled into a key the schema does not declare
+        String document = """
+                version: 1
+                oidc:
+                  session:
+                    mode: cookie
+                    max_cookie_sizes: 4096
+                """;
+
+        // Act
+        List<String> errors = validationErrors(document, "the oidc.session negative control");
+
+        // Assert
+        assertFalse(errors.isEmpty(), "the bundled gateway schema accepted 'max_cookie_sizes' under"
+                + " oidc.session, which it does not declare. The two exhibit guards above assert zero"
+                + " errors through this same code path, so without a demonstrated rejection they would"
+                + " pass just as happily against a schema that validates nothing at all. The"
+                + " oidc.session node sets additionalProperties: false and must refuse an undeclared key");
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     /**
@@ -256,6 +381,102 @@ class DocumentedSetsContractTest {
                 document + " states a count that no longer matches"
                         + " AssetResponseEnvelope.CONTENT_TYPES; the list and the stated count must move"
                         + " together");
+    }
+
+    /**
+     * The body of the first AsciiDoc {@code [source,yaml]} listing block following an anchor.
+     *
+     * @param document the document text
+     * @param anchor   the literal anchor fragment preceding the block
+     * @param label    the document label used in every failure message
+     * @return the block's body, without the enclosing delimiters
+     */
+    private static String yamlBlockAfter(String document, String anchor, String label) {
+        int from = anchorIndex(document, anchor, label);
+        int open = document.indexOf(YAML_BLOCK_OPEN, from);
+        if (open < 0) {
+            return fail(label + ": no " + YAML_BLOCK_OPEN + " listing follows the anchor \"" + anchor
+                    + "\"; the anchor no longer reaches the exhibit this guard protects");
+        }
+        int fence = document.indexOf(YAML_FENCE, open + YAML_BLOCK_OPEN.length());
+        if (fence < 0) {
+            return fail(label + ": the " + YAML_BLOCK_OPEN + " listing after the anchor \"" + anchor
+                    + "\" opens no '" + YAML_FENCE + "' delimited block");
+        }
+        int bodyStart = fence + YAML_FENCE.length();
+        int close = document.indexOf("\n" + YAML_FENCE, bodyStart);
+        if (close < 0) {
+            return fail(label + ": the exhibit opened after the anchor \"" + anchor + "\" is never"
+                    + " closed by '" + YAML_FENCE + "'; this guard would otherwise assert over the rest"
+                    + " of the file");
+        }
+        return document.substring(bodyStart, close);
+    }
+
+    /**
+     * Guards an extracted exhibit against passing vacuously: it must be non-empty, and it must still
+     * carry {@link #COOKIE_BUDGET_KEY} — the key whose omission from the bundled schema is precisely
+     * what these guards exist to catch. An exhibit that no longer declares it would validate cleanly
+     * against a schema that never declared it either, which is the silent pass this check refuses.
+     *
+     * @param exhibit  the extracted exhibit body
+     * @param document the document label used in every failure message
+     */
+    private static void assertCarriesBudgetKey(String exhibit, String document) {
+        assertFalse(exhibit.isBlank(), document + ": the extracted exhibit is empty, so validating it"
+                + " would assert nothing");
+        assertTrue(exhibit.contains(COOKIE_BUDGET_KEY), document + ": the extracted exhibit no longer"
+                + " declares '" + COOKIE_BUDGET_KEY + "'. That key is the one this guard was written"
+                + " for — without it the exhibit would validate against a schema that omits it too,"
+                + " and the drift this test protects against would go unnoticed");
+    }
+
+    /**
+     * Validates a YAML document against the bundled gateway schema through the same
+     * {@code com.networknt} path {@code ConfigLoader} uses at boot, including its
+     * {@code errorMessage} registry configuration.
+     * <p>
+     * The parsed tree is bridged to the validator through its own JSON rendering exactly as the
+     * loader does it, so these guards exercise the shipped behaviour rather than an approximation of
+     * it.
+     *
+     * @param yaml     the document to validate
+     * @param label    the document label used in every failure message
+     * @return the validation messages, empty when the document satisfies the schema
+     */
+    private static List<String> validationErrors(String yaml, String label) {
+        JsonNode tree;
+        try {
+            tree = new YAMLMapper().readTree(yaml);
+        } catch (IOException e) {
+            return fail(label + ": the exhibit is not parseable YAML, so the gateway could never load"
+                    + " it as written: " + e.getMessage());
+        }
+        List<String> messages = new ArrayList<>();
+        for (Error error : gatewaySchema().validate(tree.toString(), InputFormat.JSON)) {
+            messages.add(error.getInstanceLocation() + ": " + error.getMessage());
+        }
+        return messages;
+    }
+
+    /**
+     * The bundled gateway schema, compiled off the classpath so the assertion sees the shipped copy.
+     *
+     * @return the compiled schema
+     */
+    private static Schema gatewaySchema() {
+        SchemaRegistry registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12,
+                builder -> builder.schemaRegistryConfig(SchemaRegistryConfig.builder()
+                        .errorMessageKeyword(ERROR_MESSAGE_KEYWORD)
+                        .build()));
+        try (InputStream in = DocumentedSetsContractTest.class.getResourceAsStream(SCHEMA_RESOURCE)) {
+            if (in == null) {
+                return fail("the bundled schema " + SCHEMA_RESOURCE + " is not on the test classpath");
+            }
+            return registry.getSchema(in);
+        } catch (IOException e) {
+            return fail("cannot read the bundled schema " + SCHEMA_RESOURCE + ": " + e.getMessage());
+        }
     }
 
     /**

@@ -318,6 +318,10 @@
             "max_sessions": {
               "type": "integer",
               "description": "Server-mode upper bound on concurrently stored sessions — a DoS guard on the in-memory store. Creating a session beyond the bound is refused fail-closed."
+            },
+            "max_cookie_size": {
+              "type": "integer",
+              "description": "Cookie-mode sealed cookie-value size budget in bytes; valid range 40..8192, defaulting to 4096 when omitted. This is the ONE declared number driving both ends of the round trip — the seal-time budget and the gateway's pre-route Cookie header-value cap — so the two can never contradict each other. The bounds are stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no minimum, maximum or default keyword is declared."
             }
           }
         },
