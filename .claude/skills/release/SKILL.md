@@ -106,13 +106,24 @@ Everywhere this file or the workflow says a step runs "before anything is pushed
 
 1. **Do not re-run the whole workflow.** A second dispatch would attempt another Maven release of a
    version that is already published.
-2. Fix the cause on `main` and merge it.
-3. **Re-run the failed `publish-image` job alone** from the Actions UI (*Re-run failed jobs*). It
-   reads its version from `.github/project.yml` at the dispatch SHA and checks out the release tag,
-   so it reproduces the same inputs without touching Maven Central.
-4. If the failure was the Trivy gate on an unfixable base-image CVE, see the next section before
-   re-running.
-5. If the version has to be abandoned: **cut a patch version and publish relocation stubs.** Maven
+2. **Classify the failure before doing anything — a re-run cannot pick up a fix.** *Re-run failed
+   jobs* creates a new **attempt of the same run**: it reuses the original event context and the
+   original workflow definition, and `publish-image` checks out the **release tag**, not `main`. A
+   commit merged to `main` after the dispatch is therefore invisible to the re-run. "Fix it on
+   `main`, then re-run" does not work here and must not be attempted.
+   - **Transient job/runtime failure** — a registry timeout, a runner flake, a Maven Central
+     propagation race. **Re-run the failed `publish-image` job alone** from the Actions UI (*Re-run
+     failed jobs*). It reads its version from `.github/project.yml` at the dispatch SHA and checks
+     out the release tag, so it reproduces the same inputs without touching Maven Central.
+   - **Anything carried in the tree or the workflow** — the source, the Dockerfile, the base-image
+     pin, a `.trivyignore`, `release.yml` itself. A re-run reproduces the same inputs and so fails
+     the same way, every time. Fix the cause on `main` and **cut a new patch version**. Do not
+     re-run.
+3. If the failure was the Trivy gate on an unfixable base-image CVE, see the next section for the
+   remedy — but note that both remedies (re-pinning the base, adding a `.trivyignore`) are **tree**
+   changes, so they land under the second bullet above and need a new patch version rather than a
+   re-run.
+4. If the version has to be abandoned: **cut a patch version and publish relocation stubs.** Maven
    Central artifacts are never deleted.
 
 ### If the scan blocks on an unfixable base-image CVE
@@ -307,28 +318,70 @@ Zero open PRs means an empty merge queue (a queue entry requires an open PR).
 
 ```bash
 git fetch --tags --force
-git tag --list '<version>'
-git ls-remote --tags origin | grep -w '<version>' || echo "no such tag"
+git rev-parse --verify --quiet 'refs/tags/<version>'; case $? in
+  0) echo "STOP: local tag <version> already exists" ;;
+  1) echo "OK: no local tag <version>" ;;
+  *) echo "ERROR: the check did not evaluate - this is NOT a pass" ;;
+esac
+git ls-remote --exit-code --tags origin 'refs/tags/<version>'; case $? in
+  0) echo "STOP: remote tag <version> already exists" ;;
+  2) echo "OK: no remote tag <version>" ;;
+  *) echo "ERROR: the check did not evaluate - this is NOT a pass" ;;
+esac
 ```
 
-Both must be empty.
+**Both must report `OK`. Anything else stops the release** — including `ERROR`, which means the
+check never evaluated and is therefore not a pass.
 
+> **Match the full ref, and branch on the exit code — the same discipline as the stubs check in
+> Step 2.** `git tag --list '<version>'` and `git ls-remote … | grep …` only *print*; a procedure
+> that reads their output by eye is not a guard, and a re-run that slips past it reaches the
+> workflow's `force: true` tag push. `grep -w '<version>'` is doubly wrong: `.` is a regex
+> any-character, and `-w` treats `-` as a word boundary, so `-w '0.1.0'` also matches
+> `refs/tags/0.1.0-rc1`. The exact `refs/tags/<version>` forms above match one ref and nothing else.
+>
 > **Why this is checked directly:** the tag push is `force: true`, so a re-run can **MOVE** an
 > existing release tag rather than refusing. `release:prepare` would likely fail first, but that is
 > *incidental* protection, not a designed guard.
 
 ### Step 4 — Gate on a green `main`
 
-The dispatch builds from `main`. Confirm the latest `main` run is green before releasing:
+The dispatch builds from `main`, so the gate must be bound to **the exact commit the dispatch will
+build** — the `origin/main` SHA you just recorded in (iii) — and not to "the last few runs on the
+branch". `--branch main --limit 5` spans several workflows and several commits, and reading it by
+eye passes a red required run as readily as a green one.
 
 ```bash
-gh run list --repo cuioss/API-Sheriff --branch main --limit 5 \
-  --json databaseId,workflowName,status,conclusion,headSha
+MAIN_SHA=$(git rev-parse origin/main)   # the SHA from (iii); re-read it, do not retype it
+echo "$MAIN_SHA"
+gh run list --repo cuioss/API-Sheriff --commit "$MAIN_SHA" \
+  --json workflowName,event,status,conclusion,databaseId,url
 ```
 
-**Never dispatch a release on a red `main`.** Fix and re-check.
+**Every required workflow must appear for `$MAIN_SHA` with `status: completed` and
+`conclusion: success`.** Three distinct outcomes, and only the first permits a dispatch:
+
+| What you see for `$MAIN_SHA` | Verdict |
+|---|---|
+| Each required workflow `completed` / `success` | Green — proceed |
+| Any required workflow `failure` / `cancelled` / `timed_out` | Red — **do not dispatch.** Fix and re-check |
+| A required workflow absent, `queued` or `in_progress` | **Not a pass.** An absent run is a check that never ran, not a check that passed — wait for it, or establish why it is legitimately absent |
+
+**Never dispatch a release on a red `main`, and never on an unproven one.** Fix and re-check.
 
 ### Step 5 — Dispatch the release, deliberately
+
+**Record the pre-dispatch high-water mark first.** Run ids increase monotonically, so the newest
+existing `Release` run id is what lets the next step tell *your* dispatch apart from one that was
+already in flight:
+
+```bash
+PREV_RUN_ID=$(gh run list --repo cuioss/API-Sheriff --workflow "Release" --limit 1 \
+  --json databaseId --jq 'first | .databaseId // 0')
+echo "$PREV_RUN_ID"
+```
+
+Then dispatch:
 
 ```bash
 gh workflow run "Release" --repo cuioss/API-Sheriff --ref main
@@ -339,13 +392,27 @@ gh workflow run "Release" --repo cuioss/API-Sheriff --ref main
 **This is the only way a release is cut on this repository.** There is no auto-trigger to fall back
 on and none to wait for.
 
-Capture the run:
+Capture the run — **bound to this dispatch, and failing closed when the match is not unique**:
 
 ```bash
-RUN_ID=$(gh run list --repo cuioss/API-Sheriff --workflow "Release" --limit 10 \
-  --json databaseId,status --jq 'map(select(.status=="in_progress" or .status=="queued")) | first | .databaseId')
+RUN_ID=$(gh run list --repo cuioss/API-Sheriff --workflow "Release" \
+  --event workflow_dispatch --commit "$MAIN_SHA" --limit 20 \
+  --json databaseId --jq "[.[] | select(.databaseId > ${PREV_RUN_ID}) | .databaseId] | \
+    if length == 1 then .[0] else empty end")
+test -n "$RUN_ID" || { echo "STOP: no unique new Release run for $MAIN_SHA - do NOT proceed"; }
 echo "$RUN_ID"
 ```
+
+> **Why the binding and the emptiness check are both load-bearing.** Selecting merely the *first*
+> queued-or-in-progress `Release` run adopts whatever run happens to be active — an older release
+> still finishing, or a colleague's dispatch — and then watches it as though it were yours. And an
+> empty selection is worse than a wrong one: `gh run watch "$RUN_ID"` with `RUN_ID` unset does not
+> fail cleanly, so a silent miss becomes a confident watch of the wrong thing. Requiring **exactly
+> one** run that is newer than the high-water mark, on the `workflow_dispatch` event, at the SHA
+> Step 4 gated on, is what makes the identification provable. **If the check prints `STOP`, do not
+> continue** — find the run in the Actions UI and confirm which dispatch it belongs to before
+> watching anything. A brand-new run can take a moment to appear; re-run the selection once before
+> treating an empty result as a real miss.
 
 ### Step 6 — Hold the quiescence window
 
@@ -366,7 +433,9 @@ Two legs, and they fail differently:
   the native compile or Maven Central propagation, not a hang.
 
 **If `publish-image` fails after `release` succeeded**, you have a partial release: go to
-*If the image lane fails after the Maven release* above. **Do not re-run the whole workflow.**
+*If the image lane fails after the Maven release* above and **classify the failure before touching
+anything** — a re-run replays the original inputs and only helps a transient failure. **Do not
+re-run the whole workflow.**
 
 ### Step 8 — Verify that EXACTLY ONE release fired
 
@@ -402,22 +471,48 @@ curl -sSf "https://repo1.maven.org/maven2/de/cuioss/sheriff/gateway/api-sheriff/
 **4 — one container image, at the matching version.** Precisely: **one manifest digest carrying two
 tags.**
 
+Resolve **both** tags to a manifest digest and compare them. `imagetools inspect` answers from the
+registry rather than the local cache, so the comparison is about what was published, not about what
+this machine happens to hold:
+
 ```bash
-docker pull ghcr.io/cuioss/api-sheriff:<version>
-docker image inspect ghcr.io/cuioss/api-sheriff:<version> \
+IMAGE=ghcr.io/cuioss/api-sheriff
+TAG_SHA=sha-<40-char release-tag commit SHA>
+
+VERSION_DIGEST=$(docker buildx imagetools inspect "$IMAGE:<version>" --format '{{.Manifest.Digest}}')
+SHA_DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG_SHA" --format '{{.Manifest.Digest}}')
+echo "version tag -> $VERSION_DIGEST"
+echo "sha tag     -> $SHA_DIGEST"
+
+if [ -n "$VERSION_DIGEST" ] && [ "$VERSION_DIGEST" = "$SHA_DIGEST" ]; then
+  echo "OK: one digest, two tags"
+else
+  echo "STOP: the tags disagree, or a digest did not resolve - this release is NOT verified"
+fi
+```
+
+**An empty digest is a failed check, not a passed one** — hence the `-n` guard: an unauthenticated
+pull of a still-private package (Step 9) returns nothing, and comparing two empty strings would
+otherwise report success.
+
+Then confirm the version label on the resolved digest:
+
+```bash
+docker pull "$IMAGE@$VERSION_DIGEST"
+docker image inspect "$IMAGE@$VERSION_DIGEST" \
   --format '{{index .Config.Labels "org.opencontainers.image.version"}}'
 ```
 
-Confirm the label equals `<version>`, and that `ghcr.io/cuioss/api-sheriff:<version>` and
-`ghcr.io/cuioss/api-sheriff:sha-<40-char release-tag commit SHA>` resolve to the **same digest**.
-The workflow already asserts this at `release.yml:246-258`; this is the independent confirmation.
+The label must equal `<version>`. The workflow already asserts the same-digest property at
+`release.yml:246-258`; the commands above are the **independent** confirmation, which is the whole
+point of this step — a check that only re-reads the workflow's own claim confirms nothing.
 
-Verify the Cosign signature, using **exactly** these two values (they are derived from the
-`publish-image` job's identity and change silently if the workflow file is renamed or the release is
-dispatched from a ref other than `main`):
+Verify the Cosign signature **against that resolved digest**, using **exactly** these two identity
+values (they are derived from the `publish-image` job's identity and change silently if the workflow
+file is renamed or the release is dispatched from a ref other than `main`):
 
 ```bash
-cosign verify ghcr.io/cuioss/api-sheriff@<digest> \
+cosign verify "$IMAGE@$VERSION_DIGEST" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main
 ```
@@ -513,7 +608,10 @@ collapsed or removed while reformatting the notes.
   `main` twice as a queue bypass actor.
 - **`release/relocation-stubs` must NEVER be merged**, and the release must not pick it up.
 - **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
-  image-lane failure, re-run **`publish-image` alone** — never the whole workflow.
+  image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only
+  for a *transient* failure. A re-run replays the original event context and checks out the release
+  tag, so it **cannot** pick up a fix merged to `main`; a cause carried in the tree or the workflow
+  needs a new patch version instead.
 - **Never relax the Trivy `severity` or flip `exit-code` to `'0'`** to get a release out. Use a
   documented `.trivyignore` entry, or re-pin the base image.
 - **Verify "exactly one of each", not "it worked"** — one tag, one GitHub release, one Central

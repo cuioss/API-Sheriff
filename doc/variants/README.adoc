@@ -107,7 +107,7 @@ measurement artifact.
 | `passthrough.baseline.tolerance`
 
 | Measurement-window band
-| *6s absolute*, i.e. *10%* of the default 60s load phase. Derived from the *live* `k6.duration`, so a shortened run tightens the band rather than under-covering it
+| *6s absolute*, i.e. *10%* of the default 60s load phase. The *absolute* drift is fixed and the band is expressed as a fraction of the *live* `k6.duration`, so a shortened run *widens* the relative band -- a 30s run gets 6/30 = *20%*. That is deliberate: the worst-case graceful-stop tail is also absolute, so a fixed 10% would reject a healthy short run as `WINDOW_MISMATCH`
 | `passthrough.baseline.window.tolerance`
 
 | Error-rate ceiling

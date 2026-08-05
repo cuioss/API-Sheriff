@@ -261,15 +261,17 @@ The two costs to keep separate:
 | Path | What dominates
 
 | *Login handshake* | The OIDC authorization-code exchange -- network round trips to the identity provider. It happens *once per session*, so amortising it into a per-request figure misrepresents both numbers. Measure and report it separately.
-| *Steady-state API call* | A store lookup, then the mediated `Authorization: Bearer` injection, then the shared forward path. This is the figure that belongs next to Variant 1's `bearer` aspect.
+| *Steady-state API call* | The session cookie read and validated and resolved to a session id, then the store lookup it keys, then the mediated `Authorization: Bearer` injection, then the shared forward path. This is the figure that belongs next to Variant 1's `bearer` aspect.
 |===
 
 What to watch on this variant specifically:
 
-* *The store lookup is the variant's whole overhead* on the steady-state path. With
-  `session.store: memory` -- the only initial option -- that lookup is in-process, so the delta
-  from Variant 1 should be small. It is the number that would change first if a networked store
-  were introduced.
+* *The store lookup is the variant's dominant overhead* on the steady-state path -- dominant, not
+  sole: the cookie read, validation and resolution sit in front of it and are paid on every request
+  too, so a delta from Variant 1 attributed entirely to the store would over-attribute. With
+  `session.store: memory` -- the only initial option -- the lookup is in-process, so the delta from
+  Variant 1 should be small. It is the term that would change first if a networked store were
+  introduced, which is why it is called out separately from the cookie work that precedes it.
 * *`max_sessions` is a DoS guard, and it interacts with load testing.* A run whose virtual users
   each establish a session can approach the configured ceiling; a benchmark that starts refusing
   sessions is measuring the guard, not the gateway. Expired sessions do *not* free their slot on

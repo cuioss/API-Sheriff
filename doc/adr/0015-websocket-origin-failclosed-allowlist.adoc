@@ -49,16 +49,36 @@ validation-rules summary) before the implementing code:
   origin or the upgrade is rejected *before* any upstream dial. An *absent or empty*
   `websocket.allowed_origins` on a bearer WebSocket route *fails the boot* -- there is
   deliberately no accept-any default.
-* *Bearer only; session reuses the BFF set.* The field is validated only on a `protocol: websocket`
-  route whose effective auth is `require: bearer`. A `require: session` WS route reuses
-  `session.csrf.trusted_origins` instead, keeping the WS Origin check and the CORS/CSRF posture one
-  decision. A socket is never authenticated on the ambient session cookie alone.
+* *Bearer only.* The field is validated -- and its fail-closed boot check enforced -- only on a
+  `protocol: websocket` route whose effective auth is `require: bearer`. A socket is never
+  authenticated on the ambient session cookie alone.
++
+[WARNING]
+====
+*The intended `require: session` posture -- reuse `session.csrf.trusted_origins`, keeping the WS
+Origin check and the CORS/CSRF posture one decision -- is NOT implemented at 0.1.0.* Nothing wires
+`session.csrf.trusted_origins` into the route table's WebSocket allowlist: a session WS route that
+declares no `websocket.allowed_origins` reaches boot with an *empty* allowlist, and an empty
+allowlist means *no enforcement* -- the upgrade proceeds without an Origin check. Only the bearer
+leg fails the boot on an absent allowlist.
+
+*Until the reuse lands, a session WebSocket route must declare `websocket.allowed_origins`
+explicitly.* An explicitly declared allowlist is enforced on any route, so the control is
+reachable; it is the automatic inheritance that is missing, not the check itself. This states the
+same position as link:../security-threat-model.adoc#gw-09[threat model GW-09], whose status is
+*GAP for session-authed routes*. The two documents agree, and this bullet must not be read as
+claiming coverage the code does not deliver.
+====
 
 == Consequences
 
 * CSWSH (GW-09) is closed for bearer WebSocket routes by construction: an unlisted origin cannot
   complete the handshake, and a misconfigured (empty) allowlist fails the boot loudly rather than
   admitting every origin.
+* *CSWSH stays open for `require: session` WebSocket routes that do not declare an allowlist
+  themselves* -- the fail-closed boot check covers the bearer leg only, so the session leg carries
+  no floor. This is the residual the Decision's warning above records and that
+  link:../security-threat-model.adoc#gw-09[GW-09] tracks as a gap to close.
 * The configuration surface grows one field with self-contained, boot-validated semantics; CORS
   and the WS Origin check stay independent and separately auditable.
 * The rejection is emitted before the upstream is contacted, so a hijack attempt never reaches the

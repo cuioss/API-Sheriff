@@ -490,9 +490,11 @@ and streamed responses (never materialized). The gateway is an *opaque* passthro
 not decode `Content-Encoding`, so it is not itself a decompression-bomb target, but it must
 still cap body bytes. Explicit YAML `StreamReadConstraints` are applied at config load.
 
-*Status:* PARTIAL/COVERED. Streaming + the `max_body_bytes` counter is ADR-0006 + pipeline
+*Status:* PARTIAL. Streaming + the `max_body_bytes` counter is ADR-0006 + pipeline
 stage 6; edge limits, idle timeout, admission cap and graceful drain are delivered as the
-edge-hardening bounds; YAML limits are applied at config load.
+edge-hardening bounds; YAML limits are applied at config load. The individual controls are
+delivered, but the assertion below is not yet pinned across the whole set, which is what keeps
+the entry at PARTIAL rather than COVERED.
 
 *Assertion.* A slow-drip request is evicted at the idle timeout; a body exceeding
 `max_body_bytes` aborts mid-stream without full buffering; concurrent large requests do not
@@ -612,10 +614,12 @@ Honouring the Gravitee lesson, a generator-driven traversal/encoding regression 
 (`PathConfinementTest`) asserts the whole *class* is closed for the shared confinement, not one
 spelling.
 
-*Status:* COVERED/ELIMINATED. No SQL, no SAML, no management endpoints; config-path handling
+*Status:* COVERED. Part of the failure class is eliminated outright -- no SQL, no SAML, no
+management endpoints -- and the surfaces that do exist are owned by code: config-path handling
 and the secrets-on-raw-value rule are enforced by the configuration validator; the
 asset-serving file-path surface (ADR-0014) is confined by the shared `PathConfinement` and
-proven by the traversal/encoding corpus.
+proven by the traversal/encoding corpus. The entry is COVERED rather than ELIMINATED because
+those surviving surfaces carry the live assertion below.
 
 *Assertion.* No SQL or SAML code path exists; config file resolution cannot escape the config
 directory via `..`/encoding; a full traversal corpus is rejected; asset file resolution -- for

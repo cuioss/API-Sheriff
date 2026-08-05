@@ -384,9 +384,12 @@ stays.
 
 No key in the shipped `application.properties` is *inert* -- declared or bound with no production
 consumer. The raw TLS keys a neutral surface would otherwise compete with (`quarkus.tls.protocols`,
-`quarkus.tls.cipher-suites`, `quarkus.tls.alpn`, `quarkus.http.ssl.client-auth`) are absent, and
-their reappearance is a failing build rather than a review-time catch. The two neutral port keys
-(`sheriff.tls.public-port`, `sheriff.tls.internal-https-port`) both have production consumers.
+`quarkus.tls.cipher-suites`, `quarkus.tls.alpn`, `quarkus.http.ssl.client-auth`) are absent. Their
+absence is *asserted by nothing*: no build rule, no CI check and no config-source validation
+currently fails on their reappearance, so it is a review-time catch and only a review-time catch.
+Adding that enforcement is open work, and until it lands this paragraph is a statement of the
+current state rather than of a guarantee. The two neutral port keys (`sheriff.tls.public-port`,
+`sheriff.tls.internal-https-port`) both have production consumers.
 
 That is a statement about this file at this revision, not a general guarantee. The sweep read the
 shipped runtime properties, the TLS and configuration subsystems, and the operator-facing defaults

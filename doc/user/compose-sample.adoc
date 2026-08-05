@@ -4,10 +4,19 @@
 :sectnums:
 
 A runnable Docker Compose stack that shows the *shape* of an API Sheriff deployment: the published
-image pulled by tag, all configuration supplied through read-only mounts, and every runtime-hardening
-directive a real deployment should set, set explicitly rather than left to a default. It is a
+image pulled by tag, all configuration supplied through read-only mounts, and the runtime-hardening
+directives a real deployment should set, set explicitly rather than left to a default. It is a
 teaching artifact, not a deployment you should run as-is -- see
 <<_what_must_change_before_this_is_real>>.
+
+*The scope of that hardening claim, stated so it is not read wider than it holds.* The *security*
+directives -- non-root, `cap_drop: ALL`, `no-new-privileges`, `read_only` with explicitly sized
+`tmpfs`, and read-only configuration mounts -- are set on *all three* services. *Resource limits are
+set on the gateway only*, and that asymmetry is deliberate rather than an omission: an unvalidated
+memory cap on a third-party image is a crash loop in an operator's face rather than a hardening win,
+and the right ceiling for the identity provider follows from the database and realm size a real
+deployment runs, which this sample cannot know. Size those for your own stack -- do not copy a
+number from here.
 
 It lives at `deployment/compose-sample/` and is a *sample*, not a test harness. It carries three
 services and nothing else -- the gateway, an identity provider whose realm mints the tokens the

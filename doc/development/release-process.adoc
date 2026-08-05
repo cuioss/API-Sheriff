@@ -191,7 +191,13 @@ are normative, and both are load-bearing for the dispatch-only guarantee.
 
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares
 `on: workflow_dispatch` and nothing else. *No merge -- of any pull request, touching any path --
-can publish anything.* Publishing is always an explicit act by a maintainer.
+can cut a release.* Releasing is always an explicit act by a maintainer.
+
+The scope of that statement is *release publication*, and it is stated narrowly on purpose. A merge
+to `main` is not inert: link:../../.github/workflows/maven.yml[`maven.yml`] runs on
+`push: branches: [main]`, and its snapshot deployment runs on that push (it is skipped on pull
+requests). So a merge can publish a *snapshot* -- what it cannot do is cut a release. The
+irrevocable act, a Maven Central GA coordinate, is reachable only through the dispatch.
 
 Do not add an event-driven trigger to the release workflow. A `pull_request` trigger scoped to
 `.github/project.yml` reads as a convenience -- merge the version bump, get the release -- but it

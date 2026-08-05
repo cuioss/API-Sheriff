@@ -175,6 +175,7 @@ What the suite exercises on this variant:
 
 | `unauth` | The pipeline with *no* token validation -- filter, route, forward. The floor cost of proxying.
 | `bearer` | The same path *plus* offline validation and scope enforcement. Against `unauth`, the delta is the true cost of token validation.
+| `passthrough` | The opaque relay lane (`passthroughRelay`, `passthroughRelayEmpty`), in its `mapped` and `empty` selector modes. It is the aspect the measurement-window band is tuned against -- see the threshold table in link:README.adoc#benchmark-baselines[the shared section].
 | `http2` | HTTP/2 upstream forwarding.
 | `graphql` | GraphQL over HTTP.
 | `ws` | The WebSocket handshake (full pipeline) and the opaque relay that follows it.
