@@ -20,6 +20,21 @@ image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sherif
 image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sheriff&metric=coverage[Coverage,link=https://sonarcloud.io/summary/new_code?id=cuioss_API-Sheriff]
 
 
+*Container Image*
+
+// The version badge deliberately excludes the `sha-` provenance tag and the `sha256-` Cosign
+// signature tag. Without `ignore=`, the newest tag on the package is the signature artifact and the
+// badge renders a signature digest as though it were the release version.
+// The asterisks and the comma are percent-encoded (%2A / %2C) on purpose: a literal `*` pair in a
+// macro target is AsciiDoc bold markup, and a literal comma risks being read as an attribute
+// separator. Both encodings are accepted by the badge service; do not "clean them up".
+image:https://ghcr-badge.egpl.dev/cuioss/api-sheriff/latest_tag?ignore=sha-%2A%2Csha256-%2A&label=ghcr.io&color=blue[Container Image,link=https://github.com/cuioss/API-Sheriff/pkgs/container/api-sheriff]
+image:https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml/badge.svg[Release,link=https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml]
+
+image:https://img.shields.io/badge/cosign-signed-brightgreen[Cosign Signed,link=https://github.com/cuioss/API-Sheriff/blob/main/doc/user/container-image.adoc]
+image:https://img.shields.io/badge/trivy-HIGH%2FCRITICAL%20gate-brightgreen[Trivy Gate,link=https://github.com/cuioss/API-Sheriff/blob/main/doc/development/release-process.adoc]
+
+
 *Benchmarks*
 
 image:https://img.shields.io/endpoint?url=https://cuioss.github.io/api-sheriff/benchmarks/badges/integration-performance-badge.json[Integration Performance,link=https://cuioss.github.io/api-sheriff/benchmarks/integration/index.html]
@@ -61,24 +76,6 @@ toc::[]
     <artifactId>api-sheriff</artifactId>
 </dependency>
 ----
-
-[NOTE]
-====
-*Coordinate history.*
-On 2026-07-12 an automated trigger cut an unintended Maven Central release of
-`de.cuioss.sheriff.api:*:1.0.0` while the project was still in pre-1.0 development.
-Maven Central releases are immutable, so that `1.0.0` could not be withdrawn.
-
-The `de.cuioss.sheriff.api` coordinates are therefore *abandoned*. The project moved to
-`de.cuioss.sheriff.gateway` and restarted its version line at `0.1.0-SNAPSHOT`, which
-truthfully reflects its pre-1.0 maturity. Artifact IDs did not change.
-
-Anything still resolving `de.cuioss.sheriff.api` is redirected by relocation-only stubs
-published at `1.0.1`, which carry no code and point at the current coordinates.
-link:doc/development/release-process.adoc[Release Process] records the standing rule this
-leaves behind: a version that must be abandoned is superseded by a patch version carrying
-relocation stubs, because Maven Central artifacts are never deleted.
-====
 
 == Modules
 

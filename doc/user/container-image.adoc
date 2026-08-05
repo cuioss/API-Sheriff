@@ -57,10 +57,15 @@ Then deploy `"${DIGEST}"` verbatim.
 [NOTE]
 ====
 *If `docker pull` fails with a not-found or authentication error immediately after a release*, the
-GHCR package is most likely still private: a package created by a `GITHUB_TOKEN` push is private by
-default, and the in-workflow smoke test pulls with its own credentials so it cannot detect this. The
-fix is a one-time maintainer action recorded on the release checklist -- set the `api-sheriff`
-package to public in the organisation's package settings.
+GHCR package visibility is most likely wrong: a package created by a `GITHUB_TOKEN` push is private
+by default, and the in-workflow smoke test pulls with its own credentials so it cannot detect this.
+The fix is a one-time maintainer action recorded on the release checklist -- set the `api-sheriff`
+package to *public* in the organisation's package settings.
+
+*`Internal` is not `public`.* Internal grants a pull to every organisation member, so a maintainer
+checking from inside the org sees success while everyone outside still gets `401`. If a pull fails
+for you but works for a maintainer, this is the reason -- the field to check is the package's
+`visibility`, and only the literal value `public` serves anonymous consumers.
 ====
 
 == Pull and run
