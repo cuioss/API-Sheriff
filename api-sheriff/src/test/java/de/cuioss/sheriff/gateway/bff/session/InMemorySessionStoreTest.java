@@ -170,6 +170,35 @@ class InMemorySessionStoreTest {
             assertEquals(0, store.destroyBySid("A"), "the secondary index was cleaned after the destroy");
             assertEquals(0, store.destroyBySid("never-seen"));
         }
+
+        @Test
+        @DisplayName("Should drop the previous subject's index entry when an upsert changes sub")
+        void shouldRepairSubIndexOnUpsert() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(session("s1", "old-sub", null, FUTURE), T0);
+
+            store.create(session("s1", "new-sub", null, FUTURE), T0);
+
+            assertEquals(0, store.destroyBySub("old-sub"),
+                    "the replaced record's subject must not keep resolving to the session id — otherwise a"
+                            + " back-channel logout for the old subject destroys the replacement");
+            assertTrue(store.resolve("s1", T0).isPresent(), "the replacement survived the stale-subject destroy");
+            assertEquals(1, store.destroyBySub("new-sub"), "the replacement is reachable under its own subject");
+        }
+
+        @Test
+        @DisplayName("Should drop the previous sid's index entry when an upsert changes sid")
+        void shouldRepairSidIndexOnUpsert() {
+            InMemorySessionStore store = new InMemorySessionStore(16);
+            store.create(session("s1", "sub1", "old-sid", FUTURE), T0);
+
+            store.create(session("s1", "sub1", "new-sid", FUTURE), T0);
+
+            assertEquals(0, store.destroyBySid("old-sid"),
+                    "an IdP that rotates sid on refresh must not leave the old sid destroying the new session");
+            assertTrue(store.resolve("s1", T0).isPresent(), "the replacement survived the stale-sid destroy");
+            assertEquals(1, store.destroyBySid("new-sid"), "the replacement is reachable under its own sid");
+        }
     }
 
     @Nested
@@ -213,7 +242,8 @@ class InMemorySessionStoreTest {
             store.create(session("s2", "sub2", null, FUTURE), T0);
 
             SessionRecord overflow = session("s3", "sub3", null, FUTURE);
-            assertThrows(IllegalStateException.class, () -> store.create(overflow, T0.plusSeconds(10)),
+            Instant afterExpiry = T0.plusSeconds(10);
+            assertThrows(IllegalStateException.class, () -> store.create(overflow, afterExpiry),
                     "the at-capacity sweep reclaims nothing while every session is live, so the DoS"
                             + " guard must still refuse — reclamation may not become a way around the bound");
             assertEquals(2, store.size(), "the refused create left the store untouched");

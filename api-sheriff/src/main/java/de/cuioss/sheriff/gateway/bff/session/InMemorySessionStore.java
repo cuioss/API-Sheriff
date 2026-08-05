@@ -36,15 +36,17 @@ import java.util.Set;
  * <p>
  * The absolute TTL is enforced two ways, with <strong>no per-session timer threads, no scheduler,
  * and no periodic task</strong>: lazily on {@link #resolve} (an expired session is evicted as it is
- * looked up) and opportunistically by {@link #sweepExpired}, whose one automatic trigger is
- * {@link #create} finding the store at its {@code maxSessions} bound.
+ * looked up) and opportunistically by {@link #sweepExpired}, whose one automatic trigger is a
+ * <em>capacity-consuming</em> {@link #create} — one introducing a session id the store does not yet
+ * hold — finding the store at its {@code maxSessions} bound. An upsert of an already-stored id
+ * replaces a record already counted against the bound, so it consumes no capacity and never sweeps.
  * <p>
  * That trigger is what makes the bound a ceiling on <em>live</em> sessions rather than on
  * accumulated ones. An expired session that nothing has resolved since it lapsed still occupies its
  * slot, so without a reclaiming trigger a store could sit permanently full of dead sessions and
- * refuse every login. Creation therefore sweeps once at the bound and re-tests it; only a store
- * still full of live sessions afterwards is refused, fail-closed. Every operation is guarded by the
- * instance monitor.
+ * refuse every login. A capacity-consuming creation therefore sweeps once at the bound and re-tests
+ * it; only a store still full of live sessions afterwards is refused, fail-closed. Every operation
+ * is guarded by the instance monitor.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -84,7 +86,18 @@ public final class InMemorySessionStore implements SessionStore {
                 throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
             }
         }
-        byId.put(session.sessionId(), session);
+        SessionRecord previous = byId.put(session.sessionId(), session);
+        if (previous != null) {
+            // An upsert may carry a different sub or sid than the record it replaces. The previous
+            // record's own index memberships must go, or the stale key keeps resolving to this id:
+            // a later destroyBySub/destroyBySid on it would destroy the replacement and report a
+            // phantom deletion, since removeInternal only deindexes under the NEW sub/sid.
+            deindex(bySub, previous.sub(), session.sessionId());
+            String previousSid = previous.sid();
+            if (previousSid != null) {
+                deindex(bySid, previousSid, session.sessionId());
+            }
+        }
         index(bySub, session.sub(), session.sessionId());
         String sid = session.sid();
         if (sid != null) {
