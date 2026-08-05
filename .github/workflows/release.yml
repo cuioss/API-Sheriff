@@ -71,7 +71,7 @@ jobs:
       # a missing config for a reason that reads nothing like "sparse checkout mode". Non-cone mode
       # applies gitignore-style patterns, which is what a single-file checkout needs.
       - name: Check out the release configuration
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: .release-config
@@ -92,7 +92,7 @@ jobs:
       # If a future parent bump changes tagNameFormat this checkout fails loudly on an unresolvable
       # ref: a red release rather than a wrong image.
       - name: Check out the release tag
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ steps.config.outputs.current-version }}
