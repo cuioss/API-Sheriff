@@ -438,7 +438,8 @@ jobs:
         run: |
           set -euo pipefail
           REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
-          for attempt in 1 2 3 4 5; do
+          ATTEMPTS=5
+          for attempt in $(seq 1 "$ATTEMPTS"); do
             if cosign verify \
               --certificate-identity-regexp "$IDENTITY_REGEXP" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -446,7 +447,7 @@ jobs:
               echo "Signature verified under the published operator identity."
               exit 0
             fi
-            if [ "$attempt" -lt 5 ]; then
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
               echo "Verification attempt ${attempt} failed; retrying in 10s (signature propagation)."
               sleep 10
             fi
