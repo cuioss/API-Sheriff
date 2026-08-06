@@ -49,6 +49,10 @@ import lombok.experimental.UtilityClass;
  *       authenticated content is never written to a shared cache.</li>
  *   <li><strong>No cookies.</strong> Any {@code Set-Cookie} the source emitted is
  *       stripped — an asset action never establishes a session.</li>
+ *   <li><strong>No borrowed connection state.</strong> Every connection-specific and
+ *       framing header the source proposed is stripped
+ *       ({@link #connectionSpecificHeaders()}), together with any HTTP/2 pseudo-header —
+ *       the gateway's own client connection owns those, never the source's.</li>
  *   <li><strong>Read-only verbs.</strong> Only {@code GET} and {@code HEAD} are
  *       served ({@link #isAllowedMethod(HttpMethod)}).</li>
  * </ul>
@@ -99,6 +103,37 @@ public class AssetResponseEnvelope {
             Map.entry("wasm", "application/wasm"));
 
     /**
+     * Hop-by-hop (RFC 7230 §6.1) plus framing headers, all lower case — the set a source's
+     * proposed headers are filtered against.
+     * <p>
+     * These describe the connection the <em>source</em> answered on, never the client connection
+     * the gateway answers on, so re-emitting them is wrong on every protocol and fatal on one:
+     * RFC 9113 §8.2.2 declares a response carrying a connection-specific header field malformed,
+     * and an HTTP/2 client answers the stream with {@code PROTOCOL_ERROR} — the whole response is
+     * discarded before a single header reaches the application. An upstream that answers
+     * {@code Connection: keep-alive} (any stock reverse proxy) or {@code Transfer-Encoding: chunked}
+     * (any streamed origin response) therefore made an {@code source: upstream} asset route
+     * unusable from a browser, while the very same route worked over HTTP/1.1, which tolerates the
+     * headers as no-ops.
+     * <p>
+     * {@code Content-Length} is stripped for a second, protocol-independent reason: the gateway
+     * writes the served body itself and the framework recomputes the length from the buffer it
+     * actually writes. A borrowed length is a claim about the <em>source's</em> body, and
+     * {@link AssetSource.Served} does not always carry that body — a {@code HEAD} and every error
+     * status are served with an empty one — so forwarding it declares bytes that never follow.
+     * <p>
+     * The set is deliberately identical to the response-direction strip the proxy data plane
+     * applies in {@code ResponseStage} — which is why a plain proxy route to the same origin never
+     * showed this fault. The two live in different packages and serve the strip differently (the
+     * proxy path re-establishes framing afterwards because it streams a body it does not hold),
+     * so {@code AssetResponseEnvelopeTest} pins every name here against {@code ResponseStage}'s own
+     * forwardability predicate rather than letting the agreement rest on a comment.
+     */
+    private static final Set<String> CONNECTION_SPECIFIC_HEADERS = Set.of(
+            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+            "te", "trailer", "transfer-encoding", "upgrade", "content-length");
+
+    /**
      * The extensions the gateway maps itself — the mappings an operator can never
      * replace.
      * <p>
@@ -111,6 +146,21 @@ public class AssetResponseEnvelope {
      */
     public static Set<String> builtInExtensions() {
         return CONTENT_TYPES.keySet();
+    }
+
+    /**
+     * The connection-specific and framing header names a source can never place on a served
+     * response — see {@link #CONNECTION_SPECIFIC_HEADERS} for why each one is fatal or wrong.
+     * <p>
+     * Exposed so the parity assertion against the proxy data plane's response-direction strip can
+     * be written over the real set rather than a restated copy of it: the two strips implement the
+     * same rule on the two paths that reach a client, and a name added to one and forgotten in the
+     * other is exactly the shape of the defect this set exists to close.
+     *
+     * @return the lowercase stripped header names; immutable
+     */
+    public static Set<String> connectionSpecificHeaders() {
+        return CONNECTION_SPECIFIC_HEADERS;
     }
 
     /**
@@ -167,11 +217,16 @@ public class AssetResponseEnvelope {
     /**
      * Builds the final, gateway-governed response header set for a served asset.
      * <p>
-     * The source headers are copied verbatim except for the four the gateway owns:
+     * The source headers are copied verbatim except for the ones the gateway owns:
      * {@code Content-Type} is overridden from the extension map, {@code Set-Cookie}
      * is dropped, {@code X-Content-Type-Options: nosniff} is added, and — for
      * {@link AccessLevel#AUTHENTICATED} — {@code Cache-Control: no-store} overrides
-     * whatever the source declared. Header-name matching is case-insensitive.
+     * whatever the source declared. Every {@linkplain #connectionSpecificHeaders()
+     * connection-specific or framing header} is dropped as well, as is any HTTP/2
+     * pseudo-header ({@code :status} and friends, which a source reached over HTTP/2
+     * reports among its response headers): both describe the source's connection, and
+     * re-emitting either onto the client's connection makes the response malformed.
+     * Header-name matching is case-insensitive.
      *
      * @param filename      the served filename, used to resolve the content type
      * @param access        the effective access level of the serving route
@@ -208,6 +263,18 @@ public class AssetResponseEnvelope {
         return CONTENT_TYPE.equalsIgnoreCase(headerName)
                 || CONTENT_TYPE_OPTIONS.equalsIgnoreCase(headerName)
                 || SET_COOKIE.equalsIgnoreCase(headerName)
-                || (authenticated && CACHE_CONTROL.equalsIgnoreCase(headerName));
+                || (authenticated && CACHE_CONTROL.equalsIgnoreCase(headerName))
+                || isConnectionOwned(headerName);
+    }
+
+    /**
+     * @param headerName the source-proposed header name
+     * @return {@code true} when the name belongs to the source's own connection rather than to the
+     *         asset — a hop-by-hop/framing header, or an HTTP/2 pseudo-header, which is any name
+     *         beginning with {@code ':'} and is never a real field the gateway may re-emit
+     */
+    private static boolean isConnectionOwned(String headerName) {
+        return headerName.startsWith(":")
+                || CONNECTION_SPECIFIC_HEADERS.contains(headerName.toLowerCase(Locale.ROOT));
     }
 }
