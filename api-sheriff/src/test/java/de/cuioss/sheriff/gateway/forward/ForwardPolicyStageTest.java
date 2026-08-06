@@ -36,6 +36,8 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("ForwardPolicyStage — stage 5 zero-trust forward policy (three modes per dimension)")
 class ForwardPolicyStageTest {
@@ -457,6 +459,132 @@ class ForwardPolicyStageTest {
                 .build();
         ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(config, new SecurityEventCounter());
         return new ForwardPolicyStage(resolver, new TcpPeerGate(tcpTrusted), emitMode);
+    }
+
+    @Nested
+    @DisplayName("the gateway-owned never-forward set (no mode re-admits it)")
+    class RequestStrip {
+
+        @Test
+        @DisplayName("Cookie never crosses under forward-all")
+        void cookieNeverCrossesUnderForwardAll() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Cookie", List.of("__Host-sid=sealed")));
+
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            assertFalse(result.headers().containsKey("cookie"),
+                    "the BFF's sealed session cookie is the gateway's, never the backend's — the"
+                            + " permissive baseline must not leak it");
+        }
+
+        @Test
+        @DisplayName("Cookie never crosses under a negative-list that does not name it")
+        void cookieNeverCrossesUnderNegativeList() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Cookie", List.of("__Host-sid=sealed")));
+
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Unrelated")), false);
+
+            assertFalse(result.headers().containsKey("cookie"),
+                    "no negative-list is needed to withhold Cookie — the gateway owns it");
+        }
+
+        @Test
+        @DisplayName("Cookie never crosses even when a positive-list explicitly names it")
+        void cookieNeverCrossesEvenWhenAllowListed() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Cookie", List.of("__Host-sid=sealed")));
+
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("Cookie")), false);
+
+            assertFalse(result.headers().containsKey("Cookie"),
+                    "Cookie is one of the 15 absolute members: an operator naming it does not"
+                            + " re-admit it, because doing so is a security regression rather than a"
+                            + " policy choice");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"Host", "Content-Length", "Connection", "Referer", "Origin", "Proxy-Authorization"})
+        @DisplayName("a gateway-owned name is withheld under forward-all whatever it is")
+        void gatewayOwnedNamesAreWithheldUnderForwardAll(String name) {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(name, List.of("value")));
+
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            assertTrue(result.headers().isEmpty(),
+                    () -> name + " is gateway-owned and must not reach the upstream under forward-all");
+        }
+
+        @Test
+        @DisplayName("Authorization is the single re-admittable member, and only under a positive-list")
+        void authorizationIsTheSingleReadmittableMember() {
+            Map<String, List<String>> headers = Map.of("Authorization", List.of("Bearer inbound-xyz"));
+
+            ForwardPolicyStage.Result allowListed = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("Authorization")), false);
+            ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+            ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), deny(List.of("X-Unrelated")), false);
+
+            assertAll("re-admission is a positive-list-only carve-out",
+                    () -> assertEquals("Bearer inbound-xyz", allowListed.headers().get("Authorization"),
+                            "a positive-list naming Authorization re-admits it"),
+                    () -> assertFalse(forwardAllResult.headers().containsKey("authorization"),
+                            "forward-all declares no positive-list, so it never re-admits a credential"),
+                    () -> assertFalse(negativeListResult.headers().containsKey("authorization"),
+                            "a negative-list declares no positive-list either"));
+        }
+
+        @Test
+        @DisplayName("the mediated bearer still overwrites a re-admitted inbound Authorization")
+        void mediatedBearerBeatsReadmittedAuthorization() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER,
+                    Map.of("Authorization", List.of("Bearer inbound-xyz")));
+            request.mediatedBearer("mediated-abc");
+
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("Authorization")), false);
+
+            assertEquals("Bearer mediated-abc", result.headers().get("Authorization"),
+                    "applyMediatedBearer runs last, so the upstream sees only the mediated bearer even"
+                            + " when the route re-admitted the inbound one");
+        }
+
+        @Test
+        @DisplayName("TE crosses as the trailers token and is withheld for any other value")
+        void teCrossesOnlyAsTheTrailersToken() {
+            ForwardPolicyStage trailersStage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            ForwardPolicyStage gzipStage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result trailers = trailersStage.process(
+                    request(UNTRUSTED_PEER, Map.of("TE", List.of("trailers"))), forwardAll(), false);
+            ForwardPolicyStage.Result gzip = gzipStage.process(
+                    request(UNTRUSTED_PEER, Map.of("TE", List.of("gzip"))), forwardAll(), false);
+
+            assertAll("the TE carve-out is value-dependent, which is why it is not in the set literal",
+                    () -> assertEquals("trailers", trailers.headers().get("te"),
+                            "RFC 9110 admits TE: trailers end-to-end"),
+                    () -> assertFalse(gzip.headers().containsKey("te"),
+                            "any other TE value negotiates a transfer coding for the hop the gateway"
+                                    + " terminates and is withheld"));
+        }
+
+        @Test
+        @DisplayName("an operator's set_headers survives the strip — it is not client input")
+        void setHeadersSurvivesTheStrip() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Host", List.of("client.example")));
+
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().setHeaders(Map.of("Host", "upstream.internal")).build(), false);
+
+            assertEquals("upstream.internal", result.headers().get("Host"),
+                    "the strip governs CLIENT input; an operator's static set_headers is gateway"
+                            + " configuration and is merged after it");
+        }
     }
 
     /** A header positive-list. Leaves every other list absent, so the query dimension is forward-all. */

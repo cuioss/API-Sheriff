@@ -28,14 +28,22 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link ConnectionHeaders}: the one response-direction connection-header policy both
- * client-facing paths read — the proxy relay and the asset envelope.
+ * Tests for {@link ConnectionHeaders}: the gateway-owned connection-header policy for both
+ * directions — the response set both client-facing paths read (the proxy relay and the asset
+ * envelope), and the request set every forward mode is bounded by.
  * <p>
- * The membership assertion is deliberately exhaustive rather than sampled. The set is a protocol
- * fact, not a tuning knob: RFC 9113 §8.2.2 makes a response carrying one of these malformed, and
- * an HTTP/2 client discards the stream outright, so a name silently dropped from the set does not
- * degrade a response — it deletes it (issue #172). An exhaustive expectation is what makes such an
- * edit fail here instead of in a browser.
+ * Both membership assertions are deliberately exhaustive rather than sampled. The response set is a
+ * protocol fact, not a tuning knob: RFC 9113 §8.2.2 makes a response carrying one of these
+ * malformed, and an HTTP/2 client discards the stream outright, so a name silently dropped from the
+ * set does not degrade a response — it deletes it (issue #172). The request set carries the same
+ * weight in the other direction: it is what makes the permissive forward-all baseline safe, so a
+ * name quietly dropped from it becomes a credential reaching an upstream. An exhaustive expectation
+ * is what makes either edit fail here instead of in production.
+ * <p>
+ * The two sets are asserted <em>independently</em>, never one derived from the other. Their current
+ * superset relation is an observation about two hand-maintained lists; deriving one expectation
+ * from the other here would encode that coincidence as a rule and would stop noticing the day a
+ * name is added to one direction only.
  */
 class ConnectionHeadersTest {
 
@@ -81,5 +89,60 @@ class ConnectionHeadersTest {
     @DisplayName("Should reject a null header name rather than silently treating it as forwardable")
     void shouldRejectNullName() {
         assertThrows(NullPointerException.class, () -> ConnectionHeaders.isConnectionSpecific(null));
+    }
+
+    @Test
+    @DisplayName("Should carry exactly the 16 request-direction never-forward names")
+    void shouldCarryTheExactRequestSet() {
+        assertEquals(
+                ConnectionHeaders.REQUEST_STRIP, Set.of(
+                        // Credentials the gateway terminates or mediates.
+                        "authorization", "cookie",
+                        // Hop-by-hop / connection-specific: the hop the gateway terminates.
+                        "connection", "keep-alive", "proxy-connection", "te", "trailer",
+                        "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization",
+                        // Framing the dispatch path re-establishes.
+                        "content-length",
+                        // Names the gateway itself owns, consumes, or regenerates.
+                        "host", "origin", "referer", "date"),
+                "the request-direction set is what bounds the forward-all baseline — a name removed"
+                        + " here silently starts relaying it to every upstream");
+    }
+
+    @Test
+    @DisplayName("Should keep the two direction sets independently enumerated, not derived")
+    void shouldKeepTheTwoSetsIndependent() {
+        assertEquals(10, ConnectionHeaders.RESPONSE_STRIP.size(),
+                "the response set stays at its 10 names; this deliverable does not touch it");
+        assertEquals(16, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 16 names");
+        assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.RESPONSE_STRIP),
+                "the request set currently contains every response name — asserted as the OBSERVATION"
+                        + " it is, with both sets pinned exhaustively above, so a name added to one"
+                        + " direction alone breaks that set's own expectation rather than being"
+                        + " silently derived into the other");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Cookie", "COOKIE", "cookie", "Authorization", "Host", "TE", "Proxy-Authenticate"})
+    @DisplayName("Should withhold a request-direction name whatever case the client sent it in")
+    void shouldMatchRequestNamesCaseInsensitively(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " must be recognised — a client sends header names in its own casing, and"
+                        + " a case-sensitive check would be bypassable by changing one letter");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Content-Type", "Accept", "X-Api-Version", "If-None-Match", "User-Agent"})
+    @DisplayName("Should pass a client header the gateway does not own")
+    void shouldPassNonGatewayOwnedRequestHeaders(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is the client's to send and the route's mode to govern, not a"
+                        + " gateway-owned name");
+    }
+
+    @Test
+    @DisplayName("Should reject a null request-header name rather than treating it as forwardable")
+    void shouldRejectNullRequestName() {
+        assertThrows(NullPointerException.class, () -> ConnectionHeaders.isRequestStripped(null));
     }
 }

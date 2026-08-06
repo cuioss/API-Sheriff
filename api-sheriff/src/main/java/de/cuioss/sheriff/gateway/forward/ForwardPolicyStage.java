@@ -28,6 +28,7 @@ import java.util.function.UnaryOperator;
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ResolvedForwarding;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 
 import org.jspecify.annotations.Nullable;
@@ -47,6 +48,11 @@ import org.jspecify.annotations.Nullable;
  *       declared. A declared-empty list is not the same as an absent one: {@code query_allow: []}
  *       is a positive-list admitting nothing, while an absent {@code query_allow} is forward-all.
  *       Declaring both lists for one dimension is refused at boot.</li>
+ *   <li><strong>The gateway-owned never-forward set.</strong> Whatever mode a route resolves, the
+ *       {@link ConnectionHeaders#REQUEST_STRIP} names are withheld from the upstream — this is what
+ *       makes the forward-all baseline safe. {@code Authorization} is the single re-admittable
+ *       member and only under a positive-list naming it; {@code TE} crosses only as the
+ *       {@code trailers} token.</li>
  *   <li><strong>Regenerated forwarding headers.</strong> Inbound {@code X-Forwarded-*} /
  *       {@code Forwarded} headers are NEVER propagated — they are regenerated through the shared
  *       {@link ForwardedHeaderResolver}, emitting {@code X-Forwarded-*} always and RFC 7239
@@ -74,6 +80,10 @@ public final class ForwardPolicyStage {
 
     static final String EMIT_BOTH = "both";
     private static final String FORWARDED_HEADER = "Forwarded";
+    private static final String AUTHORIZATION = "authorization";
+    private static final String TE = "te";
+    /** The one {@code TE} value RFC 9110 admits end-to-end; every other value is hop-scoped. */
+    private static final String TRAILERS = "trailers";
 
     private static final Set<String> FORWARDING_HEADERS = Set.of(
             "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port",
@@ -110,6 +120,7 @@ public final class ForwardPolicyStage {
 
         Map<String, String> headers = new LinkedHashMap<>();
         copyHeadersByMode(request, forwardConfig, headers);
+        applyRequestStrip(forwardConfig, headers);
         headers.putAll(forwardConfig.setHeaders());
         applyConditionalHeaders(request, notModifiedEnabled, headers);
         applyRegeneratedForwarding(request, headers);
@@ -173,6 +184,66 @@ public final class ForwardPolicyStage {
             }
             headers.put(name, values.getFirst());
         }
+    }
+
+    /**
+     * Withholds the gateway-owned {@link ConnectionHeaders#REQUEST_STRIP} names from the copied
+     * client headers. Applied on <em>every</em> mode, after the mode copy: no forward mode — not
+     * even a {@code headers_allow} naming one — re-admits these, with the two carve-outs below.
+     * <p>
+     * The strip runs before {@code set_headers} is merged, so an operator's explicit static header
+     * is never removed by it: this gate governs <em>client input</em>, and operator configuration is
+     * not client input.
+     * <p>
+     * Two members carry behaviour beyond membership, which is why they are decided here rather than
+     * in the set literal:
+     * <ul>
+     *   <li><strong>{@code authorization} is the single re-admittable member</strong>, and only when
+     *       the route declares a positive-list naming it. Under a negative-list or forward-all the
+     *       route declares no {@code headers_allow}, so it is never re-admitted there — a permissive
+     *       baseline must not leak an inbound credential. A re-admitted value is still overwritten
+     *       by {@link #applyMediatedBearer}, which runs last.</li>
+     *   <li><strong>{@code te} crosses only when its value is exactly the {@code trailers} token.</strong>
+     *       RFC 9110 admits that one value; any other ({@code gzip}, or {@code trailers} alongside
+     *       another transfer coding) is a transfer-coding negotiation for the hop the gateway
+     *       terminates and is withheld.</li>
+     * </ul>
+     */
+    private static void applyRequestStrip(ForwardConfig forwardConfig, Map<String, String> headers) {
+        boolean authorizationReadmitted = namesAuthorization(forwardConfig.headersAllow());
+        headers.entrySet().removeIf(entry -> isWithheldFromUpstream(entry.getKey(), entry.getValue(),
+                authorizationReadmitted));
+    }
+
+    private static boolean isWithheldFromUpstream(String name, String value, boolean authorizationReadmitted) {
+        if (!ConnectionHeaders.isRequestStripped(name)) {
+            return false;
+        }
+        String lowerName = name.toLowerCase(Locale.ROOT);
+        if (AUTHORIZATION.equals(lowerName)) {
+            return !authorizationReadmitted;
+        }
+        if (TE.equals(lowerName)) {
+            return !TRAILERS.equals(value.strip().toLowerCase(Locale.ROOT));
+        }
+        return true;
+    }
+
+    /**
+     * Whether the route's positive-list names {@code Authorization}. A {@code null} list means the
+     * route declares no positive-list at all (negative-list or forward-all), where the re-admission
+     * never applies.
+     */
+    private static boolean namesAuthorization(@Nullable List<String> headersAllow) {
+        if (headersAllow == null) {
+            return false;
+        }
+        for (String name : headersAllow) {
+            if (AUTHORIZATION.equals(name.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
