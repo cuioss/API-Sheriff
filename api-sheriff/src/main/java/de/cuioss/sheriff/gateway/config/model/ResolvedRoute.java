@@ -100,15 +100,10 @@ Set<String> effectiveAllowedOrigins,
      * Canonical constructor requiring the mandatory components, defensively copying
      * {@code effectiveAllowedMethods} and {@code effectiveAllowedOrigins}, defaulting
      * an absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
-     * {@code effectiveForward} to an all-absent {@link ForwardConfig}, and enforcing
-     * the terminal-action invariant: exactly one of {@code upstream} (proxy) or
-     * {@code asset} resolves.
-     * <p>
-     * The {@code effectiveForward} default expression is unchanged, but its meaning
-     * has inverted: an all-absent {@link ForwardConfig} now selects <em>forward-all</em>
-     * on both dimensions rather than the former nothing-crosses allowlist. The
-     * gateway-owned never-forward set still bounds it, and no mode re-admits the
-     * regenerated forwarding headers.
+     * {@code effectiveForward} to an all-absent {@link ForwardConfig} — the
+     * <em>forward-all</em> posture on both dimensions, not a nothing-crosses one — and
+     * enforcing the terminal-action invariant: exactly one of {@code upstream} (proxy)
+     * or {@code asset} resolves.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");

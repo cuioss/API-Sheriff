@@ -195,9 +195,8 @@ public final class RouteTableBuilder {
         // The declared block is carried WHOLESALE, so headers_deny / query_deny ride this same chain
         // with no per-list resolution: the forward block has no inheritance cascade (ADR-0007 applies
         // to auth, allowed_methods, security_* and upstream_defaults, not to forward), so a route
-        // either declares the block or it does not. The fallback expression is unchanged but its
-        // meaning has inverted: an all-absent ForwardConfig now selects FORWARD-ALL on both
-        // dimensions rather than the former nothing-crosses allowlist.
+        // either declares the block or it does not. The fallback ForwardConfig is all-absent, which
+        // is FORWARD-ALL on both dimensions — not a nothing-crosses allowlist.
         ForwardConfig declaredForward = route.forward();
         ForwardConfig effectiveForward = declaredForward != null
                 ? declaredForward

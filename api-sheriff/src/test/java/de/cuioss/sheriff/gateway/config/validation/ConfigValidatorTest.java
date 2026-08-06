@@ -2239,8 +2239,6 @@ class ConfigValidatorTest {
     @DisplayName("Forward-mode exclusivity (a dimension resolves exactly one mode)")
     class ForwardModeExclusivity {
 
-        private static final String BOTH_DECLARED = "declares both";
-
         private EndpointConfig endpointWithForward(ForwardConfig forward) {
             RouteConfig route = RouteConfig.builder()
                     .id("proxied")
@@ -2352,7 +2350,7 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validateForward(
                     new ForwardConfig(List.of("Accept"), List.of("Cookie"), null, null, Map.of()));
 
-            assertTrue(errors.getFirst().message().contains(BOTH_DECLARED),
+            assertTrue(errors.getFirst().message().contains("declares both"),
                     () -> "the message must state that both lists were declared, got: "
                             + errors.getFirst().message());
         }

@@ -278,12 +278,11 @@ public final class ForwardPolicyStage {
         if (!ConnectionHeaders.isRequestStripped(name)) {
             return false;
         }
-        String lowerName = name.toLowerCase(Locale.ROOT);
-        if (AUTHORIZATION.equals(lowerName)) {
+        if (AUTHORIZATION.equalsIgnoreCase(name)) {
             return !authorizationReadmitted;
         }
-        if (TE.equals(lowerName)) {
-            return !TRAILERS.equals(value.strip().toLowerCase(Locale.ROOT));
+        if (TE.equalsIgnoreCase(name)) {
+            return !TRAILERS.equalsIgnoreCase(value.strip());
         }
         return true;
     }
