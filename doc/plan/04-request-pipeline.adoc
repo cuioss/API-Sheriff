@@ -11,11 +11,18 @@ work; this one records what was decided and built at Plan 04 time.
 
 One part of it has since been superseded. *Stage 5's forward policy* is described below as an
 allowlist ("`headers_allow` / `query_allow` filtering", the two conditional validators joining
-the effective allowlist, "inbound `Authorization` stripped unless explicitly allow-listed").
+the effective allowlist).
 That is no longer how the stage works: the forward block now resolves one of *three modes* per
 dimension -- positive-list, negative-list, or forward-all -- inside a route the request is
 already authorised for, bounded by gateway-owned header sets no route configuration can
-override, and the conditional tier carries five validators rather than two. The current
+override, and the conditional tier carries five validators rather than two.
+
+*One rule below is retained, not superseded.* "Inbound `Authorization` stripped unless explicitly
+allow-listed" still holds exactly as written: `Authorization` is the single re-admittable member
+of the gateway-owned never-forward set, and a route's positive-list naming it remains the only
+thing that re-admits it -- so a negative-list or forward-all route withholds it, and on a
+`require: session` route the mediated bearer overwrites it regardless. `Cookie` is the contrasting
+case, absolute against client input under every mode. The current
 specification is
 link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]
 and

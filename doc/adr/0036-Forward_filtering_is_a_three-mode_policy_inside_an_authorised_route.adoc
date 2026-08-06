@@ -67,6 +67,14 @@ from what the route declares:
 * **Forward-all** — neither declared for that dimension: every client entry
   crosses.
 
+Each mode selects among the *client-controlled* entries only. Every mode is
+additionally bounded by the gateway-owned sets described below — which no list
+re-admits — and the gateway-understood protocol headers cross without being
+named. So "everything" and "every client entry" above mean everything the
+gateway does not itself own; a deny-list does not forward a `Cookie` merely by
+omitting it, and forward-all is not a way to reach an upstream with a spoofed
+`X-Forwarded-For`.
+
 The dimensions do not have to agree. A route may run a positive-list on headers
 and forward-all on query in one block, because the two answer different
 questions.
@@ -82,9 +90,17 @@ routing behaviour they have to infer.
 **Deny-by-default is documented where it lives — the URL layer.** The forward
 stage's own documentation, and the architecture and threat-model text describing
 it, state that a request matching no route reaches no upstream, and that the
-forward block chooses a posture *within* an authorised route. This is a
-documentation correction, not a behavioural loosening: route matching enforced
-the boundary before this decision and enforces it unchanged after.
+forward block chooses a posture *within* an authorised route.
+
+The *authorization boundary* is unchanged by this decision — route matching
+enforced it before and enforces it unchanged after, so no request reaches an
+upstream it could not reach previously. What does change is *forwarding
+exposure* inside that boundary: a route that relied on the old allow-list-only
+default now sends an authorised request's headers and query parameters upstream
+that it previously withheld. Relocating where deny-by-default is documented and
+broadening the default forward posture are two separate changes, and only the
+first is purely a documentation correction. The second is a real behavioural
+change, recorded as the first entry under Risks below.
 
 **Two gateway-owned sets bound every mode, and forward-all is safe because of
 them.** A permissive baseline is only defensible if the names that must never

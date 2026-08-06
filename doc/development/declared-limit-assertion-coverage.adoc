@@ -330,6 +330,14 @@ declaration's *existence* is proven while its *boundary* is not.
   re-pointed at `X-Sheriff-Allowed`, chosen to be both genuinely allow-listed and genuinely outside
   that set.
 
+  *`query_deny` is deliberately outside this row's integration surface, and the COVERED verdict
+  should be read against the three keys the title names rather than as full two-dimensional mode
+  coverage.* No IT route declares a `query_deny`, so the negative-list evidence above is the
+  *header* dimension's alone. The key is not unasserted -- `ForwardPolicyStageTest` pins the
+  query dimension's negative-list at unit level -- but nothing here exercises it through a real
+  gateway. Closing that
+  would mean a new IT fixture route; it is recorded as a known boundary rather than implied away.
+
 | *G6* Strict preset parameter-*value* length cap (1024)
   Layer 2 -- resolved, in no yaml
 | `ThoroughChecksStage` (relocated url-parameter validation)

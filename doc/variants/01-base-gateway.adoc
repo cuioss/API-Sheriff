@@ -65,8 +65,11 @@ upstream is never called.
 | A per-route filter *inside* an already-authorised route, not an admission gate: each of headers
   and query parameters independently resolves a positive-list, a negative-list, or -- when the route
   declares neither -- forward-all. Whatever the mode, the gateway-owned never-forward set still
-  withholds `Cookie`, an inbound `Authorization` and the hop-by-hop and provenance names, and the
-  HTTP mechanics the gateway understands cross without an entry. Inbound `Forwarded` /
+  withholds `Cookie` -- absolute against client input, re-admitted by no mode and no list -- along
+  with the hop-by-hop and provenance names. An inbound `Authorization` is the set's *single*
+  re-admittable member, and only where the route declares a positive-list naming it; under a
+  negative-list or forward-all it is withheld. The HTTP mechanics the gateway understands cross
+  without an entry, unless the route denies one by name. Inbound `Forwarded` /
   `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s forwarded resolver,
   and the gateway emits regenerated canonical output (`X-Forwarded-*` by default). See
   link:../adr/0003-forwarded-headers.adoc[ADR-0003] and
@@ -95,8 +98,9 @@ endpoint:
         max_query_params: 20
         max_body_bytes: 1048576
       # Optional. Omit the whole block and every client header and query parameter crosses,
-      # bounded by the gateway-owned never-forward set; `accept` and `content-type` would cross
-      # on their own either way, because the gateway understands them. Declare a list only to
+      # bounded by the gateway-owned never-forward set; `accept` and `content-type` cross without
+      # being enumerated, because the gateway understands them -- under this positive-list too.
+      # A `headers_deny` naming one is the way to withhold it. Declare a list only to
       # NARROW that -- a positive-list, as here, when the backend's input is a closed set worth
       # stating; `headers_deny` / `query_deny` when the point is to withhold a few names.
       forward:

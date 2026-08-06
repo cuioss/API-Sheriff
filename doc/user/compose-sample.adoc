@@ -220,9 +220,11 @@ directory gives you a working starting point. From there the usual first three c
   down.
 . Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`. You will
   usually need no `forward` block at all: with none declared, every client header and query
-  parameter crosses except the gateway-owned never-forward set (`Cookie`, `Authorization`, the
-  hop-by-hop and framing names), and the HTTP mechanics -- `Accept`, `Content-Type`, `Range` and
-  the conditional validators -- cross without being listed. Add a `forward` block only to
+  parameter crosses except the gateway-owned never-forward set (`Cookie` absolutely, an inbound
+  `Authorization` on any route declaring no positive-list naming it, and the hop-by-hop and
+  framing names), and the HTTP mechanics -- `Accept`, `Accept-Encoding`, `Accept-Language`,
+  `Content-Type` and `Range` -- cross without being listed, joined by the five conditional
+  validators when the route's `not_modified` toggle is enabled. Add a `forward` block only to
   *narrow* that: `headers_deny` / `query_deny` to withhold specific names, or
   `headers_allow` / `query_allow` for a strict positive-list. See
   link:../configuration.adoc#_forward[the `forward` reference].

@@ -32,9 +32,11 @@ endpoint:
       #
       # This is the STRICTEST of the three modes, chosen here to make the distinction visible, not
       # because it is the recommended starting point. A real backend usually wants no forward block
-      # at all: HTTP mechanics (Accept, Content-Type, Range, the conditional validators) cross on
-      # their own, and the gateway-owned never-forward set still withholds Cookie, Authorization and
-      # the hop-by-hop names whatever the mode. Reach for a list to NARROW that — headers_deny /
+      # at all: HTTP mechanics (Accept, Accept-Encoding, Accept-Language, Content-Type, Range) cross
+      # on their own, the conditional validators join them once the route enables not_modified, and
+      # the gateway-owned never-forward set still withholds Cookie and the hop-by-hop names whatever
+      # the mode — an inbound Authorization only crosses where a positive-list names it.
+      # Reach for a list to NARROW that — headers_deny /
       # query_deny to withhold specific names, or these positive-lists when the backend's input is a
       # closed set you want to state.
       forward:

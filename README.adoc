@@ -155,7 +155,7 @@ whose previous no-block posture you were relying on. See
 link:doc/architecture.adoc#_forward_policy[Architecture -- Forward Policy] and
 link:doc/adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036].
 
-Upstream response headers are relayed verbatim::
+Upstream response headers are relayed except for gateway-owned names::
 Both directions carry a *gateway-owned never-relay set* -- the connection-specific and framing
 names, plus, on the request side, the credentials and provenance headers the gateway owns. Beyond
 those sets the two directions differ: a route can *narrow* what crosses on the request side

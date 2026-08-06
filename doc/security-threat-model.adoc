@@ -350,9 +350,16 @@ iterator path skipped value validation -> CRLF response splitting). Traefik CVE-
 strip abuse, GW-02).
 
 *Control.* cui-http's `CharacterValidationStage` rejects CR/LF/NUL in header names and values
-*unconditionally* (ingress); the gateway feeds every inbound header through it and re-applies
-it before writing any response. Never let a client `Connection:` header steer stripping of
-framing or trust headers.
+*unconditionally* on the *ingress* path: every inbound header is fed through it before any stage
+reads one. The response direction carries no equivalent re-validation, and saying so is the
+honest statement of the control's reach -- the gateway does not re-run `CharacterValidationStage`
+over upstream response headers. Both response paths (`edge.ResponseStage` for the streamed proxy
+relay, `asset.AssetResponseEnvelope` for the buffered asset envelope) copy the source's remaining
+headers through once the gateway-owned never-relay set below has been applied. That direction is
+bounded by *which names* cross rather than by re-checking their characters, so the residual is
+scoped to a configured upstream that is already inside the gateway's trust boundary rather than
+to client-supplied input. Never let a client `Connection:` header steer stripping of framing or
+trust headers.
 
 The hop-by-hop and trust-header lists are *gateway-owned and enumerated in full per direction*,
 never derived from a sibling list and never taken from what a client names
