@@ -113,6 +113,26 @@ scheduled jobs, so it catches the driver that produced the second symptom and no
 a bean driven by a startup observer or an HTTP endpoint would pass it. The exclusion list remains a
 reviewed decision rather than something a test can derive.
 
+The stronger check -- deriving the required scope from the extension's own CDI registrations rather
+than from a hand-maintained list -- was tried and is not available, and the reason is worth recording
+so it is not tried again from scratch:
+
+* *Resolvability of the unqualified `TokenValidator` is not a proxy for reachability.* The obvious
+  driver-agnostic assertion is that the extension's unqualified validator is unresolvable, on the
+  reasoning that ARC keeps a producer only while something injects from it. Measured, it is resolvable
+  even with every reaching bean excluded: the extension's producer is retained regardless. Retained is
+  not instantiated -- it is `@ApplicationScoped` and nothing calls a method on it, which is why the
+  ten-second failure is genuinely gone -- but that makes resolvability unable to distinguish the
+  healthy state from the broken one, so it cannot carry the assertion.
+* *Enumerating the container's beans and comparing them to the exclusion list is a membership
+  snapshot,* which
+  link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  forbids: a rule asserts a property, never equality with today's members. Such a rule would fail on
+  every legitimate extension upgrade that adds an unrelated bean, and would be relaxed away.
+
+What remains derivable is the *symptom*, not the *scope* -- which is what the scheduled-job assertion
+checks. The gap is therefore real and is carried in Risks below rather than papered over.
+
 === 3. The dependency stays
 
 Only the beans are excluded. The extension remains a compile dependency because its deployment
