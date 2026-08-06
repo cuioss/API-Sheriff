@@ -24,6 +24,7 @@ import java.util.Set;
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 
 import lombok.experimental.UtilityClass;
 
@@ -49,6 +50,11 @@ import lombok.experimental.UtilityClass;
  *       authenticated content is never written to a shared cache.</li>
  *   <li><strong>No cookies.</strong> Any {@code Set-Cookie} the source emitted is
  *       stripped — an asset action never establishes a session.</li>
+ *   <li><strong>No borrowed connection state.</strong> Every connection-specific and
+ *       framing header the source proposed is stripped, together with any HTTP/2
+ *       pseudo-header — the gateway's own client connection owns those, never the
+ *       source's. The rule itself is {@link ConnectionHeaders}, shared with the proxy
+ *       data plane's relay so the two response paths cannot diverge.</li>
  *   <li><strong>Read-only verbs.</strong> Only {@code GET} and {@code HEAD} are
  *       served ({@link #isAllowedMethod(HttpMethod)}).</li>
  * </ul>
@@ -167,11 +173,16 @@ public class AssetResponseEnvelope {
     /**
      * Builds the final, gateway-governed response header set for a served asset.
      * <p>
-     * The source headers are copied verbatim except for the four the gateway owns:
+     * The source headers are copied verbatim except for the ones the gateway owns:
      * {@code Content-Type} is overridden from the extension map, {@code Set-Cookie}
      * is dropped, {@code X-Content-Type-Options: nosniff} is added, and — for
      * {@link AccessLevel#AUTHENTICATED} — {@code Cache-Control: no-store} overrides
-     * whatever the source declared. Header-name matching is case-insensitive.
+     * whatever the source declared. Everything {@link ConnectionHeaders#isConnectionSpecific
+     * ConnectionHeaders} rejects is dropped as well — the connection-specific and framing
+     * headers, and any HTTP/2 pseudo-header ({@code :status} and friends, which a source
+     * reached over HTTP/2 reports among its response headers): both describe the source's
+     * connection, and re-emitting either onto the client's connection makes the response
+     * malformed. Header-name matching is case-insensitive.
      *
      * @param filename      the served filename, used to resolve the content type
      * @param access        the effective access level of the serving route
@@ -208,6 +219,7 @@ public class AssetResponseEnvelope {
         return CONTENT_TYPE.equalsIgnoreCase(headerName)
                 || CONTENT_TYPE_OPTIONS.equalsIgnoreCase(headerName)
                 || SET_COOKIE.equalsIgnoreCase(headerName)
-                || (authenticated && CACHE_CONTROL.equalsIgnoreCase(headerName));
+                || (authenticated && CACHE_CONTROL.equalsIgnoreCase(headerName))
+                || ConnectionHeaders.isConnectionSpecific(headerName);
     }
 }

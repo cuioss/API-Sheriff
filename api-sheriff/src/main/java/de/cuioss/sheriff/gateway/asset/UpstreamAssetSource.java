@@ -62,7 +62,10 @@ import org.jspecify.annotations.Nullable;
  * taken from the fixed extension map (overriding the upstream's claim), {@code nosniff}
  * is set, an upstream {@code Set-Cookie} is stripped, and an
  * {@link AccessLevel#AUTHENTICATED} asset is forced to {@code no-store} even when the
- * upstream sent {@code Cache-Control: public}.
+ * upstream sent {@code Cache-Control: public}. The envelope also strips every header the
+ * shared {@link de.cuioss.sheriff.gateway.http.ConnectionHeaders} policy names — this source
+ * is the only one that proposes any, since {@code DirectoryAssetSource} has no connection to
+ * describe — so the upstream's hop state never lands on the client's connection.
  *
  * @author API Sheriff Team
  * @since 1.0

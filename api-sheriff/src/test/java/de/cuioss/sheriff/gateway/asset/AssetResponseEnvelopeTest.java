@@ -29,6 +29,8 @@ import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.edge.ResponseStage;
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -250,6 +252,111 @@ class AssetResponseEnvelopeTest {
                             "an asset action must never establish a session"),
                     () -> assertEquals("kept", governed.get("X-Custom"),
                             "unrelated source headers pass through"));
+        }
+    }
+
+    /**
+     * The connection-specific strip — the governance that keeps an {@code source: upstream} asset
+     * route servable over HTTP/2 (issue #172).
+     * <p>
+     * A source's hop headers describe the source's connection, not the client's. Re-emitting one
+     * makes the response malformed under RFC 9113 §8.2.2, and an HTTP/2 client answers the stream
+     * with {@code PROTOCOL_ERROR} — the response is discarded whole, which is why the symptom was
+     * an empty reply rather than a wrong header.
+     */
+    @Nested
+    @DisplayName("The connection-specific and framing header strip")
+    class ConnectionSpecificStrip {
+
+        /**
+         * Every stripped name, sourced from the production set rather than restated — a name added
+         * there without a case here would otherwise go unexercised. The mixed casing is deliberate:
+         * an origin sends {@code Connection}, not {@code connection}, so the case-insensitive match
+         * is what is actually under test.
+         */
+        static Stream<String> strippedNames() {
+            return ConnectionHeaders.RESPONSE_STRIP.stream();
+        }
+
+        @ParameterizedTest
+        @MethodSource("strippedNames")
+        @DisplayName("Should strip each connection-specific header the source proposed")
+        void shouldStripConnectionSpecificHeader(String name) {
+            Map<String, String> sourceHeaders = new LinkedHashMap<>();
+            sourceHeaders.put(capitalized(name), "whatever");
+            sourceHeaders.put("X-Custom", "kept");
+
+            Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+
+            assertAll(
+                    () -> assertFalse(governed.keySet().stream().anyMatch(name::equalsIgnoreCase),
+                            () -> name + " describes the source's connection, never the client's — "
+                                    + "re-emitting it makes an HTTP/2 response malformed"),
+                    () -> assertEquals("kept", governed.get("X-Custom"),
+                            "unrelated source headers still pass through"));
+        }
+
+        @Test
+        @DisplayName("Should strip the whole hop set at once, as a real origin sends it")
+        void shouldStripTheWholeHopSet() {
+            Map<String, String> sourceHeaders = new LinkedHashMap<>();
+            sourceHeaders.put("Connection", "keep-alive");
+            sourceHeaders.put("Keep-Alive", "timeout=5");
+            sourceHeaders.put("Proxy-Connection", "keep-alive");
+            sourceHeaders.put("Transfer-Encoding", "chunked");
+            sourceHeaders.put("Content-Length", "530");
+            sourceHeaders.put("Server", "nginx");
+
+            Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+
+            assertAll(
+                    () -> assertEquals(Set.of(AssetResponseEnvelope.CONTENT_TYPE,
+                                    AssetResponseEnvelope.CONTENT_TYPE_OPTIONS, "Server"), governed.keySet(),
+                            "only the gateway's own headers and the end-to-end Server header survive"),
+                    () -> assertEquals("nginx", governed.get("Server")));
+        }
+
+        @Test
+        @DisplayName("Should strip an HTTP/2 pseudo-header a source reached over h2 reports")
+        void shouldStripPseudoHeaders() {
+            // The JDK HTTP client surfaces :status among the response headers when it negotiated
+            // HTTP/2 with the upstream, so an https asset upstream with h2 in its ALPN set hands
+            // the gateway one. A pseudo-header in a normal header block is malformed by definition.
+            Map<String, String> sourceHeaders = new LinkedHashMap<>();
+            sourceHeaders.put(":status", "200");
+            sourceHeaders.put("X-Custom", "kept");
+
+            Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
+                    "app.js", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+
+            assertAll(
+                    () -> assertFalse(governed.containsKey(":status"),
+                            "a pseudo-header is never a real field the gateway may re-emit"),
+                    () -> assertEquals("kept", governed.get("X-Custom")));
+        }
+
+        /**
+         * The both-paths fence. {@link ConnectionHeaders} is the one declaration, but a shared
+         * constant only helps if both response paths actually consult it — a path that kept a local
+         * copy would compile, pass its own tests, and reintroduce issue #172 the moment a name was
+         * added here alone. This walks the shared set through the proxy relay's own public
+         * forwardability predicate, so the proxy path is proven to honour every name the asset path
+         * strips, not merely to have the same constant on its classpath.
+         */
+        @Test
+        @DisplayName("Should strip nothing the proxy data plane's ResponseStage would forward")
+        void shouldAgreeWithTheProxyResponseStrip() {
+            for (String name : ConnectionHeaders.RESPONSE_STRIP) {
+                assertFalse(ResponseStage.isForwardableResponseHeader(name, true),
+                        () -> name + " is stripped by the asset envelope but forwarded by "
+                                + "ResponseStage — the two response paths have drifted");
+            }
+        }
+
+        private static String capitalized(String name) {
+            return Character.toUpperCase(name.charAt(0)) + name.substring(1);
         }
     }
 

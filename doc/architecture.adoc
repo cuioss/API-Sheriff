@@ -531,7 +531,12 @@ Three properties define the action:
   gateway -- never the backing directory or the (possibly hostile) upstream -- governs the
   response metadata: the `Content-Type` is set from the gateway's own extension map, `nosniff`
   is always added, any source `Set-Cookie` is stripped, and an `access: authenticated` asset is
-  forced to `Cache-Control: no-store`. Only `GET`/`HEAD` are served. The untrusted request
+  forced to `Cache-Control: no-store`. The envelope also strips every connection-specific and
+  framing header the source proposed, plus any HTTP/2 pseudo-header: those describe the *source's*
+  connection, and relaying one onto the client's makes an HTTP/2 response malformed (RFC 9113
+  §8.2.2), which a client answers by discarding the whole stream. That strip is not the envelope's
+  own list -- it is the shared `ConnectionHeaders` policy stage 7's proxy relay reads as well, so
+  the two paths that answer a client cannot diverge on it. Only `GET`/`HEAD` are served. The untrusted request
   sub-path is canonicalized and confined under the configured root before the source is touched,
   closing the path-traversal class for the whole asset surface.
 * *The extension map is operator-extensible, add-only.* The global `asset_defaults.content_types`

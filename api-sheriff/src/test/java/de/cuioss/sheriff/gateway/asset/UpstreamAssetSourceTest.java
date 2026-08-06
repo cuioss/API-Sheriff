@@ -134,6 +134,74 @@ class UpstreamAssetSourceTest {
     }
 
     @Test
+    @DisplayName("Should strip the upstream's connection-specific headers (issue #172)")
+    void shouldStripUpstreamConnectionHeaders() {
+        // The header shape any stock origin answers with. Relayed onto the client's connection they
+        // make an HTTP/2 response malformed (RFC 9113 §8.2.2), and the client answers the stream
+        // with PROTOCOL_ERROR — the asset never arrives at all, while HTTP/1.1 tolerates them and
+        // the very same route works. That asymmetry is the whole bug.
+        UpstreamFetcher fetcher = cannedFetcher(OK, headers(
+                "Connection", "keep-alive",
+                "Keep-Alive", "timeout=5",
+                "Proxy-Connection", "keep-alive",
+                "Transfer-Encoding", "chunked",
+                "Content-Length", String.valueOf(BODY.length),
+                "Server", "nginx"), BODY);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+
+        assertAll(
+                () -> assertEquals(OK, served.status()),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch("Connection"::equalsIgnoreCase),
+                        "the upstream's connection state must never reach the client's connection"),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch("Keep-Alive"::equalsIgnoreCase),
+                        "Keep-Alive is connection-specific and malformed over HTTP/2"),
+                () -> assertFalse(
+                        served.headers().keySet().stream().anyMatch("Proxy-Connection"::equalsIgnoreCase),
+                        "RFC 9113 §8.2.2 names Proxy-Connection connection-specific alongside Connection"),
+                () -> assertFalse(
+                        served.headers().keySet().stream().anyMatch("Transfer-Encoding"::equalsIgnoreCase),
+                        "the client's framing is the edge's to choose, never the upstream's"),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch("Content-Length"::equalsIgnoreCase),
+                        "the edge recomputes the length from the buffer it writes"),
+                () -> assertEquals("nginx", served.headers().get("Server"),
+                        "an end-to-end upstream header still passes through"),
+                () -> assertArrayEqualsBody(BODY, served.body()));
+    }
+
+    @Test
+    @DisplayName("Should strip the upstream Content-Length on a body-less outcome")
+    void shouldStripContentLengthOnBodylessOutcome() {
+        // A 404 is served with an empty body, so relaying the upstream's Content-Length would
+        // declare bytes that never follow — a hang on HTTP/1.1 and a mismatch on HTTP/2. The same
+        // holds for HEAD, which is why the strip is unconditional rather than status-dependent.
+        UpstreamFetcher fetcher = cannedFetcher(NOT_FOUND, headers("Content-Length", "1234"), BODY);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "missing.js");
+
+        assertAll(
+                () -> assertEquals(NOT_FOUND, served.status()),
+                () -> assertEquals(0, served.body().length, "an upstream error status is served body-less"),
+                () -> assertFalse(served.headers().keySet().stream().anyMatch("Content-Length"::equalsIgnoreCase),
+                        "a length describing a body the gateway does not serve must not be relayed"));
+    }
+
+    @Test
+    @DisplayName("Should strip an HTTP/2 pseudo-header an h2-negotiated upstream fetch reports")
+    void shouldStripUpstreamPseudoHeader() {
+        // The JDK HTTP client negotiates HTTP/2 by default, so an https asset upstream advertising
+        // h2 in its ALPN set hands the fetch seam a ":status" entry among the response headers.
+        UpstreamFetcher fetcher = cannedFetcher(OK, headers(":status", "200", "X-Keep", "yes"), BODY);
+
+        AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
+
+        assertAll(
+                () -> assertFalse(served.headers().containsKey(":status"),
+                        "a pseudo-header in a normal header block is malformed by definition"),
+                () -> assertEquals("yes", served.headers().get("X-Keep")));
+    }
+
+    @Test
     @DisplayName("Should force no-store for authenticated access even when the upstream sent Cache-Control: public")
     void shouldForceNoStoreForAuthenticatedOverUpstreamPublic() {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers("Cache-Control", "public, max-age=99999"), BODY);

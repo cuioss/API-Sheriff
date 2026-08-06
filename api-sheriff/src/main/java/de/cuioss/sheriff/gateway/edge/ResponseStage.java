@@ -20,6 +20,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.http.HttpClientResponse;
@@ -33,8 +36,9 @@ import io.vertx.core.http.HttpServerResponse;
  * {@link HttpClientResponse#pipeTo(io.vertx.core.streams.WriteStream) pipeTo} — the body is never
  * materialized. Header rules:
  * <ul>
- *   <li><strong>Hop-by-hop headers</strong> (RFC 7230 §6.1) plus length/framing headers Vert.x
- *       recomputes are stripped in the response direction.</li>
+ *   <li><strong>Connection-specific headers</strong> plus the length/framing headers Vert.x
+ *       recomputes are stripped in the response direction, per the shared
+ *       {@link ConnectionHeaders} policy the asset envelope reads too.</li>
  *   <li><strong>Conditional-response headers</strong> ({@code ETag} / {@code Last-Modified}) pass
  *       through only when the route enables {@code not_modified}; on a disabled route they are
  *       stripped so no validator ever reaches the client. A {@code 304} on an enabled route relays
@@ -48,11 +52,6 @@ import io.vertx.core.http.HttpServerResponse;
  */
 public final class ResponseStage {
 
-    /** Hop-by-hop (RFC 7230 §6.1) plus framing headers Vert.x recomputes. All lower case. */
-    private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
-            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-            "te", "trailer", "transfer-encoding", "upgrade", "content-length");
-
     /** Conditional-response validators stripped unless the route enables {@code not_modified}. */
     private static final Set<String> CONDITIONAL_RESPONSE_HEADERS = Set.of("etag", "last-modified");
 
@@ -62,11 +61,14 @@ public final class ResponseStage {
      * @return {@code true} when the header crosses back to the client
      */
     public static boolean isForwardableResponseHeader(String name, boolean notModifiedEnabled) {
-        String lower = Objects.requireNonNull(name, "name").toLowerCase(Locale.ROOT);
-        if (HOP_BY_HOP_HEADERS.contains(lower)) {
+        Objects.requireNonNull(name, "name");
+        // The hop-by-hop / framing judgement is ConnectionHeaders', shared with the asset
+        // envelope: one protocol rule, read by both paths that answer a client. Only the
+        // conditional-validator gate below is this stage's own, since it turns on a route flag.
+        if (ConnectionHeaders.isConnectionSpecific(name)) {
             return false;
         }
-        return notModifiedEnabled || !CONDITIONAL_RESPONSE_HEADERS.contains(lower);
+        return notModifiedEnabled || !CONDITIONAL_RESPONSE_HEADERS.contains(name.toLowerCase(Locale.ROOT));
     }
 
     /**
