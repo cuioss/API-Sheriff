@@ -106,9 +106,16 @@ public final class RouteRuntime {
     private final @Nullable SecurityHeadersConfig securityHeaders;
 
     /**
-     * The effective, deny-by-default {@code forward} allowlist consumed by stage 5 — the
-     * per-route {@code headers_allow} / {@code query_allow} / {@code set_headers} sets resolved
-     * once at boot. An empty {@link ForwardConfig} when the route declares no {@code forward} block.
+     * The effective {@code forward} filter consumed by stage 5 — the per-route
+     * {@code headers_allow} / {@code headers_deny} / {@code query_allow} / {@code query_deny} /
+     * {@code set_headers} sets resolved once at boot.
+     * <p>
+     * The {@link Builder.Default} is an all-absent {@link ForwardConfig}, which is the
+     * <em>forward-all</em> posture on both dimensions — the value a route declaring no
+     * {@code forward} block resolves to. It is a permissive default rather than a fail-closed one
+     * because deny-by-default lives at the URL layer: a request that matched no route never reaches
+     * this field at all, and what does cross is still bounded by the gateway-owned never-forward
+     * set no mode can re-admit.
      */
     @Builder.Default
     private final ForwardConfig effectiveForward = ForwardConfig.builder().build();

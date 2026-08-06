@@ -39,6 +39,7 @@ import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -2222,6 +2223,138 @@ class ConfigValidatorTest {
                             "both malformed values are reported, the well-formed one is not"),
                     () -> assertHasError(errors, POINTER, "avifs"),
                     () -> assertHasError(errors, POINTER, "jxl"));
+        }
+    }
+
+    /**
+     * The forward-mode exclusivity rule: each {@code forward} dimension resolves exactly one of the
+     * three modes, so declaring both {@code *_allow} and {@code *_deny} for one dimension is refused
+     * at boot rather than reconciled by a silent precedence guess.
+     * <p>
+     * Every refusal case is paired with a matched positive control declaring exactly one list, so a
+     * rule that started refusing everything — or nothing — fails here instead of passing as a
+     * one-sided assertion.
+     */
+    @Nested
+    @DisplayName("Forward-mode exclusivity (a dimension resolves exactly one mode)")
+    class ForwardModeExclusivity {
+
+        private static final String BOTH_DECLARED = "declares both";
+
+        private EndpointConfig endpointWithForward(ForwardConfig forward) {
+            RouteConfig route = RouteConfig.builder()
+                    .id("proxied")
+                    .match(match("/proxied", HttpMethod.GET))
+                    .forward(forward)
+                    .build();
+            return endpoint("orders", "ORDERS", List.of(HttpMethod.GET), route);
+        }
+
+        private List<ConfigError> validateForward(ForwardConfig forward) {
+            return validator.validate(validGateway().build(), List.of(endpointWithForward(forward)),
+                    topologyWith("ORDERS"));
+        }
+
+        @Test
+        @DisplayName("Should refuse a route declaring both headers_allow and headers_deny")
+        void shouldRefuseBothHeaderLists() {
+            List<ConfigError> errors = validateForward(
+                    new ForwardConfig(List.of("Accept"), List.of("Cookie"), null, null, Map.of()));
+
+            assertAll("the refusal names the route and the dimension",
+                    () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
+                    () -> assertHasError(errors, "/endpoint/routes", "proxied"),
+                    () -> assertHasError(errors, "/endpoint/routes", "headers_allow"),
+                    () -> assertHasError(errors, "/endpoint/routes", "headers_deny"));
+        }
+
+        @Test
+        @DisplayName("Should refuse a route declaring both query_allow and query_deny")
+        void shouldRefuseBothQueryLists() {
+            List<ConfigError> errors = validateForward(
+                    new ForwardConfig(null, null, List.of("page"), List.of("debug"), Map.of()));
+
+            assertAll("the refusal names the route and the dimension",
+                    () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
+                    () -> assertHasError(errors, "/endpoint/routes", "proxied"),
+                    () -> assertHasError(errors, "/endpoint/routes", "query_allow"),
+                    () -> assertHasError(errors, "/endpoint/routes", "query_deny"));
+        }
+
+        @Test
+        @DisplayName("Should report both dimensions in one pass rather than stopping at the first")
+        void shouldReportBothDimensionsInOnePass() {
+            List<ConfigError> errors = validateForward(new ForwardConfig(
+                    List.of("Accept"), List.of("Cookie"), List.of("page"), List.of("debug"), Map.of()));
+
+            assertAll("ADR-0009 single-pass aggregation: the operator sees the whole list at once",
+                    () -> assertEquals(2, errors.size(), () -> "one violation per dimension, got: " + errors),
+                    () -> assertHasError(errors, "/endpoint/routes", "headers_allow"),
+                    () -> assertHasError(errors, "/endpoint/routes", "query_allow"));
+        }
+
+        /**
+         * A declared-empty list is declared: pairing {@code headers_allow: []} with a
+         * {@code headers_deny} is the same contradiction as pairing two populated lists. This is the
+         * case a naive {@code isEmpty()} check would wave through.
+         */
+        @Test
+        @DisplayName("Should refuse a declared-EMPTY list paired with the opposite list")
+        void shouldRefuseDeclaredEmptyPairedWithOppositeList() {
+            List<ConfigError> errors = validateForward(
+                    new ForwardConfig(List.of(), List.of("Cookie"), null, null, Map.of()));
+
+            assertEquals(1, errors.size(),
+                    () -> "a declared-empty positive-list is still declared, so pairing it with a deny"
+                            + " list is refused, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("singleModeRoutes")
+        @DisplayName("Should accept a route declaring exactly one mode per dimension")
+        void shouldAcceptSingleModeRoutes(String name, ForwardConfig forward) {
+            List<ConfigError> errors = validateForward(forward);
+
+            assertTrue(errors.isEmpty(),
+                    () -> "'" + name + "' declares at most one list per dimension and must boot clean, got: "
+                            + errors);
+        }
+
+        static Stream<Arguments> singleModeRoutes() {
+            return Stream.of(
+                    Arguments.of("positive-list on both dimensions",
+                            new ForwardConfig(List.of("Accept"), null, List.of("page"), null, Map.of())),
+                    Arguments.of("negative-list on both dimensions",
+                            new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of())),
+                    Arguments.of("positive-list headers, negative-list query",
+                            new ForwardConfig(List.of("Accept"), null, null, List.of("debug"), Map.of())),
+                    Arguments.of("negative-list headers, positive-list query",
+                            new ForwardConfig(null, List.of("Cookie"), List.of("page"), null, Map.of())),
+                    Arguments.of("forward-all on both dimensions",
+                            new ForwardConfig(null, null, null, null, Map.of())),
+                    Arguments.of("declared-empty positive-lists, no deny lists",
+                            new ForwardConfig(List.of(), null, List.of(), null, Map.of())));
+        }
+
+        @Test
+        @DisplayName("Should accept a route declaring no forward block at all")
+        void shouldAcceptRouteWithoutForwardBlock() {
+            List<ConfigError> errors = validator.validate(validGateway().build(),
+                    List.of(endpoint("orders", "ORDERS", List.of(HttpMethod.GET), route("proxied", HttpMethod.GET))),
+                    topologyWith("ORDERS"));
+
+            assertTrue(errors.isEmpty(), () -> "an absent forward block declares no list, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("The refusal message tells the operator which lists collided")
+        void refusalMessageNamesTheCollidingKeys() {
+            List<ConfigError> errors = validateForward(
+                    new ForwardConfig(List.of("Accept"), List.of("Cookie"), null, null, Map.of()));
+
+            assertTrue(errors.getFirst().message().contains(BOTH_DECLARED),
+                    () -> "the message must state that both lists were declared, got: "
+                            + errors.getFirst().message());
         }
     }
 }

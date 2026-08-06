@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -190,7 +191,7 @@ class ConfigModelContractTest {
                 .match(matchConfig())
                 .auth(auth())
                 .securityFilter(securityFilterConfig())
-                .forward(new ForwardConfig(List.of("Accept"), List.of("page"),
+                .forward(new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
                         Map.of("X-Gateway", "api-sheriff")))
                 .upstream(upstreamConfig())
                 .rateLimit(new RateLimitConfig(100, 200))
@@ -215,7 +216,8 @@ class ConfigModelContractTest {
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
                 .upstream(resolvedUpstream())
-                .effectiveForward(new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "api-sheriff")))
+                .effectiveForward(new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
+                        Map.of("X-Gateway", "api-sheriff")))
                 .build();
     }
 
@@ -371,9 +373,15 @@ class ConfigModelContractTest {
                     voCase("SecurityFilterConfig", securityFilterConfig(), securityFilterConfig(),
                             SecurityFilterConfig.builder().build()),
                     voCase("ForwardConfig",
-                            new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "sheriff")),
-                            new ForwardConfig(List.of("Accept"), List.of("page"), Map.of("X-Gateway", "sheriff")),
-                            new ForwardConfig(List.of(), List.of(), Map.of())),
+                            new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
+                                    Map.of("X-Gateway", "sheriff")),
+                            new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
+                                    Map.of("X-Gateway", "sheriff")),
+                            new ForwardConfig(List.of(), null, List.of(), null, Map.of())),
+                    voCase("ForwardConfig (negative-list mode)",
+                            new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of()),
+                            new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of()),
+                            new ForwardConfig(null, List.of("Cookie"), null, null, Map.of())),
                     voCase("WebSocketConfig",
                             new WebSocketConfig(List.of("https://app.example.com"), 300),
                             new WebSocketConfig(List.of("https://app.example.com"), 300),
@@ -547,10 +555,14 @@ class ConfigModelContractTest {
             assertNull(cfg.effectiveSecurityHeaders());
             assertTrue(cfg.effectiveAllowedMethods().isEmpty());
             assertEquals(Protocol.HTTP, cfg.protocol());
-            assertTrue(cfg.effectiveForward().headersAllow().isEmpty(),
-                    "an absent forward block normalizes to a deny-by-default empty allowlist");
-            assertTrue(cfg.effectiveForward().queryAllow().isEmpty());
-            assertTrue(cfg.effectiveForward().setHeaders().isEmpty());
+            assertNull(cfg.effectiveForward().headersAllow(),
+                    "an absent forward block normalizes to the forward-all posture: every list stays"
+                            + " null (absent), never an empty allowlist that would forward nothing");
+            assertNull(cfg.effectiveForward().headersDeny());
+            assertNull(cfg.effectiveForward().queryAllow());
+            assertNull(cfg.effectiveForward().queryDeny());
+            assertTrue(cfg.effectiveForward().setHeaders().isEmpty(),
+                    "set_headers carries no mode semantics and keeps the absent-means-empty normalization");
             assertTrue(cfg.effectiveAllowedOrigins().isEmpty(),
                     "an absent WebSocket origin allowlist normalizes to an empty set");
             assertNull(cfg.effectiveWebSocketIdleTimeoutSeconds(),
@@ -562,7 +574,7 @@ class ConfigModelContractTest {
             assertTrue(new AuthConfig("none", null).requiredScopes().isEmpty());
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
             assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
-            assertTrue(new ForwardConfig(null, null, null).setHeaders().isEmpty());
+            assertTrue(new ForwardConfig(null, null, null, null, null).setHeaders().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).cipherSuites().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).alpn().isEmpty());
             assertTrue(new TlsConfig(null, null, null, null, null).passthroughSni().isEmpty());
@@ -579,6 +591,52 @@ class ConfigModelContractTest {
             WebSocketConfig cfg = new WebSocketConfig(null, null);
             assertTrue(cfg.allowedOrigins().isEmpty());
             assertNull(cfg.idleTimeoutSeconds());
+        }
+
+        /**
+         * ForwardConfig is the deliberate exception to this package's absent-collection-means-empty
+         * rule: its four list components stay {@code null} when absent, because absent and declared
+         * empty select different forward modes (forward-all versus a list that names nothing).
+         * Normalizing here would erase the distinction the three-mode model is built on.
+         */
+        @Test
+        void forwardConfigKeepsAbsentListsNullRatherThanNormalizingThem() {
+            ForwardConfig absent = new ForwardConfig(null, null, null, null, null);
+
+            assertAll("every absent forward list stays null",
+                    () -> assertNull(absent.headersAllow(), "an absent headers_allow is not an empty allowlist"),
+                    () -> assertNull(absent.headersDeny(), "an absent headers_deny is not an empty denylist"),
+                    () -> assertNull(absent.queryAllow(), "an absent query_allow is not an empty allowlist"),
+                    () -> assertNull(absent.queryDeny(), "an absent query_deny is not an empty denylist"));
+        }
+
+        @Test
+        void forwardConfigDistinguishesAbsentFromDeclaredEmpty() {
+            ForwardConfig absent = new ForwardConfig(null, null, null, null, Map.of());
+            ForwardConfig declaredEmpty = new ForwardConfig(List.of(), null, List.of(), null, Map.of());
+
+            assertAll("absent and declared-empty are different postures, so they are different values",
+                    () -> assertNull(absent.headersAllow()),
+                    () -> assertNotNull(declaredEmpty.headersAllow(),
+                            "a declared empty list is present and empty, never null"),
+                    () -> assertTrue(declaredEmpty.headersAllow().isEmpty()),
+                    () -> assertTrue(declaredEmpty.queryAllow().isEmpty()),
+                    () -> assertNotEquals(absent, declaredEmpty,
+                            "forward-all and a positive-list naming nothing must not compare equal — the"
+                                    + " whole three-mode model depends on the two being distinguishable"));
+        }
+
+        @Test
+        void forwardConfigDefensivelyCopiesDeclaredListsAndKeepsThemUnmodifiable() {
+            List<String> source = new ArrayList<>(List.of("Accept"));
+            ForwardConfig cfg = new ForwardConfig(source, null, null, null, Map.of());
+            source.add("X-Late");
+
+            assertAll("a declared list is copied at construction and is unmodifiable afterwards",
+                    () -> assertEquals(List.of("Accept"), cfg.headersAllow(),
+                            "mutating the source after construction must not reach the record"),
+                    () -> assertThrows(UnsupportedOperationException.class,
+                            () -> cfg.headersAllow().add("X-Other")));
         }
     }
 

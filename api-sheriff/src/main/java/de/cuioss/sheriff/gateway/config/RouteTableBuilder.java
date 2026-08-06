@@ -61,8 +61,9 @@ import org.jspecify.annotations.Nullable;
  * {@code path_prefix} length (most specific first), and
  * materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, the effective deny-by-default {@code forward}
- * allowlist, and the effective upstream base path (the route-level
+ * / not-modified toggles, the effective {@code forward} filter (whose
+ * per-dimension positive-list / negative-list / forward-all posture is carried
+ * wholesale, deny lists included), and the effective upstream base path (the route-level
  * {@code upstream.path} replacing the alias-derived base path when declared)
  * into a {@link ResolvedRoute}. The inheritance chains
  * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
@@ -190,6 +191,13 @@ public final class RouteTableBuilder {
         // also keeps the non-nullness visible to static analysis: Sonar's dataflow does not model
         // requireNonNullElse as null-eliminating, so it carried route.forward()/route.protocol()'s
         // @Nullable onto the result and raised java:S4449 at the first use of each local (PR #146).
+        //
+        // The declared block is carried WHOLESALE, so headers_deny / query_deny ride this same chain
+        // with no per-list resolution: the forward block has no inheritance cascade (ADR-0007 applies
+        // to auth, allowed_methods, security_* and upstream_defaults, not to forward), so a route
+        // either declares the block or it does not. The fallback expression is unchanged but its
+        // meaning has inverted: an all-absent ForwardConfig now selects FORWARD-ALL on both
+        // dimensions rather than the former nothing-crosses allowlist.
         ForwardConfig declaredForward = route.forward();
         ForwardConfig effectiveForward = declaredForward != null
                 ? declaredForward

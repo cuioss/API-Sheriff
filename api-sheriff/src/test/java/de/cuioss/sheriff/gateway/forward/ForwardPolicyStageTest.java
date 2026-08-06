@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.forward;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,7 +37,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-@DisplayName("ForwardPolicyStage — stage 5 zero-trust forward policy")
+@DisplayName("ForwardPolicyStage — stage 5 zero-trust forward policy (three modes per dimension)")
 class ForwardPolicyStageTest {
 
     private static final String EMIT_XFORWARDED = "x-forwarded";
@@ -150,8 +151,8 @@ class ForwardPolicyStageTest {
     }
 
     @Nested
-    @DisplayName("deny-by-default allowlists")
-    class Allowlists {
+    @DisplayName("positive-list mode (headers_allow / query_allow declared)")
+    class PositiveListMode {
 
         @Test
         @DisplayName("forwards only allow-listed request headers")
@@ -224,6 +225,191 @@ class ForwardPolicyStageTest {
             assertEquals(List.of("2"), result.query().get("page"), "allow-listed query parameter must cross");
             assertFalse(result.query().containsKey("secret"), "non-allow-listed query parameter must be dropped");
         }
+
+        @Test
+        @DisplayName("a DECLARED EMPTY query_allow is a positive-list naming nothing, so nothing crosses")
+        void declaredEmptyQueryAllowCrossesNothing() {
+            // Arrange — the distinction this deliverable exists to preserve: declared-empty is a
+            // positive-list that admits nothing, NOT the absent state (which is forward-all)
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(Map.of("page", List.of("2"), "secret", List.of("x")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryAllow(List.of()).build(), false);
+
+            // Assert
+            assertTrue(result.query().isEmpty(),
+                    "query_allow: [] is a declared positive-list naming nothing, so no query parameter"
+                            + " crosses — it must NOT be read as the absent, forward-all state");
+        }
+
+        @Test
+        @DisplayName("a DECLARED EMPTY headers_allow crosses no client header")
+        void declaredEmptyHeadersAllowCrossesNothing() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-Api-Version", List.of("v2")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), false);
+
+            // Assert
+            assertFalse(result.headers().containsKey("x-api-version"),
+                    "headers_allow: [] admits no client header");
+        }
+    }
+
+    @Nested
+    @DisplayName("negative-list mode (headers_deny / query_deny declared)")
+    class NegativeListMode {
+
+        @Test
+        @DisplayName("crosses every client header except the denied one")
+        void crossesEverythingButTheDeniedHeader() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(
+                    "X-Api-Version", List.of("v2"),
+                    "X-Secret", List.of("leak")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Secret")), false);
+
+            // Assert — the inbound names are lower-case-keyed by PipelineRequest, and the negative-list
+            // copy carries them through under that key
+            assertEquals("v2", result.headers().get("x-api-version"),
+                    "an undenied client header crosses under a negative-list");
+            assertFalse(result.headers().containsKey("x-secret"),
+                    "the denied header must not cross");
+        }
+
+        @Test
+        @DisplayName("denied-name matching is case-insensitive, as RFC 9110 field names require")
+        void deniedHeaderMatchingIsCaseInsensitive() {
+            // Arrange — the operator writes the name in one case, the client sends another
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-SECRET", List.of("leak")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("x-secret")), false);
+
+            // Assert
+            assertFalse(result.headers().containsKey("x-secret"),
+                    "a case-differing denied name must still be withheld — otherwise the deny list could"
+                            + " be bypassed by changing the case of a header name");
+        }
+
+        @Test
+        @DisplayName("crosses every query parameter except the denied one")
+        void crossesEveryQueryParameterButTheDeniedOne() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(Map.of("page", List.of("2"), "secret", List.of("x")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().queryDeny(List.of("secret")).build(), false);
+
+            // Assert
+            assertEquals(List.of("2"), result.query().get("page"), "an undenied parameter crosses");
+            assertFalse(result.query().containsKey("secret"), "the denied parameter must not cross");
+        }
+
+        @Test
+        @DisplayName("a forwarding header is never smuggled in through a negative-list")
+        void forwardingHeaderNeverCrossesUnderNegativeList() {
+            // Arrange — the deny list names something else entirely, so nothing withholds XFF except
+            // the gateway-owned skip this assertion exists to pin
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR), Set.of(TRUSTED_CIDR));
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Unrelated")), false);
+
+            // Assert
+            assertFalse(result.headers().containsValue(CLIENT_IP),
+                    "the FORWARDING_HEADERS skip is retained on the negative-list mode: a regenerated"
+                            + " header is never copied from the client, whatever the mode");
+        }
+    }
+
+    @Nested
+    @DisplayName("forward-all mode (neither list declared)")
+    class ForwardAllMode {
+
+        @Test
+        @DisplayName("crosses a client header that is named by no list at all")
+        void crossesAnUnlistedHeader() {
+            // Arrange — the absent-state flip: no forward block at all
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-Api-Version", List.of("v2")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertEquals("v2", result.headers().get("x-api-version"),
+                    "with neither list declared every client header crosses — this is the baseline the"
+                            + " absent state now means");
+        }
+
+        @Test
+        @DisplayName("crosses a query parameter that is named by no list at all")
+        void crossesAnUnlistedQueryParameter() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = queryRequest(Map.of("page", List.of("2")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertEquals(List.of("2"), result.query().get("page"),
+                    "with neither query list declared every client parameter crosses");
+        }
+
+        @Test
+        @DisplayName("a forwarding header is never smuggled in through forward-all")
+        void forwardingHeaderNeverCrossesUnderForwardAll() {
+            // Arrange — the most permissive mode is still bounded by the gateway-owned skip
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR), Set.of(TRUSTED_CIDR));
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertFalse(result.headers().containsValue(CLIENT_IP),
+                    "forward-all is not a way to smuggle a regenerated forwarding header through — the"
+                            + " FORWARDING_HEADERS skip applies on every mode");
+        }
+
+        @Test
+        @DisplayName("the two dimensions resolve their modes independently")
+        void headerAndQueryModesResolveIndependently() {
+            // Arrange — a positive-list on headers and forward-all on query, in one block
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.GET)
+                    .requestPath("/api/orders")
+                    .peerAddress(UNTRUSTED_PEER)
+                    .headers(Map.of("X-Api-Version", List.of("v2"), "X-Secret", List.of("leak")))
+                    .queryParameters(Map.of("page", List.of("2")))
+                    .build();
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("X-Api-Version")), false);
+
+            // Assert
+            assertAll("the header dimension is a positive-list while the query dimension is forward-all",
+                    () -> assertEquals("v2", result.headers().get("X-Api-Version"),
+                            "the allow-listed header crosses under its declared name"),
+                    () -> assertFalse(result.headers().containsKey("x-secret"),
+                            "the header positive-list still excludes the unlisted header"),
+                    () -> assertEquals(List.of("2"), result.query().get("page"),
+                            "the query dimension declares no list, so it is forward-all"));
+        }
     }
 
     @Nested
@@ -273,8 +459,19 @@ class ForwardPolicyStageTest {
         return new ForwardPolicyStage(resolver, new TcpPeerGate(tcpTrusted), emitMode);
     }
 
+    /** A header positive-list. Leaves every other list absent, so the query dimension is forward-all. */
     private static ForwardConfig allow(List<String> headersAllow) {
         return ForwardConfig.builder().headersAllow(headersAllow).build();
+    }
+
+    /** A header negative-list. Leaves every other list absent. */
+    private static ForwardConfig deny(List<String> headersDeny) {
+        return ForwardConfig.builder().headersDeny(headersDeny).build();
+    }
+
+    /** The all-absent block: forward-all on both dimensions — what a route declaring no forward means. */
+    private static ForwardConfig forwardAll() {
+        return ForwardConfig.builder().build();
     }
 
     private static PipelineRequest request(@Nullable String peer, Map<String, List<String>> headers) {
@@ -283,6 +480,15 @@ class ForwardPolicyStageTest {
                 .requestPath("/api/orders")
                 .peerAddress(peer)
                 .headers(headers)
+                .build();
+    }
+
+    private static PipelineRequest queryRequest(Map<String, List<String>> queryParameters) {
+        return PipelineRequest.builder()
+                .method(HttpMethod.GET)
+                .requestPath("/api/orders")
+                .peerAddress(UNTRUSTED_PEER)
+                .queryParameters(queryParameters)
                 .build();
     }
 }

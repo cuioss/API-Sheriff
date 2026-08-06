@@ -43,6 +43,7 @@ import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -97,6 +98,12 @@ import org.jspecify.annotations.Nullable;
  * {@code profile} resolves to {@code minimal} must be neither effectively authenticated nor anchored
  * under a {@code type: bff} anchor. The {@code profile} <em>value range</em> is owned by the bundled
  * JSON Schema, so no post-binding range rule exists here — only this posture refusal.
+ * <p>
+ * The forward-mode exclusivity refusal adds one more: a route must not declare both {@code *_allow}
+ * and {@code *_deny} for the same {@code forward} dimension, because each dimension resolves exactly
+ * one of the three modes (positive-list, negative-list, forward-all). The schema bounds the
+ * {@code forward} key <em>set</em>; a mutual exclusion between two of its keys is cross-cutting and
+ * lives here.
  * <p>
  * Framework-agnostic (ADR-0005): the rule set is supplied at construction and the
  * validator carries no framework imports.
@@ -208,7 +215,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAuthorizationHeaderValueLength(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateForwardModeExclusivity(endpoints, errors));
 
     private final List<ValidationRule> rules;
 
@@ -443,6 +451,57 @@ public final class ConfigValidator {
             rendered.append("...");
         }
         return rendered.toString();
+    }
+
+    /**
+     * Rule: a route must not declare both the positive-list and the negative-list for the same
+     * {@code forward} dimension.
+     * <p>
+     * Each dimension — headers, query — resolves <em>exactly one</em> of three modes: a positive-list
+     * when {@code *_allow} is declared, a negative-list when {@code *_deny} is declared, and
+     * forward-all when neither is. Declaring both expresses no coherent posture, and any precedence
+     * the gateway silently picked would be a guess about which one the operator meant. The two are
+     * therefore refused together at boot rather than reconciled at request time.
+     * <p>
+     * The bound is genuinely cross-cutting and cannot move into the bundled JSON Schema: the schema's
+     * {@code additionalProperties: false} bounds the <em>key set</em> of the {@code forward} object,
+     * but a mutual exclusion between two of its optional keys belongs with the other post-binding
+     * rules. Both dimensions of every route are checked and every violation is collected rather than
+     * failing on the first, per ADR-0009 — the operator sees the whole list in one boot attempt.
+     */
+    private static void validateForwardModeExclusivity(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                ForwardConfig forward = route.forward();
+                if (forward == null) {
+                    continue;
+                }
+                checkForwardDimension(endpoint, route, "headers", forward.headersAllow(), forward.headersDeny(),
+                        errors);
+                checkForwardDimension(endpoint, route, "query", forward.queryAllow(), forward.queryDeny(), errors);
+            }
+        }
+    }
+
+    /**
+     * Refuses one {@code forward} dimension that declares both of its mutually exclusive lists. A
+     * <em>declared empty</em> list counts as declared: {@code headers_allow: []} is a positive-list
+     * admitting nothing, not an omission, so pairing it with a {@code headers_deny} is the same
+     * contradiction as pairing two populated lists.
+     */
+    private static void checkForwardDimension(EndpointConfig endpoint, RouteConfig route, String dimension,
+            @Nullable List<String> allow, @Nullable List<String> deny, List<ConfigError> errors) {
+        if (allow == null || deny == null) {
+            return;
+        }
+        String allowKey = dimension + "_allow";
+        String denyKey = dimension + "_deny";
+        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                ("route '%s' declares both %s and %s; the %s forward dimension resolves exactly one "
+                        + "mode, so the positive-list and the negative-list are mutually exclusive — "
+                        + "declare %s for a positive-list, %s for a negative-list, or neither for the "
+                        + "forward-all baseline")
+                        .formatted(route.id(), allowKey, denyKey, dimension, allowKey, denyKey)));
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
