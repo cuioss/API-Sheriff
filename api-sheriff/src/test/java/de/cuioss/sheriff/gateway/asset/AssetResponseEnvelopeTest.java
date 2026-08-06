@@ -30,6 +30,7 @@ import java.util.stream.Stream;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.edge.ResponseStage;
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -274,7 +275,7 @@ class AssetResponseEnvelopeTest {
          * is what is actually under test.
          */
         static Stream<String> strippedNames() {
-            return AssetResponseEnvelope.connectionSpecificHeaders().stream();
+            return ConnectionHeaders.RESPONSE_STRIP.stream();
         }
 
         @ParameterizedTest
@@ -302,6 +303,7 @@ class AssetResponseEnvelopeTest {
             Map<String, String> sourceHeaders = new LinkedHashMap<>();
             sourceHeaders.put("Connection", "keep-alive");
             sourceHeaders.put("Keep-Alive", "timeout=5");
+            sourceHeaders.put("Proxy-Connection", "keep-alive");
             sourceHeaders.put("Transfer-Encoding", "chunked");
             sourceHeaders.put("Content-Length", "530");
             sourceHeaders.put("Server", "nginx");
@@ -336,22 +338,17 @@ class AssetResponseEnvelopeTest {
         }
 
         /**
-         * The parity fence against the proxy data plane. Both paths answer a client and both must
-         * refuse to relay the same connection state, but the two strips are enforced in different
-         * packages, so the agreement is asserted rather than assumed.
-         * <p>
-         * The assertion runs through {@code ResponseStage}'s own public predicate rather than a
-         * restated copy of its set, so it stays true to whatever that stage actually does. It is
-         * deliberately one-directional — it proves the envelope strips nothing the proxy path
-         * forwards. The converse (a name {@code ResponseStage} strips and the envelope does not) is
-         * exactly issue #172 and cannot be derived here, because the stage exposes a predicate, not
-         * its set; {@link ConnectionSpecificStrip#shouldStripTheWholeHopSet()} pins the envelope's
-         * side against the concrete headers a real origin sends.
+         * The both-paths fence. {@link ConnectionHeaders} is the one declaration, but a shared
+         * constant only helps if both response paths actually consult it — a path that kept a local
+         * copy would compile, pass its own tests, and reintroduce issue #172 the moment a name was
+         * added here alone. This walks the shared set through the proxy relay's own public
+         * forwardability predicate, so the proxy path is proven to honour every name the asset path
+         * strips, not merely to have the same constant on its classpath.
          */
         @Test
         @DisplayName("Should strip nothing the proxy data plane's ResponseStage would forward")
         void shouldAgreeWithTheProxyResponseStrip() {
-            for (String name : AssetResponseEnvelope.connectionSpecificHeaders()) {
+            for (String name : ConnectionHeaders.RESPONSE_STRIP) {
                 assertFalse(ResponseStage.isForwardableResponseHeader(name, true),
                         () -> name + " is stripped by the asset envelope but forwarded by "
                                 + "ResponseStage — the two response paths have drifted");

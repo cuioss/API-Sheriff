@@ -143,6 +143,7 @@ class UpstreamAssetSourceTest {
         UpstreamFetcher fetcher = cannedFetcher(OK, headers(
                 "Connection", "keep-alive",
                 "Keep-Alive", "timeout=5",
+                "Proxy-Connection", "keep-alive",
                 "Transfer-Encoding", "chunked",
                 "Content-Length", String.valueOf(BODY.length),
                 "Server", "nginx"), BODY);
@@ -155,6 +156,9 @@ class UpstreamAssetSourceTest {
                         "the upstream's connection state must never reach the client's connection"),
                 () -> assertFalse(served.headers().keySet().stream().anyMatch("Keep-Alive"::equalsIgnoreCase),
                         "Keep-Alive is connection-specific and malformed over HTTP/2"),
+                () -> assertFalse(
+                        served.headers().keySet().stream().anyMatch("Proxy-Connection"::equalsIgnoreCase),
+                        "RFC 9113 §8.2.2 names Proxy-Connection connection-specific alongside Connection"),
                 () -> assertFalse(
                         served.headers().keySet().stream().anyMatch("Transfer-Encoding"::equalsIgnoreCase),
                         "the client's framing is the edge's to choose, never the upstream's"),

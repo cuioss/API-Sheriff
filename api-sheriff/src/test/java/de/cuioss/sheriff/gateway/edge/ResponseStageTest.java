@@ -33,8 +33,9 @@ class ResponseStageTest {
 
         @ParameterizedTest
         @ValueSource(strings = {
-                "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
-                "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Content-Length"})
+                "Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
+                "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade",
+                "Content-Length"})
         @DisplayName("strips hop-by-hop and framing headers regardless of not_modified")
         void stripsHopByHop(String header) {
             assertFalse(ResponseStage.isForwardableResponseHeader(header, true),
