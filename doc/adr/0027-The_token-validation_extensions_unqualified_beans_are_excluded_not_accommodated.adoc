@@ -1,0 +1,273 @@
+= ADR-0027: The token-validation extension's unqualified beans are excluded, not accommodated
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The gateway drives token validation from gateway.yaml through the @GatewayValidator qualifier and never uses the token-validation extension's unqualified validator, so every extension bean that reaches it — two health probes and a scheduled metrics collector — is removed from the bean set rather than configured into a working state; the extension dependency itself stays for the GraalVM reflection registration the gateway does use, and the resulting readiness `jwks` datum is a boot-time constructibility fact rather than a live signal.
+// tags: health-checks, readiness, metrics, scheduler, cdi, bean-exclusion, observability, extension-boundary, native-image, token-validation
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+API Sheriff depends on the token-sheriff validation extension for its JWT validation machinery. That
+dependency brings two things onto the runtime classpath, and they are separable:
+
+* *The validation library.* The classes that parse and verify tokens, which the gateway uses
+  directly.
+* *The extension's own opinionated wiring.* A configuration namespace
+  (`sheriff.token.issuers.<name>.*`), a producer that builds an unqualified `TokenValidator` and a
+  `SecurityEventCounter` from it, two readiness probes that report on that validator, and a metrics
+  collector that publishes that counter.
+
+The gateway does not use the second. Its request path injects a `@GatewayValidator`-qualified
+`TokenValidator` assembled from `gateway.yaml`'s `token_validation` block, and the qualifier exists
+precisely to bypass the extension's unqualified bean. The gateway's own readiness check reads the
+same qualified validator. No production class imports the extension's Quarkus wiring package at all.
+
+This produces a structural mismatch rather than a misconfiguration. Every one of those beans resolves
+through the *extension's* issuer list, which this gateway never populates, so every one of them meets
+the same "no issuer configurations found" condition. The mismatch is single; how it *presents*
+depends on what drives each bean, and the two shapes cost different things:
+
+* *Driven by the health endpoint.* The two probes report DOWN. SmallRye Health composes readiness as
+  the conjunction of every `@Readiness` contributor, so probes reporting on machinery the product
+  does not use take aggregate readiness DOWN for the whole process. A correctly-configured gateway --
+  one that drives validation entirely from `gateway.yaml`, as the architecture intends -- is
+  therefore permanently not ready.
+* *Driven by the scheduler.* The metrics collector carries a ten-second `@Scheduled` trigger and
+  constructor-injects the counter, so bean creation fails on every tick and the scheduler logs a full
+  stack trace each time. Readiness is unaffected and token validation keeps working; the log is what
+  is lost, at roughly sixty stack-trace lines every ten seconds, which is enough to bury everything
+  else an operator needs to read.
+
+That second shape is the reason this decision is stated over *beans* rather than over *probes*. A
+rule scoped to health checks answers only the symptom that happened to be found first, and leaves the
+next bean in the same position to be rediscovered from its own symptom.
+
+The choice point this creates is an ownership question, and it generalises past this one extension.
+When a dependency ships observability for a mechanism the consumer deliberately does not use, the
+consumer can either *feed* that mechanism enough configuration to make it work, or *remove* it from
+the consumer's observability surface. Feeding it means maintaining configuration for machinery with
+no consumer, purely to satisfy a check. Removing it means the consumer's observability surface is
+composed deliberately rather than inherited.
+
+A second constraint bounds the available answers. Removing the *dependency* is not equivalent to
+removing the *beans*: the extension's deployment processor registers the GraalVM reflection
+metadata for the validation classes the gateway genuinely does use at runtime, so the dependency is
+load-bearing for the native image regardless of whether any of its beans are wanted.
+
+== Decision
+
+*A bean that observes machinery the product does not use is removed from the bean set, not
+configured into a working state.*
+
+The extension's unqualified beans are excluded at the CDI level by type pattern, scoped to exactly
+the health and metrics packages of its Quarkus wiring. The exclusion is declared unconditionally and
+in no profile, because a profile-scoped exclusion would itself be a branch in the shipped
+configuration surface, which
+link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
+forbids.
+
+=== 1. The scope is those packages, never a global switch
+
+The exclusion names the health and metrics packages of the extension's Quarkus wiring and nothing
+else. It is specifically *not* a blanket disable of extension-contributed health checks, *not* a
+disable of the scheduler, and not any other global switch. Blanket-disabling a security-relevant
+readiness check to force a probe green is refused under the posture of
+link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022];
+disabling the scheduler wholesale would silently take out any scheduled job this gateway itself later
+wants. The narrow exclusion removes beans that observe nothing here, whereas a global switch would
+also remove beans that observe something, and would keep doing so silently as the dependency set
+grows.
+
+The scope stops short of the whole `de.cuioss.sheriff.token.quarkus.*` surface for the same reason.
+That package tree also carries beans a future change here may legitimately want -- the `@BearerToken`
+producer, the claim-mapper registry -- and a sweeping pattern would remove them at the moment someone
+reached for one, with nothing announcing why.
+
+=== 2. The scope is enforced by a fitness function, not by vigilance
+
+The exclusion is a list of packages, and a list is only ever as complete as the last symptom someone
+investigated: the health probes were excluded from their symptom, and the metrics collector was found
+later from a different one. A test therefore asserts the general form of the rule -- *no scheduled
+job may name the extension's Quarkus wiring* -- alongside the specific bean assertions. It fails when
+an eagerly-driven newcomer lands rather than when an operator eventually reads the log.
+
+That fitness function is deliberately partial and is documented as such. It observes registered
+scheduled jobs, so it catches the driver that produced the second symptom and not every possible one;
+a bean driven by a startup observer or an HTTP endpoint would pass it. The exclusion list remains a
+reviewed decision rather than something a test can derive.
+
+=== 3. The dependency stays
+
+Only the beans are excluded. The extension remains a compile dependency because its deployment
+processor registers the GraalVM reflection metadata for the validation classes the gateway uses at
+runtime. Dropping it would trade three unwanted beans for a new compile dependency on the core
+validation library plus a hand-maintained replacement for reflection registration that is currently
+generated -- a strictly worse position.
+
+=== 4. No observability is lost, because none was being produced
+
+The excluded probes were not observing this gateway's JWKS loaders. Both iterate the *extension's*
+issuer list; that list is empty in every profile, so neither probe ever reached the loaders the
+gateway actually builds from `gateway.yaml`. Their DOWN status was a report about an unconfigured
+parallel mechanism, not a signal about the product. The gateway's own readiness check reports a
+`jwks` datum for the real, qualified validator in the same readiness payload.
+
+The excluded metrics collector had published no meter either. It failed inside its own dependency
+resolution on every tick, so it never reached the point of registering anything -- what the exclusion
+removes is the stack trace, not a JWT metric. Publishing the *qualified* validator's
+`SecurityEventCounter` as meters is genuinely absent and is separate work; the seam for it is the
+gateway's own metrics adapter, which already binds the `cui-http` security counter the same way.
+
+=== 5. That `jwks` datum is boot-time constructibility, not a live signal
+
+This is stated as part of the decision rather than left to be discovered, because the datum reads
+more strongly than it is. The producer forces the application-scoped validator into existence at
+boot, and a failure there aborts startup; afterwards the probe's lookup returns the cached instance
+and reports ready for the remainder of the process lifetime. An IdP whose JWKS endpoint becomes
+unreachable later, a stalled key rotation, or an expired signing key therefore do *not* take
+readiness DOWN.
+
+That is an open gap in the gateway's own probe, and it *pre-dates this exclusion rather than being
+caused by it* -- the excluded probe polled per-issuer loader status and would have carried a live
+signal, but only for issuers it was pointed at, and it was never pointed at these. Closing the gap
+means giving the gateway's own readiness check a live loader-status read. It is not something this
+exclusion removed, and restoring the excluded probes would not close it.
+
+== Consequences
+
+=== Positive
+
+* A correctly-configured gateway reports ready. Aggregate readiness reflects the mechanism the
+  product actually runs on instead of a parallel one it deliberately bypasses.
+* The application log is usable. A recurring stack trace on a ten-second cycle is not a cosmetic
+  defect: it is the difference between logs that can be read during an incident and logs that cannot.
+* The observability surface is composed deliberately. Each contributor is there because it observes
+  something this product does, rather than because a dependency happened to contribute it.
+* No configuration is maintained for machinery with no consumer. The alternative -- populating the
+  extension's issuer namespace to satisfy its beans -- would have created exactly the redundant
+  parallel declaration ADR-0032 removes.
+* The native image is unaffected: the reflection registration the gateway relies on is a
+  deployment-time concern and is untouched by a runtime bean exclusion.
+
+=== Negative
+
+* The gateway's own readiness check is now the *only* JWKS readiness coverage. There is no second
+  opinion, so a defect in that check is a defect in the whole signal.
+* The exclusion is expressed as type patterns over another project's packages. A reorganisation of
+  the extension's health or metrics package would silently stop matching, and the beans would return
+  without anything failing to announce it.
+* The exclusion list is per-package and grows by discovery. The fitness function narrows that to the
+  scheduler-driven case; a bean in the same position driven some other way is still found from its
+  symptom.
+* Someone reading the readiness payload sees a `jwks` datum that reports ready and will reasonably
+  read it as a live signal. It is not one, and only the documentation says so.
+
+=== Risks
+
+* *The boot-time-constructibility datum is mistaken for liveness.* This is the principal residual
+  risk and it is accepted deliberately: the gap is real, it pre-dates this decision, and closing it
+  is separate work. Until then a JWKS endpoint can become unreachable, a key rotation can stall, or
+  a signing key can expire, and readiness will continue to report ready throughout. Operational
+  alerting must not treat this readiness probe as coverage for those conditions.
+
+* *The exclusion outlives its justification.* It is correct only while the extension's issuer
+  namespace remains unpopulated in this artifact. A deployment that ever supplies extension-backed
+  issuers would want those beans back, and nothing detects that combination -- the configuration
+  would simply be observed by nothing. The exclusion is bound to the architectural stance that
+  validation is driven from `gateway.yaml`, and it must be revisited if that stance changes.
+
+* *The list lags the extension.* Each entry was added after a symptom was observed in a running
+  deployment rather than derived from the extension's bean set. The fitness function closes that
+  loop for scheduler-driven beans; for any other driver, the loop is still an operator noticing
+  something. An extension release that adds an eagerly-driven bean outside those two packages will
+  reproduce this class of defect, and the mitigation is to read the exclusion's scope when the
+  dependency is upgraded rather than to trust the list.
+
+== Alternatives Considered
+
+=== Populate the extension's issuer namespace so its beans work
+
+Supply the extension with enough issuer configuration to satisfy its own beans, leaving all of them
+in the observability surface.
+
+Rejected because it maintains configuration for machinery with no consumer, purely to satisfy a
+check. The probes would then report on a validator the request path never touches, so a green
+result would carry no information about the gateway while looking exactly like one that did, and the
+metrics collector would publish counters for a validator that counts nothing. It also recreates the
+parallel declaration ADR-0032 removes, in the same file, for the same non-reason.
+
+=== Disable extension-contributed health checks, or the scheduler, globally
+
+Use a global switch -- suppress health checks contributed by extensions, or turn the scheduler off --
+which is a single key and needs no knowledge of the extension's package structure.
+
+Rejected on blast radius. It would suppress beans that *do* observe something, both now and as the
+dependency set grows, and would do so silently -- the failure mode is an observability surface that
+quietly stops covering things nobody decided to stop covering. Forcing a security-relevant readiness
+check green with a blanket switch is refused under ADR-0022's posture, and disabling the scheduler
+would pre-emptively remove a mechanism this gateway has not yet used but has no reason to forbid. The
+narrow exclusion is more brittle to package reorganisation, which is the accepted cost of not
+over-reaching.
+
+=== Drop the extension dependency entirely
+
+Remove the dependency, taking its beans with it, and depend directly on the core validation
+library.
+
+Rejected on cost and on native-image correctness. The extension's deployment processor generates the
+GraalVM reflection registration for the validation classes the gateway uses at runtime; removing it
+requires a new compile dependency *plus* a hand-maintained replacement for registration that is
+currently derived automatically. That is a larger, more fragile surface adopted to solve a problem
+that one line of bean exclusion solves exactly.
+
+=== Escalate to the extension as a configuration-model finding and wait
+
+Report upstream that a bean gating on a namespace a consumer may legitimately never populate should
+neither force aggregate readiness DOWN nor throw on a schedule, and adopt the fix when it lands.
+
+Rejected as the sole remedy, on timing rather than on merit -- the observation is sound and is worth
+raising, and the scheduled collector makes the stronger version of the case: a metrics collector that
+finds no property-based issuers should warn once and go idle rather than fail hard on every tick, for
+any embedder in this position. But it puts this gateway's readiness and its log on another project's
+release cycle. ADR-0022 directs that a tightened upstream default the gateway cannot accommodate is
+escalated rather than patched around; that posture governs *security defaults*, and this is not one.
+These are observability beans reporting on a mechanism this consumer deliberately does not use, and
+declining to instantiate them narrows nothing the product relies on. Raising it upstream and
+excluding here are complementary, not alternatives.
+
+The unifying principle: the first two alternatives try to make an uninformative bean *work*, and the
+last two try to make it *someone else's problem*. An observability surface is composed by the
+application that serves it -- a bean belongs in it when it observes something that application does,
+and a bean that observes nothing is removed rather than satisfied.
+
+== References
+
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
+  -- the rule under which this exclusion is declared unconditionally rather than profile-scoped, and
+  the masked-defect failure mode a profile-scoped health branch would have reproduced
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+  -- the posture that forbids forcing a security-relevant check green with a global switch, and its
+  scope boundary against this case
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the `gateway.yaml` token-validation surface that the qualified validator is built from
+* link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
+  runtime-specific assembly at the boundary
+* link:../configuration.adoc[Configuration reference] -- the `token_validation` surface and the
+  readiness contract
