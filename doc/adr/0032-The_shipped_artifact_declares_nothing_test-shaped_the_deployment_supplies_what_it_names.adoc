@@ -145,8 +145,8 @@ A key declared unconditionally *because* a profile-scoped declaration would be a
 working, not an exception to it. The gateway ships exactly such a declaration: the key-less TLS
 bucket that marks the plain-HTTP management opt-out
 (`quarkus.tls.plain-management.reload-period`) is declared in no profile, and the bean-exclusion key
-that removes the unused extension health probes (`quarkus.arc.exclude-types`, see
-link:0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027])
+that removes the unused extension health and metrics beans (`quarkus.arc.exclude-types`, see
+link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027])
 likewise. Both carry a comment citing this rule as the reason they are unconditional. Neither is
 test-shaped: both are product configuration that happens to be inert until a deployment selects the
 behaviour it enables.
@@ -269,7 +269,7 @@ that a passing check is never mistaken for the property itself.
 * link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
   -- the policy / deployment-bound / build-time classification of the server-TLS surface, and the
   boundary rule that keeps ports and trust material deployment-supplied
-* link:0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027]
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
   -- a bean exclusion declared unconditionally under this rule, and a worked instance of the
   masked-defect failure mode described above
 * link:../development/README.adoc[Development guide] -- the contributor-layer statement of this

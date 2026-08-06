@@ -163,7 +163,7 @@ a green readiness probe.
 ====
 
 That narrowness is a known and accepted consequence of the exclusion decision recorded in
-link:../adr/0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027]:
+link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]:
 the token-validation extension's two unqualified health probes were removed from the bean set
 rather than configured into a green state, because they observe an issuer namespace this gateway
 never populates. The live per-issuer loader signal they would have carried is an open gap in the

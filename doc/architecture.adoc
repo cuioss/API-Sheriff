@@ -726,7 +726,7 @@ exposure.
 
 The hardening itself stands regardless. Readiness reports *state, never cause*, consistent with the
 boot-time-constructibility reading of the `jwks` datum in
-link:adr/0027-The_token-validation_extensions_unqualified_health_probes_are_excluded_not_accommodated.adoc[ADR-0027].
+link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027].
 Where the bearer-token validator cannot be resolved the probe marks readiness DOWN with
 `jwks: unavailable` and a fixed `error: validation-unavailable` token -- it never places the
 underlying exception message on the payload, which can name issuer URLs, internal hostnames,
