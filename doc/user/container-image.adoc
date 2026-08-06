@@ -189,7 +189,7 @@ DIGEST="$(docker image inspect \
 [ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
 
 cosign verify \
-  --certificate-identity https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main \
+  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "${DIGEST}"
 ----
@@ -200,9 +200,9 @@ the same string.
 
 Both flags are mandatory, and each pins a different half of the claim:
 
-`--certificate-identity`::
-*Who* signed it -- the exact workflow, in the exact repository, on the exact ref. It is what binds
-the check to this project's release lane rather than to any workflow anywhere.
+`--certificate-identity-regexp`::
+*Who* signed it -- the exact workflow, in the exact repository, on one of exactly two accepted refs.
+It is what binds the check to this project's release lane rather than to any workflow anywhere.
 
 `--certificate-oidc-issuer`::
 *Which identity provider* vouched for that identity. It is what stops the same identity string,
@@ -226,6 +226,27 @@ The following checks were performed on each of these signatures:
 
 *A non-zero exit means the artifact must not be deployed.* Treat it as a supply-chain failure, not
 as a tooling problem to work around.
+
+=== Why the identity is a pattern, and why it is still exact
+
+The signing identity is the release workflow's ref, and this project cuts releases from two paths: a
+deliberate dispatch from `main`, and the merge of a version-changing `.github/project.yml` pull
+request. GitHub stamps the certificate with the ref the run was triggered on, so the first path signs
+under `@refs/heads/main` and the second under `@refs/pull/<number>/merge`. Both are legitimate
+releases -- the merge path only reaches the publishing job after the central version-changed guard
+has confirmed the declared version actually moved.
+
+*The pattern admits those two refs and nothing else.* It is anchored at both ends, so it matches the
+whole identity rather than appearing somewhere inside a longer one; it names this repository and this
+workflow file literally; and the pull-request number is digits-only. A signature from any other
+workflow, any other repository, or any other ref fails the check.
+
+Do not relax it to a wildcard. An identity pattern that accepts anything accepts a signature from any
+workflow in any repository, which turns the verification into a formality that always passes.
+
+*The release lane runs this exact command against every digest it signs, and fails the release if it
+does not verify.* The values above are not a transcription of what the workflow is believed to do --
+they are what it proves before calling a release complete.
 
 == See also
 

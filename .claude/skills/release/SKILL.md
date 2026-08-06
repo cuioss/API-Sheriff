@@ -64,8 +64,8 @@ Consequently:
 
 | job | publishes |
 |---|---|
-| `release` (`release.yml:16-26`) — `uses: reusable-maven-release.yml` | Maven artifacts to Maven Central; the SCM tag; the GitHub release |
-| `publish-image` (`release.yml:45-365`) — local, `needs: [release]` | the container image to GHCR at the **same** version, plus an SPDX SBOM and a Cosign signature |
+| `release` (job `release` in `release.yml`) — `uses: reusable-maven-release.yml` | Maven artifacts to Maven Central; the SCM tag; the GitHub release |
+| `publish-image` (job `publish-image` in `release.yml`) — local, `needs: [release]` | the container image to GHCR at the **same** version, plus an SPDX SBOM and a Cosign signature |
 
 ---
 
@@ -83,7 +83,7 @@ the Maven version must be able to derive the image reference without a mapping t
 **This is a checked fact rather than a convention.** The `publish-image` job checks out the release
 tag the Maven release pushed, reads `current-version` from `.github/project.yml` with the same pinned
 action the release job used, and asserts the checked-out `project.version` equals it
-(`release.yml:125-134`). A mismatch fails the release **before the image is built or pushed to
+(step `Assert the checked-out project version matches the released version`). A mismatch fails the release **before the image is built or pushed to
 GHCR**.
 
 ### The release is NOT atomic
@@ -206,7 +206,8 @@ before the cut). `maven-release-plugin` owns the `X.Y.Z-SNAPSHOT` → `X.Y.Z` tr
 `release:prepare`.
 
 > **Do NOT hand-edit `project.version` in `pom.xml`.** It would collide with the release plugin and
-> break the version-identity assertion at `release.yml:125-134`.
+> break the version-identity assertion in the `Assert the checked-out project version matches the
+> released version` step.
 
 **If `current-version` is already the version you intend to release, there is nothing to change** —
 skip to Step 2. (This is the case for the `0.1.0` cut: `.github/project.yml` already declares
@@ -321,7 +322,7 @@ Then **`Read` every listed file** and confirm exactly one invokes `reusable-mave
 > **A CONTENT SEARCH IS NOT VALID EVIDENCE HERE.** The architecture inventory does not walk
 > `.github/**`. `architecture search --content --literal --pattern "reusable-maven-release.yml"`
 > returns `count: 0` with `files_scanned: 934`, **no unreadable entries and no elision** — a
-> clean-looking zero — **while the string is present at `release.yml:19`.** That zero is a
+> clean-looking zero — **while the string is present in `release.yml`'s `release` job.** That zero is a
 > **coverage gap, never an absence.** Use direct `Read` enumeration, always.
 
 **(iii) Confirm the merge queue is quiesced and `main` is settled — IMMEDIATELY before dispatching.**
@@ -440,10 +441,11 @@ run the two guarded commands above first and dispatch immediately after.)
 
 > **Why `--ref main` and not `--ref "$MAIN_SHA"`.** Dispatching at the gated SHA looks like the
 > tighter fix, and it is the wrong one here — for three independent reasons:
-> 1. **The signature identity is bound to `refs/heads/main`.** Step 8 verifies the Cosign signature
->    against `--certificate-identity …/release.yml@refs/heads/main`. That value is the OIDC
->    `job_workflow_ref` of the `publish-image` job, so it changes with the dispatch ref. A dispatch
->    at a SHA produces a certificate this runbook's own verification would reject.
+> 1. **The signature identity is bound to the ref, and the accepted set is closed.** Step 8 verifies
+>    the Cosign signature against a pattern accepting exactly `refs/heads/main` and
+>    `refs/pull/<N>/merge`. That value is the OIDC `job_workflow_ref` of the `publish-image` job, so
+>    it changes with the dispatch ref. A dispatch at a SHA is in neither branch of the pattern, so it
+>    produces a certificate this runbook's own verification would reject.
 > 2. **The release force-pushes to a branch.** `maven-release-plugin` commits the version transition
 >    and the workflow force-pushes it to `main`; a dispatch at a detached SHA has no branch to push.
 > 3. **`ref` is documented as a branch or tag name.** The workflow-dispatch API documents exactly
@@ -597,19 +599,32 @@ docker image inspect "$IMAGE@$VERSION_DIGEST" \
   --format '{{index .Config.Labels "org.opencontainers.image.version"}}'
 ```
 
-The label must equal `<version>`. The workflow already asserts the same-digest property at
-`release.yml:246-258`; the commands above are the **independent** confirmation, which is the whole
-point of this step — a check that only re-reads the workflow's own claim confirms nothing.
+The label must equal `<version>`. The workflow already asserts the same-digest property in its
+`Resolve the pushed manifest digest` step; the commands above are the **independent** confirmation,
+which is the whole point of this step — a check that only re-reads the workflow's own claim confirms
+nothing.
 
 Verify the Cosign signature **against that resolved digest**, using **exactly** these two identity
-values (they are derived from the `publish-image` job's identity and change silently if the workflow
-file is renamed or the release is dispatched from a ref other than `main`):
+values. They are derived from the `publish-image` job's OIDC identity, which embeds the ref the run
+was triggered from — so the accepted set is a pattern over the **two** refs a release can legitimately
+come from, not a single literal:
 
 ```bash
 cosign verify "$IMAGE@$VERSION_DIGEST" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main
+  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
 ```
+
+`refs/heads/main` is a `workflow_dispatch` release; `refs/pull/<N>/merge` is a merge-triggered one
+(a `pull_request` run's `GITHUB_REF` is the merge ref, and that path is legitimate because the central
+version-changed guard plus `merged == true` already decided it was a release). The pattern stays
+anchored at both ends and bound to this repository and this workflow file — **do not** relax it to a
+wildcard. The workflow runs this same command against every digest it signs, so a failure here is a
+real supply-chain signal, not a stale expectation.
+
+**Three files carry this pattern** — `.github/workflows/release.yml` (the `publish-image` verify
+step), `doc/user/container-image.adoc` (the operator-facing command), and this runbook. Nothing
+mechanical keeps them in sync; changing one means changing all three.
 
 > **Ignore the benchmark run this triggers.** `.github/workflows/benchmark.yml` fires on
 > `push: tags: ["*"]`, so the release's tag push **starts a benchmark run**. That run belongs to the

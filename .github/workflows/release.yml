@@ -1,19 +1,53 @@
 # Configuration is read from .github/project.yml - no inputs needed!
 name: Release
 
-# Manual dispatch only. The former `pull_request: {types: [closed], paths: ['.github/project.yml']}`
-# trigger fired a real Maven Central release on 2026-07-12, accidentally publishing
-# de.cuioss.sheriff.api:*:1.0.0 when a PR touching .github/project.yml was merged.
-# Releases are now cut deliberately via workflow_dispatch — do not reintroduce an
-# event-driven trigger.
+# A merge can cut a release again — because the DECISION moved, not because the trigger was
+# forgiven.
+#
+# THE INCIDENT THIS TRIGGER CAUSED ONCE. On 2026-07-12 a `pull_request: {types: [closed], paths:
+# ['.github/project.yml']}` trigger of exactly this shape fired a real Maven Central release: merging
+# a PR that touched .github/project.yml published de.cuioss.sheriff.api:*:1.0.0. Maven Central
+# artifacts are superseded, never withdrawn, so that version was abandoned, relocation-stubbed at
+# 1.0.1, the coordinates moved to de.cuioss.sheriff.gateway, and the version line restarted.
+#
+# WHAT HAD TO BE TRUE BEFORE IT COULD RETURN. That trigger fired on MERGED-NESS — every merge
+# touching the file was a publication. The pinned cuioss-organization workflow below now owns a
+# version-changed guard, so the release is decided CENTRALLY, on whether the declared version
+# actually changed. That is precisely the discrimination the 2026-07-12 trigger lacked, and it is
+# consumed here, never re-implemented locally.
+#
+# The decision itself is recorded in ADR-0035 (doc/adr/), which supersedes ADR-0034 — read it there
+# rather than restating it here.
 on:
   workflow_dispatch:
+  # PREFILTER ONLY, NEVER THE DECISION. This path matches EVERY edit to .github/project.yml, not just
+  # a version bump: the file's non-release keys today include name, description, maven-build, sonar,
+  # pages and github-automation, and that list is open — a key added tomorrow matches too. So a merge
+  # arriving here proves nothing about the version. The central guard is what decides; this only
+  # keeps unrelated merges out.
+  # `branches:` filters on the PR's BASE, so only a PR merging INTO main can reach the release job at
+  # all. Without it a merge into any long-lived branch that touched .github/project.yml would enter
+  # this workflow and be decided solely by the central guard's parent comparison against THAT
+  # branch — a release cut from a non-main line. This is a base filter, not the version
+  # discriminator; it narrows what may ask, never what is answered.
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths: ['.github/project.yml']
 
 permissions:
   contents: read
 
 jobs:
   release:
+    # ANDed with the central version-changed guard inside the called workflow, NEVER an alternative
+    # to it. Its merit is defence-in-depth plus not spending a runner on a close-without-merge — it
+    # is NOT here because the central guard is blind to merged-ness; that guard checks merged-ness
+    # too.
+    # Written event-first so the dispatch path still runs: on workflow_dispatch there is no
+    # pull_request context, so the first operand is true and the condition short-circuits. This is
+    # the same shape .github/workflows/benchmark.yml already ships.
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     permissions:
       contents: write
     uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@937fbcf44d34d826b3bcd66d49d7a7d32030f39a # v0.18.0
@@ -27,16 +61,32 @@ jobs:
 
   # Publishes the container image at the SAME version the Maven release just cut.
   #
-  # COMPOSABILITY CAVEAT — read before "simplifying" the version lookup below.
-  # A caller workflow may hang a dependent sibling job off a `uses:` job; that part is ordinary
-  # GitHub Actions. But reusable-maven-release.yml@15376a19 declares NO `on.workflow_call.outputs`
-  # block — its `released-version` is a job-level output on the called workflow's own internal job
-  # and is therefore NOT readable by us. `needs.release.outputs.released-version` evaluates to the
-  # EMPTY STRING, which would tag and push `ghcr.io/cuioss/api-sheriff:` — a malformed reference, or
-  # worse, a silently mislabelled image. That is why the version is re-read from .github/project.yml
-  # with the same pinned action the release job used. Do not replace it with a `needs.` expression.
+  # WHY `needs.release.outputs.released-version != ''` IS THE RUN/SKIP DISCRIMINATOR.
+  # At the pinned 937fbcf (v0.18.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
+  # block, so `released-version` is genuinely readable here. It is EMPTY exactly when the central
+  # guard decided the declared version had not changed and skipped the release — so the empty string
+  # IS that guard's own decision, surfaced. The caller consumes it and derives nothing. Without this
+  # `if:`, a guard-skipped merge would still spend 90 minutes on a native build and then re-push and
+  # re-sign an already-released tag.
   #
-  # The org workflow is NOT forked and the dispatch-only guarantee is NOT weakened by this job.
+  # The two obvious alternatives are both wrong. `needs.release.result` reports a non-failure for a
+  # called workflow whose internal jobs all skipped, so it cannot tell a real release from a skipped
+  # one. Re-deriving "the version changed" in this caller would re-implement centrally-owned logic —
+  # the thing this design exists to avoid.
+  #
+  # SCOPE SPLIT — two separate questions, two separate answers. Do not merge them.
+  #   * `needs.release.outputs.released-version` decides WHETHER this job runs (run/skip).
+  #   * `steps.config.outputs.current-version` supplies THE VALUE PUBLISHED. It comes from the
+  #     sparse checkout + `read-project-config` steps below, which are DELIBERATELY RETAINED rather
+  #     than replaced by a `needs.` expression — the retention rests on keeping this lane's version
+  #     lookup independent of the release job's output plumbing, not on that output being
+  #     unavailable. It is not a leftover of the retired caveat.
+  # Consuming the output for run/skip while retaining the re-read for the value is consistent, not
+  # contradictory. Collapsing the two would delete this job's guard discriminator and re-open the
+  # 90-minute no-op publish lane.
+  #
+  # The org workflow is NOT forked, and this job now runs only when the central guard let a release
+  # through.
   #
   # LATENCY NOTE — `needs: [release]` waits for the whole called workflow, including its
   # wait-for-maven-central (30-minute timeout) and propagate-to-consumers jobs. Both are `if:`-gated
@@ -45,6 +95,7 @@ jobs:
   publish-image:
     name: Publish the tested image to GHCR
     needs: [release]
+    if: needs.release.outputs.released-version != ''
     runs-on: ubuntu-latest
     # The native compile inside the integration-test lifecycle is the dominant term; the scan, push
     # and smoke together are minutes.
@@ -338,16 +389,33 @@ jobs:
       # the registry alongside the image (the Sigstore sha256-<digest>.sig convention); there is no
       # key store, no COSIGN_PRIVATE_KEY and no new secret. `id-token: write` is declared on this job.
       #
-      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES. Both are derived from THIS job's identity
-      # and will change silently if this workflow file is renamed or a release is dispatched from a
-      # ref other than main:
+      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES:
       #
-      #   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-      #   --certificate-identity    https://github.com/cuioss/API-Sheriff/.github/workflows/release.yml@refs/heads/main
+      #   --certificate-oidc-issuer      https://token.actions.githubusercontent.com
+      #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$
       #
-      # The identity names release.yml ITSELF, not the org reusable workflow, because publish-image
-      # is a local job in this caller. doc/user/container-image.adoc publishes the same two strings
-      # to operators; this comment is what keeps the two copies from drifting.
+      # THE IDENTITY HAS TWO LEGITIMATE REFS, NOT ONE. Fulcio puts the OIDC `job_workflow_ref` claim
+      # in the certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
+      # workflow — so that claim names release.yml ITSELF (never the org reusable workflow) at the ref
+      # the run was triggered on, i.e. GITHUB_REF. This lane has two release paths and they carry
+      # different refs:
+      #
+      #   * workflow_dispatch from main  -> GITHUB_REF = refs/heads/main
+      #   * merge of a .github/project.yml PR -> GITHUB_REF = refs/pull/<N>/merge
+      #
+      # The merge ref is a FIRST-CLASS release path, not an anomaly to be excluded: the org
+      # version-changed guard plus `merged == true` already decided that this merge is a real release
+      # (see the trigger comment at the top of this file), and this job only runs when
+      # needs.release.outputs.released-version is non-empty. Pinning the accepted identity to
+      # @refs/heads/main alone would therefore reject the signature of a perfectly legitimate release.
+      #
+      # The regexp is TIGHTLY ANCHORED, not a wildcard: anchored at both ends, bound to this exact
+      # repository and this exact workflow file, and the PR number is digits-only. It admits exactly
+      # the two refs above and nothing else. Do NOT relax it to a `.*` — a loose identity would accept
+      # a signature from any workflow in any repository and the check would prove nothing.
+      #
+      # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
+      # below RUNS them — the lane proves its own signing identity rather than asserting it in prose.
       #
       # SLSA provenance and any further attestation are deliberately out of scope.
       - name: Sign the published digest (keyless)
@@ -355,6 +423,43 @@ jobs:
           DIGEST: ${{ steps.digest.outputs.value }}
         run: |
           cosign sign --yes "ghcr.io/cuioss/api-sheriff@${DIGEST}"
+
+      # PROVE WHAT WAS JUST SIGNED. This is the step whose absence let the identity drift ship: the
+      # lane signed, went green, and NOTHING ever asserted that the signature it had just produced was
+      # acceptable to the verification command this project publishes. A release that signs under an
+      # identity no operator command accepts is a supply-chain break that stays invisible until a
+      # consumer hits it.
+      #
+      # So this step runs EXACTLY the two values doc/user/container-image.adoc gives operators,
+      # against the digest just signed. If an operator's verification would fail, this job fails
+      # first — before the release is called done.
+      #
+      # The bounded retry covers Rekor/Fulcio propagation ONLY. A wrong identity fails identically on
+      # every attempt, so the retry cannot launder one into a pass; it just delays the loud failure by
+      # under a minute.
+      - name: Verify the signature under the published identity
+        env:
+          DIGEST: ${{ steps.digest.outputs.value }}
+          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
+        run: |
+          set -euo pipefail
+          REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
+          ATTEMPTS=5
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            if cosign verify \
+              --certificate-identity-regexp "$IDENTITY_REGEXP" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$REF"; then
+              echo "Signature verified under the published operator identity."
+              exit 0
+            fi
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "Verification attempt ${attempt} failed; retrying in 10s (signature propagation)."
+              sleep 10
+            fi
+          done
+          echo "::error::cosign verify failed for ${REF} using the identity published in doc/user/container-image.adoc. The lane signed under an identity operators cannot verify — treat this as a supply-chain failure, not a flake."
+          exit 1
 
       # `|| true` is a deliberate guard, not sloppiness: this step runs on EVERY outcome, including
       # the paths where the smoke step failed before `docker run` and there is nothing to remove.
