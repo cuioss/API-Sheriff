@@ -62,10 +62,15 @@ upstream is never called.
   `SCOPE_MISSING` event.
 
 | Forwarding
-| Zero-trust: only allow-listed headers/params reach the upstream. Inbound
-  `Forwarded` / `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s
-  forwarded resolver, and the gateway emits regenerated canonical output
-  (`X-Forwarded-*` by default). See link:../adr/0003-forwarded-headers.adoc[ADR-0003].
+| A per-route filter *inside* an already-authorised route, not an admission gate: each of headers
+  and query parameters independently resolves a positive-list, a negative-list, or -- when the route
+  declares neither -- forward-all. Whatever the mode, the gateway-owned never-forward set still
+  withholds `Cookie`, an inbound `Authorization` and the hop-by-hop and provenance names, and the
+  HTTP mechanics the gateway understands cross without an entry. Inbound `Forwarded` /
+  `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s forwarded resolver,
+  and the gateway emits regenerated canonical output (`X-Forwarded-*` by default). See
+  link:../adr/0003-forwarded-headers.adoc[ADR-0003] and
+  link:../architecture.adoc#_forward_policy[Architecture -- Forward Policy].
 
 | Observability
 | Every outcome increments the link:../architecture.adoc#_event_system[event counter] and is
@@ -89,8 +94,12 @@ endpoint:
         allowed_paths: ["/api/orders", "/api/orders/{id}"]
         max_query_params: 20
         max_body_bytes: 1048576
+      # Optional. Omit the whole block and every client header and query parameter crosses,
+      # bounded by the gateway-owned never-forward set; `accept` and `content-type` would cross
+      # on their own either way, because the gateway understands them. Declare a list only to
+      # NARROW that -- a positive-list, as here, when the backend's input is a closed set worth
+      # stating; `headers_deny` / `query_deny` when the point is to withhold a few names.
       forward:
-        headers_allow: [accept, content-type]
         query_allow: [page, size]
       upstream:
         path: /orders          # replaces the matched prefix; request-path remainder appended
@@ -154,7 +163,9 @@ rather than fetched over HTTP.
 
 * *Stateless* -- no session, no store, horizontally scalable with no coordination.
 * *Self-contained* -- no database, no Redis, no etcd.
-* *Fail-secure* -- deny-by-default routing, filtering, and scope enforcement.
+* *Fail-secure* -- deny-by-default routing (a request matching no route reaches no upstream),
+  filtering, and scope enforcement. Within a route it reaches, what crosses is the forward
+  policy's per-dimension mode, bounded by the gateway-owned never-forward set.
 
 == Performance baseline
 

@@ -69,6 +69,17 @@ the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-C
   like any other anchor.
 * A route still carries at most one terminal action -- `upstream` or `asset`, never both.
 * Classpath-embedded resources and any parallel outbound HTTP stack are explicitly out of scope.
+* *The forward policy does not reach an asset route, and the three-mode model
+  (link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036])
+  therefore changes nothing here.* Asset routes carry no `forward` block, which under that model
+  would ordinarily resolve forward-all. It does not matter either way: the edge computes the
+  forward projection for every route, but the asset branch takes the terminal action *without
+  consuming it* -- the source is resolved from the confined path and the request method alone, and
+  no client header or query parameter is carried into it. An `source: upstream` fetch is likewise
+  the gateway's own request, not a relay of the client's. The consequence is worth stating rather
+  than deriving: an asset route's exposure is bounded by auth-before-source-resolution, the
+  confinement, and the gateway-owned response envelope -- never by a forward list -- so no asset
+  descriptor needs a `forward` block added to hold its posture.
 
 == References
 

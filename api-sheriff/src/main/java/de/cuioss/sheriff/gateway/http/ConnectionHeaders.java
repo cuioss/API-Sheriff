@@ -83,7 +83,7 @@ public class ConnectionHeaders {
      * The request-direction never-forward set, all lower case — the header names a client may send
      * that the gateway never relays upstream, whatever forward mode the route resolves.
      * <p>
-     * Membership answers one of four questions, and it matters which applies to which name:
+     * Membership answers one of five questions, and it matters which applies to which name:
      * <ul>
      *   <li><strong>Credentials the gateway terminates or mediates.</strong> {@code authorization}
      *       (superseded by the mediated bearer), {@code cookie} (the BFF's sealed session cookie is
@@ -98,7 +98,34 @@ public class ConnectionHeaders {
      *       upstream authority is the gateway's to set), {@code origin} and {@code referer}
      *       (inbound provenance signals the gateway consumes for CORS/CSRF rather than relays), and
      *       {@code date} (the message the upstream receives is the gateway's, not the client's).</li>
+     *   <li><strong>Spoofable provenance claims the gateway alone is entitled to make</strong> — the
+     *       underscore spellings of the regenerated forwarding names ({@code x_forwarded_for},
+     *       {@code x_forwarded_host}, {@code x_forwarded_proto}, {@code x_forwarded_port},
+     *       {@code x_forwarded_prefix}) and the vendor client-IP aliases ({@code x-real-ip},
+     *       {@code x-client-ip}, {@code true-client-ip}, {@code cf-connecting-ip}). See the
+     *       placement note below for why these live here rather than beside the canonical names.</li>
      * </ul>
+     * <p>
+     * <strong>Why the provenance variants are here and not in the forwarding set.</strong> The
+     * forwarding set in {@code forward.ForwardPolicyStage} enumerates the names the gateway
+     * <em>regenerates</em>: it is read both as a client-copy skip and as the mask that hides inbound
+     * forwarding headers from the resolver when the immediate peer is untrusted. The gateway
+     * regenerates {@code X-Forwarded-For}; it does not regenerate {@code X_Forwarded_For} or
+     * {@code X-Real-IP}, and the resolver never queries either, so filing them there would assert a
+     * regeneration relationship that does not exist and widen the resolver mask with names it never
+     * asks for. What is true of them is the question <em>this</em> set asks: they are claims about
+     * the connection's provenance that only the gateway is entitled to make, so a client-sent copy
+     * is never relayed. The canonical hyphenated names stay where they are — they are genuinely
+     * regenerated, and duplicating them here would create two lists that can disagree.
+     * <p>
+     * The threat is a backend that reads them <em>as though</em> they were the canonical name: a
+     * framework folding {@code -} and {@code _} into one CGI-style variable resolves
+     * {@code X_Forwarded_For} to the same {@code HTTP_X_FORWARDED_FOR} the real header produces.
+     * Under the old allow-list-only forward model such a name was dropped incidentally, because
+     * everything unlisted was; under the forward-all baseline it is an ordinary client header, so
+     * withholding it has to be stated. {@code Forwarded} contributes no separate entry: it carries
+     * no hyphen to fold, so its underscore spelling is the canonical name itself, already held by
+     * the forwarding set.
      * <p>
      * <strong>Three names are deliberately lifted from {@link #RESPONSE_STRIP} rather than
      * inherited</strong> — each is here on its own request-direction reasoning:
@@ -122,7 +149,10 @@ public class ConnectionHeaders {
     public static final Set<String> REQUEST_STRIP = Set.of(
             "authorization", "connection", "content-length", "cookie", "date", "host",
             "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
-            "proxy-connection", "referer", "te", "trailer", "transfer-encoding", "upgrade");
+            "proxy-connection", "referer", "te", "trailer", "transfer-encoding", "upgrade",
+            "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto", "x_forwarded_port",
+            "x_forwarded_prefix", "x-real-ip", "x-client-ip", "true-client-ip",
+            "cf-connecting-ip");
 
     /**
      * Whether {@code headerName} is withheld from the upstream request regardless of the route's

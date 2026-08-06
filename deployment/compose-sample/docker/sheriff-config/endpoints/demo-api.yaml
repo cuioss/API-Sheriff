@@ -23,11 +23,20 @@ endpoint:
     - id: demo-api-get
       match:
         path_prefix: /api
-      # The forward stage is DENY-BY-DEFAULT: a request header or query parameter crosses to the
-      # upstream only if it is named here. That is the posture, not a restriction to work around —
-      # an allowlist is what stops a header the gateway does not understand from becoming the
-      # upstream's problem. Nothing is allowed through here because the demo upstream serves a canned
-      # document and reads neither; add the exact names a real backend needs, and no others.
+      # FORWARD MODE — both lists are DECLARED EMPTY, which is a positive-list naming nothing, not
+      # the absent state. The distinction is the whole of it: an absent list means forward-all (every
+      # client header and query parameter crosses), an empty one means no client entry crosses at
+      # all. This sample declares them empty on purpose, because the demo upstream serves a canned
+      # document and reads neither — the values below are unchanged by the three-mode model and its
+      # behaviour is exactly what it always was.
+      #
+      # This is the STRICTEST of the three modes, chosen here to make the distinction visible, not
+      # because it is the recommended starting point. A real backend usually wants no forward block
+      # at all: HTTP mechanics (Accept, Content-Type, Range, the conditional validators) cross on
+      # their own, and the gateway-owned never-forward set still withholds Cookie, Authorization and
+      # the hop-by-hop names whatever the mode. Reach for a list to NARROW that — headers_deny /
+      # query_deny to withhold specific names, or these positive-lists when the backend's input is a
+      # closed set you want to state.
       forward:
         headers_allow: []
         query_allow: []

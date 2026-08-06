@@ -11,6 +11,12 @@
 # require: none posture itself — inherited wholesale by every route, including the
 # routes that override the default anchor to graphql/upload (endpoint auth wins over
 # anchor auth in the resolution chain).
+#
+# FORWARD POSTURE — this file carries all three modes on purpose (ADR-0036). Header
+# and query filtering happens INSIDE a route the request is already authorised for;
+# deny-by-default lives at the URL layer, where a request matching no route reaches no
+# upstream at all. Each route below states which mode it resolves and why, because the
+# mode is selected by what the YAML does NOT say and is therefore invisible otherwise.
 endpoint:
   id: httpbin
   enabled: true
@@ -19,17 +25,21 @@ endpoint:
   auth:
     require: none
   routes:
+    # MODE: positive-list on both dimensions — only the named entries cross.
+    # X-Sheriff-Allowed is the G5 positive control (DeclaredLimitBoundaryIT): a header
+    # that is genuinely allow-listed AND genuinely outside the gateway-understood
+    # protocol set, so its arrival upstream evidences the ALLOWLIST rather than the
+    # protocol set. Content-Type is retained deliberately even though the protocol set
+    # would carry it anyway — the route's POST body must be echoed as-is (not as a
+    # base64 octet-stream data-URI) whether or not that set keeps its present membership.
+    # The probe/page/size/req query params are what the GET/metrics/shutdown suites
+    # assert on. Accept-Language is deliberately NOT listed: G5 uses it to prove a
+    # protocol header crosses WITHOUT an allowlist entry.
     - id: httpbin-proxy
       match:
         path_prefix: /proxy
-      # The new pipeline edge (stage 5) forwards deny-by-default: only allow-listed
-      # request headers and query parameters cross to the upstream. Allow the header
-      # and query names the proxy suite exercises so go-httpbin echoes them back —
-      # Content-Type so a text body is echoed as-is (not a base64 octet-stream
-      # data-URI), and the probe/page/size/req query params the GET/metrics/shutdown
-      # suites assert on.
       forward:
-        headers_allow: ["Content-Type"]
+        headers_allow: ["Content-Type", "X-Sheriff-Allowed"]
         query_allow: ["probe", "page", "size", "req"]
 
     # --- The profile: minimal partial-disable route (ADR-0024) ---------------
@@ -56,8 +66,15 @@ endpoint:
         # One wildcard segment: /proxy/minimal-mode/<action> is admitted, a deeper path is not
         # (the matcher compares segment counts exactly). Enforced under `minimal` unchanged.
         allowed_paths: ["/proxy/minimal-mode/{action}"]
+      # MODE: positive-list on both dimensions. headers_allow is DECLARED EMPTY, which is
+      # not the same as absent: it is a positive-list naming nothing, so no client header
+      # crosses on the allowlist path. Content-Type still reaches the upstream — it is in
+      # the gateway-understood protocol set and crosses without an entry — which is exactly
+      # why its former entry here was redundant and was removed rather than the key.
+      # Deleting the key would have flipped this dimension to forward-all and changed the
+      # route's effective posture, which this file's routes do not do by accident.
       forward:
-        headers_allow: ["Content-Type"]
+        headers_allow: []
         # return_to carries the parameter value the strict routes reject; allow-listing it lets
         # the upstream echo prove the request was forwarded rather than merely not rejected.
         query_allow: ["probe", "return_to"]
@@ -66,8 +83,12 @@ endpoint:
     # go-httpbin's /anything/* echo endpoint accepts POST bodies, so the graphql
     # and upload aspects need no new upstream service. Each route overrides the
     # endpoint's default 'api' anchor to join its own benchmark namespace.
-    # Content-Type is allow-listed on every POST route because the forward stage
-    # is deny-by-default — without it the body would not be echoed as sent.
+    #
+    # MODE on all three: positive-list, DECLARED EMPTY. headers_allow is their only
+    # forward key, so removing it — rather than emptying it — would delete the whole
+    # forward block and flip them to forward-all. The explicit [] preserves the shipped
+    # posture and therefore the benchmark's input: the POST body is still echoed as sent,
+    # because Content-Type crosses on the protocol set with no entry needed.
     - id: httpbin-graphql
       protocol: graphql
       anchor: graphql
@@ -77,7 +98,7 @@ endpoint:
       upstream:
         path: /anything/graphql
       forward:
-        headers_allow: ["Content-Type"]
+        headers_allow: []
 
     # The two upload routes are separate so each aspect is independently
     # addressable; both ride the 'upload' anchor's raised body cap.
@@ -89,7 +110,7 @@ endpoint:
       upstream:
         path: /anything/upload-small
       forward:
-        headers_allow: ["Content-Type"]
+        headers_allow: []
 
     - id: httpbin-upload-large
       anchor: upload
@@ -99,4 +120,40 @@ endpoint:
       upstream:
         path: /anything/upload-large
       forward:
-        headers_allow: ["Content-Type"]
+        headers_allow: []
+
+    # --- The two remaining forward modes, one route each ---------------------
+    # G5 asserts the three-mode model, so the two modes the routes above do not
+    # resolve need a route to be asserted against. Both ride the same public 'api'
+    # anchor and the endpoint's require: none posture, and both echo through
+    # go-httpbin's /anything/* so the forwarded headers come back observable.
+
+    # MODE: negative-list on headers — everything crosses EXCEPT the named entries.
+    # Accept-Language is denied on purpose: it is a gateway-understood protocol header, so
+    # this entry is what proves a deny entry OUTRANKS that set. Without that precedence an
+    # operator could not withhold a protocol header at all, since the set is a fixed
+    # constant with no configuration surface. X-Sheriff-Denied is the ordinary-header leg
+    # of the same assertion, and Content-Type is deliberately left undenied as the control
+    # showing the set still carries what the deny list does not name. The query dimension
+    # declares no list, so it independently resolves forward-all — the two dimensions are
+    # separate decisions and this route is where that is visible.
+    - id: httpbin-deny-list
+      match:
+        path_prefix: /proxy/deny-list
+      upstream:
+        path: /anything/deny-list
+      forward:
+        headers_deny: ["Accept-Language", "X-Sheriff-Denied"]
+
+    # MODE: forward-all on both dimensions — no forward block at all. This is the
+    # baseline an ordinary backend behind an authorised route gets, and the route exists
+    # to prove what still does NOT cross under it: the gateway-owned never-forward set
+    # (Cookie absolutely, Authorization absent any positive-list) and the regenerated
+    # forwarding names together with their underscore/alias spellings. A route with no
+    # forward block is the shape most deployments will actually ship, so it is asserted
+    # rather than assumed.
+    - id: httpbin-forward-all
+      match:
+        path_prefix: /proxy/forward-all
+      upstream:
+        path: /anything/forward-all

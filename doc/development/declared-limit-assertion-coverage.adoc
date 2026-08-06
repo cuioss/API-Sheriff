@@ -168,13 +168,13 @@ declaration's *existence* is proven while its *boundary* is not.
 | `LargeBodyIT` (runtime 413) + `BodyLimitActivationWiringTest` (framework-floor coupling)
 
 | `httpbin-minimal-mode.max_body_bytes: 1024`
-  `sheriff-config/endpoints/httpbin.yaml:55`
+  `sheriff-config/endpoints/httpbin.yaml:65`
 | `ThoroughChecksStage` (enforced under `minimal` unchanged)
 | COVERED
 | `SecurityProfileModeIT` (`bodyCapStillRejectsOverCapBody` + `bodyWithinCapIsForwarded` control)
 
 | `httpbin-minimal-mode.allowed_paths`
-  `sheriff-config/endpoints/httpbin.yaml:58`
+  `sheriff-config/endpoints/httpbin.yaml:68`
 | `ThoroughChecksStage` (path allowlist)
 | COVERED
 | `SecurityProfileModeIT` (`allowedPathsStillRejectsPathOutsideAllowlist` -- the two-segment
@@ -301,14 +301,34 @@ declaration's *existence* is proven while its *boundary* is not.
 | `DeclaredLimitBoundaryIT` -- one byte over is rejected 413 carrying the gateway's own RFC 9457
   envelope (not the framework's bare 413), one byte under is forwarded and echoed
 
-| *G5* `forward.headers_allow` / `query_allow` deny-by-default
-  `sheriff-config/endpoints/httpbin.yaml:32-33,60-63,80,92,102` (5 routes);
-  `sheriff-config/endpoints/bff-session.yaml:25` (1 route);
-  `sheriff-config/endpoints/grpc.yaml:48-50,67-69` (2 routes)
-| Forward stage 5 (deny-by-default allow-listing)
+| *G5* `forward.headers_allow` / `headers_deny` / `query_allow` -- the three-mode projection
+  `sheriff-config/endpoints/httpbin.yaml:42-43,77,80,101,113,123,146` (6 routes declaring a list)
+  plus the absent-block route at `:155-159`;
+  `sheriff-config/endpoints/bff-session.yaml:34` (1 route);
+  `sheriff-config/endpoints/grpc.yaml:62-64,81-83` (2 routes)
+| Forward stage 5 (per-dimension mode selection, bounded by the gateway-owned sets)
 | COVERED
-| `DeclaredLimitBoundaryIT` -- one request carrying both an allow-listed and a non-allow-listed
-  header *and* query parameter; the allow-listed pair is echoed, the other is stripped
+| `DeclaredLimitBoundaryIT` -- five cases, one per claim. *Positive-list*: an allow-listed header
+  and query cross, an unlisted pair is stripped. *The protocol set*: a gateway-understood header
+  the route never names crosses anyway, with an unlisted ordinary header alongside it as the
+  matched control. *Negative-list*: a `headers_deny` entry withholds a protocol header (proving the
+  deny outranks the set) and an ordinary one, while an undenied header crosses as the control.
+  *Forward-all*: an unlisted header crosses on the bare posture while `Cookie`, `Authorization` and
+  a spoofed `X-Real-IP` do not. *The `TE` carve-out*: the one member whose crossing turns on its
+  VALUE rather than its name -- `TE: trailers` crosses the forward-all route with no entry naming
+  it, any other value does not, and the two legs are asserted together because the delta between
+  them is what shows the decision is about the value. The gateway-owned set's own membership is
+  pinned exhaustively at unit level (`ConnectionHeadersTest`, `ForwardPolicyStageTest`); this row
+  asserts the *wiring* through a real gateway.
+
+  *This row no longer says "deny-by-default", because the stage no longer is.* Deny-by-default is
+  the URL layer's property -- a request matching no route reaches no upstream -- and it is
+  unchanged. Stage 5 filters *within* a route the request is already authorised for, and an absent
+  list now means forward-all (ADR-0036). The former assertion also used `Content-Type` as its
+  allow-listed positive control, which the gateway-understood protocol set now carries with no
+  entry at all: it would have crossed either way, so the control evidenced nothing. It is
+  re-pointed at `X-Sheriff-Allowed`, chosen to be both genuinely allow-listed and genuinely outside
+  that set.
 
 | *G6* Strict preset parameter-*value* length cap (1024)
   Layer 2 -- resolved, in no yaml
@@ -395,8 +415,11 @@ boundary -- and they are listed as the standing remainder so the class stays cou
   deliberately lowered route caps are proven; the inherited default never is.
 
 | 5 | G5 | per-request
-| Deny-by-default forward allow-listing. An information-flow defect (a header crossing to the
-  upstream that should not) rather than a gateway-wide degradation -- hence rank 5.
+| The forward stage's per-dimension mode projection. An information-flow defect (a header crossing
+  to the upstream that should not) rather than a gateway-wide degradation -- hence rank 5. The
+  ranking was assigned while the stage was allow-list-only; the three-mode model
+  (link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036])
+  does not change the blast radius, because the gateway-owned never-forward set bounds every mode.
 |===
 
 === The standing remainder

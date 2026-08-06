@@ -65,7 +65,12 @@ Once the session exists, an API call carries only the session-id cookie. The gat
 . Looks up the stored access token in the server-side store.
 . If the token is near expiry, transparently refreshes it (see below).
 . Injects `Authorization: Bearer <token>` and forwards, applying the same
-  link:01-base-gateway.adoc[base-gateway] filtering and zero-trust forward policy.
+  link:01-base-gateway.adoc[base-gateway] filtering and per-route
+  link:../configuration.adoc#_forward[forward policy]. The client's own `Cookie` header --
+  including the session cookie the gateway just consumed -- is in the gateway-owned
+  never-forward set and reaches no upstream under *any* forward mode; that absoluteness is what
+  makes the BFF premise hold. The mediated bearer is merged last, so it wins over any inbound
+  `Authorization` a route's mode admitted.
 
 image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
 
@@ -231,9 +236,11 @@ endpoint:
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
-      forward:
-        headers_allow: [accept, content-type]
-        # the mediated "Authorization: Bearer" is injected automatically on session routes
+      # No forward block: every client header and query parameter crosses, bounded by the
+      # gateway-owned never-forward set -- and `Cookie` is in it absolutely, so the session
+      # cookie never reaches the backend on this posture either. The mediated
+      # "Authorization: Bearer" is injected automatically on session routes, last, so it wins.
+      # Declare headers_deny / query_deny (or a positive-list) only to narrow this.
       upstream: { path: /orders }
 ----
 

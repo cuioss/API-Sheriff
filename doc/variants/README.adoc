@@ -5,7 +5,7 @@
 
 API Sheriff ships as *one binary*; each route runs in one of three authentication postures,
 selected by configuration (see "Variants Are Route Postures" below). The inbound pipeline -- TLS edge, `cui-http` security filter, static routing,
-zero-trust forward policy, metrics, and event system -- is *shared* across all three (see
+the per-route forward policy, metrics, and event system -- is *shared* across all three (see
 link:../architecture.adoc[Architecture]). The variants differ only in the *authentication
 stage*.
 

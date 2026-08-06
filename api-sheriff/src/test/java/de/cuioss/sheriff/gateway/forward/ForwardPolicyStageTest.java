@@ -58,6 +58,8 @@ class ForwardPolicyStageTest {
     private static final String CLIENT_IP = "6.6.6.6";
     private static final String XFF = "X-Forwarded-For";
     private static final String FORWARDED = "Forwarded";
+    /** The one TE value RFC 9110 admits end-to-end, and the only one gRPC sends. */
+    private static final String TRAILERS_TOKEN = "trailers";
 
     @Nested
     @DisplayName("drop-and-regenerate forwarding headers")
@@ -773,6 +775,68 @@ class ForwardPolicyStageTest {
                     () -> name + " is gateway-owned and must not reach the upstream under forward-all");
         }
 
+        /** A provenance value belonging to no fixture peer, so a hit can only be the client's claim. */
+        private static final String SPOOFED_CLIENT = "9.9.9.9";
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "X_Forwarded_For", "X_Forwarded_Host", "X_Forwarded_Proto", "X_Forwarded_Port",
+                "X_Forwarded_Prefix", "X-Real-IP", "X-Client-IP", "True-Client-IP", "CF-Connecting-IP"})
+        @DisplayName("a spoofable provenance variant crosses under neither forward-all nor a negative-list")
+        void provenanceVariantsNeverCrossUnderPermissiveModes(String name) {
+            // Arrange — the two permissive modes are the ones that lost the old allow-list's
+            // incidental protection, so both are asserted for every name. The variant rides
+            // alongside a header the gateway does NOT own: that companion is the matched positive
+            // control, proving the mode copy actually ran and the variant's absence is a
+            // withholding DECISION rather than an empty result.
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of(SPOOFED_CLIENT),
+                    "X-Api-Version", List.of("v2"));
+
+            // Act
+            ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+            ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers),
+                    deny(List.of("X-Unrelated")), false);
+
+            // Assert — containsValue rather than a name lookup, so a variant that crossed under any
+            // spelling at all still fails. The gateway never emits this value itself, so a hit can
+            // only be the client's own claim reaching the upstream.
+            assertAll("a provenance claim is the gateway's alone to make, under every permissive mode",
+                    () -> assertFalse(forwardAllResult.headers().containsValue(SPOOFED_CLIENT),
+                            () -> name + " must not reach the upstream under forward-all — a backend"
+                                    + " folding '-' and '_' into one CGI variable would read it as"
+                                    + " the real forwarding header"),
+                    () -> assertEquals("v2", forwardAllResult.headers().get("x-api-version"),
+                            "control: forward-all really did copy the client's unowned header, so the"
+                                    + " absence above is a decision and not an empty mode copy"),
+                    () -> assertFalse(negativeListResult.headers().containsValue(SPOOFED_CLIENT),
+                            () -> name + " must not reach the upstream under a negative-list that"
+                                    + " does not name it — no deny entry should be needed"),
+                    () -> assertEquals("v2", negativeListResult.headers().get("x-api-version"),
+                            "control: the negative-list copy carried the undenied header through"));
+        }
+
+        @Test
+        @DisplayName("an operator's set_headers still places a provenance variant deliberately")
+        void setHeadersStillPlacesAProvenanceVariant() {
+            // Arrange — the strip governs CLIENT input. An operator fronting a backend that reads
+            // X-Real-IP must still be able to set it, and this is the bound on the widening above:
+            // it withholds a claim the client made, never one the operator configured.
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-Real-IP", List.of(SPOOFED_CLIENT)));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().setHeaders(Map.of("X-Real-IP", "10.1.2.3")).build(), false);
+
+            // Assert
+            assertEquals(List.of("10.1.2.3"), valuesNamed(result.headers(), "X-Real-IP"),
+                    "the operator's static value crosses and the client's spoof does not — exactly"
+                            + " one X-Real-IP reaches the upstream, and it is the configured one");
+        }
+
         @Test
         @DisplayName("Authorization is the single re-admittable member, and only under a positive-list")
         void authorizationIsTheSingleReadmittableMember() {
@@ -826,6 +890,37 @@ class ForwardPolicyStageTest {
                     () -> assertFalse(gzip.headers().containsKey("te"),
                             "any other TE value negotiates a transfer coding for the hop the gateway"
                                     + " terminates and is withheld"));
+        }
+
+        @Test
+        @DisplayName("the TE carve-out admits a copied header; it does not copy one a positive-list omitted")
+        void teCarveOutDoesNotSubstituteForThePositiveListEntry() {
+            // Arrange — the asymmetry a reader is most likely to get wrong, and the reason grpc.yaml
+            // keeps its `te` entry rather than deleting it as redundant. The carve-out decides
+            // whether a copied TE SURVIVES the strip; it never puts one into the map. Under
+            // forward-all the mode copy supplies it, so the entry would indeed be redundant — under
+            // a positive-list nothing copies an unlisted name, so the entry is load-bearing and
+            // removing it withholds TE: trailers from a gRPC upstream that requires it.
+            Map<String, List<String>> headers = Map.of("TE", List.of(TRAILERS_TOKEN));
+
+            // Act
+            ForwardPolicyStage.Result named = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("te")), false);
+            ForwardPolicyStage.Result omitted = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("X-Unrelated")), false);
+            ForwardPolicyStage.Result permissive = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+
+            // Assert
+            assertAll("the carve-out is a survival rule, not an admission path",
+                    () -> assertEquals(List.of(TRAILERS_TOKEN), valuesNamed(named.headers(), "TE"),
+                            "a positive-list naming te copies it in, and the trailers value survives"),
+                    () -> assertEquals(List.of(), valuesNamed(omitted.headers(), "TE"),
+                            "a positive-list that omits te never copies it, so the carve-out has"
+                                    + " nothing to admit — this is why the grpc routes keep the entry"),
+                    () -> assertEquals(List.of(TRAILERS_TOKEN), valuesNamed(permissive.headers(), "TE"),
+                            "under forward-all the mode copy supplies it, so there the entry WOULD be"
+                                    + " redundant — the two modes differ and the difference matters"));
         }
 
         @Test

@@ -17,15 +17,20 @@ Two structural principles shape the layout:
   a concrete host. They reference an abstract alias (`APP1`, `KEYCLOAK`, ...); a separate
   topology file binds each alias to a real location. Moving a deployment changes only the
   topology, never the endpoint files.
-* *Zero-trust and deny-by-default* throughout: nothing is forwarded, routed, or trusted unless
-  it is explicitly configured.
+* *Deny-by-default at the URL layer.* Nothing is routed or trusted unless it is explicitly
+  configured: a request matching no route reaches no upstream at all, and an authentication
+  posture is written out rather than inferred. Within a route the request is already authorised
+  for, the `forward` block then chooses a *filtering posture* -- permissive by default, strict
+  by opt-in -- bounded by gateway-owned sets no configuration can override (see
+  link:#_forward[`forward`]).
 
 The model rests on a small set of adopted patterns:
 
 * *Endpoint-centric routes* with per-route timeout and circuit breaker.
 * *Composable, bounded matchers* (path, method, host, header).
 * *Validated-then-immutable, atomic config.*
-* *Zero-trust forwarding* (deny-by-default allowlists).
+* *Three-mode forward filtering* (positive-list, negative-list, or forward-all per dimension),
+  bounded by gateway-owned never-forward sets.
 * *Alias -> URL indirection with an explicit in-file env placeholder* -- a single-URL alias,
   decomposed on read, whose value an environment variable may supply or override only through an
   explicit `${VAR}` placeholder written in the file -- never an automatic lookup (see
@@ -460,12 +465,21 @@ endpoint:
         max_query_params: 20
         max_param_value_length: 2048    # characters
         max_body_bytes: 1048576
-      forward:                     # zero-trust: only what is listed crosses upstream
-        headers_allow: [accept, content-type]
-        query_allow: [page, size]
+      forward:                     # OPTIONAL. Omit the whole block for FORWARD-ALL, the
+                                   #   baseline. Per dimension, declaring *_allow selects a
+                                   #   positive-list and *_deny a negative-list; declaring BOTH
+                                   #   for one dimension is REFUSED AT BOOT
+        headers_allow: [x-tenant]  # positive-list. The gateway-understood protocol headers
+                                   #   (Accept, Accept-Encoding, Accept-Language, Content-Type,
+                                   #   Range, + the conditional validators) cross WITHOUT being
+                                   #   listed -- do not enumerate HTTP mechanics here
+        query_deny: [debug]        # negative-list on the OTHER dimension: every other client
+                                   #   parameter crosses. The two dimensions are independent
         set_headers:               # additional STATIC gateway-set headers only; the mediated
           x-gateway: api-sheriff   #   Authorization (session routes) and the forwarding-
-                                   #   header set are injected automatically, never configured
+                                   #   header set are injected automatically, never configured.
+                                   #   set_headers WINS over a client header of the same name
+                                   #   (case-insensitively) -- operator config beats client input
       upstream:
         path: /orders              # replaces the matched path_prefix; the request-path
                                    #   remainder is appended (see "upstream")
@@ -490,14 +504,16 @@ endpoint:
   routes:
     - id: auth
       match: { path_prefix: /auth }
-      forward:                     # deny-by-default: the OIDC request params must be listed
+      forward:                     # a POSITIVE-list, chosen deliberately: this route reaches an
+                                   #   IdP authorization endpoint, so only the OIDC request
+                                   #   params should cross
         query_allow: [client_id, redirect_uri, response_type, scope, state, nonce,
                       code_challenge, code_challenge_method]
       upstream: { path: /realms/main/protocol/openid-connect/auth }
     - id: token
       match: { path_prefix: /token, methods: [POST] }
-      forward:
-        headers_allow: [content-type]
+                                   # no forward block: FORWARD-ALL. Content-Type would cross
+                                   #   even under a positive-list -- it is gateway-understood
       upstream: { path: /realms/main/protocol/openid-connect/token }
 ----
 
@@ -607,7 +623,10 @@ are carved out.
 
 === Defaults for omitted blocks
 
-Deny-by-default extends to omitted configuration:
+What an omitted block resolves to, and where the resolution comes from. Most rows are
+fail-closed -- an omitted `auth` inherits a declared posture rather than inventing one, and an
+omitted `security_filter` lands on `strict`. The `forward` row is the deliberate exception,
+and is explained in its own cell:
 
 [cols="1,3"]
 |===
@@ -642,12 +661,15 @@ Deny-by-default extends to omitted configuration:
   limits, and any explicit limit keys in the winning block override them individually.
 
 | `forward`
-| Nothing is forwarded: no request headers and no query parameters cross to the upstream
-  beyond the *automatic* injections (the mediated `Authorization: Bearer` on session routes,
-  the regenerated forwarding-header set -- see `forward` below -- and, when the route's
-  `not_modified` toggle is enabled, the conditional-request validators, see
-  link:#_upstream_defaults[`upstream_defaults`]). A route that needs client input must list
-  it.
+| *Forward-all* on both dimensions: every client request header and query parameter crosses,
+  minus the gateway-owned request-direction never-forward set (`Authorization`, `Cookie`, the
+  hop-by-hop and connection-specific names, `Content-Length`, `Host`, `Origin`, `Referer`,
+  `Date`), which no configuration can re-admit apart from the single `Authorization` carve-out.
+  The *automatic* injections apply as always: the mediated `Authorization: Bearer` on session
+  routes and the regenerated forwarding-header set. A route that wants a stricter posture
+  declares it -- see link:#_forward[`forward`]. Note this is the one omitted-block default that
+  is *permissive*: it filters within a route the request is already authorised for, so the
+  deny-by-default guarantee is unaffected (it lives at route matching).
 
 | `rate_limit`
 | No rate limiting (the feature is out of scope regardless; the field is reserved).
@@ -1337,12 +1359,15 @@ that cap rather than equal to it. The integration stack does exactly this: it ov
 pre-check untouched and is capped by the gateway's streaming byte counter instead — it always
 receives the gateway's `application/problem+json` envelope, regardless of where the floor sits.
 
-*Whitelisting.* `cui-http` has no path allow-list knob, so URL/parameter whitelisting is enforced at
-the gateway layer: `allowed_paths` (a request whose validated, normalized path matches no entry is
-rejected -- the manifest's "WAF via path white-listing"), plus `forward.query_allow` /
-`forward.headers_allow` (only listed items reach upstream). Header-name and content-type allow/block
+*Whitelisting.* `cui-http` has no path allow-list knob, so path whitelisting is enforced at the
+gateway layer by `allowed_paths`: a request whose validated, normalized path matches no entry is
+rejected -- the manifest's "WAF via path white-listing". Header-name and content-type allow/block
 are configured via `allowed_header_names` / `blocked_header_names` / `allowed_content_types`
-above, wired to the corresponding `cui-http` knobs.
+above, wired to the corresponding `cui-http` knobs. *What reaches the upstream is a separate,
+later question* answered by the route's link:#_forward[`forward`] block, which offers a
+positive-list (`headers_allow` / `query_allow`), a negative-list (`headers_deny` / `query_deny`)
+or the forward-all baseline -- do not read `forward` as an inbound admission control; a request
+that got this far was already admitted.
 
 *`allowed_paths` matching semantics.* An entry is a literal path in which `{name}` placeholders
 each match *exactly one* path segment (any characters except `/`). There are no wildcards, no
@@ -1772,25 +1797,126 @@ Matchers compose with AND semantics; a route matches only if every declared matc
 | Header matchers: `present: true` or an exact `value`. All listed must hold.
 |===
 
+[[_forward]]
 === `forward`
 
-Deny-by-default. `headers_allow` / `query_allow` are allowlists; anything not listed is not
-forwarded. `set_headers` adds *static*, gateway-controlled headers. Three injections happen
-*automatically* and are never written in `set_headers` / `headers_allow`: the mediated
-`Authorization: Bearer` on `require: session` routes (Variants 2/3 -- the gateway sets it
-from the session's access token, and an inbound `Authorization` header from the client is
-always stripped on those routes), the regenerated forwarding-header set per the `forwarded`
-policy, and -- when the route's `not_modified` toggle is enabled -- the conditional-request
-validators `If-None-Match` / `If-Modified-Since`
-(link:#_upstream_defaults[`upstream_defaults`], ADR-0008).
+*A filter inside a route the request is already authorised for* -- not the gateway's
+deny-by-default boundary. That boundary is route matching: a request matching no route is
+rejected `404` and reaches no upstream at all (see link:#_route_ordering[Route ordering]). By
+the time `forward` runs, the route has been selected and the auth posture enforced, so this
+block decides only *which of the client's own headers and query parameters survive the trip*
+(link:adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
+
+==== The three modes
+
+Headers and query parameters are *independent dimensions*. Each resolves exactly one of three
+modes from what the route declares -- and a route may mix them, e.g. a positive-list on headers
+with forward-all on query.
+
+[cols="1,2,2"]
+|===
+| Mode | Selected by | Behaviour
+
+| *Positive-list*
+| `headers_allow` / `query_allow` declared
+| Only the named entries cross.
+
+| *Negative-list*
+| `headers_deny` / `query_deny` declared
+| Every client entry crosses *except* the named ones.
+
+| *Forward-all*
+| Neither list declared for that dimension
+| Every client entry crosses. This is the baseline: omit the `forward` block entirely and both
+  dimensions are forward-all.
+|===
+
+*Declaring both lists for one dimension fails the boot.* `headers_allow` together with
+`headers_deny` (or `query_allow` with `query_deny`) is not a stricter policy but an ambiguous
+one, so the configuration validator refuses it rather than resolving it to a guess. The two
+dimensions are judged separately -- `headers_allow` plus `query_deny` is legal.
+
+*An absent list is not an empty one.* `query_allow: []` is a *positive-list admitting nothing*;
+an omitted `query_allow` is *forward-all*. The two are opposite behaviours, so the distinction
+is carried in the model and never normalised away
+(link:adr/0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]).
+
+Header names match *case-insensitively* on both list modes, as RFC 9110 field names require.
+Query-parameter names match *case-sensitively* on both modes -- query names are case-sensitive
+in HTTP, and making only one side insensitive would let a route's two lists disagree about what
+a name is.
+
+==== What crosses regardless of the mode
+
+Three gateway-owned sets bound every mode, and they are what makes the forward-all baseline safe
+to offer
+(link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+
+*The never-forward set.* These client headers are withheld under *every* mode, whatever a route
+declares: `Authorization`, `Cookie`, `Connection`, `Proxy-Connection`, `Keep-Alive`,
+`Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`,
+`Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- credentials the gateway terminates
+or mediates, the hop the gateway terminates rather than the message it forwards, the framing the
+gateway re-establishes, and the names the gateway itself owns. Two members carry
+value- or mode-dependent behaviour:
+
+* *`Cookie` is absolute.* No mode and no list re-admits it. The BFF pattern's premise is that the
+  backend never sees the sealed `__Host-` session cookie, and that absoluteness is exactly what
+  makes a permissive baseline defensible.
+* *`Authorization` is the single re-admittable member*, and only where the route declares a
+  *positive*-list naming it -- a legitimate choice for a pure-proxy route. Under a negative-list
+  or forward-all there is no positive-list, so a permissive route can never leak an inbound
+  credential. On a `require: session` route the mediated bearer is merged *last* and overwrites
+  it regardless, so the upstream still sees only the mediated credential.
+* *`TE` crosses only as the exact `trailers` token* -- the one value RFC 9110 admits end-to-end,
+  and what gRPC-over-HTTP/2 requires. Any other value negotiates a transfer coding for the hop
+  the gateway terminates and is withheld.
+
+*The gateway-understood protocol set.* These cross *without* being named, so a route never
+enumerates HTTP mechanics to make an ordinary backend work:
+
+* *Unconditional* -- `Accept`, `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range`.
+* *Conditional* -- the five RFC 9110 §13 validators `If-None-Match`, `If-Modified-Since`,
+  `If-Match`, `If-Unmodified-Since`, `If-Range`, admitted only when the route's
+  link:#_upstream_defaults[`not_modified`] toggle is enabled.
+
+Membership answers *"does the gateway know what this header means?"*, not "does a backend need
+it" -- the latter rule would admit `Cookie` and `Authorization`. `User-Agent` is deliberately
+outside the set on that test; a backend that genuinely needs it names it in `headers_allow`. The
+set is a fixed constant with no configuration surface: to withhold one of these, *deny it by
+name*. A `headers_deny` entry naming a protocol header wins; a `headers_allow` is deliberately
+not consulted, since crossing without being named is the set's whole purpose.
+
+*The regenerated forwarding headers.* The client's `X-Forwarded-*` / `Forwarded` copies never
+cross under any mode -- the gateway emits its own freshly regenerated set per the
+link:#_forwarded_headers[`forwarded`] policy, so forward-all is not a way to smuggle a spoofed
+`X-Forwarded-For` upstream.
+
+==== `set_headers`, and what wins
+
+`set_headers` adds *static*, gateway-controlled headers. Two injections are never written here
+and never listed in `headers_allow`: the mediated `Authorization: Bearer` on `require: session`
+routes (set from the session's access token), and the regenerated forwarding-header set.
+
+The stage merges in a pinned order -- the mode copy with the never-forward strip, then the
+protocol set, then `set_headers`, then the regenerated forwarding headers, then the mediated
+bearer -- and that order is one rule stated twice:
+
+. *Operator configuration beats client input.* `set_headers` merges after everything sourced
+  from the request, so an operator's `Content-Type` *replaces* a client's `content-type` rather
+  than riding alongside it. The outbound map is keyed case-insensitively, so the replacement
+  happens whatever either side spelled.
+. *Gateway-owned transport truth beats operator configuration.* The regenerated forwarding
+  headers and the mediated bearer merge after `set_headers`, the bearer last.
 
 === `upstream`
 
 The target is `resolved(endpoint.base_url) + upstream.path + remainder`, where *remainder* is
 the request path after stripping the matched `match.path_prefix` -- so path parameters survive
 the mapping (`/api/orders/42` -> `.../orders/42`), and `upstream.path` *replaces* the matched
-prefix rather than prepending to the full request path. Allowed query parameters
-(`forward.query_allow`) are appended unchanged. `connect_timeout_ms` / `read_timeout_ms` are
+prefix rather than prepending to the full request path. The query parameters the route's
+link:#_forward[`forward`] mode admits are appended unchanged.
+`connect_timeout_ms` / `read_timeout_ms` are
 millisecond-precision options on the shared per-upstream-tuple data-plane client
 (link:adr/0008-data-plane-transport.adoc[ADR-0008]). `retry` and `circuit_breaker` map to the
 per-route resilience guard assembled at boot (SmallRye Fault Tolerance, programmatic --
@@ -1820,14 +1946,28 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
 
 | `not_modified.enabled`
 | End-to-end conditional-request *pass-through* for the route
-  (link:adr/0008-data-plane-transport.adoc[ADR-0008]). *Enabled* (default): the
-  conditional-request headers (`If-None-Match`, `If-Modified-Since`) are implicitly part of
-  the route's effective `forward.headers_allow`, and upstream `304` responses plus the
-  validator response headers (`ETag`, `Last-Modified`) relay untouched. *Disabled*: the
-  validators are stripped in *both* directions, deliberately forcing full `200` exchanges --
-  for upstreams whose ETags are inconsistent across nodes or leak inode/version detail. In
+  (link:adr/0008-data-plane-transport.adoc[ADR-0008],
+  link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+  *Enabled* (default): the five RFC 9110 §13 validators (`If-None-Match`, `If-Modified-Since`,
+  `If-Match`, `If-Unmodified-Since`, `If-Range`) are admitted by the gateway-understood protocol
+  set -- they cross without appearing in any `forward` list -- and upstream `304` responses plus
+  the validator response headers (`ETag`, `Last-Modified`) relay untouched. *Disabled*: the
+  response half strips `ETag` / `Last-Modified`, and the request half withholds the five
+  validators from the protocol set, deliberately forcing full `200` exchanges -- for upstreams
+  whose ETags are inconsistent across nodes or leak inode/version detail. Gating both halves on
+  one flag is what stops the gateway asking a question whose answer it then discards. In
   *neither* state does the gateway cache response bodies or answer `304` from a cache --
   gateway-side response caching is rejected by design (ADR-0008).
+
+  *One boundary is recorded rather than resolved.* The toggle gates the *protocol set's
+  admission path*; it is not a withholding rule applied to the mode copy. A forward-all or
+  negative-list route therefore still carries a client's `If-None-Match` upstream with the flag
+  off -- the header crosses on the route's declared posture -- while the response half strips the
+  `ETag` that would answer it. Closing that gap means changing what forward-all means for a
+  class of client headers, which is wider than the decision that introduced the modes, so it is
+  pinned by a characterization test and left as an open question rather than resolved silently.
+  A route that must withhold the validators under a permissive posture names them in
+  `headers_deny`.
 |===
 
 *Resolution (wholesale, no merge).* Each route's effective `retry` / `not_modified` toggle is,
@@ -2115,8 +2255,9 @@ disabled list keeps running.
   on a `minimal` route.
 * `max_body_bytes` -- a resource guard against exhaustion, not an injection defence.
 * `allowed_paths` -- a surface restriction, not an injection defence.
-* The verb gate (`allowed_methods`), authentication and the auth floor, CSRF, the forward-policy
-  allowlists, the terminal-action rules, and the response-side security-header envelope.
+* The verb gate (`allowed_methods`), authentication and the auth floor, CSRF, the route's
+  link:#_forward[`forward`] mode and the gateway-owned never-forward set it cannot override, the
+  terminal-action rules, and the response-side security-header envelope.
 
 *Disabled under `minimal` -- exactly these two, and nothing else:*
 

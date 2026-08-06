@@ -92,7 +92,7 @@ class ConnectionHeadersTest {
     }
 
     @Test
-    @DisplayName("Should carry exactly the 16 request-direction never-forward names")
+    @DisplayName("Should carry exactly the 25 request-direction never-forward names")
     void shouldCarryTheExactRequestSet() {
         assertEquals(
                 ConnectionHeaders.REQUEST_STRIP, Set.of(
@@ -104,7 +104,13 @@ class ConnectionHeadersTest {
                         // Framing the dispatch path re-establishes.
                         "content-length",
                         // Names the gateway itself owns, consumes, or regenerates.
-                        "host", "origin", "referer", "date"),
+                        "host", "origin", "referer", "date",
+                        // Spoofable provenance claims only the gateway is entitled to make: the
+                        // underscore spellings a CGI-style backend folds onto the canonical name,
+                        // and the vendor client-IP aliases such a backend may trust directly.
+                        "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto",
+                        "x_forwarded_port", "x_forwarded_prefix",
+                        "x-real-ip", "x-client-ip", "true-client-ip", "cf-connecting-ip"),
                 "the request-direction set is what bounds the forward-all baseline — a name removed"
                         + " here silently starts relaying it to every upstream");
     }
@@ -113,8 +119,10 @@ class ConnectionHeadersTest {
     @DisplayName("Should keep the two direction sets independently enumerated, not derived")
     void shouldKeepTheTwoSetsIndependent() {
         assertEquals(10, ConnectionHeaders.RESPONSE_STRIP.size(),
-                "the response set stays at its 10 names; this deliverable does not touch it");
-        assertEquals(16, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 16 names");
+                "the response set stays at its 10 names; the provenance-variant widening is"
+                        + " request-direction only and must not propagate here — a response"
+                        + " carrying X-Real-IP is the source's business, not the gateway's");
+        assertEquals(25, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 25 names");
         assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.RESPONSE_STRIP),
                 "the request set currently contains every response name — asserted as the OBSERVATION"
                         + " it is, with both sets pinned exhaustively above, so a name added to one"
@@ -138,6 +146,35 @@ class ConnectionHeadersTest {
         assertFalse(ConnectionHeaders.isRequestStripped(name),
                 () -> name + " is the client's to send and the route's mode to govern, not a"
                         + " gateway-owned name");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X_Forwarded_For", "x_forwarded_for", "X_FORWARDED_FOR",
+            "X_Forwarded_Host", "X_Forwarded_Proto", "X_Forwarded_Port", "X_Forwarded_Prefix",
+            "X-Real-IP", "x-real-ip", "X-Client-IP", "True-Client-IP", "CF-Connecting-IP"})
+    @DisplayName("Should withhold a spoofable provenance variant a CGI-folding backend would trust")
+    void shouldWithholdProvenanceVariants(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is a claim about the connection's provenance that only the gateway is"
+                        + " entitled to make. Under the old allow-list-only forward model it was"
+                        + " dropped incidentally; under forward-all it is an ordinary client header,"
+                        + " and a backend folding '-' and '_' into one CGI variable reads it as the"
+                        + " canonical name");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port",
+            "X-Forwarded-Prefix", "Forwarded"})
+    @DisplayName("Should leave the CANONICAL forwarding names out of this set — they are regenerated, not stripped")
+    void shouldNotClaimTheCanonicalForwardingNames(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is a name the gateway REGENERATES, so it belongs to the forwarding set"
+                        + " in ForwardPolicyStage — which is read both as the client-copy skip and as"
+                        + " the untrusted-peer resolver mask. Duplicating it here would create two"
+                        + " lists that can disagree; this assertion is what keeps the placement"
+                        + " decision (variants here, canonical names there) from eroding");
     }
 
     @Test

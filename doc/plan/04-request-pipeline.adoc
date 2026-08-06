@@ -3,6 +3,29 @@
 :toclevels: 3
 :sectnums:
 
+[NOTE]
+====
+*Delivered -- read as a historical record, not as the current specification.* Per
+link:README.adoc[the plan index], the design documents govern and the plans only sequence the
+work; this one records what was decided and built at Plan 04 time.
+
+One part of it has since been superseded. *Stage 5's forward policy* is described below as an
+allowlist ("`headers_allow` / `query_allow` filtering", the two conditional validators joining
+the effective allowlist, "inbound `Authorization` stripped unless explicitly allow-listed").
+That is no longer how the stage works: the forward block now resolves one of *three modes* per
+dimension -- positive-list, negative-list, or forward-all -- inside a route the request is
+already authorised for, bounded by gateway-owned header sets no route configuration can
+override, and the conditional tier carries five validators rather than two. The current
+specification is
+link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]
+and
+link:../adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037],
+with the operator-facing reference in link:../configuration.adoc#_forward[`configuration.adoc`].
+
+Deny-by-default is unchanged and is *not* what moved: it lives at the URL layer (stage 2, route
+selection), exactly as this document's stages 1-2 and its GW-01 item describe.
+====
+
 == Goal
 
 Implement the gateway's data plane for the standard HTTP verbs: the fixed request pipeline
