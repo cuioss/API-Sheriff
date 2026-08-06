@@ -1857,12 +1857,22 @@ declares: `Authorization`, `Cookie`, `Connection`, `Proxy-Connection`, `Keep-Ali
 `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`,
 `Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- credentials the gateway terminates
 or mediates, the hop the gateway terminates rather than the message it forwards, the framing the
-gateway re-establishes, and the names the gateway itself owns. Two members carry
-value- or mode-dependent behaviour:
+gateway re-establishes, and the names the gateway itself owns.
 
-* *`Cookie` is absolute.* No mode and no list re-admits it. The BFF pattern's premise is that the
-  backend never sees the sealed `__Host-` session cookie, and that absoluteness is exactly what
-  makes a permissive baseline defensible.
+The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
+vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
+the underscore spellings of the forwarding names. Every name in the set is matched on its
+*separator-folded* spelling -- lower-cased with each `_` mapped to `-` -- so `X_Real_IP` and
+`X-Real_IP` are withheld exactly as `X-Real-IP` is, and a backend that folds header names into
+CGI-style variables cannot be reached by respelling one.
+
+Two members carry value- or mode-dependent behaviour:
+
+* *`Cookie` is absolute against client input.* No mode and no list re-admits a client's `Cookie`.
+  The BFF pattern's premise is that the backend never sees the sealed `__Host-` session cookie,
+  and that absoluteness is exactly what makes a permissive baseline defensible. The one way a
+  `Cookie` header reaches an upstream at all is an operator writing a *static* value in
+  `set_headers` (see below) -- gateway configuration, never the caller's session cookie.
 * *`Authorization` is the single re-admittable member*, and only where the route declares a
   *positive*-list naming it -- a legitimate choice for a pure-proxy route. Under a negative-list
   or forward-all there is no positive-list, so a permissive route can never leak an inbound
@@ -1897,6 +1907,18 @@ link:#_forwarded_headers[`forwarded`] policy, so forward-all is not a way to smu
 `set_headers` adds *static*, gateway-controlled headers. Two injections are never written here
 and never listed in `headers_allow`: the mediated `Authorization: Bearer` on `require: session`
 routes (set from the session's access token), and the regenerated forwarding-header set.
+
+*`set_headers` is not bounded by the never-forward set, and that is deliberate.* The strip governs
+*client input*; an operator's static value is gateway configuration and is merged after it, so
+`set_headers` can place any header name at all -- including `Authorization` for a backend behind a
+static credential, `Host` for a backend expecting a particular vhost, or `X-Real-IP` for one that
+reads it. What this cannot do is leak the *caller's* value: the entry is a fixed string from the
+route's YAML, so a client's `Cookie`, credential or provenance claim still never crosses. Two
+consequences follow. A hop-by-hop or framing name set here (`Transfer-Encoding`, `Content-Length`,
+`Connection`, `Upgrade`) is written onto a request whose framing the gateway otherwise owns and is
+never a sensible entry -- it is not refused at boot, so do not write one. And declaring the same
+field twice under different casing (`Content-Type` and `content-type`) leaves which value wins
+unspecified; declare each field once.
 
 The stage merges in a pinned order -- the mode copy with the never-forward strip, then the
 protocol set, then `set_headers`, then the regenerated forwarding headers, then the mediated

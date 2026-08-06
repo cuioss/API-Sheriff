@@ -177,9 +177,48 @@ class ConnectionHeadersTest {
                         + " decision (variants here, canonical names there) from eroding");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X_Real_IP", "X-Real_IP", "X_Real-IP",
+            "X_Client_IP", "X-Client_IP", "X_Client-IP",
+            "True_Client_IP", "True-Client_IP", "True_Client-IP",
+            "CF_Connecting_IP", "CF-Connecting_IP", "CF_Connecting-IP",
+            "Content_Length", "Transfer_Encoding", "Keep_Alive",
+            "Proxy_Connection", "Proxy_Authorization", "Proxy_Authenticate"})
+    @DisplayName("Should withhold every '-'/'_' spelling of a gateway-owned name, not just the canonical one")
+    void shouldWithholdEverySeparatorSpelling(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " folds onto a gateway-owned name for any backend that maps header"
+                        + " names to CGI-style variables (CGI/FastCGI/WSGI/Rack all fold '-' and"
+                        + " '_' onto one underscore), so a client spelling it this way reaches the"
+                        + " very variable the canonical name feeds. A name with two separators has"
+                        + " FOUR spellings; enumerating them one fix at a time is the Traefik"
+                        + " forwarded-header fix-chain, which is why the membership test folds the"
+                        + " separator instead of the literal listing every variant");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"X_Api_Version", "X-Api_Version", "Content_Type", "Accept_Encoding", "User_Agent"})
+    @DisplayName("Should not let separator folding over-strip a header the gateway does not own")
+    void shouldNotOverStripOnSeparatorFolding(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " folds onto a name that is NOT gateway-owned, so folding must widen the"
+                        + " match across spellings of the owned names only — never across names");
+    }
+
+    @Test
+    @DisplayName("Should fold a header name to lower case and '-' separators, through Locale.ROOT")
+    void shouldFoldSeparatorsAndCase() {
+        assertEquals("x-forwarded-for", ConnectionHeaders.separatorFolded("X_Forwarded-For"));
+        assertEquals("if-none-match", ConnectionHeaders.separatorFolded("IF_NONE_MATCH"));
+        assertEquals("accept", ConnectionHeaders.separatorFolded("Accept"),
+                "a name with no separator folds to its lower-cased self");
+    }
+
     @Test
     @DisplayName("Should reject a null request-header name rather than treating it as forwardable")
     void shouldRejectNullRequestName() {
         assertThrows(NullPointerException.class, () -> ConnectionHeaders.isRequestStripped(null));
+        assertThrows(NullPointerException.class, () -> ConnectionHeaders.separatorFolded(null));
     }
 }

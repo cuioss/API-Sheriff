@@ -492,12 +492,18 @@ safe*
   is entitled to make -- the underscore spellings of the forwarding names (`X_Forwarded_For` and
   its siblings, which a backend folding `-` and `_` into one CGI variable reads as the real
   header) together with the vendor client-IP aliases `X-Real-IP`, `X-Client-IP`,
-  `True-Client-IP` and `CF-Connecting-IP`.
+  `True-Client-IP` and `CF-Connecting-IP`. Membership is tested on the *separator-folded* name
+  (lower-cased, every `_` mapped to `-`), so the set closes the whole `-`/`_` equivalence class of
+  each name it holds rather than listing the variants -- a two-separator name has four spellings a
+  CGI-folding backend resolves to one variable, and enumerating them one fix at a time is the
+  Traefik forwarded-header fix-chain.
 +
-*The rule is asymmetric, and the asymmetry is the decision.* `Cookie` is absolute: no mode
-and no list re-admits it, because the BFF pattern's entire premise is that the backend never
-sees the sealed `__Host-` session cookie -- and that absoluteness is precisely what makes a
-forward-all baseline safe to offer at all. `Authorization` is the *single* re-admittable
+*The rule is asymmetric, and the asymmetry is the decision.* `Cookie` is absolute against client
+input: no mode and no list re-admits it, because the BFF pattern's entire premise is that the
+backend never sees the sealed `__Host-` session cookie -- and that absoluteness is precisely what
+makes a forward-all baseline safe to offer at all. (The strip bounds what the *caller* can send;
+an operator's static `set_headers` entry is gateway configuration merged after it, and can carry
+no caller value.) `Authorization` is the *single* re-admittable
 member, honoured only where a route declares a *positive*-list naming it; under a
 negative-list or forward-all there is no positive-list, so a permissive route can never leak
 an inbound credential. Even a re-admitted `Authorization` is overwritten by the mediated
@@ -525,10 +531,13 @@ gateway terminates.
   only when `trust_scheme_host` opts in -- and the gateway emits *freshly regenerated* canonical
   output from it: `X-Forwarded-*` by default, RFC 7239 opt-in and additive
   (link:adr/0003-forwarded-headers.adoc[ADR-0003]). Inbound chains are never propagated, so
-  forward-all is not a way to smuggle a spoofed `X-Forwarded-For` upstream. This skip covers the
-  names the gateway *emits*; the spellings it does not emit but must still never relay -- the
-  underscore forms and the vendor aliases -- are withheld by the never-forward set above instead,
-  because a name the gateway does not regenerate does not belong in the set of names it does. See
+  forward-all is not a way to smuggle a spoofed `X-Forwarded-For` upstream. The skip is keyed on
+  the names the gateway *emits*, matched on the same separator-folded name, so `X-Forwarded_For`
+  and `X_Forwarded-For` are skipped exactly as the canonical spelling is; the names it does not
+  emit but must still never relay -- the vendor aliases -- are withheld by the never-forward set
+  above instead, because a name the gateway does not regenerate does not belong in the set of names
+  it does. Between the two folded sets, every spelling of every provenance name reaches one of
+  them. See
   link:configuration.adoc#_forwarded_headers[Configuration -- forwarding headers].
 
 *The merge order is pinned, and it encodes a precedence rule.* The stage merges, in order:

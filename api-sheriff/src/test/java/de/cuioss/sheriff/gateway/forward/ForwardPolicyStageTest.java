@@ -818,6 +818,56 @@ class ForwardPolicyStageTest {
                             "control: the negative-list copy carried the undenied header through"));
         }
 
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "X-Forwarded_For", "X_Forwarded-For", "X-Forwarded_Host", "X_Forwarded-Host",
+                "X-Forwarded_Proto", "X_Forwarded-Proto", "X-Forwarded_Port", "X_Forwarded-Port",
+                "X-Forwarded_Prefix", "X_Forwarded-Prefix",
+                "X_Real_IP", "X-Real_IP", "X_Client_IP", "True_Client_IP", "CF_Connecting_IP"})
+        @DisplayName("a MIXED '-'/'_' spelling of a provenance name crosses under no mode either")
+        void mixedSeparatorProvenanceSpellingsNeverCross(String name) {
+            // Arrange — a name with two separators has FOUR spellings and a CGI-folding backend
+            // (CGI/FastCGI/WSGI/Rack) resolves all four to one variable, so closing only the fully
+            // hyphenated and fully underscored ends leaves the two mixed spellings landing on the
+            // very variable the gateway's regenerated header feeds. Enumerating spellings one fix
+            // at a time is the Traefik forwarded-header fix-chain; both sets therefore fold the
+            // separator before the membership test, and this asserts the class is closed rather
+            // than sampled. Three modes are exercised because each reaches the class by a different
+            // route: forward-all and the negative-list through the mode copy, the positive-list
+            // through its own skip.
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of(SPOOFED_CLIENT),
+                    "X-Api-Version", List.of("v2"));
+
+            // Act
+            ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+            ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers),
+                    deny(List.of("X-Unrelated")), false);
+            ForwardPolicyStage.Result positiveListResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers),
+                    allow(List.of(name, "X-Api-Version")), false);
+
+            // Assert — containsValue rather than a name lookup, so the spoof failing to cross under
+            // ANY spelling still fails the test. The gateway never emits this value itself.
+            assertAll("every '-'/'_' spelling of a provenance name is closed, under every mode",
+                    () -> assertFalse(forwardAllResult.headers().containsValue(SPOOFED_CLIENT),
+                            () -> name + " must not reach the upstream under forward-all"),
+                    () -> assertEquals("v2", forwardAllResult.headers().get("x-api-version"),
+                            "control: forward-all really did copy the client's unowned header"),
+                    () -> assertFalse(negativeListResult.headers().containsValue(SPOOFED_CLIENT),
+                            () -> name + " must not reach the upstream under a negative-list"),
+                    () -> assertEquals("v2", negativeListResult.headers().get("x-api-version"),
+                            "control: the negative-list copy carried the undenied header through"),
+                    () -> assertFalse(positiveListResult.headers().containsValue(SPOOFED_CLIENT),
+                            () -> name + " must not cross even when a positive-list names it — a"
+                                    + " gateway-owned provenance claim is not an operator's to"
+                                    + " re-admit from client input"),
+                    () -> assertEquals("v2", positiveListResult.headers().get("X-Api-Version"),
+                            "control: the positive-list really did admit its other entry"));
+        }
+
         @Test
         @DisplayName("an operator's set_headers still places a provenance variant deliberately")
         void setHeadersStillPlacesAProvenanceVariant() {

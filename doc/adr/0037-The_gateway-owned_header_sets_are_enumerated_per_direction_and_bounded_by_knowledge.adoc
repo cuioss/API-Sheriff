@@ -121,6 +121,20 @@ precisely the Traefik fix-chain shape. `set_headers` is unaffected — the strip
 governs client input, and an operator fronting a backend that reads `X-Real-IP`
 still sets it deliberately.
 
+**The class is closed by folding, not by listing its members.** Both sets test
+membership on the *separator-folded* name — lower-cased with every `_` mapped to
+`-` — so each closes its own names across the whole `-`/`_` class. The literals
+are not the closure and must not be read as one: a two-separator name has **four**
+spellings (`X-Forwarded-For`, `X_Forwarded_For`, `X-Forwarded_For`,
+`X_Forwarded-For`) that a CGI-folding backend resolves to one variable, so
+enumerating them would mean four entries per name and a fix the first time one was
+missed — which is the Traefik fix-chain itself, where each CVE closed one spelling
+while a sibling survived. Folding also makes the closure *inherited*: a name added
+to either set later is covered across every spelling without a second edit. The
+five `x_forwarded_*` entries that remain in the never-forward set predate the fold
+and are now redundant with the regeneration skip's folded match; they are kept as
+the literal record of which spellings the threat model names, not as the mechanism.
+
 **The two sets are independent enumerations, not one derived from the other.**
 The request set currently contains every response-set name, but that is recorded
 as an *observation* about two hand-maintained lists rather than as a derivation

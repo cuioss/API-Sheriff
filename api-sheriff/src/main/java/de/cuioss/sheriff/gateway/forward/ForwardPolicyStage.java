@@ -116,6 +116,23 @@ public final class ForwardPolicyStage {
             "x-forwarded-prefix", "forwarded");
 
     /**
+     * Whether {@code name} is a spelling of a header the gateway <em>regenerates</em> — tested on
+     * the {@linkplain ConnectionHeaders#separatorFolded separator-folded} name, so the client copy
+     * skips {@code X-Forwarded_For} and {@code X_Forwarded-For} exactly as it skips the canonical
+     * {@code X-Forwarded-For}.
+     * <p>
+     * The folding is what closes the {@code -}/{@code _} equivalence class here rather than
+     * enumerating its members: a CGI-folding backend resolves all four spellings of a two-separator
+     * name to one variable, so a mixed spelling that crossed would let a client's claim land on the
+     * same variable as the gateway's regenerated one. {@link ConnectionHeaders#REQUEST_STRIP} closes
+     * the same class for the names the gateway does <em>not</em> regenerate; between the two, every
+     * spelling of every provenance name reaches one of the two sets.
+     */
+    private static boolean isRegeneratedForwardingName(String name) {
+        return FORWARDING_HEADERS.contains(ConnectionHeaders.separatorFolded(name));
+    }
+
+    /**
      * The protocol-set tier that crosses whatever the route configures — content negotiation and
      * range requests, the mechanics every backend speaks and no operator should have to enumerate.
      */
@@ -204,8 +221,10 @@ public final class ForwardPolicyStage {
      * headers and withholds the {@code headers_deny} names (an absent deny list denying nothing —
      * the forward-all baseline).
      * <p>
-     * The {@link #FORWARDING_HEADERS} skip is applied on every mode: a regenerated header must never
-     * be copied from the client, so forward-all is not a way to smuggle one in.
+     * The {@link #FORWARDING_HEADERS} skip is applied on every mode, and on the
+     * {@linkplain #isRegeneratedForwardingName separator-folded} name: a regenerated header must
+     * never be copied from the client under any spelling, so neither forward-all nor an
+     * {@code X-Forwarded_For} is a way to smuggle one in.
      */
     private static void copyHeadersByMode(PipelineRequest request, ForwardConfig forwardConfig,
             Map<String, String> headers) {
@@ -220,7 +239,7 @@ public final class ForwardPolicyStage {
     private static void copyPositiveListHeaders(PipelineRequest request, List<String> allow,
             Map<String, String> headers) {
         for (String name : allow) {
-            if (FORWARDING_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+            if (isRegeneratedForwardingName(name)) {
                 continue;
             }
             request.firstHeader(name).ifPresent(value -> headers.put(name, value));
@@ -238,7 +257,7 @@ public final class ForwardPolicyStage {
         for (Map.Entry<String, List<String>> entry : request.headers().entrySet()) {
             String name = entry.getKey();
             List<String> values = entry.getValue();
-            if (values.isEmpty() || FORWARDING_HEADERS.contains(name) || denied.contains(name)) {
+            if (values.isEmpty() || isRegeneratedForwardingName(name) || denied.contains(name)) {
                 continue;
             }
             headers.put(name, values.getFirst());
@@ -357,7 +376,7 @@ public final class ForwardPolicyStage {
     private void applyRegeneratedForwarding(PipelineRequest request, Map<String, String> headers) {
         boolean peerTrusted = peerGate.isTrustedPeer(request.peerAddress());
         UnaryOperator<String> lookup = name -> {
-            if (!peerTrusted && FORWARDING_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+            if (!peerTrusted && isRegeneratedForwardingName(name)) {
                 return null;
             }
             return request.firstHeader(name).orElse(null);

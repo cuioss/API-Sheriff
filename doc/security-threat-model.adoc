@@ -361,8 +361,10 @@ Two properties carry this control:
 
 * *The request-direction never-forward set applies under every forward mode* -- including the
   permissive forward-all baseline. `Authorization` is its single re-admittable member (only on a
-  route declaring a positive-list naming it); `Cookie` is absolute. No route configuration
-  re-admits the hop-by-hop, framing or gateway-owned names.
+  route declaring a positive-list naming it); `Cookie` is absolute against client input. No route
+  configuration re-admits the hop-by-hop, framing or gateway-owned names from the request. The one
+  path around the set is an operator's *static* `set_headers` value, which is merged after the
+  strip and carries no caller-supplied material.
 * *The forwarded header set is built by regeneration, never by editing the client's map.* The
   client's `X-Forwarded-*` / `Forwarded` copies are skipped on *every* mode, forward-all
   included, so a permissive route is not a way to smuggle a spoofed chain upstream (GW-04).
@@ -371,10 +373,13 @@ Two properties carry this control:
 forward model dropped *everything* an operator did not enumerate, which incidentally also dropped
 non-canonical spellings a client invented -- an `X_Forwarded_For`-style underscore variant that
 cui-http does not canonicalize to the hyphenated name, or a vendor alias such as `X-Real-IP`.
-Forward-all removes that incidental protection, so the protection is now stated: those spellings
-are members of the request-direction never-forward set in their own right, withheld under every
-mode without an operator entry. They sit *there* rather than beside the canonical names because
-the gateway does not *regenerate* them -- the canonical names are what it emits, the variants are
+Forward-all removes that incidental protection, so the protection is now stated: the vendor
+aliases are members of the request-direction never-forward set in their own right, and both that
+set and the regeneration skip match on the *separator-folded* name, so every `-`/`_` spelling of
+either set's names is withheld under every mode without an operator entry (see
+link:#gw-04[GW-04] for why the class is closed by folding rather than by enumeration). The
+aliases sit in the never-forward set rather than beside the canonical names because the gateway
+does not *regenerate* them -- the canonical names are what it emits, the aliases are
 claims about provenance only the gateway is entitled to make. `set_headers` is unaffected: an
 operator fronting a backend that reads `X-Real-IP` still sets it deliberately, because the strip
 governs client input and configuration is not client input.
@@ -419,28 +424,37 @@ configuration validator (CIDR parsing, split-range trust-all rejection). The cli
 `X-Forwarded-*` / `Forwarded` copies are skipped under every forward mode, forward-all included,
 so the *emitted* chain is always the gateway's own.
 
-*The equivalence class beyond the canonical names is covered too, and by a different mechanism.*
-The regeneration skip is keyed on the canonical spellings (`x-forwarded-for`, `-host`, `-proto`,
-`-port`, `-prefix`, `forwarded`), matched case-insensitively -- that is what the gateway *emits*.
-The spellings it does not emit but must still never *relay* -- the underscore forms
-(`X_Forwarded_For` and its four siblings) and the vendor aliases (`X-Real-IP`, `X-Client-IP`,
-`True-Client-IP`, `CF-Connecting-IP`) -- are members of the request-direction never-forward set
-instead, so they are withheld under every mode with no operator entry. Splitting the class across
-the two sets by *which question each name answers* is deliberate: filing a name the gateway does
-not regenerate beside the ones it does would assert a relationship that is not there, and would
-widen the untrusted-peer resolver mask with names the resolver never queries. `Forwarded`
-contributes no separate variant -- it carries no hyphen to fold, so its underscore spelling is
-the canonical name already held by the regeneration skip. The Traefik fix-chain in the evidence
-above is a chain of *incomplete* equivalence-class handling; closing the class in the gateway's
-own sets, rather than per route, is what keeps this from becoming another link in it.
+*The equivalence class beyond the canonical names is covered too, and it is closed by a rule
+rather than by a list.* Two sets hold the names, split by *which question each name answers*: the
+regeneration skip holds the canonical spellings (`x-forwarded-for`, `-host`, `-proto`, `-port`,
+`-prefix`, `forwarded`) -- what the gateway *emits* -- and the request-direction never-forward set
+holds the names it does not emit but must never *relay*, the vendor aliases `X-Real-IP`,
+`X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`. The split is deliberate: filing a name the
+gateway does not regenerate beside the ones it does would assert a relationship that is not there,
+and would widen the untrusted-peer resolver mask with names the resolver never queries.
+
+*Both sets are then tested on the separator-folded name* -- lower-cased with every `_` mapped to
+`-` -- so each set closes its own names across the whole `-`/`_` class instead of listing the
+variants. This matters because the class is larger than it looks: a two-separator name such as
+`X-Forwarded-For` has *four* spellings (`X-Forwarded-For`, `X_Forwarded_For`, `X-Forwarded_For`,
+`X_Forwarded-For`), and every backend that maps header names to CGI-style variables -- CGI,
+FastCGI, WSGI and Rack all do -- resolves all four to one `HTTP_X_FORWARDED_FOR`. Enumerating
+spellings would mean four entries per name and a fix the first time one was missed, which is
+exactly the shape of the Traefik fix-chain in the evidence above: each of those CVEs closed one
+spelling while a sibling survived. Folding before the membership test closes the class at once and
+keeps it closed for any name a later edit adds to either set. `Forwarded` contributes no variant
+at all -- it carries no separator to fold, so its underscore spelling is the canonical name the
+regeneration skip already holds.
 
 *Assertion.* A spoofed inbound `X-Forwarded-For`/`X-Real-IP`/`Forwarded` from a non-trusted
 peer never influences the gateway's resolved client identity; the emitted chain is regenerated,
 not appended; the canonical `X-Forwarded-*` / `Forwarded` names are skipped from the client copy
 under *every* forward mode, forward-all included; each underscore variant and vendor alias is
 withheld from the upstream under *both* forward-all and a negative-list that does not name it,
-each leg carrying a matched positive control; an operator's `set_headers` still places such a
-name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot.
+each leg carrying a matched positive control; every *mixed* `-`/`_` spelling of a forwarding name
+or a vendor alias is withheld under forward-all, a negative-list *and* a positive-list naming it,
+so the equivalence class is asserted closed rather than sampled; an operator's `set_headers` still
+places such a name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot.
 
 [#gw-05]
 === GW-05 -- SSRF via proxy features / upstream control

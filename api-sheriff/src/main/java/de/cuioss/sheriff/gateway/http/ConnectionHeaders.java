@@ -127,6 +127,14 @@ public class ConnectionHeaders {
      * no hyphen to fold, so its underscore spelling is the canonical name itself, already held by
      * the forwarding set.
      * <p>
+     * <strong>The literal names one spelling each; {@link #separatorFolded} closes the rest of the
+     * class.</strong> A name with two separators has four {@code -}/{@code _} spellings and a
+     * CGI-folding backend resolves all four to one variable, so enumerating them would mean four
+     * entries per name and a fix-chain the first time one was missed. {@link #isRequestStripped}
+     * folds the separator before testing membership instead, which is why {@code x_real_ip},
+     * {@code x-real_ip} and {@code x_real-ip} are all withheld though only {@code x-real-ip}
+     * appears below — and why a name added here later inherits that closure for free.
+     * <p>
      * <strong>Three names are deliberately lifted from {@link #RESPONSE_STRIP} rather than
      * inherited</strong> — each is here on its own request-direction reasoning:
      * <ul>
@@ -155,20 +163,56 @@ public class ConnectionHeaders {
             "cf-connecting-ip");
 
     /**
+     * Canonicalizes a client-sent header name to the spelling the gateway-owned sets are written
+     * in: lower case, with every {@code _} folded to {@code -}.
+     * <p>
+     * <strong>This is the equivalence-class closure, and it is a rule rather than a list.</strong>
+     * A backend that folds header names into CGI-style variables — anything speaking CGI, FastCGI,
+     * WSGI or Rack — maps {@code -} and {@code _} onto the same underscore, so
+     * {@code X-Forwarded-For}, {@code X_Forwarded_For}, {@code X-Forwarded_For} and
+     * {@code X_Forwarded-For} all resolve to one {@code HTTP_X_FORWARDED_FOR}. A name with two
+     * separators therefore has four spellings, and a name with three has eight. Enumerating them
+     * is what the Traefik forwarded-header fix-chain did: each fix closed one spelling while a
+     * sibling survived. Folding the separator before the membership test closes the whole class at
+     * once, and keeps it closed for every name a later edit adds to either set — the gateway-owned
+     * sets stay written in their canonical spelling and no variant has to be maintained beside them.
+     * <p>
+     * Case folds through {@link Locale#ROOT} rather than the default locale: a Turkish default
+     * would map {@code I} to a dotless {@code ı} and quietly stop matching {@code authorization}.
+     *
+     * @param headerName the header name as the client spelled it; never {@code null}
+     * @return the lower-cased, separator-folded name the gateway-owned sets are keyed by
+     */
+    public static String separatorFolded(String headerName) {
+        Objects.requireNonNull(headerName, "headerName");
+        return headerName.toLowerCase(Locale.ROOT).replace('_', '-');
+    }
+
+    /**
      * Whether {@code headerName} is withheld from the upstream request regardless of the route's
      * forward mode.
      * <p>
-     * This is plain membership in {@link #REQUEST_STRIP}, matched case-insensitively. It answers
-     * only "is this name gateway-owned?" — the {@code TE: trailers} carve-out and the single-member
-     * {@code authorization} re-admission are value- and mode-dependent and are applied by the
-     * caller, not decided here.
+     * Membership is tested twice: against the name lower-cased, and against its
+     * {@linkplain #separatorFolded separator-folded} form. The first match is the ordinary
+     * case-insensitive one RFC 9110 field names require; the second is what closes the
+     * {@code -}/{@code _} equivalence class, so a client cannot reach a CGI-folding backend's
+     * {@code HTTP_X_REAL_IP} by spelling the header {@code X_Real_IP}. The five explicitly
+     * enumerated {@code x_forwarded_*} members are matched by the first test and are what withholds
+     * them <em>here</em>; their hyphenated siblings are the regeneration skip's business, and the
+     * folded test is what makes the mixed spellings between the two reach one of the two sets.
+     * <p>
+     * It answers only "is this name gateway-owned?" — the {@code TE: trailers} carve-out and the
+     * single-member {@code authorization} re-admission are value- and mode-dependent and are applied
+     * by the caller, not decided here.
      *
      * @param headerName the client-sent request-header name; never {@code null}
-     * @return {@code true} when the name is a {@link #REQUEST_STRIP} member
+     * @return {@code true} when the name, or its separator-folded form, is a {@link #REQUEST_STRIP}
+     *         member
      */
     public static boolean isRequestStripped(String headerName) {
         Objects.requireNonNull(headerName, "headerName");
-        return REQUEST_STRIP.contains(headerName.toLowerCase(Locale.ROOT));
+        return REQUEST_STRIP.contains(headerName.toLowerCase(Locale.ROOT))
+                || REQUEST_STRIP.contains(separatorFolded(headerName));
     }
 
     /**
