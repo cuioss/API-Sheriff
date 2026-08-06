@@ -25,8 +25,14 @@ on:
   # pages and github-automation, and that list is open — a key added tomorrow matches too. So a merge
   # arriving here proves nothing about the version. The central guard is what decides; this only
   # keeps unrelated merges out.
+  # `branches:` filters on the PR's BASE, so only a PR merging INTO main can reach the release job at
+  # all. Without it a merge into any long-lived branch that touched .github/project.yml would enter
+  # this workflow and be decided solely by the central guard's parent comparison against THAT
+  # branch — a release cut from a non-main line. This is a base filter, not the version
+  # discriminator; it narrows what may ask, never what is answered.
   pull_request:
     types: [closed]
+    branches: [main]
     paths: ['.github/project.yml']
 
 permissions:
