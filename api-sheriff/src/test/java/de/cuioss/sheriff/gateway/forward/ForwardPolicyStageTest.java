@@ -31,6 +31,7 @@ import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.edge.ResponseStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 
@@ -500,20 +501,28 @@ class ForwardPolicyStageTest {
 
         @ParameterizedTest
         @ValueSource(strings = {"Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Range"})
-        @DisplayName("an unconditional protocol header crosses a positive-list route that never names it")
+        @DisplayName("an unconditional protocol header crosses a route that never names it, either way of the toggle")
         void unconditionalProtocolHeaderCrossesUnnamed(String name) {
             // Arrange — headers_allow: [] admits no CLIENT header at all, which is exactly what makes
             // this the discriminating case: anything that crosses, crosses because of the protocol set
-            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(name, List.of("probe-value")));
+            Map<String, List<String>> headers = Map.of(name, List.of("probe-value"));
 
-            // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), false);
+            // Act — the same route under both not_modified states
+            ForwardPolicyStage.Result toggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
+            ForwardPolicyStage.Result toggleOn = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), true);
 
-            // Assert
-            assertEquals(List.of("probe-value"), valuesNamed(result.headers(), name),
-                    () -> name + " is HTTP mechanics the gateway understands, so it crosses without the"
-                            + " operator enumerating it");
+            // Assert — this is the matched control for the conditional tier: only the conditional half
+            // rides not_modified, so a change that accidentally gated the WHOLE set behind the toggle
+            // would pass the conditional test above and fail here
+            assertAll("the unconditional tier is toggle-independent",
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOff.headers(), name),
+                            () -> name + " is HTTP mechanics the gateway understands, so it crosses"
+                                    + " without the operator enumerating it"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOn.headers(), name),
+                            () -> name + " must not become conditional just because the route honours"
+                                    + " conditional requests — the two tiers are gated independently"));
         }
 
         @ParameterizedTest
@@ -603,6 +612,73 @@ class ForwardPolicyStageTest {
                             + " withheld it — silently handing the upstream a header the gateway owns."
                             + " Adding such a name requires consulting the strip in applyProtocolHeaders,"
                             + " not just extending the literal");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @DisplayName("one flag gates both directions: no validator crosses either way while not_modified is off")
+        void notModifiedGatesBothDirectionsTogether(String requestValidator) {
+            // Arrange — the coupling the toggle exists to preserve, asserted across the two stages that
+            // implement its halves. Keeping it in ONE test is the point: the request half (this stage's
+            // conditional tier) and the response half (ResponseStage's ETag / Last-Modified strip) are
+            // gated by the same flag, so dropping either half orphans the other. Two same-file tests
+            // could not catch that; this one fails the moment the halves disagree.
+            //
+            // The route declares a positive-list, which is where the toggle actually governs: the
+            // conditional tier of the protocol set is then the ONLY path admitting a validator. Under
+            // forward-all the mode copy carries the client's headers wholesale and the gate never sees
+            // them — pinned separately by forwardAllCarriesValidatorsPastTheToggle below.
+            Map<String, List<String>> headers = Map.of(requestValidator, List.of("probe-value"));
+
+            // Act
+            ForwardPolicyStage.Result disabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
+            ForwardPolicyStage.Result enabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), true);
+
+            // Assert
+            assertAll("the request question and the response answer are gated as one",
+                    () -> assertEquals(List.of(), valuesNamed(disabled.headers(), requestValidator),
+                            () -> requestValidator + " must not be asked on a not_modified: false route"),
+                    () -> assertFalse(ResponseStage.isForwardableResponseHeader("ETag", false),
+                            "and the answer must not come back either — a route that never forwards a"
+                                    + " validator has no use for the ETag that would answer it"),
+                    () -> assertFalse(ResponseStage.isForwardableResponseHeader("Last-Modified", false),
+                            "same for Last-Modified: the response half is stripped on a disabled route"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(enabled.headers(), requestValidator),
+                            () -> requestValidator + " crosses once the route enables not_modified"),
+                    () -> assertTrue(ResponseStage.isForwardableResponseHeader("ETag", true),
+                            "and ETag comes back, so the gateway keeps the answer it asked for"),
+                    () -> assertTrue(ResponseStage.isForwardableResponseHeader("Last-Modified", true),
+                            "and Last-Modified with it"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @DisplayName("under forward-all a validator crosses even with not_modified off — the mode copy, not the set")
+        void forwardAllCarriesValidatorsPastTheToggle(String requestValidator) {
+            // Arrange — characterization of where the toggle's reach ENDS, pinned so the boundary is
+            // visible rather than discovered later. not_modified gates the protocol set's conditional
+            // tier; it is not a withholding rule applied to the mode copy. A forward-all route has
+            // declared that client headers cross, and this validator crosses on that posture alone.
+            //
+            // Note the asymmetry this leaves: the response half strips ETag / Last-Modified on the very
+            // same route, so a forward-all + not_modified:false route forwards the precondition and then
+            // discards the validator answering it. Resolving that is a change to forward-all semantics,
+            // which is outside this deliverable's declared edit (widening the tier's membership) — it is
+            // recorded here as behaviour, not endorsed as intent.
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER,
+                    Map.of(requestValidator, List.of("probe-value")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertEquals(List.of("probe-value"), valuesNamed(result.headers(), requestValidator),
+                    () -> requestValidator + " crosses under forward-all because the mode copy carried"
+                            + " it, not because the protocol set admitted it — the not_modified gate"
+                            + " governs the set's admission path only");
         }
 
         @Test
