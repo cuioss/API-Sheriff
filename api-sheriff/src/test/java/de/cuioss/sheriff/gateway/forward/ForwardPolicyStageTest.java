@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -30,6 +31,7 @@ import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 
 import org.jspecify.annotations.Nullable;
@@ -415,8 +417,8 @@ class ForwardPolicyStageTest {
     }
 
     @Nested
-    @DisplayName("static and conditional headers")
-    class StaticAndConditional {
+    @DisplayName("static set_headers — operator configuration beats client input")
+    class StaticSetHeaders {
 
         @Test
         @DisplayName("appends static set_headers verbatim")
@@ -434,22 +436,200 @@ class ForwardPolicyStageTest {
         }
 
         @Test
-        @DisplayName("conditional-request headers cross only when the route enables not_modified")
-        void conditionalHeadersGatedByNotModified() {
-            // Arrange
-            Map<String, List<String>> headers = Map.of("If-None-Match", List.of("\"etag-1\""));
+        @DisplayName("set_headers: Content-Type REPLACES an inbound client Content-Type rather than riding alongside it")
+        void setHeadersContentTypeReplacesTheInboundOne() {
+            // Arrange — the regression the reorder exists to fix. The client's name arrives
+            // lower-cased (PipelineRequest normalizes), the operator writes the canonical spelling.
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Content-Type", List.of("text/plain")));
+
+            // Act — forward-all, so the mode copy really does carry the client's value in first
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().setHeaders(Map.of("Content-Type", "application/json")).build(), false);
+
+            // Assert — exactly ONE Content-Type reaches the upstream, carrying the operator's value.
+            // Asserting the cardinality is the point: a case-sensitive outbound map would send the
+            // client's `content-type: text/plain` alongside the operator's `Content-Type`, and a
+            // get()-only assertion would pass while a duplicate header crossed.
+            assertEquals(List.of("application/json"), valuesNamed(result.headers(), "Content-Type"),
+                    "an operator's set_headers value must REPLACE the inbound one, however either side"
+                            + " spelled the field name — RFC 9110 field names are case-insensitive, so"
+                            + " two spellings of one field must never both cross");
+        }
+
+        @Test
+        @DisplayName("the protocol set does not duplicate a client header the mode copy already carried")
+        void protocolSetDoesNotDuplicateTheModeCopy() {
+            // Arrange — under forward-all the mode copy inserts the lower-cased inbound `accept`,
+            // then the protocol set re-admits it under the canonical `Accept`
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Accept", List.of("application/json")));
 
             // Act
-            ForwardPolicyStage.Result dropped = stage(EMIT_XFORWARDED, List.of(), Set.of())
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+
+            // Assert
+            assertEquals(List.of("application/json"), valuesNamed(result.headers(), "Accept"),
+                    "the two insertion paths spell the field differently, so only a case-insensitive"
+                            + " outbound map collapses them into the single header the upstream must see");
+        }
+
+        @Test
+        @DisplayName("an operator's set_headers survives a headers_deny entry naming the same field")
+        void setHeadersSurvivesAMatchingDenyEntry() {
+            // Arrange — headers_deny governs CLIENT input; set_headers is operator configuration
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Content-Type", List.of("text/plain")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, ForwardConfig.builder()
+                    .headersDeny(List.of("Content-Type"))
+                    .setHeaders(Map.of("Content-Type", "application/json"))
+                    .build(), false);
+
+            // Assert
+            assertEquals(List.of("application/json"), valuesNamed(result.headers(), "Content-Type"),
+                    "the deny entry withholds the client's value; the operator's static value is merged"
+                            + " afterwards and is not client input");
+        }
+    }
+
+    @Nested
+    @DisplayName("the gateway-understood protocol set (crosses without an operator entry)")
+    class ProtocolHeaderSet {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Range"})
+        @DisplayName("an unconditional protocol header crosses a positive-list route that never names it")
+        void unconditionalProtocolHeaderCrossesUnnamed(String name) {
+            // Arrange — headers_allow: [] admits no CLIENT header at all, which is exactly what makes
+            // this the discriminating case: anything that crosses, crosses because of the protocol set
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(name, List.of("probe-value")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), false);
+
+            // Assert
+            assertEquals(List.of("probe-value"), valuesNamed(result.headers(), name),
+                    () -> name + " is HTTP mechanics the gateway understands, so it crosses without the"
+                            + " operator enumerating it");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @DisplayName("a conditional validator crosses only when the route enables not_modified")
+        void conditionalValidatorGatedByNotModified(String name) {
+            // Arrange — all five RFC 9110 §13 validators ride the one toggle, because the response
+            // direction gates ETag / Last-Modified on the same flag
+            Map<String, List<String>> headers = Map.of(name, List.of("probe-value"));
+
+            // Act
+            ForwardPolicyStage.Result disabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
                     .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
-            ForwardPolicyStage.Result crossed = stage(EMIT_XFORWARDED, List.of(), Set.of())
+            ForwardPolicyStage.Result enabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
                     .process(request(UNTRUSTED_PEER, headers), allow(List.of()), true);
 
             // Assert
-            assertFalse(dropped.headers().containsKey("If-None-Match"),
-                    "conditional headers are dropped when not_modified is disabled");
-            assertEquals("\"etag-1\"", crossed.headers().get("If-None-Match"),
-                    "conditional headers cross when not_modified is enabled");
+            assertAll("the conditional tier is the protocol set's gated half",
+                    () -> assertEquals(List.of(), valuesNamed(disabled.headers(), name),
+                            () -> name + " must not cross while not_modified is disabled — the gateway"
+                                    + " would be asking a question whose answer it then discards"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(enabled.headers(), name),
+                            () -> name + " crosses once the route honours conditional requests"));
+        }
+
+        @Test
+        @DisplayName("a headers_deny entry naming a protocol header beats the set")
+        void denyEntryBeatsTheProtocolSet() {
+            // Arrange — the set is applied only to names the mode copy did not already refuse
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Accept", List.of("application/json")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("Accept")), false);
+
+            // Assert
+            assertEquals(List.of(), valuesNamed(result.headers(), "Accept"),
+                    "an operator who wants a protocol header withheld says so with a deny entry, and"
+                            + " that entry must not be undone by the set re-admitting it");
+        }
+
+        @Test
+        @DisplayName("the deny entry beating the set is matched case-insensitively")
+        void denyEntryBeatsTheProtocolSetCaseInsensitively() {
+            // Arrange — the operator writes one case, the set literal carries another
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Content-Type", List.of("text/plain")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("content-type")), false);
+
+            // Assert
+            assertEquals(List.of(), valuesNamed(result.headers(), "Content-Type"),
+                    "otherwise the deny entry could be bypassed by the case the set literal happens to"
+                            + " use, which is not a policy the operator chose");
+        }
+
+        @Test
+        @DisplayName("a conditional validator denied by name stays withheld even with not_modified enabled")
+        void deniedConditionalValidatorStaysWithheld() {
+            // Arrange
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("If-None-Match", List.of("\"etag-1\"")));
+
+            // Act — the toggle is ON, so only the deny entry can withhold it
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("If-None-Match")), true);
+
+            // Assert
+            assertEquals(List.of(), valuesNamed(result.headers(), "If-None-Match"),
+                    "the deny entry outranks both tiers of the set, not just the unconditional one");
+        }
+
+        @Test
+        @DisplayName("the protocol set never re-admits a gateway-owned name, because the two sets are disjoint")
+        void protocolSetIsDisjointFromTheRequestStrip() {
+            // Arrange — applyProtocolHeaders reads the RAW client request and runs AFTER the strip, so
+            // it bypasses ConnectionHeaders.REQUEST_STRIP entirely. That is safe ONLY while the two
+            // sets share no name; this assertion is what catches a future addition that breaks it.
+            List<String> overlap = ForwardPolicyStage.PROTOCOL_HEADERS.stream()
+                    .map(name -> name.toLowerCase(Locale.ROOT))
+                    .filter(ConnectionHeaders.REQUEST_STRIP::contains)
+                    .toList();
+
+            // Assert
+            assertEquals(List.of(), overlap,
+                    "a name in both sets would be re-admitted by the protocol set after the strip"
+                            + " withheld it — silently handing the upstream a header the gateway owns."
+                            + " Adding such a name requires consulting the strip in applyProtocolHeaders,"
+                            + " not just extending the literal");
+        }
+
+        @Test
+        @DisplayName("the mediated bearer still runs last, beating a re-admitted inbound Authorization")
+        void mediatedBearerStillRunsLast() {
+            // Arrange — the pinned order's tail: nothing the reorder introduced may displace it
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(
+                    "Authorization", List.of("Bearer inbound-xyz"),
+                    "Content-Type", List.of("text/plain")));
+            request.mediatedBearer("mediated-abc");
+
+            // Act — a positive-list re-admits the inbound credential AND set_headers touches another field
+            ForwardPolicyStage.Result result = stage.process(request, ForwardConfig.builder()
+                    .headersAllow(List.of("Authorization"))
+                    .setHeaders(Map.of("Content-Type", "application/json"))
+                    .build(), false);
+
+            // Assert
+            assertAll("applyMediatedBearer is the last merge in the pinned order",
+                    () -> assertEquals(List.of("Bearer mediated-abc"),
+                            valuesNamed(result.headers(), "Authorization"),
+                            "the upstream sees only the mediated bearer, never the inbound one the"
+                                    + " positive-list re-admitted"),
+                    () -> assertEquals(List.of("application/json"),
+                            valuesNamed(result.headers(), "Content-Type"),
+                            "and set_headers still beats the client's value alongside it"));
         }
     }
 
@@ -609,6 +789,22 @@ class ForwardPolicyStageTest {
                 .peerAddress(peer)
                 .headers(headers)
                 .build();
+    }
+
+    /**
+     * Every outbound value whose field name equals {@code name} ignoring case.
+     * <p>
+     * Assertions use this rather than {@code headers().get(name)} because the interesting failures are
+     * about <em>cardinality</em>: RFC 9110 field names are case-insensitive, so an outbound map that
+     * distinguishes {@code content-type} from {@code Content-Type} sends the upstream two headers where
+     * the precedence rule promises one. A {@code get()}-based assertion cannot see that — it finds the
+     * spelling it asked for and reports success while the duplicate crosses.
+     */
+    private static List<String> valuesNamed(Map<String, String> headers, String name) {
+        return headers.entrySet().stream()
+                .filter(entry -> entry.getKey().equalsIgnoreCase(name))
+                .map(Map.Entry::getValue)
+                .toList();
     }
 
     private static PipelineRequest queryRequest(Map<String, List<String>> queryParameters) {
