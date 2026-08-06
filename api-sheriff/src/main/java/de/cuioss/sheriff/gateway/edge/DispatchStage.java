@@ -94,7 +94,7 @@ public final class DispatchStage {
 
     /**
      * Builds the upstream request URI (path + query) — the resolved upstream base path, the request
-     * path remainder, and the allow-listed raw query appended verbatim.
+     * path remainder, and the mode-filtered raw query appended verbatim.
      *
      * @param upstream      the resolved upstream target
      * @param pathRemainder the request path remainder after the route prefix is stripped
@@ -119,7 +119,7 @@ public final class DispatchStage {
      *                       gate retry re-entries for idempotency
      * @param route          the resolved route runtime holding the shared client and guard
      * @param requestUri     the upstream request URI (see {@link #upstreamRequestUri})
-     * @param forwardHeaders the deny-by-default header set computed by stage 5
+     * @param forwardHeaders the mode-filtered header set computed by stage 5
      * @param requestBody    the inbound request body as a live read stream
      * @return the upstream response (body still streaming)
      * @throws GatewayException carrying the mapped error-contract event on any dispatch failure

@@ -111,10 +111,10 @@ public final class WebSocketRelayStage {
      *
      * @param ctx             the routing context (client request/response and Vert.x handle)
      * @param route           the resolved route runtime (upstream, shared client, idle timeout)
-     * @param forwardHeaders  the deny-by-default forwarded header set computed by stage 5
+     * @param forwardHeaders  the mode-filtered forwarded header set computed by stage 5
      * @param securityHeaders the stage-0 security headers accumulated on the response, applied to a
      *                        handshake-failure response before it is ended
-     * @param requestUri      the upstream request URI (path + allow-listed query)
+     * @param requestUri      the upstream request URI (path + mode-filtered query)
      * @param releaseAdmission the edge's idempotent admission-release callback, invoked once at relay
      *                        teardown — on the established relay's {@code closeBoth} funnel and on the
      *                        client-upgrade-failure branch — and never at upgrade completion
