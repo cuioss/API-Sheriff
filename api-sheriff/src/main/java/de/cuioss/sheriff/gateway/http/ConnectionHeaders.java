@@ -22,10 +22,17 @@ import java.util.Set;
 import lombok.experimental.UtilityClass;
 
 /**
- * The single response-direction connection-header policy — the set of header names an upstream
- * or backing source may propose but the gateway must never place on the client's connection.
+ * The gateway-owned connection-header policy for <strong>both</strong> directions — the header
+ * names the gateway never relays, enumerated once per direction.
  * <p>
- * <strong>Every path that answers a client reads this one set.</strong> The gateway has two:
+ * {@link #RESPONSE_STRIP} is the response-direction set: names an upstream or backing source may
+ * propose but the gateway must never place on the client's connection. {@link #REQUEST_STRIP} is
+ * the request-direction set: names a client may send but the gateway never forwards upstream. The
+ * request-direction set is what makes the permissive forward-all baseline safe — without it a
+ * forward-all route would send the BFF's sealed session cookie to every upstream, defeating the
+ * pattern whose entire premise is that the backend never sees it.
+ * <p>
+ * <strong>Every path that answers a client reads the response set.</strong> The gateway has two:
  * the proxy data plane's streamed relay ({@code edge.ResponseStage}) and the asset terminal
  * action's buffered envelope ({@code asset.AssetResponseEnvelope}). They apply the policy
  * differently — the proxy path re-establishes framing afterwards because it streams a body it
@@ -33,6 +40,12 @@ import lombok.experimental.UtilityClass;
  * but the <em>set</em> is one rule about one protocol, so it is declared once. Two copies of it
  * is not a style objection: issue #172 was exactly a header the proxy path stripped and the asset
  * path did not, and a mirrored list would have let the next such name diverge just as quietly.
+ * <p>
+ * <strong>The two sets are independent enumerations, not one derived from the other.</strong>
+ * {@code REQUEST_STRIP} does currently contain every {@code RESPONSE_STRIP} name, but that is an
+ * <em>observation</em> about the two lists as they stand — not a derivation and not an invariant.
+ * A name added to one direction does not join the other: the directions answer different
+ * questions, so each list is maintained on its own terms and neither is computed from its sibling.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -65,6 +78,142 @@ public class ConnectionHeaders {
             "connection", "proxy-connection", "keep-alive", "proxy-authenticate",
             "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
             "content-length");
+
+    /**
+     * The request-direction never-forward set, all lower case — the header names a client may send
+     * that the gateway never relays upstream, whatever forward mode the route resolves.
+     * <p>
+     * Membership answers one of five questions, and it matters which applies to which name:
+     * <ul>
+     *   <li><strong>Credentials the gateway terminates or mediates.</strong> {@code authorization}
+     *       (superseded by the mediated bearer), {@code cookie} (the BFF's sealed session cookie is
+     *       the gateway's, never the backend's).</li>
+     *   <li><strong>Hop-by-hop and connection-specific names</strong> describing the hop the gateway
+     *       terminates rather than the message it forwards: {@code connection}, {@code keep-alive},
+     *       {@code proxy-connection}, {@code te}, {@code trailer}, {@code transfer-encoding},
+     *       {@code upgrade}, {@code proxy-authenticate}, {@code proxy-authorization}.</li>
+     *   <li><strong>Framing the gateway re-establishes:</strong> {@code content-length} is a claim
+     *       about the client's body, and the dispatch path frames what it actually sends.</li>
+     *   <li><strong>Names the gateway itself owns or regenerates:</strong> {@code host} (the
+     *       upstream authority is the gateway's to set), {@code origin} and {@code referer}
+     *       (inbound provenance signals the gateway consumes for CORS/CSRF rather than relays), and
+     *       {@code date} (the message the upstream receives is the gateway's, not the client's).</li>
+     *   <li><strong>Spoofable provenance claims the gateway alone is entitled to make</strong> — the
+     *       underscore spellings of the regenerated forwarding names ({@code x_forwarded_for},
+     *       {@code x_forwarded_host}, {@code x_forwarded_proto}, {@code x_forwarded_port},
+     *       {@code x_forwarded_prefix}) and the vendor client-IP aliases ({@code x-real-ip},
+     *       {@code x-client-ip}, {@code true-client-ip}, {@code cf-connecting-ip}). See the
+     *       placement note below for why these live here rather than beside the canonical names.</li>
+     * </ul>
+     * <p>
+     * <strong>Why the provenance variants are here and not in the forwarding set.</strong> The
+     * forwarding set in {@code forward.ForwardPolicyStage} enumerates the names the gateway
+     * <em>regenerates</em>: it is read both as a client-copy skip and as the mask that hides inbound
+     * forwarding headers from the resolver when the immediate peer is untrusted. The gateway
+     * regenerates {@code X-Forwarded-For}; it does not regenerate {@code X_Forwarded_For} or
+     * {@code X-Real-IP}, and the resolver never queries either, so filing them there would assert a
+     * regeneration relationship that does not exist and widen the resolver mask with names it never
+     * asks for. What is true of them is the question <em>this</em> set asks: they are claims about
+     * the connection's provenance that only the gateway is entitled to make, so a client-sent copy
+     * is never relayed. The canonical hyphenated names stay where they are — they are genuinely
+     * regenerated, and duplicating them here would create two lists that can disagree.
+     * <p>
+     * The threat is a backend that reads them <em>as though</em> they were the canonical name: a
+     * framework folding {@code -} and {@code _} into one CGI-style variable resolves
+     * {@code X_Forwarded_For} to the same {@code HTTP_X_FORWARDED_FOR} the real header produces.
+     * Under the old allow-list-only forward model such a name was dropped incidentally, because
+     * everything unlisted was; under the forward-all baseline it is an ordinary client header, so
+     * withholding it has to be stated. {@code Forwarded} contributes no separate entry: it carries
+     * no hyphen to fold, so its underscore spelling is the canonical name itself, already held by
+     * the forwarding set.
+     * <p>
+     * <strong>The literal names one spelling each; {@link #separatorFolded} closes the rest of the
+     * class.</strong> A name with two separators has four {@code -}/{@code _} spellings and a
+     * CGI-folding backend resolves all four to one variable, so enumerating them would mean four
+     * entries per name and a fix-chain the first time one was missed. {@link #isRequestStripped}
+     * folds the separator before testing membership instead, which is why {@code x_real_ip},
+     * {@code x-real_ip} and {@code x_real-ip} are all withheld though only {@code x-real-ip}
+     * appears below — and why a name added here later inherits that closure for free.
+     * <p>
+     * <strong>Three names are deliberately lifted from {@link #RESPONSE_STRIP} rather than
+     * inherited</strong> — each is here on its own request-direction reasoning:
+     * <ul>
+     *   <li>{@code proxy-connection} — RFC 9113 §8.2.2 connection-specific <em>and</em>
+     *       client-sendable, so unlike most connection-specific names it genuinely arrives inbound.</li>
+     *   <li>{@code proxy-authorization} — RFC 7230 §6.1 hop-by-hop, and a credential for the hop the
+     *       gateway itself terminates; forwarding it would hand the upstream a secret addressed to
+     *       the gateway.</li>
+     *   <li>{@code proxy-authenticate} — a response-direction header with no legitimate
+     *       request-direction use at all. Withholding it costs one string and denies a header-
+     *       smuggling vector; admitting it would buy nothing.</li>
+     * </ul>
+     * <p>
+     * <strong>Two behaviours ride on top of membership, and neither lives in this literal.</strong>
+     * {@code te} is withheld unless its value is exactly the {@code trailers} token, and
+     * {@code authorization} is the single re-admittable member (honoured only when a route's
+     * {@code headers_allow} names it). Both are value- or mode-dependent, so they belong to the
+     * request-direction application in {@code forward.ForwardPolicyStage}, not to a set of names.
+     */
+    public static final Set<String> REQUEST_STRIP = Set.of(
+            "authorization", "connection", "content-length", "cookie", "date", "host",
+            "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
+            "proxy-connection", "referer", "te", "trailer", "transfer-encoding", "upgrade",
+            "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto", "x_forwarded_port",
+            "x_forwarded_prefix", "x-real-ip", "x-client-ip", "true-client-ip",
+            "cf-connecting-ip");
+
+    /**
+     * Canonicalizes a client-sent header name to the spelling the gateway-owned sets are written
+     * in: lower case, with every {@code _} folded to {@code -}.
+     * <p>
+     * <strong>This is the equivalence-class closure, and it is a rule rather than a list.</strong>
+     * A backend that folds header names into CGI-style variables — anything speaking CGI, FastCGI,
+     * WSGI or Rack — maps {@code -} and {@code _} onto the same underscore, so
+     * {@code X-Forwarded-For}, {@code X_Forwarded_For}, {@code X-Forwarded_For} and
+     * {@code X_Forwarded-For} all resolve to one {@code HTTP_X_FORWARDED_FOR}. A name with two
+     * separators therefore has four spellings, and a name with three has eight. Enumerating them
+     * is what the Traefik forwarded-header fix-chain did: each fix closed one spelling while a
+     * sibling survived. Folding the separator before the membership test closes the whole class at
+     * once, and keeps it closed for every name a later edit adds to either set — the gateway-owned
+     * sets stay written in their canonical spelling and no variant has to be maintained beside them.
+     * <p>
+     * Case folds through {@link Locale#ROOT} rather than the default locale: a Turkish default
+     * would map {@code I} to a dotless {@code ı} and quietly stop matching {@code authorization}.
+     *
+     * @param headerName the header name as the client spelled it; never {@code null}
+     * @return the lower-cased, separator-folded name the gateway-owned sets are keyed by
+     */
+    public static String separatorFolded(String headerName) {
+        Objects.requireNonNull(headerName, "headerName");
+        return headerName.toLowerCase(Locale.ROOT).replace('_', '-');
+    }
+
+    /**
+     * Whether {@code headerName} is withheld from the upstream request regardless of the route's
+     * forward mode.
+     * <p>
+     * Membership is tested twice: against the name lower-cased, and against its
+     * {@linkplain #separatorFolded separator-folded} form. The first match is the ordinary
+     * case-insensitive one RFC 9110 field names require; the second is what closes the
+     * {@code -}/{@code _} equivalence class, so a client cannot reach a CGI-folding backend's
+     * {@code HTTP_X_REAL_IP} by spelling the header {@code X_Real_IP}. The five explicitly
+     * enumerated {@code x_forwarded_*} members are matched by the first test and are what withholds
+     * them <em>here</em>; their hyphenated siblings are the regeneration skip's business, and the
+     * folded test is what makes the mixed spellings between the two reach one of the two sets.
+     * <p>
+     * It answers only "is this name gateway-owned?" — the {@code TE: trailers} carve-out and the
+     * single-member {@code authorization} re-admission are value- and mode-dependent and are applied
+     * by the caller, not decided here.
+     *
+     * @param headerName the client-sent request-header name; never {@code null}
+     * @return {@code true} when the name, or its separator-folded form, is a {@link #REQUEST_STRIP}
+     *         member
+     */
+    public static boolean isRequestStripped(String headerName) {
+        Objects.requireNonNull(headerName, "headerName");
+        return REQUEST_STRIP.contains(headerName.toLowerCase(Locale.ROOT))
+                || REQUEST_STRIP.contains(separatorFolded(headerName));
+    }
 
     /**
      * Whether {@code headerName} belongs to the source's own connection rather than to the message

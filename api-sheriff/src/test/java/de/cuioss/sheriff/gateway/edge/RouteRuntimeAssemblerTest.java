@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -248,9 +249,9 @@ class RouteRuntimeAssemblerTest {
     }
 
     @Test
-    @DisplayName("Should carry the effective forward allowlist from the resolved route")
+    @DisplayName("Should carry the effective forward filter from the resolved route")
     void shouldCarryEffectiveForward() {
-        ForwardConfig forward = new ForwardConfig(List.of("Accept"), List.of("page"),
+        ForwardConfig forward = new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
                 Map.of("X-Gateway", "api-sheriff"));
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
@@ -261,19 +262,39 @@ class RouteRuntimeAssemblerTest {
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
         assertEquals(forward, runtimes.getFirst().getEffectiveForward(),
-                "The materialized forward allowlist flows to the runtime unchanged");
+                "The materialized forward filter flows to the runtime unchanged");
     }
 
     @Test
-    @DisplayName("Should default an absent forward block to a deny-by-default empty allowlist")
-    void shouldDefaultAbsentForwardToEmpty() {
+    @DisplayName("Should carry a negative-list forward block from the resolved route")
+    void shouldCarryEffectiveForwardDenyLists() {
+        ForwardConfig forward = new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of());
+        RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
+                .id("deny").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/d").build())
+                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .upstream(upstream("a.example")).effectiveForward(forward).build()));
+
+        List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
+
+        assertEquals(forward, runtimes.getFirst().getEffectiveForward(),
+                "The deny lists reach the runtime through the same wholesale carry as the allow lists");
+    }
+
+    @Test
+    @DisplayName("Should default an absent forward block to the forward-all posture")
+    void shouldDefaultAbsentForwardToForwardAll() {
         RouteTable table = new RouteTable(List.of(
                 route("r1", Protocol.HTTP, "none", null, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
-        assertTrue(runtimes.getFirst().getEffectiveForward().headersAllow().isEmpty(),
-                "An unforwarded route carries an empty, deny-by-default allowlist");
+        ForwardConfig effective = runtimes.getFirst().getEffectiveForward();
+        assertAll("a route declaring no forward block carries forward-all, not a nothing-crosses allowlist",
+                () -> assertNull(effective.headersAllow()),
+                () -> assertNull(effective.headersDeny()),
+                () -> assertNull(effective.queryAllow()),
+                () -> assertNull(effective.queryDeny()));
     }
 
     @Test

@@ -40,7 +40,12 @@ An API call carries the encrypted token cookie. The gateway:
 . Reads and *decrypts* the cookie (AES-256-GCM) to recover the tokens -- no store lookup.
 . If the token is near expiry, transparently refreshes it and re-seals the cookie.
 . Injects `Authorization: Bearer <token>` and forwards, applying the same
-  link:01-base-gateway.adoc[base-gateway] filtering and zero-trust forward policy.
+  link:01-base-gateway.adoc[base-gateway] filtering and per-route
+  link:../configuration.adoc#_forward[forward policy]. The client's own `Cookie` header --
+  including the sealed token cookie the gateway just decrypted -- is in the gateway-owned
+  never-forward set and reaches no upstream under *any* forward mode; that absoluteness is what
+  keeps the sealed cookie away from the backend. The mediated bearer is merged last, so it wins
+  over any inbound `Authorization` a route's mode admitted.
 
 image::../resources/diagrams/bff-token-mediation.svg[Session-based versus cookie-based token mediation compared side by side, align=center]
 
@@ -173,9 +178,11 @@ endpoint:
   routes:
     - id: orders-api
       match: { path_prefix: /api/orders }
-      forward:
-        headers_allow: [accept, content-type]
-        # the mediated "Authorization: Bearer" is injected automatically on session routes
+      # No forward block: every client header and query parameter crosses, bounded by the
+      # gateway-owned never-forward set -- and `Cookie` is in it absolutely, so the sealed
+      # token cookie never reaches the backend on this posture either. The mediated
+      # "Authorization: Bearer" is injected automatically on session routes, last, so it wins.
+      # Declare headers_deny / query_deny (or a positive-list) only to narrow this.
       upstream: { path: /orders }
 ----
 

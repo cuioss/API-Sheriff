@@ -18,9 +18,23 @@
 # proto but deliberately NOT implemented upstream: the bearer route rejects a tokenless call before
 # any upstream dial, so it is never reached.
 #
-# The deny-by-default forward stage means the gRPC framing metadata (content-type: application/grpc,
-# te, grpc-encoding, ...) and the client's custom metadata must be allow-listed for the call to
-# cross to the upstream; set_headers additionally injects a gateway-side metadata header.
+# FORWARD MODE — both routes declare headers_allow, so both resolve a POSITIVE-LIST: only the
+# named entries cross (ADR-0036). That is the mode these routes want, because gRPC metadata is a
+# closed set the operator knows, not open-ended client input — but it means every name the call
+# needs must be listed, including the ones the permissive modes would carry for free.
+#
+# `te` in particular is NOT redundant here and must not be tidied away. TE is a member of the
+# gateway-owned never-forward set and crosses only when its value is exactly the `trailers` token
+# (ADR-0037) — but that carve-out decides whether a copied header survives the strip, not whether
+# the mode copied it in the first place. Under forward-all the copy carries `te` and the carve-out
+# admits `TE: trailers` with no entry at all; under a positive-list the name is never copied unless
+# it is listed, so removing this entry would withhold `TE: trailers` from a gRPC upstream that
+# requires it. ForwardPolicyStageTest pins both halves of that asymmetry.
+#
+# `content-type` is retained on the same reasoning as the httpbin routes: the gateway-understood
+# protocol set carries it without an entry today, so the entry changes nothing — but a route whose
+# correctness depends on it should not rest on that set's present membership.
+# set_headers additionally injects a gateway-side metadata header.
 endpoint:
   id: grpc
   enabled: true
@@ -36,7 +50,7 @@ endpoint:
     # Public gRPC relay: unary + server-streaming echo and grpc-status/trailer relay from the
     # intentionally failing method. The match prefix is the bare Echo service path and upstream.path
     # is identical, so the full /{package}.Echo/{Method} path reaches the upstream unchanged. The
-    # forward allowlist carries the gRPC framing headers the opaque relay must pass through, plus the
+    # positive-list carries the gRPC framing headers the opaque relay must pass through, plus the
     # client's x-echo-meta metadata; set_headers injects x-sheriff-injected toward the upstream.
     - id: grpc-echo
       protocol: grpc

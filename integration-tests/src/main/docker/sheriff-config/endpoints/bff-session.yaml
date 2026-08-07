@@ -7,11 +7,22 @@
 # gateway forwarded: the mediated bearer the SessionAuthenticationStage injects from the
 # stored session, and the ABSENCE of the browser session cookie upstream.
 #
-# The forward stage is deny-by-default (stage 5): only the allow-listed request headers
-# cross to the upstream. Authorization is allow-listed so the injected mediated bearer is
-# echoed back by go-httpbin; Cookie is deliberately NOT allow-listed, so the browser
-# session cookie is stripped and never reaches the upstream — the two halves of the
-# mediation proof.
+# FORWARD MODE — headers_allow is declared, so the header dimension resolves a POSITIVE-LIST
+# (ADR-0036): only the named entries cross. The values are unchanged by the three-mode model
+# and this route's effective posture is exactly what it always was.
+#
+# Authorization is listed to re-admit the CLIENT's inbound Authorization past the never-forward
+# set — it is NOT what makes the mediated bearer reach the upstream, and the echo does not depend
+# on it. ForwardPolicyStage merges the mediated bearer LAST, unconditionally and without
+# consulting any forward list, overwriting whatever the mode copy forwarded; go-httpbin would
+# echo it back with this entry absent. The entry is kept because it exercises the single
+# re-admittable member of the never-forward set (ADR-0037) and pins that the mediated bearer
+# still wins over a re-admitted client value. Cookie
+# is NOT listed — but note that its absence from this list is not what withholds it. Cookie is
+# an absolute member of the gateway-owned never-forward set (ADR-0037): no mode and no list
+# re-admits it, so the browser session cookie would be stripped even on a route that named it
+# or on one with no forward block at all. The two halves of the mediation proof therefore rest
+# on the gateway's own set rather than on this route's diligence, which is the stronger claim.
 endpoint:
   id: bff-session
   enabled: true

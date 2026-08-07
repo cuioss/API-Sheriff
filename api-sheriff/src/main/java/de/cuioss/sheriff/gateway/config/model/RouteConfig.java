@@ -38,7 +38,9 @@ import org.jspecify.annotations.Nullable;
  *                       endpoint/anchor default
  * @param securityFilter the route-level security filter, {@code null} when the anchor or
  *                       global default applies
- * @param forward        the forwarding allowlist, {@code null} when nothing is forwarded
+ * @param forward        the forward filter, {@code null} when the route declares no
+ *                       {@code forward} block — which is the forward-all posture on
+ *                       both dimensions, not a nothing-crosses one
  * @param upstream       the upstream target settings, {@code null} when omitted
  * @param asset          the asset terminal-action settings, {@code null} when omitted; a
  *                       route carries at most one terminal action, so {@code asset}

@@ -350,21 +350,56 @@ iterator path skipped value validation -> CRLF response splitting). Traefik CVE-
 strip abuse, GW-02).
 
 *Control.* cui-http's `CharacterValidationStage` rejects CR/LF/NUL in header names and values
-*unconditionally* (ingress); the gateway feeds every inbound header through it and re-applies
-it before writing any response. Keep an explicit, closed hop-by-hop list the gateway honors;
-never let a client `Connection:` header steer stripping of framing or trust headers. Build the
-forwarded header set by regeneration from an allowlist, never by editing the client's map (the
-zero-trust forward policy) -- which also means client `X_Forwarded_For`-style underscore
-variants that cui-http does not canonicalize are dropped by the deny-by-default allowlist
-rather than reaching the upstream.
+*unconditionally* on the *ingress* path: every inbound header is fed through it before any stage
+reads one. The response direction carries no equivalent re-validation, and saying so is the
+honest statement of the control's reach -- the gateway does not re-run `CharacterValidationStage`
+over upstream response headers. Both response paths (`edge.ResponseStage` for the streamed proxy
+relay, `asset.AssetResponseEnvelope` for the buffered asset envelope) copy the source's remaining
+headers through once the gateway-owned never-relay set below has been applied. That direction is
+bounded by *which names* cross rather than by re-checking their characters, so the residual is
+scoped to a configured upstream that is already inside the gateway's trust boundary rather than
+to client-supplied input. Never let a client `Connection:` header steer stripping of framing or
+trust headers.
 
-*Status:* PARTIAL. Header CR/LF/NUL is cui-http (COVERED); zero-trust regeneration is pipeline
-stage 5; the hop-by-hop-abuse-cannot-strip-framing property (the GW-02 tie-in) is not
-asserted.
+The hop-by-hop and trust-header lists are *gateway-owned and enumerated in full per direction*,
+never derived from a sibling list and never taken from what a client names
+(link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+Two properties carry this control:
 
-*Assertion.* CR/LF in a header value is rejected; a client `Connection: X-Forwarded-For`
-(or `Content-Length`) does not cause the gateway to drop the regenerated forwarding header
-or the framing header; response headers are validated before write.
+* *The request-direction never-forward set applies under every forward mode* -- including the
+  permissive forward-all baseline. `Authorization` is its single re-admittable member (only on a
+  route declaring a positive-list naming it); `Cookie` is absolute against client input. No route
+  configuration re-admits the hop-by-hop, framing or gateway-owned names from the request. The one
+  path around the set is an operator's *static* `set_headers` value, which is merged after the
+  strip and carries no caller-supplied material.
+* *The forwarded header set is built by regeneration, never by editing the client's map.* The
+  client's `X-Forwarded-*` / `Forwarded` copies are skipped on *every* mode, forward-all
+  included, so a permissive route is not a way to smuggle a spoofed chain upstream (GW-04).
+
+*The equivalence class is carried in the set, not left to the operator.* The old allow-list-only
+forward model dropped *everything* an operator did not enumerate, which incidentally also dropped
+non-canonical spellings a client invented -- an `X_Forwarded_For`-style underscore variant that
+cui-http does not canonicalize to the hyphenated name, or a vendor alias such as `X-Real-IP`.
+Forward-all removes that incidental protection, so the protection is now stated: the vendor
+aliases are members of the request-direction never-forward set in their own right, and both that
+set and the regeneration skip match on the *separator-folded* name, so every `-`/`_` spelling of
+either set's names is withheld under every mode without an operator entry (see
+link:#gw-04[GW-04] for why the class is closed by folding rather than by enumeration). The
+aliases sit in the never-forward set rather than beside the canonical names because the gateway
+does not *regenerate* them -- the canonical names are what it emits, the aliases are
+claims about provenance only the gateway is entitled to make. `set_headers` is unaffected: an
+operator fronting a backend that reads `X-Real-IP` still sets it deliberately, because the strip
+governs client input and configuration is not client input.
+
+*Status:* PARTIAL. Header CR/LF/NUL is cui-http (COVERED); the per-direction gateway-owned sets
+and the every-mode regeneration skip are pipeline stage 5 and are pinned exhaustively by their
+own tests; the hop-by-hop-abuse-cannot-strip-framing property (the GW-02 tie-in) is not
+asserted, which is the one leg keeping this row off COVERED.
+
+*Assertion.* CR/LF in a header value is rejected; a client `Connection: X-Forwarded-For` (or
+`Content-Length`) does not cause the gateway to drop the regenerated forwarding header or the
+framing header; a client-sent `X-Forwarded-For`, `Cookie` or `Authorization` never reaches the
+upstream on a forward-all route; response headers are validated before write.
 
 [#gw-04]
 === GW-04 -- X-Forwarded / trusted-proxy spoofing
@@ -392,13 +427,41 @@ header names across the *whole* equivalence class (case, `-`/`_`, aliases) befor
 or the strip is incomplete -- the Traefik fix-chain is the cautionary tale.
 
 *Status:* COVERED. ADR-0003 + pipeline stage 5 (TCP-peer gate, drop-and-regenerate) + the
-configuration validator (CIDR parsing, split-range trust-all rejection). The
-name-equivalence-class stripping is the one nuance still to make explicit in the test set.
+configuration validator (CIDR parsing, split-range trust-all rejection). The client's canonical
+`X-Forwarded-*` / `Forwarded` copies are skipped under every forward mode, forward-all included,
+so the *emitted* chain is always the gateway's own.
+
+*The equivalence class beyond the canonical names is covered too, and it is closed by a rule
+rather than by a list.* Two sets hold the names, split by *which question each name answers*: the
+regeneration skip holds the canonical spellings (`x-forwarded-for`, `-host`, `-proto`, `-port`,
+`-prefix`, `forwarded`) -- what the gateway *emits* -- and the request-direction never-forward set
+holds the names it does not emit but must never *relay*, the vendor aliases `X-Real-IP`,
+`X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`. The split is deliberate: filing a name the
+gateway does not regenerate beside the ones it does would assert a relationship that is not there,
+and would widen the untrusted-peer resolver mask with names the resolver never queries.
+
+*Both sets are then tested on the separator-folded name* -- lower-cased with every `_` mapped to
+`-` -- so each set closes its own names across the whole `-`/`_` class instead of listing the
+variants. This matters because the class is larger than it looks: a two-separator name such as
+`X-Forwarded-For` has *four* spellings (`X-Forwarded-For`, `X_Forwarded_For`, `X-Forwarded_For`,
+`X_Forwarded-For`), and every backend that maps header names to CGI-style variables -- CGI,
+FastCGI, WSGI and Rack all do -- resolves all four to one `HTTP_X_FORWARDED_FOR`. Enumerating
+spellings would mean four entries per name and a fix the first time one was missed, which is
+exactly the shape of the Traefik fix-chain in the evidence above: each of those CVEs closed one
+spelling while a sibling survived. Folding before the membership test closes the class at once and
+keeps it closed for any name a later edit adds to either set. `Forwarded` contributes no variant
+at all -- it carries no separator to fold, so its underscore spelling is the canonical name the
+regeneration skip already holds.
 
 *Assertion.* A spoofed inbound `X-Forwarded-For`/`X-Real-IP`/`Forwarded` from a non-trusted
-peer is ignored; the emitted chain is regenerated, not appended; case/underscore/alias
-variants of forwarding headers are all stripped; a `0.0.0.0/1`+`128.0.0.0/1` config is
-rejected at boot.
+peer never influences the gateway's resolved client identity; the emitted chain is regenerated,
+not appended; the canonical `X-Forwarded-*` / `Forwarded` names are skipped from the client copy
+under *every* forward mode, forward-all included; each underscore variant and vendor alias is
+withheld from the upstream under *both* forward-all and a negative-list that does not name it,
+each leg carrying a matched positive control; every *mixed* `-`/`_` spelling of a forwarding name
+or a vendor alias is withheld under forward-all, a negative-list *and* a positive-list naming it,
+so the equivalence class is asserted closed rather than sampled; an operator's `set_headers` still
+places such a name deliberately; a `0.0.0.0/1`+`128.0.0.0/1` config is rejected at boot.
 
 [#gw-05]
 === GW-05 -- SSRF via proxy features / upstream control
@@ -1014,8 +1077,8 @@ outstanding hardening work (next section).
 
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash) | cui-http (canonical path) + gateway pipeline invariant | PARTIAL
 | <<gw-02>> | Reject ambiguous HTTP framing | Gateway/web-server (cui-http out of scope) | GAP
-| <<gw-03>> | Header CR/LF reject; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (hop-by-hop) | PARTIAL
-| <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation | cui-http resolver + ADR-0003 + gateway (peer gate, trust-all rejection) | COVERED
+| <<gw-03>> | Header CR/LF reject; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`ConnectionHeaders`, ADR-0037) | PARTIAL
+| <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + gateway (peer gate, trust-all rejection, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; test behaviour not flag | ADR-0017 (front listener) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL

@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -799,7 +800,7 @@ class RouteTableBuilderTest {
         @Test
         @DisplayName("Should carry the route-level forward block onto the resolved route")
         void shouldCarryRouteForward() {
-            ForwardConfig forward = new ForwardConfig(List.of("Accept"), List.of("page"),
+            ForwardConfig forward = new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
                     Map.of("X-Gateway", "api-sheriff"));
             RouteConfig route = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
                     .forward(forward).build();
@@ -812,18 +813,59 @@ class RouteTableBuilderTest {
         }
 
         @Test
-        @DisplayName("Should default an absent forward block to a deny-by-default empty allowlist")
-        void shouldDefaultAbsentForwardToEmpty() {
+        @DisplayName("Should default an absent forward block to the forward-all posture")
+        void shouldDefaultAbsentForwardToForwardAll() {
             EndpointConfig endpoint = endpoint("orders", "ORDERS")
                     .routes(List.of(route("r", HttpMethod.GET))).build();
 
             RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
 
             ResolvedRoute resolved = find(table, "r");
-            assertTrue(resolved.effectiveForward().headersAllow().isEmpty(),
-                    "an unforwarded route resolves to an empty, deny-by-default allowlist");
-            assertTrue(resolved.effectiveForward().queryAllow().isEmpty());
-            assertTrue(resolved.effectiveForward().setHeaders().isEmpty());
+            assertAll("a route declaring no forward block resolves to forward-all, not to a"
+                    + " nothing-crosses allowlist",
+                    () -> assertNull(resolved.effectiveForward().headersAllow(),
+                            "no positive-list is declared, so the header dimension is not a positive-list"),
+                    () -> assertNull(resolved.effectiveForward().headersDeny()),
+                    () -> assertNull(resolved.effectiveForward().queryAllow()),
+                    () -> assertNull(resolved.effectiveForward().queryDeny()),
+                    () -> assertTrue(resolved.effectiveForward().setHeaders().isEmpty()));
+        }
+
+        @Test
+        @DisplayName("Should carry a route-level negative-list forward block through unchanged")
+        void shouldCarryRouteDenyLists() {
+            ForwardConfig forward = new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of());
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .forward(forward).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            ResolvedRoute resolved = find(table, "r");
+            assertAll("the deny lists ride the same wholesale carry-through as the allow lists",
+                    () -> assertEquals(forward, resolved.effectiveForward()),
+                    () -> assertEquals(List.of("Cookie"), resolved.effectiveForward().headersDeny()),
+                    () -> assertEquals(List.of("debug"), resolved.effectiveForward().queryDeny()));
+        }
+
+        @Test
+        @DisplayName("Should keep a declared-empty positive-list distinguishable from an absent one")
+        void shouldKeepDeclaredEmptyDistinctFromAbsent() {
+            ForwardConfig declaredEmpty = new ForwardConfig(List.of(), null, List.of(), null, Map.of());
+            RouteConfig declaring = RouteConfig.builder().id("declared").match(match("/declared", HttpMethod.GET))
+                    .forward(declaredEmpty).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .routes(List.of(declaring, route("absent", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertAll("the two routes resolve to different postures, not to the same empty one",
+                    () -> assertTrue(find(table, "declared").effectiveForward().headersAllow().isEmpty(),
+                            "a declared-empty positive-list stays present and empty"),
+                    () -> assertNull(find(table, "absent").effectiveForward().headersAllow(),
+                            "an absent list stays absent"),
+                    () -> assertNotEquals(find(table, "declared").effectiveForward(),
+                            find(table, "absent").effectiveForward()));
         }
     }
 

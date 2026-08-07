@@ -134,12 +134,35 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
 Verified as still open at the 0.1.0 cut. Each is a deliberate boundary or a known gap, not a
 surprise waiting to be discovered.
 
-Upstream response headers are relayed verbatim::
-The forward policy is deny-by-default on the *request* side, but the gateway does not strip
-identifying *response* headers an upstream emits -- `Server`, `X-Powered-By` and their kin reach
-the client unchanged. There is no response-header allowlist, and no configuration knob suppresses
-them. Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to
-you.
+A route with no `forward` block now forwards everything (behaviour change on upgrade)::
+The `forward` block used to be allow-list-only: a request header or query parameter crossed to the
+upstream *only* if the route named it, so a route declaring no block forwarded nothing. It is now a
+three-mode policy -- `headers_allow` / `query_allow` is a positive-list, `headers_deny` /
+`query_deny` is a negative-list, and *declaring neither means everything crosses*. An existing
+route that omitted the block, or omitted one of its two dimensions, therefore starts forwarding
+client input it previously withheld.
++
+*The bound matters as much as the change.* This alters what crosses *within* routes the operator
+had already exposed; it never alters *which* routes are reachable. Route matching is unchanged and
+remains deny-by-default -- a request matching no route still reaches no upstream. Nor does it leak
+credentials: `Cookie` never crosses under any mode, an inbound `Authorization` is re-admitted only
+where a route declares a positive-list naming it, and the hop-by-hop, framing and provenance
+headers the gateway owns are withheld regardless. Note also that a *declared-empty* list is not the
+absent state: `headers_allow: []` is a positive-list naming nothing, and keeps forwarding nothing.
++
+*Mitigation, one line:* declare a positive-list (`headers_allow` / `query_allow`) on any route
+whose previous no-block posture you were relying on. See
+link:doc/architecture.adoc#_forward_policy[Architecture -- Forward Policy] and
+link:doc/adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036].
+
+Upstream response headers are relayed except for gateway-owned names::
+Both directions carry a *gateway-owned never-relay set* -- the connection-specific and framing
+names, plus, on the request side, the credentials and provenance headers the gateway owns. Beyond
+those sets the two directions differ: a route can *narrow* what crosses on the request side
+(`headers_deny` / `headers_allow`), while on the response side the gateway does not strip
+identifying headers an upstream emits -- `Server`, `X-Powered-By` and their kin reach the client
+unchanged. There is no response-header allowlist and no configuration knob suppresses them.
+Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to you.
 
 The server-mode session store is single-node and in-memory::
 `InMemorySessionStore` is the only implementation of the `SessionStore` seam, and `session.store`

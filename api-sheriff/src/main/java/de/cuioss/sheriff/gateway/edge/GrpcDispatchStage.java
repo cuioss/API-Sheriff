@@ -68,7 +68,7 @@ public final class GrpcDispatchStage {
      * @param route          the resolved route runtime holding the shared forced-h2 client and guard
      * @param method         the request method (gRPC is always {@code POST})
      * @param requestUri     the upstream request URI
-     * @param forwardHeaders the deny-by-default header set computed by stage 5
+     * @param forwardHeaders the mode-filtered header set computed by stage 5
      * @param requestBody    the inbound request body as a live read stream
      * @return the upstream response (body and trailers still streaming)
      * @throws GatewayException carrying the mapped error-contract event on any dispatch failure

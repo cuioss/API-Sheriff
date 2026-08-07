@@ -148,6 +148,7 @@ Two other endpoints are published:
 This removes the containers, the network and the volumes, so the next bring-up starts from a known
 state and re-imports the realm.
 
+[[_what_must_change_before_this_is_real]]
 == What must change before this is real
 
 The sample is deliberately loud about being a sample. Every item below is a placeholder that is
@@ -217,9 +218,34 @@ directory gives you a working starting point. From there the usual first three c
 . Point the `UPSTREAM` alias in `docker/sheriff-config/topology.properties` at your real backend, or
   override `TOPOLOGY_UPSTREAM` in the environment. It is the one place a backend address is written
   down.
-. Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`, and add the
-  exact request headers and query parameters your backend needs to its deny-by-default `forward`
-  allowlists.
+. Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`. You will
+  usually need no `forward` block at all: with none declared, every client header and query
+  parameter crosses except the gateway-owned never-forward set (`Cookie` absolutely, an inbound
+  `Authorization` on any route declaring no positive-list naming it, and the hop-by-hop and
+  framing names), and the HTTP mechanics -- `Accept`, `Accept-Encoding`, `Accept-Language`,
+  `Content-Type` and `Range` -- cross without being listed, joined by the five conditional
+  validators when the route's `not_modified` toggle is enabled. Add a `forward` block only to
+  *narrow* that: `headers_deny` / `query_deny` to withhold specific names, or
+  `headers_allow` / `query_allow` for a strict positive-list. See
+  link:../configuration.adoc#_forward[the `forward` reference].
++
+[IMPORTANT]
+====
+*This is a behaviour change if you are upgrading.* `forward` used to be allow-list-only, so a
+route that declared no block forwarded nothing. Declaring neither list now means *everything
+crosses*, and an existing route that omitted the block -- or omitted one of its two dimensions --
+starts forwarding client input it previously withheld.
+
+The bound is worth stating precisely: this changes what crosses *within* routes you had already
+exposed, never *which* routes are reachable (route matching is unchanged and still
+deny-by-default), and it leaks no credentials -- `Cookie` crosses under no mode at all, and an
+inbound `Authorization` only where a route declares a positive-list naming it. *Mitigation is one
+line:* declare a positive-list on any route whose previous no-block posture you relied on.
+
+This sample is unaffected: `demo-api.yaml` declares `headers_allow: []` / `query_allow: []`, and a
+*declared-empty* list is a positive-list naming nothing -- not the absent state. Its behaviour is
+exactly what it always was.
+====
 . Replace the identity provider with your own, updating the issuer URL, the JWKS URL and the
   `allowed_egress_hosts` entry in `docker/sheriff-config/gateway.yaml` together -- the issuer value
   must match the `iss` your tokens actually carry, or every request fails with a 401 that looks like

@@ -19,6 +19,18 @@ link:../configuration.adoc#_protocols[Configuration -- Protocols] for the key it
 link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] for what each
 protocol does and does not inspect.
 
+*A route that declares no `forward` block forwards every client header and query parameter the
+gateway-owned never-forward set does not withhold* -- so a protocol route needs no enumeration of
+its own mechanics to work, and the routes shown below deliberately declare none. Neither of the
+example routes on this page is thereby unguarded: `Cookie` is absolute against client input --
+no mode and no list re-admits it -- as are the hop-by-hop, framing and provenance names. An
+inbound `Authorization` is the one re-admittable member, and only where a route declares a
+`headers_allow` naming it; the routes below declare no list at all, so it is withheld here.
+Declare a `forward` block only to *narrow* that. One protocol-specific caution: a gRPC route that *does*
+declare `headers_allow` must list `te`, because a positive-list never copies a name it does not
+name and gRPC over HTTP/2 requires `TE: trailers`. See
+link:../architecture.adoc#_forward_policy[Architecture -- Forward Policy].
+
 == Configuring a WebSocket route
 
 A `protocol: websocket` route proxies an HTTP upgrade handshake, then relays frames opaquely in

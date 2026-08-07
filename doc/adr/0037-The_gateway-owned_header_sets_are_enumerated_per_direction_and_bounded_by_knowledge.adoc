@@ -1,0 +1,348 @@
+= ADR-0037: The gateway-owned header sets are enumerated per direction and bounded by knowledge
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: The gateway owns three header sets — a request-direction never-forward set, a response-direction strip, and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the two value- or mode-dependent behaviours (TE: trailers, the single re-admittable Authorization) live in the application rather than in a set literal.
+// tags: header-policy, forward-policy, connection-headers, zero-trust, rfc9110, rfc9113, conditional-requests, protocol-set
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+Once a route can resolve a forward-all posture
+(link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]),
+the header names the gateway must never relay stop being a convenience and
+become the thing that makes the permissive baseline defensible. Under an
+allow-list-only model an omission from those sets was masked: the operator's
+enumeration was the filter, and a name the gateway forgot to withhold simply
+never appeared on anyone's allow-list. Under forward-all an omission crosses.
+
+Three separate questions were being answered by scattered, partly-duplicated
+logic.
+
+**What must never be relayed, and in which direction?** The response direction
+already had a set — the connection-specific and framing names an upstream may
+propose but the gateway must not place on the client's connection. Issue #172
+was exactly a failure of *scope* rather than of content: the proxy data plane
+stripped `Connection` and the asset terminal action did not, so an origin's
+routine `Connection: keep-alive` reached an HTTP/2 client, which is malformed
+per RFC 9113 §8.2.2 and made a served asset arrive as nothing at all. Two
+mirrored lists had let one drift. The request direction had no enumerated set
+at all — it did not need one while the operator's allow-list was the filter.
+
+**What should cross without anyone naming it?** With forward-all available the
+enumeration burden is gone for permissive routes, but it remains for exactly the
+routes that most want a positive-list: a route that names three application
+headers still had to add `Accept`, `Content-Type` and `Range` before its backend
+behaved normally. Those are HTTP mechanics, not application policy.
+
+**What does the `not_modified` toggle actually govern?** Conditional requests
+have two halves — the validators the client sends, and the `ETag` /
+`Last-Modified` the upstream answers with. The request half enumerated two
+validators; the response half stripped two headers. Whether those halves were
+one decision or two had never been recorded, and the request half's membership
+was demonstrably incomplete against RFC 9110 §13.
+
+A membership rule was needed that could be applied to a name mechanically, and
+that would not quietly expand.
+
+== Decision
+
+**Three sets, each enumerated in full for the direction it serves, and none
+derived from another.**
+
+=== The response-direction strip
+
+The connection-specific and framing names the gateway never places on the
+client's connection: the RFC 9113 §8.2.2 connection-specific names, the
+remaining RFC 7230 §6.1 hop-by-hop names, and `Content-Length` — which is
+framing rather than hop-by-hop and is stripped for a different reason, that it
+is a claim about the *source's* body which neither relay writes verbatim in
+every case.
+
+It is declared **once** and read by **every path that answers a client** — the
+proxy data plane's streamed relay and the asset terminal action's buffered
+envelope. Those paths apply it differently, because one streams a body it does
+not hold and the other lets the framework size a buffer it does. That difference
+is in the application; the *set* is one rule about one protocol, so it has one
+home. Two copies of it is not a style objection: #172 was a name one copy had
+and the other lacked.
+
+=== The request-direction never-forward set
+
+The names a client may send that the gateway never relays upstream, whatever
+mode the route resolved. Membership answers one of five questions:
+
+* **Credentials the gateway terminates or mediates** — `authorization`,
+  `cookie`. The BFF's sealed session cookie is the gateway's, never the
+  backend's; forwarding it defeats the pattern whose entire premise is that the
+  backend never sees it.
+* **Hop-by-hop and connection-specific names** describing the hop the gateway
+  terminates rather than the message it forwards.
+* **Framing the gateway re-establishes** — `content-length`.
+* **Names the gateway itself owns or regenerates** — `host`, `origin`,
+  `referer`, `date`.
+* **Spoofable provenance claims only the gateway is entitled to make** — the
+  underscore spellings of the forwarding names (`x_forwarded_for`,
+  `x_forwarded_host`, `x_forwarded_proto`, `x_forwarded_port`,
+  `x_forwarded_prefix`) and the vendor client-IP aliases (`x-real-ip`,
+  `x-client-ip`, `true-client-ip`, `cf-connecting-ip`).
+
+**The forwarding-name equivalence class is split across two sets, by which
+question each name answers.** The *canonical* forwarding names stay in the
+regeneration skip, because that set enumerates what the gateway **emits** and is
+read twice — as the client-copy skip and as the mask that hides inbound
+forwarding headers from the resolver when the immediate peer is untrusted. The
+gateway does not regenerate `X_Forwarded_For` or `X-Real-IP`, and the resolver
+never queries either, so filing them there would assert a regeneration
+relationship that does not exist and widen a mask with names nothing asks for.
+What *is* true of them is this set's question: they are provenance claims the
+gateway alone may make, so a client-sent copy is never relayed. `Forwarded`
+contributes no variant at all — it carries no hyphen to fold, so its underscore
+spelling is the canonical name the regeneration skip already holds, and adding it
+here would be a duplicate rather than a new name.
+
+The threat is not that such a name corrupts the *regenerated* header — it cannot
+— but that a backend reads it **as though** it were the canonical one: a
+framework folding `-` and `_` into a single CGI-style variable resolves
+`X_Forwarded_For` to the same `HTTP_X_FORWARDED_FOR` the real header produces.
+Under the allow-list-only model these were dropped incidentally, because
+everything unlisted was. Under forward-all the protection has to be *stated*, and
+stating it in the gateway's own set rather than as a per-route `headers_deny`
+remedy is the point: an incomplete equivalence class handled route-by-route is
+precisely the Traefik fix-chain shape. `set_headers` is unaffected — the strip
+governs client input, and an operator fronting a backend that reads `X-Real-IP`
+still sets it deliberately.
+
+**The class is closed by folding, not by listing its members.** Both sets test
+membership on the *separator-folded* name — lower-cased with every `_` mapped to
+`-` — so each closes its own names across the whole `-`/`_` class. The literals
+are not the closure and must not be read as one: a two-separator name has **four**
+spellings (`X-Forwarded-For`, `X_Forwarded_For`, `X-Forwarded_For`,
+`X_Forwarded-For`) that a CGI-folding backend resolves to one variable, so
+enumerating them would mean four entries per name and a fix the first time one was
+missed — which is the Traefik fix-chain itself, where each CVE closed one spelling
+while a sibling survived. Folding also makes the closure *inherited*: a name added
+to either set later is covered across every spelling without a second edit. The
+five `x_forwarded_*` entries that remain in the never-forward set predate the fold
+and are now redundant with the regeneration skip's folded match; they are kept as
+the literal record of which spellings the threat model names, not as the mechanism.
+
+**The two sets are independent enumerations, not one derived from the other.**
+The request set currently contains every response-set name, but that is recorded
+as an *observation* about two hand-maintained lists rather than as a derivation
+or an invariant. The directions answer different questions, so a name added to
+one does not join the other, and each set is pinned exhaustively by its own test
+so a one-directional addition fails that set's assertion instead of propagating
+silently.
+
+**Two behaviours ride on top of membership and deliberately do not live in the
+set literal**, because both are value- or mode-dependent:
+
+1. **`authorization` is the single re-admittable member**, honoured only when a
+   route declares a positive-list naming it. Under a negative-list or forward-all
+   there is no positive-list, so a permissive baseline can never leak an inbound
+   credential. A re-admitted value is still overwritten by the mediated bearer,
+   which is merged last.
+2. **`te` crosses only when its value is exactly the `trailers` token.** RFC 9110
+   admits that one value end-to-end; any other negotiates a transfer coding for
+   the hop the gateway terminates.
+
+That asymmetry — `authorization` overridable by an operator, `cookie` not — is
+the decision, not an oversight. Re-admitting an inbound `Authorization` on a
+route that names it is a policy choice an operator can legitimately make for a
+pure-proxy route. Re-admitting `Cookie` is a security regression in every case
+the gateway supports, so naming it changes nothing.
+
+=== The gateway-understood protocol set
+
+The names that cross **without an operator entry**, in two tiers:
+
+* **Unconditional** — `Accept`, `Accept-Encoding`, `Accept-Language`,
+  `Content-Type`, `Range`: content negotiation and range requests.
+* **Conditional** — the five RFC 9110 §13 validators `If-None-Match`,
+  `If-Modified-Since`, `If-Match`, `If-Unmodified-Since`, `If-Range`, gated by
+  the route's `not_modified` toggle.
+
+**The membership rule is knowledge, not necessity.** A name is in the set when
+the gateway knows what it means and can reason about the consequences of
+relaying it. The tempting alternative rule — "is it technically necessary for
+backends to work?" — is strictly worse, because it admits `Cookie` and
+`Authorization`, which is precisely what the never-forward set withholds.
+`User-Agent` is deliberately out on the same test: widely expected, required for
+nothing, and a backend that genuinely needs it can name it. The set is a fixed
+constant with no configuration surface; an operator who wants one of these
+withheld denies it by name.
+
+**A `headers_deny` entry naming a protocol header wins.** The set is applied only
+to names the mode copy did not already refuse. A *positive*-list is deliberately
+not consulted — crossing without being named is the set's entire purpose — so the
+only way to withhold one is to say so.
+
+**The set is disjoint from the request-direction never-forward set**, and that
+disjointness is load-bearing rather than incidental. The protocol set is applied
+*after* the strip and reads the raw client request, so it bypasses the strip
+entirely; that is safe only while the two sets share no name. A test asserts the
+disjointness directly, so a future addition to either list fails there rather
+than silently re-admitting a name the gateway owns.
+
+=== The `not_modified` decision
+
+**The toggle is kept, and its request-direction membership is widened from two
+validators to five. The response direction is unchanged.**
+
+Keeping it is the substantive half. The alternative — always forwarding
+validators and always relaying `ETag` — was rejected because the two halves are
+one decision: forwarding a validator whose response counterpart is then stripped
+makes the gateway ask a question it discards the answer to. Gating both halves on
+one flag is what stops that, and the coupling is asserted by a test that names
+both stages, so dropping either half fails a test that mentions the other.
+
+Widening to five closes an incompleteness rather than adding a feature: RFC 9110
+§13 defines five validators, a route honouring conditional requests needs all of
+them, and the two the set carried were an arbitrary subset.
+
+**One boundary is recorded rather than resolved.** The toggle gates the protocol
+set's *admission path*; it is not a withholding rule applied to the mode copy. A
+forward-all or negative-list route therefore forwards a validator with the flag
+off — the client's header crosses on the declared posture — while the response
+half still strips the `ETag` that would answer it. That route forwards a
+precondition and discards the answer, which is the asymmetry this toggle exists
+to prevent, surviving in the one mode where the toggle does not reach. Closing it
+means changing what forward-all means for a class of client headers, which is
+wider than this decision's scope. It is pinned as characterization so the
+boundary is visible, and left as an open question rather than resolved silently.
+
+== Consequences
+
+=== Positive
+
+* The forward-all baseline is safe by construction: the names that must not
+  cross are withheld structurally, not by operator diligence.
+* An operator states application policy and the gateway supplies HTTP mechanics,
+  so a positive-list route names three headers instead of eleven.
+* One home per direction means a name cannot be present in one relay path and
+  absent from another — the #172 failure mode is structurally excluded.
+* A route honouring conditional requests now forwards all five validators, so
+  `If-Range` and `If-Unmodified-Since` work where they previously did not.
+* The membership rule is stateable in one sentence, so a future addition can be
+  argued against it rather than judged ad hoc.
+
+=== Negative
+
+* Three sets are three surfaces to maintain, and the independence rule means a
+  name relevant to both directions is written twice, deliberately.
+* The protocol set is a fixed constant. An operator whose backend needs a name
+  outside it must add a positive-list entry, and the gateway offers no way to
+  extend the set itself.
+* The knowledge rule requires a judgement per name. It is sharper than
+  "necessary", but it is not mechanical, and `User-Agent` sits close enough to
+  the line that its exclusion needs the rationale recorded.
+
+=== Risks
+
+* **An addition to either enumerated set can break the disjointness the protocol
+  set relies on.** The protocol set bypasses the strip; a name added to both
+  lists would be withheld and then re-admitted. The disjointness test is the
+  guard, and it must be understood as an invariant rather than a tidiness check.
+* **The two-independent-lists rule looks like duplication and invites a
+  refactor.** A future reader may "simplify" by deriving one set from the other,
+  which silently couples the directions and makes a one-directional addition
+  propagate. The rationale is recorded on the sets themselves for that reason.
+* **The forward-all conditional asymmetry is a known open edge.** It is
+  characterized by a test rather than fixed, so it will not surprise a reader of
+  the suite — but it remains a route shape that forwards a precondition whose
+  answer is discarded.
+* **A permissive baseline makes every future omission from the request set a
+  live defect** rather than a latent one. Adding a client-sendable,
+  gateway-owned header to the protocol landscape now requires updating that set
+  in the same change.
+
+== Alternatives Considered
+
+=== Derive the request set from the response set plus a delta
+
+Define one core list and express the request direction as "the core plus these
+extra names".
+
+*Rejected because* it asserts a relationship the two directions do not have. The
+sets answer different questions — one is about a connection the gateway is
+terminating toward a client, the other about credentials and provenance the
+gateway owns toward an upstream — and their present overlap is a coincidence of
+the current membership rather than a rule. A derivation would make every future
+addition to the response direction silently change request behaviour.
+
+=== Make the protocol set configurable
+
+Let an operator extend or replace the gateway-understood set per route or
+globally.
+
+*Rejected because* it reintroduces the enumeration it exists to remove, and adds
+a way to get it wrong. The set's value is that it is the same everywhere and
+needs no thought; a configurable version is just an allow-list with a default,
+and the route-level `headers_allow` already covers the case where an operator
+needs a name the gateway does not know.
+
+=== Use "technically necessary for the backend" as the membership rule
+
+Admit any header a backend commonly requires.
+
+*Rejected because* the rule admits `Cookie` and `Authorization` — the two names
+whose withholding the BFF pattern depends on. A rule that contradicts the
+never-forward set at its most important members is not a rule.
+
+=== Drop the `not_modified` toggle and always forward validators
+
+Remove the flag, forward all five validators unconditionally, and always relay
+`ETag` / `Last-Modified`.
+
+*Rejected because* it removes the operator's ability to keep a route out of
+conditional-request handling entirely, and the flag has a legitimate use: a route
+whose upstream computes validators expensively, or whose responses must not be
+cached by intermediaries, wants the whole exchange off. Removing the toggle also
+removes the coupling that keeps the two halves consistent, so a later change to
+one direction would have nothing to hold it to the other.
+
+=== Widen the conditional tier but gate it on the mode copy as well
+
+Extend the toggle so it also withholds validators a forward-all route would copy,
+closing the asymmetry recorded above.
+
+*Deferred, not rejected.* It is the change that would make the criterion "no
+conditional validator crosses in either direction on a disabled route" true in
+every mode. It is out of scope here because it changes what forward-all means:
+forward-all currently says "the client's headers cross", and this would carve an
+exception into that promise based on an unrelated flag. That is a decision about
+mode semantics and belongs with ADR-0036's model, argued on its own terms.
+
+== Generalisation
+
+When a system relaxes a restrictive default, the sets it relies on change status
+without changing content: names that were belt-and-braces while a stricter filter
+sat in front of them become the only thing standing between a client and an
+upstream. The audit that matters is not of the new permissive path but of the
+old sets, because their *completeness requirement* just changed and nothing in
+the diff says so.
+
+A membership rule for a security-relevant set should be stateable as a question
+about the *system's knowledge* rather than about the *consumer's needs*. "What do
+we understand well enough to be responsible for?" is answerable and bounded;
+"what do they need?" is neither, and it drifts toward admitting whatever the
+loudest integration asked for. Where two members of such a set carry behaviour
+beyond membership, that behaviour belongs in the code applying the set, not in
+the literal — a set of names should be readable as a set of names.
+
+== References
+
+* link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] — the three-mode forward model these sets bound
+* link:0014-asset-serving-terminal-action.adoc[ADR-0014] — the asset terminal action that shares the response-direction strip
+* link:0008-data-plane-transport.adoc[ADR-0008] — the data-plane transport and its conditional-validator handling
+* `doc/architecture.adoc` — the request pipeline and its header policy
+* `doc/configuration.adoc` — the operator-facing `forward` reference

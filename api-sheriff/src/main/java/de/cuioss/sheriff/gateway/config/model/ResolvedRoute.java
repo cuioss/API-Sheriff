@@ -62,9 +62,11 @@ import org.jspecify.annotations.Nullable;
  *                               route resolves to exactly one terminal action, so
  *                               {@code upstream} and {@code asset} are mutually
  *                               exclusive (ADR-0014)
- * @param effectiveForward       the materialized, deny-by-default {@code forward}
- *                               allowlist consumed by stage 5; an empty
- *                               {@link ForwardConfig} when the route declares none
+ * @param effectiveForward       the materialized {@code forward} filter consumed by
+ *                               stage 5 — a per-dimension positive-list, negative-list
+ *                               or forward-all posture; an all-absent
+ *                               {@link ForwardConfig}, meaning <em>forward-all</em>,
+ *                               when the route declares no {@code forward} block
  * @param effectiveAllowedOrigins the materialized, lower-cased exact-match
  *                               {@code Origin} allowlist for a WebSocket route,
  *                               empty for a non-WebSocket route (meaningful only when
@@ -98,9 +100,10 @@ Set<String> effectiveAllowedOrigins,
      * Canonical constructor requiring the mandatory components, defensively copying
      * {@code effectiveAllowedMethods} and {@code effectiveAllowedOrigins}, defaulting
      * an absent {@code protocol} to {@link Protocol#HTTP}, defaulting an absent
-     * {@code effectiveForward} to a deny-by-default empty {@link ForwardConfig}, and
-     * enforcing the terminal-action invariant: exactly one of {@code upstream}
-     * (proxy) or {@code asset} resolves.
+     * {@code effectiveForward} to an all-absent {@link ForwardConfig} — the
+     * <em>forward-all</em> posture on both dimensions, not a nothing-crosses one — and
+     * enforcing the terminal-action invariant: exactly one of {@code upstream} (proxy)
+     * or {@code asset} resolves.
      */
     public ResolvedRoute {
         Objects.requireNonNull(id, "id");

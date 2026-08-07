@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -158,11 +159,12 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
                     .extract();
 
             // Assert — 200 plus an echo body is the whole assertion, deliberately. The probe header is
-            // NOT allow-listed by /proxy's forward.headers_allow (which carries Content-Type only), so
-            // the deny-by-default forward stage strips it before the upstream — asserting it appears in
-            // the echoed headers map would be asserting the opposite of what G5 below proves. The echo
-            // is what shows the request actually reached go-httpbin rather than being answered by some
-            // earlier gate; the 400-vs-200 delta against the case below is what makes this a cap test.
+            // NOT named by /proxy's forward.headers_allow and is not a gateway-understood protocol
+            // header either, so the positive-list mode strips it before the upstream — asserting it
+            // appears in the echoed headers map would be asserting the opposite of what G5 below
+            // proves. The echo is what shows the request actually reached go-httpbin rather than being
+            // answered by some earlier gate; the 400-vs-200 delta against the case below is what makes
+            // this a cap test.
             assertNotNull(response.path("method"),
                     "an admitted request must reach the upstream — its echo carries the method");
         }
@@ -245,8 +247,8 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
     }
 
     @Nested
-    @DisplayName("G5 — the forward stage is deny-by-default for headers and query parameters")
-    class ForwardAllowlistDenyByDefault {
+    @DisplayName("G5 — the forward stage resolves one of three modes inside an authorised route")
+    class ForwardModeProjection {
 
         /** Allow-listed by endpoints/httpbin.yaml's forward.query_allow on the /proxy route. */
         private static final String ALLOWED_QUERY = "probe";
@@ -254,20 +256,49 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
         /** Deliberately absent from that allowlist. */
         private static final String DENIED_QUERY = "smuggled";
 
-        /** Allow-listed by that route's forward.headers_allow. */
-        private static final String ALLOWED_HEADER = "Content-Type";
+        /**
+         * Allow-listed by /proxy's forward.headers_allow AND outside the gateway-understood protocol
+         * set — both halves are load-bearing. The former control was {@code Content-Type}, which the
+         * protocol set now carries with no entry at all: the assertion stayed green while proving
+         * nothing about the allowlist, because the header would have crossed either way.
+         */
+        private static final String ALLOWED_HEADER = "X-Sheriff-Allowed";
 
         /** Deliberately absent from that allowlist. */
         private static final String DENIED_HEADER = "X-Sheriff-Smuggled";
 
+        /** A protocol-set member /proxy's positive-list deliberately does NOT name. */
+        private static final String UNLISTED_PROTOCOL_HEADER = "Accept-Language";
+
+        /** The negative-list route: everything crosses except its two declared names. */
+        private static final String DENY_LIST_PATH = "/proxy/deny-list";
+
+        /** Named by that route's headers_deny, and a protocol-set member — the precedence case. */
+        private static final String DENIED_PROTOCOL_HEADER = "Accept-Language";
+
+        /** Named by that route's headers_deny, and an ordinary header. */
+        private static final String DENIED_ORDINARY_HEADER = "X-Sheriff-Denied";
+
+        /** The route declaring no forward block at all: forward-all on both dimensions. */
+        private static final String FORWARD_ALL_PATH = "/proxy/forward-all";
+
+        /** The permissive control on that route: an ordinary header no list anywhere names. */
+        private static final String UNLISTED_HEADER = "X-Sheriff-Unlisted";
+
+        /**
+         * A never-forward member admitted end-to-end for exactly one value — the only member whose
+         * crossing depends on what it says rather than on what it is called.
+         */
+        private static final String TE_HEADER = "TE";
+
         @Test
-        @DisplayName("one request: the allow-listed header and query cross, the non-allow-listed pair is stripped")
-        void nonAllowListedHeaderAndQueryAreStripped() {
+        @DisplayName("positive-list: the allow-listed header and query cross, the unlisted pair is stripped")
+        void positiveListCrossesOnlyWhatItNames() {
             // Arrange + Act — a SINGLE request carrying both pairs, so the positive control and the
             // negative assertion observe the same forward decision rather than two separate requests
             // that could differ for unrelated reasons.
             var response = given()
-                    .contentType("text/plain")
+                    .header(ALLOWED_HEADER, "allow-listed-value")
                     .header(DENIED_HEADER, "must-not-cross")
                     .queryParam(ALLOWED_QUERY, "allow-listed-value")
                     .queryParam(DENIED_QUERY, "must-not-cross")
@@ -294,6 +325,151 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
             assertFalse(containsIgnoringCase(forwardedHeaders, DENIED_HEADER),
                     "a header absent from headers_allow must be stripped before the upstream, echoed headers were: "
                             + forwardedHeaders.keySet());
+        }
+
+        @Test
+        @DisplayName("a gateway-understood protocol header crosses the same route WITHOUT being allow-listed")
+        void protocolHeaderCrossesUnlisted() {
+            // Arrange + Act — the same positive-list route, one request carrying a protocol-set member
+            // the route never names alongside an ordinary header it never names. The pair is the point:
+            // both are unlisted, so anything that separates them is the protocol set and nothing else.
+            var response = given()
+                    .header(UNLISTED_PROTOCOL_HEADER, "de-DE")
+                    .header(DENIED_HEADER, "must-not-cross")
+                    .when()
+                    .get(PROXY_GET_PATH)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            // Assert
+            Map<String, ?> forwardedHeaders = response.path("headers");
+            assertNotNull(forwardedHeaders, "go-httpbin echoes the headers it received");
+            assertTrue(containsIgnoringCase(forwardedHeaders, UNLISTED_PROTOCOL_HEADER),
+                    "HTTP mechanics cross without an operator entry — that is what stops a positive-list"
+                            + " route from having to enumerate them. Echoed headers were: "
+                            + forwardedHeaders.keySet());
+            assertFalse(containsIgnoringCase(forwardedHeaders, DENIED_HEADER),
+                    "the matched control: an ordinary unlisted header is still stripped, so the crossing"
+                            + " above is the protocol set and not a broken allowlist. Echoed headers were: "
+                            + forwardedHeaders.keySet());
+        }
+
+        @Test
+        @DisplayName("negative-list: a deny entry beats the protocol set, and an undenied header crosses")
+        void denyEntryBeatsTheProtocolSet() {
+            // Arrange + Act — one request against the negative-list route carrying all three legs: the
+            // denied protocol header, the denied ordinary header, and an undenied header that is the
+            // positive control proving the permissive copy really ran.
+            var response = given()
+                    .header(DENIED_PROTOCOL_HEADER, "de-DE")
+                    .header(DENIED_ORDINARY_HEADER, "must-not-cross")
+                    .header(ALLOWED_HEADER, "undenied-value")
+                    .when()
+                    .get(DENY_LIST_PATH)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            // Assert
+            Map<String, ?> forwardedHeaders = response.path("headers");
+            assertNotNull(forwardedHeaders, "go-httpbin echoes the headers it received");
+            assertTrue(containsIgnoringCase(forwardedHeaders, ALLOWED_HEADER),
+                    "control: a negative-list crosses everything it does not name, echoed headers were: "
+                            + forwardedHeaders.keySet());
+            assertFalse(containsIgnoringCase(forwardedHeaders, DENIED_ORDINARY_HEADER),
+                    "the denied ordinary header must not cross, echoed headers were: "
+                            + forwardedHeaders.keySet());
+            assertFalse(containsIgnoringCase(forwardedHeaders, DENIED_PROTOCOL_HEADER),
+                    "a deny entry OUTRANKS the gateway-understood protocol set — otherwise an operator"
+                            + " could never withhold one, since the set is a fixed constant with no"
+                            + " configuration surface. Echoed headers were: " + forwardedHeaders.keySet());
+        }
+
+        @Test
+        @DisplayName("forward-all: an unlisted client header crosses, but no gateway-owned name does")
+        void forwardAllIsBoundedByTheGatewayOwnedSet() {
+            // Arrange + Act — the route declares no forward block at all, which is the shape most
+            // deployments ship. One request carries the permissive control alongside the three
+            // never-forward classes the baseline has to keep withholding for it to be safe at all:
+            // a mediated credential, the BFF's sealed cookie, and a spoofed provenance claim.
+            var response = given()
+                    .header(UNLISTED_HEADER, "crosses-on-the-baseline")
+                    .header("Cookie", "__Host-sid=sealed")
+                    .header("Authorization", "Bearer inbound-must-not-cross")
+                    .header("X-Real-IP", "9.9.9.9")
+                    .when()
+                    .get(FORWARD_ALL_PATH)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            // Assert
+            Map<String, ?> forwardedHeaders = response.path("headers");
+            assertNotNull(forwardedHeaders, "go-httpbin echoes the headers it received");
+            assertTrue(containsIgnoringCase(forwardedHeaders, UNLISTED_HEADER),
+                    "control: with neither list declared every client header crosses, echoed headers were: "
+                            + forwardedHeaders.keySet());
+            assertFalse(containsIgnoringCase(forwardedHeaders, "Cookie"),
+                    "Cookie is absolute — no mode and no list re-admits it, and that absoluteness is what"
+                            + " makes a forward-all baseline safe to offer. Echoed headers were: "
+                            + forwardedHeaders.keySet());
+            assertFalse(containsIgnoringCase(forwardedHeaders, "Authorization"),
+                    "Authorization is re-admittable ONLY under a positive-list naming it; forward-all"
+                            + " declares none, so a permissive route never leaks an inbound credential."
+                            + " Echoed headers were: " + forwardedHeaders.keySet());
+            assertFalse(containsIgnoringCase(forwardedHeaders, "X-Real-IP"),
+                    "a provenance claim is the gateway's alone to make: the vendor client-IP aliases and"
+                            + " the underscore spellings of the forwarding names are members of the"
+                            + " never-forward set, so a backend folding '-' and '_' into one CGI variable"
+                            + " cannot be fed a spoofed one. Echoed headers were: "
+                            + forwardedHeaders.keySet());
+        }
+
+        @Test
+        @DisplayName("TE crosses as the trailers token without an allowlist entry, and not for any other value")
+        void teCrossesOnlyAsTheTrailersToken() {
+            // Arrange + Act — the only case here that needs TWO requests, because one request cannot
+            // carry two different TE values and the DELTA between them is the whole assertion: it is
+            // what shows the carve-out turns on the VALUE rather than on the name. Both legs ride the
+            // forward-all route, so neither is allow-listed, and both carry the same permissive
+            // control so a missing TE can be told apart from a request that never arrived.
+            var trailersLeg = given()
+                    .header(TE_HEADER, "trailers")
+                    .header(UNLISTED_HEADER, "crosses-on-the-baseline")
+                    .when()
+                    .get(FORWARD_ALL_PATH)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+            var otherValueLeg = given()
+                    .header(TE_HEADER, "gzip")
+                    .header(UNLISTED_HEADER, "crosses-on-the-baseline")
+                    .when()
+                    .get(FORWARD_ALL_PATH)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+
+            // Assert
+            Map<String, ?> withTrailers = trailersLeg.path("headers");
+            Map<String, ?> withOtherValue = otherValueLeg.path("headers");
+            assertNotNull(withTrailers, "go-httpbin echoes the headers it received");
+            assertNotNull(withOtherValue, "go-httpbin echoes the headers it received");
+            assertAll("the TE carve-out is value-dependent, which is why it is not a set membership",
+                    () -> assertTrue(containsIgnoringCase(withTrailers, TE_HEADER),
+                            "RFC 9110 admits TE: trailers end-to-end, and the permissive copy carries it"
+                                    + " with no entry naming it — which is why a gRPC upstream behind a"
+                                    + " forward-all route works unconfigured. Echoed headers were: "
+                                    + withTrailers.keySet()),
+                    () -> assertFalse(containsIgnoringCase(withOtherValue, TE_HEADER),
+                            "any other TE value negotiates a transfer coding for the hop the gateway"
+                                    + " terminates, so it is withheld. Echoed headers were: "
+                                    + withOtherValue.keySet()),
+                    () -> assertTrue(containsIgnoringCase(withOtherValue, UNLISTED_HEADER),
+                            "the matched control: the withheld leg's request DID reach the upstream, so"
+                                    + " the absence above is the carve-out and not a dropped request."
+                                    + " Echoed headers were: " + withOtherValue.keySet()));
         }
 
         /**

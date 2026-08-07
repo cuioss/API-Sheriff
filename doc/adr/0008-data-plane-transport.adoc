@@ -55,15 +55,19 @@ are native to the Vert.x client that already runs the gateway's edge.
   by the full context it is memory-unbounded per user; either way it materializes proxied
   bodies (the ADR-0006 anti-pattern) and adds a cache-poisoning surface. `ETagAwareHttpAdapter`
   is control-plane only, permanently.
-* *`not_modified.enabled` means end-to-end conditional pass-through*, nothing more:
-** *enabled* (default) -- the conditional-request headers (`If-None-Match`,
-   `If-Modified-Since`) are implicitly part of the route's effective `forward.headers_allow`,
-   and upstream `304` responses plus validator response headers (`ETag`, `Last-Modified`)
-   relay untouched. `304` carries no body -- fully streaming-compatible, zero gateway state.
-** *disabled* -- validators are stripped in *both* directions (request conditionals and
-   response `ETag`/`Last-Modified`), deliberately forcing full `200` exchanges -- the
-   hardening knob for upstreams whose ETags are inconsistent across nodes or leak
-   inode/version information.
+* *`not_modified.enabled` means end-to-end conditional pass-through*, nothing more. It gates
+  *both halves of one exchange* -- the validators the client sends and the validators the
+  upstream answers with -- because forwarding a precondition whose answer is then stripped
+  makes the gateway ask a question it discards the answer to (see Amendment A1 for the
+  request-half membership and the one boundary that survives):
+** *enabled* (default) -- the RFC 9110 §13 conditional-request validators cross to the
+   upstream, and upstream `304` responses plus the validator response headers (`ETag`,
+   `Last-Modified`) relay untouched. `304` carries no body -- fully streaming-compatible, zero
+   gateway state.
+** *disabled* -- the validators are withheld and the response-direction `ETag` /
+   `Last-Modified` are stripped, deliberately forcing full `200` exchanges -- the hardening
+   knob for upstreams whose ETags are inconsistent across nodes or leak inode/version
+   information.
 * *Resilience uses SmallRye Fault Tolerance's programmatic API*
   (`quarkus-smallrye-fault-tolerance`) -- the Quarkus-native mechanism, applied without
   annotations or CDI interception on the hot path: one guard per route, assembled at boot
@@ -79,6 +83,39 @@ are native to the Vert.x client that already runs the gateway's edge.
   restricted to multiples of 1000 ms only because `cui-http`'s `HttpHandler` builder takes
   whole seconds; the Vert.x client takes milliseconds natively. The delivered
   `ConfigValidator` rule and its documentation entries are removed (pre-1.0: break freely).
+
+[[_amendment_a1]]
+=== Amendment A1 -- the request half is the protocol set's gated tier, and it carries five validators
+
+The decision above is unchanged in substance; the *mechanism* of its request half was restated
+by
+link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037],
+and this amendment records the difference so the original wording is not read as current.
+
+*What changed.* This ADR originally described the request half as making `If-None-Match` and
+`If-Modified-Since` "implicitly part of the route's effective `forward.headers_allow`". That
+description no longer holds in either of its two parts:
+
+* *The membership is five, not two.* RFC 9110 §13 defines `If-None-Match`,
+  `If-Modified-Since`, `If-Match`, `If-Unmodified-Since` and `If-Range`. A route honouring
+  conditional requests needs all of them; the two originally named were an arbitrary subset, so
+  `If-Range` and `If-Unmodified-Since` did not work on a route whose toggle was on.
+* *The mechanism is not the allow-list.* Since
+  link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] a
+  route resolves one of three forward modes, and `headers_allow` is only one of them. The
+  validators are now the *gated tier of the gateway-understood protocol set* -- names that cross
+  without an operator entry -- so they reach the upstream under every mode, and the toggle
+  decides whether that tier is admitted at all.
+
+*The one boundary that survives, recorded rather than resolved.* The toggle gates the protocol
+set's *admission path*; it is not a withholding rule applied to the mode copy. A forward-all or
+negative-list route therefore still carries a client's validator upstream with the flag *off* --
+the header crosses on the route's declared posture -- while the response half strips the `ETag`
+that would answer it. That is the asymmetry this toggle exists to prevent, surviving in the one
+mode the toggle does not reach. Closing it means changing what forward-all means for a class of
+client headers, which belongs with the mode model rather than here, so it is pinned by a
+characterization test and left open. A route that must withhold the validators under a
+permissive posture names them in `headers_deny`.
 
 == Consequences
 
@@ -106,6 +143,10 @@ are native to the Vert.x client that already runs the gateway's edge.
 
 * link:0005-module-structure.adoc[ADR-0005] -- the edge/core boundary the guards respect
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006] -- the plane split this ADR completes
+* link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] --
+  the three forward modes the conditional validators now cross under
+* link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] --
+  the gateway-owned header sets, and the `not_modified` decision Amendment A1 records
 * https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus -- SmallRye Fault Tolerance]
   (programmatic API)
 * https://vertx.io/docs/vertx-core/java/#_making_requests[Vert.x HttpClient] -- streams,

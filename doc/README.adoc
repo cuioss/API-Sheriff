@@ -196,7 +196,10 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
 | Data plane: Vert.x `HttpClient` (streams, trailers, upgrades) shared per upstream tuple;
   resilience via per-route programmatic SmallRye Fault Tolerance guards with a stream-aware
   retry gate; gateway-side response caching rejected; `not_modified.enabled` = end-to-end
-  conditional pass-through; `cui-http`'s client stack is control-plane only.
+  conditional pass-through, gating both halves of the exchange on one flag -- the five RFC 9110
+  §13 request validators (widened from two by link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037])
+  and the `ETag` / `Last-Modified` that answer them; `cui-http`'s client stack is control-plane
+  only.
 
 | link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]
 | Asymmetric alias-resolution failure: an unresolvable enabled-endpoint `base_url` alias
@@ -267,7 +270,25 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   is not applied to matched reserved paths (they terminate at the gateway and their handlers
   validate their own parameters), and the cookie-header value-length raise is necessarily
   gateway-wide because inbound validation precedes route selection. *(Status: proposed.)*
+
+| link:adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]
+| Forward filtering is a per-dimension three-mode policy -- positive-list, negative-list, or
+  forward-all when neither list is declared -- applied *inside* a route the request is already
+  authorised for; deny-by-default stays at the URL layer, a declared-empty list is not the absent
+  state, and declaring both lists for one dimension is refused at boot. *(Status: proposed.)*
+
+| link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]
+| The gateway owns three header sets -- a request-direction never-forward set, a response-direction
+  strip, and a gateway-understood protocol set that crosses with no operator entry -- each
+  enumerated in full for its own direction rather than derived from a sibling. Membership answers
+  "does the gateway know what this header means?", and the value- or mode-dependent behaviours
+  (`TE: trailers`, the single re-admittable `Authorization`) live in the application rather than in
+  a set literal. *(Status: proposed.)*
 |===
+
+NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0034 are recorded in
+link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
+table as a curated entry point; a missing row is index drift, never a withdrawn decision.
 
 == Reading Order
 

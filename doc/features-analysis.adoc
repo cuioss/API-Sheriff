@@ -29,7 +29,9 @@ set of things well, with zero mandatory external dependencies.
 
 | *KrakenD*
 | The *posture reference*: truly stateless, declarative, immutable configuration, no
-  database, zero-trust (deny-by-default) header/parameter forwarding.
+  database, zero-trust (deny-by-default) header/parameter forwarding. API Sheriff adopts the
+  first three wholesale and *diverges on the fourth* -- see the Tier-1 forwarding row for the
+  three-mode model and why the enumeration burden was moved to the gateway.
 
 | *Traefik*
 | The *UX reference*: simplest deployment (single binary, no external deps), expressive
@@ -67,10 +69,24 @@ set of things well, with zero mandatory external dependencies.
   checks with no synchronous introspection call to the IdP. See
   link:variants/01-base-gateway.adoc[Variant 1].
 
-| *Zero-trust header / parameter forwarding (deny-by-default allowlist)*
-| Inspired directly by KrakenD's zero-trust parameter forwarding. Nothing is forwarded
-  upstream unless it appears in the route's allowlist. This is a security posture, not scope
-  creep, and it aligns with "secure defaults".
+| *Three-mode header / parameter forwarding, bounded by gateway-owned never-forward sets*
+| Inspired by KrakenD's zero-trust parameter forwarding, and *deliberately divergent from it*
+  on the baseline. Deny-by-default is retained where it belongs -- at the URL layer, where a
+  request matching no route reaches no upstream at all. Within a route the request is already
+  authorised for, each dimension resolves one of three postures: a positive-list
+  (`headers_allow` / `query_allow`), a negative-list (`headers_deny` / `query_deny`), or
+  forward-all when neither is declared
+  (link:adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
+  What makes the permissive baseline defensible is not operator diligence but two gateway-owned
+  sets no route can override: a request-direction never-forward set (`Cookie` absolutely,
+  `Authorization` re-admittable only on a positive-list naming it, plus the hop-by-hop, framing
+  and gateway-owned names) and a gateway-understood protocol set that crosses without an
+  operator entry
+  (link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+  The trade is deliberate: KrakenD's model makes the operator enumerate `Accept` and
+  `Content-Type` to make an ordinary backend work, which buys no security at a layer that has
+  already authorised the request, and in practice produces long copy-pasted allow-lists or a
+  broad one that hides the intent.
 
 | *Path whitelisting + parameter limits (basic HTTP security filtering, NOT a WAF)*
 | Inspired by APISIX `uri-blocker` + KrakenD JSON-Schema/CEL validation, but scoped
@@ -269,7 +285,7 @@ Secondary differentiators worth claiming:
 | Transparent token refresh | Yes | Yes | EE only | M2M only
 | PAR-initiating FAPI 2.0 RP | Planned (not in 0.1.0) | No | No | No
 | Offline JWT validation | Yes | Yes | Partial | Yes
-| Zero-trust forwarding | Yes | No | No | Yes
+| Per-route forward filtering (allow / deny / forward-all) | Yes (three modes) | No | No | Allow-list only
 | Path allowlist + param limits | Yes | Partial | No | Partial
 | WebSocket | Yes | Yes | Yes | EE only
 | gRPC | Yes | Yes | Yes | EE only

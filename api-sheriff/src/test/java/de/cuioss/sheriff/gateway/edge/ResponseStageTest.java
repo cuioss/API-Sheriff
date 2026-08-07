@@ -71,6 +71,25 @@ class ResponseStageTest {
             assertFalse(ResponseStage.isForwardableResponseHeader(header, false),
                     header + " must be stripped on a not_modified-disabled route");
         }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"ETag", "Last-Modified"})
+        @DisplayName("the validator flips with the toggle — this half is one direction of a two-directional contract")
+        void validatorFlipsWithTheToggle(String header) {
+            // The response half of the not_modified contract. Its counterpart is the request half in
+            // forward.ForwardPolicyStage, whose conditional tier (the five RFC 9110 §13 validators) is
+            // gated by the SAME flag; ForwardPolicyStageTest asserts the two together, since only that
+            // package can see both. The control kept here is the one that survives locally: this header
+            // must genuinely FLIP with the toggle rather than being unconditionally relayed or
+            // unconditionally stripped. Asserting both states of one header in one test is what makes a
+            // change that pins it in either direction fail here rather than silently orphaning the pair.
+            assertTrue(ResponseStage.isForwardableResponseHeader(header, true),
+                    header + " must relay while the route honours conditional requests");
+            assertFalse(ResponseStage.isForwardableResponseHeader(header, false),
+                    header + " must be stripped once it does not — a validator relayed on a route whose"
+                            + " request half never forwarded the matching precondition is an answer to a"
+                            + " question the gateway never asked");
+        }
     }
 
     @Nested

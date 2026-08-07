@@ -30,8 +30,12 @@
  * {@link org.jspecify.annotations.NullMarked} default every component is
  * non-null unless it is explicitly annotated
  * {@link org.jspecify.annotations.Nullable}: an absent optional scalar is
- * represented as {@code null}, and an absent collection as an empty collection
- * (never {@code null}). Instances are therefore safe to publish and share across
+ * represented as {@code null}, and an absent collection as an empty collection.
+ * The one deliberate exception is
+ * {@link de.cuioss.sheriff.gateway.config.model.ForwardConfig}'s four list
+ * components, which are explicitly {@code @Nullable} because <em>absent</em> and
+ * <em>declared empty</em> select different forward modes there and collapsing the
+ * two would erase the distinction. Instances are safe to publish and share across
  * threads without external synchronization.
  * <p>
  * <strong>Framework-agnostic seam (ADR-0005).</strong> This package carries no

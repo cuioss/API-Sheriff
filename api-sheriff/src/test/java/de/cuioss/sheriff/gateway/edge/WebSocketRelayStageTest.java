@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -125,11 +126,14 @@ class WebSocketRelayStageTest {
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
         RouteTable routeTable = new RouteTable(List.of(
-                wsRoute("wsopen", "/ws-open", "none", upstreamPort, Set.of(), null),
-                wsRoute("wsorigin", "/ws-origin", "none", upstreamPort, Set.of(ALLOWED_ORIGIN), null),
-                wsRoute("wssecure", "/ws-secure", "bearer", upstreamPort, Set.of(ALLOWED_ORIGIN), null),
-                wsRoute("wsidle", "/ws-idle", "none", upstreamPort, Set.of(), 1),
-                wsRoute("wsdead", "/ws-dead", "none", deadPort, Set.of(), null)));
+                wsRoute("wsopen", "/ws-open", "none", upstreamPort, Set.of(), null, positiveListNamingNothing()),
+                wsRoute("wsforwardall", "/ws-forward-all", "none", upstreamPort, Set.of(), null, null),
+                wsRoute("wsorigin", "/ws-origin", "none", upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                        positiveListNamingNothing()),
+                wsRoute("wssecure", "/ws-secure", "bearer", upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                        positiveListNamingNothing()),
+                wsRoute("wsidle", "/ws-idle", "none", upstreamPort, Set.of(), 1, positiveListNamingNothing()),
+                wsRoute("wsdead", "/ws-dead", "none", deadPort, Set.of(), null, positiveListNamingNothing())));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
@@ -245,14 +249,10 @@ class WebSocketRelayStageTest {
     }
 
     @Test
-    @DisplayName("forwards no non-allow-listed handshake header to the upstream (deny-by-default)")
+    @DisplayName("forwards no non-allow-listed handshake header on a positive-list route")
     void deniesNonAllowlistedForwardHeader() throws Exception {
-        // Arrange — a custom header the route's (empty) forward allowlist does not permit
-        WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("localhost").setPort(frontPort).setURI("/ws-open/room")
-                .addHeader("Origin", ALLOWED_ORIGIN).addHeader("X-Custom", "leak");
-        WebSocket socket = wsClient.connect(options).toCompletionStage().toCompletableFuture()
-                .get(15, TimeUnit.SECONDS);
+        // Arrange — a custom header the route's declared-empty positive-list does not name
+        WebSocket socket = connectWithCustomHeader("/ws-open/room");
         CompletableFuture<String> echoed = new CompletableFuture<>();
         socket.textMessageHandler(echoed::complete);
 
@@ -260,9 +260,33 @@ class WebSocketRelayStageTest {
         socket.writeTextMessage("go");
         echoed.get(15, TimeUnit.SECONDS);
 
-        // Assert — the upstream handshake never saw the denied header
+        // Assert — the upstream handshake never saw the unlisted header
         assertNull(upstreamCustomHeader.get(),
-                "a header outside the deny-by-default forward allowlist is not relayed to the upstream");
+                "a header the route's positive-list does not name is not relayed to the upstream");
+    }
+
+    /**
+     * The matched control for the assertion above: the same handshake against a route declaring no
+     * forward block at all. The forward policy governs the WebSocket handshake headers on both
+     * postures, so the discriminator is the route's declared mode — not the relay path ignoring the
+     * policy. Without this control the assertion above would stay green against a relay that had
+     * stopped consulting the forward policy entirely.
+     */
+    @Test
+    @DisplayName("relays an unlisted handshake header on a forward-all route")
+    void relaysUnlistedForwardHeaderOnForwardAllRoute() throws Exception {
+        // Arrange — the same custom header, against a route that declares neither list
+        WebSocket socket = connectWithCustomHeader("/ws-forward-all/room");
+        CompletableFuture<String> echoed = new CompletableFuture<>();
+        socket.textMessageHandler(echoed::complete);
+
+        // Act
+        socket.writeTextMessage("go");
+        echoed.get(15, TimeUnit.SECONDS);
+
+        // Assert
+        assertEquals("leak", upstreamCustomHeader.get(),
+                "a route declaring no forward block is forward-all, so the client header crosses");
     }
 
     @Test
@@ -445,6 +469,14 @@ class WebSocketRelayStageTest {
         return wsClient.connect(options).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
     }
 
+    /** Opens a handshake carrying the {@code X-Custom} header the forward-policy assertions key on. */
+    private WebSocket connectWithCustomHeader(String uri) throws Exception {
+        WebSocketConnectOptions options = new WebSocketConnectOptions()
+                .setHost("localhost").setPort(frontPort).setURI(uri)
+                .addHeader("Origin", ALLOWED_ORIGIN).addHeader("X-Custom", "leak");
+        return wsClient.connect(options).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+    }
+
     private static SecurityHeadersConfig securityHeaders() {
         return SecurityHeadersConfig.builder()
                 .contentTypeNosniff(Boolean.TRUE)
@@ -452,8 +484,16 @@ class WebSocketRelayStageTest {
                 .build();
     }
 
+    /**
+     * A WebSocket route whose forward posture is declared explicitly rather than left to the default.
+     * <p>
+     * Every route here declares a positive-list, and the {@code /ws-forward-all} route deliberately
+     * does not — the pair is what keeps both postures pinned. Leaving the posture implicit is what
+     * made these fixtures silently change meaning when the absent state flipped from nothing-crosses
+     * to forward-all, so the posture is now stated at each call site.
+     */
     private static ResolvedRoute wsRoute(String id, String pathPrefix, String require, int upstreamPort,
-            Set<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds) {
+            Set<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds, @Nullable ForwardConfig forward) {
         return ResolvedRoute.builder()
                 .id(id)
                 .protocol(Protocol.WEBSOCKET)
@@ -463,7 +503,17 @@ class WebSocketRelayStageTest {
                 .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
+                .effectiveForward(forward)
                 .build();
+    }
+
+    /**
+     * A declared-empty positive-list: the route names no forwardable client header, so none crosses.
+     * This is the posture these fixtures shipped with, now stated rather than inherited from a
+     * default that has since inverted.
+     */
+    private static ForwardConfig positiveListNamingNothing() {
+        return ForwardConfig.builder().headersAllow(List.of()).build();
     }
 
     /**

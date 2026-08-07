@@ -28,14 +28,22 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for {@link ConnectionHeaders}: the one response-direction connection-header policy both
- * client-facing paths read — the proxy relay and the asset envelope.
+ * Tests for {@link ConnectionHeaders}: the gateway-owned connection-header policy for both
+ * directions — the response set both client-facing paths read (the proxy relay and the asset
+ * envelope), and the request set every forward mode is bounded by.
  * <p>
- * The membership assertion is deliberately exhaustive rather than sampled. The set is a protocol
- * fact, not a tuning knob: RFC 9113 §8.2.2 makes a response carrying one of these malformed, and
- * an HTTP/2 client discards the stream outright, so a name silently dropped from the set does not
- * degrade a response — it deletes it (issue #172). An exhaustive expectation is what makes such an
- * edit fail here instead of in a browser.
+ * Both membership assertions are deliberately exhaustive rather than sampled. The response set is a
+ * protocol fact, not a tuning knob: RFC 9113 §8.2.2 makes a response carrying one of these
+ * malformed, and an HTTP/2 client discards the stream outright, so a name silently dropped from the
+ * set does not degrade a response — it deletes it (issue #172). The request set carries the same
+ * weight in the other direction: it is what makes the permissive forward-all baseline safe, so a
+ * name quietly dropped from it becomes a credential reaching an upstream. An exhaustive expectation
+ * is what makes either edit fail here instead of in production.
+ * <p>
+ * The two sets are asserted <em>independently</em>, never one derived from the other. Their current
+ * superset relation is an observation about two hand-maintained lists; deriving one expectation
+ * from the other here would encode that coincidence as a rule and would stop noticing the day a
+ * name is added to one direction only.
  */
 class ConnectionHeadersTest {
 
@@ -81,5 +89,136 @@ class ConnectionHeadersTest {
     @DisplayName("Should reject a null header name rather than silently treating it as forwardable")
     void shouldRejectNullName() {
         assertThrows(NullPointerException.class, () -> ConnectionHeaders.isConnectionSpecific(null));
+    }
+
+    @Test
+    @DisplayName("Should carry exactly the 25 request-direction never-forward names")
+    void shouldCarryTheExactRequestSet() {
+        assertEquals(
+                ConnectionHeaders.REQUEST_STRIP, Set.of(
+                        // Credentials the gateway terminates or mediates.
+                        "authorization", "cookie",
+                        // Hop-by-hop / connection-specific: the hop the gateway terminates.
+                        "connection", "keep-alive", "proxy-connection", "te", "trailer",
+                        "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization",
+                        // Framing the dispatch path re-establishes.
+                        "content-length",
+                        // Names the gateway itself owns, consumes, or regenerates.
+                        "host", "origin", "referer", "date",
+                        // Spoofable provenance claims only the gateway is entitled to make: the
+                        // underscore spellings a CGI-style backend folds onto the canonical name,
+                        // and the vendor client-IP aliases such a backend may trust directly.
+                        "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto",
+                        "x_forwarded_port", "x_forwarded_prefix",
+                        "x-real-ip", "x-client-ip", "true-client-ip", "cf-connecting-ip"),
+                "the request-direction set is what bounds the forward-all baseline — a name removed"
+                        + " here silently starts relaying it to every upstream");
+    }
+
+    @Test
+    @DisplayName("Should keep the two direction sets independently enumerated, not derived")
+    void shouldKeepTheTwoSetsIndependent() {
+        assertEquals(10, ConnectionHeaders.RESPONSE_STRIP.size(),
+                "the response set stays at its 10 names; the provenance-variant widening is"
+                        + " request-direction only and must not propagate here — a response"
+                        + " carrying X-Real-IP is the source's business, not the gateway's");
+        assertEquals(25, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 25 names");
+        assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.RESPONSE_STRIP),
+                "the request set currently contains every response name — asserted as the OBSERVATION"
+                        + " it is, with both sets pinned exhaustively above, so a name added to one"
+                        + " direction alone breaks that set's own expectation rather than being"
+                        + " silently derived into the other");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Cookie", "COOKIE", "cookie", "Authorization", "Host", "TE", "Proxy-Authenticate"})
+    @DisplayName("Should withhold a request-direction name whatever case the client sent it in")
+    void shouldMatchRequestNamesCaseInsensitively(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " must be recognised — a client sends header names in its own casing, and"
+                        + " a case-sensitive check would be bypassable by changing one letter");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Content-Type", "Accept", "X-Api-Version", "If-None-Match", "User-Agent"})
+    @DisplayName("Should pass a client header the gateway does not own")
+    void shouldPassNonGatewayOwnedRequestHeaders(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is the client's to send and the route's mode to govern, not a"
+                        + " gateway-owned name");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X_Forwarded_For", "x_forwarded_for", "X_FORWARDED_FOR",
+            "X_Forwarded_Host", "X_Forwarded_Proto", "X_Forwarded_Port", "X_Forwarded_Prefix",
+            "X-Real-IP", "x-real-ip", "X-Client-IP", "True-Client-IP", "CF-Connecting-IP"})
+    @DisplayName("Should withhold a spoofable provenance variant a CGI-folding backend would trust")
+    void shouldWithholdProvenanceVariants(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is a claim about the connection's provenance that only the gateway is"
+                        + " entitled to make. Under the old allow-list-only forward model it was"
+                        + " dropped incidentally; under forward-all it is an ordinary client header,"
+                        + " and a backend folding '-' and '_' into one CGI variable reads it as the"
+                        + " canonical name");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port",
+            "X-Forwarded-Prefix", "Forwarded"})
+    @DisplayName("Should leave the CANONICAL forwarding names out of this set — they are regenerated, not stripped")
+    void shouldNotClaimTheCanonicalForwardingNames(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is a name the gateway REGENERATES, so it belongs to the forwarding set"
+                        + " in ForwardPolicyStage — which is read both as the client-copy skip and as"
+                        + " the untrusted-peer resolver mask. Duplicating it here would create two"
+                        + " lists that can disagree; this assertion is what keeps the placement"
+                        + " decision (variants here, canonical names there) from eroding");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "X_Real_IP", "X-Real_IP", "X_Real-IP",
+            "X_Client_IP", "X-Client_IP", "X_Client-IP",
+            "True_Client_IP", "True-Client_IP", "True_Client-IP",
+            "CF_Connecting_IP", "CF-Connecting_IP", "CF_Connecting-IP",
+            "Content_Length", "Transfer_Encoding", "Keep_Alive",
+            "Proxy_Connection", "Proxy_Authorization", "Proxy_Authenticate"})
+    @DisplayName("Should withhold every '-'/'_' spelling of a gateway-owned name, not just the canonical one")
+    void shouldWithholdEverySeparatorSpelling(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " folds onto a gateway-owned name for any backend that maps header"
+                        + " names to CGI-style variables (CGI/FastCGI/WSGI/Rack all fold '-' and"
+                        + " '_' onto one underscore), so a client spelling it this way reaches the"
+                        + " very variable the canonical name feeds. A name with two separators has"
+                        + " FOUR spellings; enumerating them one fix at a time is the Traefik"
+                        + " forwarded-header fix-chain, which is why the membership test folds the"
+                        + " separator instead of the literal listing every variant");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"X_Api_Version", "X-Api_Version", "Content_Type", "Accept_Encoding", "User_Agent"})
+    @DisplayName("Should not let separator folding over-strip a header the gateway does not own")
+    void shouldNotOverStripOnSeparatorFolding(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " folds onto a name that is NOT gateway-owned, so folding must widen the"
+                        + " match across spellings of the owned names only — never across names");
+    }
+
+    @Test
+    @DisplayName("Should fold a header name to lower case and '-' separators, through Locale.ROOT")
+    void shouldFoldSeparatorsAndCase() {
+        assertEquals("x-forwarded-for", ConnectionHeaders.separatorFolded("X_Forwarded-For"));
+        assertEquals("if-none-match", ConnectionHeaders.separatorFolded("IF_NONE_MATCH"));
+        assertEquals("accept", ConnectionHeaders.separatorFolded("Accept"),
+                "a name with no separator folds to its lower-cased self");
+    }
+
+    @Test
+    @DisplayName("Should reject a null request-header name rather than treating it as forwardable")
+    void shouldRejectNullRequestName() {
+        assertThrows(NullPointerException.class, () -> ConnectionHeaders.isRequestStripped(null));
+        assertThrows(NullPointerException.class, () -> ConnectionHeaders.separatorFolded(null));
     }
 }
