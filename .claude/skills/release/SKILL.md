@@ -424,7 +424,8 @@ anything else open can land ahead of it and move the commit your release is cut 
 >    team, and do not merge anything yourself, from the cut until Step 7 reports the run finished.
 >    No branch policy, merge freeze or workflow check enforces this — it is an operator obligation,
 >    and a merge landing inside that window can still race the release force-push. Treat it as a
->    residual operator risk, not a closed safeguard (ADR-0035 records it as one).
+>    residual operator risk, not a closed safeguard — ADR-0035 records it as exactly that residual
+>    risk, and states plainly that nothing enforces the post-dispatch merge hold.
 
 **(iv) Confirm no tag for the release version already exists.**
 
@@ -551,8 +552,9 @@ gh run view "$RUN_ID" --repo cuioss/API-Sheriff --json displayTitle,headBranch,h
 > confirm it names the version-bump PR before watching it.
 
 **Now READ THE RUN. Do not infer the outcome from the merge having happened** — see *The guard has
-NEVER been observed* above; until a cut has actually been read off a run, every outcome here is a
-first observation rather than a confirmation:
+fired once and has never been observed refusing* above. Exactly one merge-triggered cut (`0.1.1`) has
+been read off a run, so a firing guard is a confirmation of that single precedent; a *refusing* guard
+would still be a first observation:
 
 | what the run shows | what decided it | published? |
 |---|---|---|
