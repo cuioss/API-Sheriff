@@ -49,7 +49,7 @@ A security-focused API Gateway with a lightweight approach, built with Quarkus.
 
 [IMPORTANT]
 ====
-*0.1.0 is an ALPHA release.* The configuration surface and the APIs *may change without a
+*0.1.1 is an ALPHA release.* The configuration surface and the APIs *may change without a
 migration path*. Per this project's pre-1.0 rules, breaking changes are made freely: keys are
 renamed or removed, values change meaning, and no deprecation shim, compatibility alias or
 upgrade tooling is provided. A `gateway.yaml` that boots today may fail to boot on the next
@@ -131,7 +131,7 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
 [[_known_limitations]]
 == Known Limitations
 
-Verified as still open at the 0.1.0 cut. Each is a deliberate boundary or a known gap, not a
+Verified as still open at the 0.1.1 cut. Each is a deliberate boundary or a known gap, not a
 surprise waiting to be discovered.
 
 A route with no `forward` block now forwards everything (behaviour change on upgrade)::
