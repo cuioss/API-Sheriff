@@ -365,8 +365,13 @@ Confirm **all four**, and treat any one of them failing as a stop:
 1. The `on:` block carries **exactly** `workflow_dispatch` plus the `pull_request` trigger with
    `types: [closed]`, `branches: [main]`, `paths: ['.github/project.yml']` — **and nothing else.** No
    `push`, no `schedule`, no additional path, no widened `branches:`, no extra `types:`.
-2. The `release` job still carries its merged-ness gate:
-   `if: github.event_name != 'pull_request' || github.event.pull_request.merged == true`.
+2. The `release` job's `if:` still carries **both** operands, ANDed:
+   `(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')` and
+   `(github.event_name != 'pull_request' || github.event.pull_request.merged == true)`. The second is
+   the merged-ness gate. The first is what confines a dispatch to `main` — `workflow_dispatch:`
+   carries no branch filter of its own, and the Cosign identity Step 8 verifies accepts only
+   `refs/heads/main`, so losing that operand would let a dispatch from any ref publish under an
+   identity the project's own verification command then rejects.
 3. The `publish-image` job still carries `if: needs.release.outputs.released-version != ''` — the
    central guard's own verdict, surfaced. Without it a guard-skipped merge would still spend 90
    minutes on a native build and then re-push and re-sign an already-released tag.
@@ -447,12 +452,12 @@ esac
 **Both must report `OK`. Anything else stops the release** — including `ERROR`, which means the
 check never evaluated and is therefore not a pass.
 
-> **Match the full ref, and branch on the exit code — the same discipline as the stubs check in
-> Step 2.** `git tag --list '<version>'` and `git ls-remote … | grep …` only *print*; a procedure
-> that reads their output by eye is not a guard, and a re-run that slips past it reaches the
-> workflow's `force: true` tag push. `grep -w '<version>'` is doubly wrong: `.` is a regex
-> any-character, and `-w` treats `-` as a word boundary, so `-w '0.1.0'` also matches
-> `refs/tags/0.1.0-rc1`. The exact `refs/tags/<version>` forms above match one ref and nothing else.
+> **Match the full ref, and branch on the exit code.** `git tag --list '<version>'` and
+> `git ls-remote … | grep …` only *print*; a procedure that reads their output by eye is not a guard,
+> and a re-run that slips past it reaches the workflow's `force: true` tag push. `grep -w '<version>'`
+> is doubly wrong: `.` is a regex any-character, and `-w` treats `-` as a word boundary, so
+> `-w '0.1.0'` also matches `refs/tags/0.1.0-rc1`. The exact `refs/tags/<version>` forms above match
+> one ref and nothing else.
 >
 > **Why this is checked directly:** the tag push is `force: true`, so a re-run can **MOVE** an
 > existing release tag rather than refusing. `release:prepare` would likely fail first, but that is
