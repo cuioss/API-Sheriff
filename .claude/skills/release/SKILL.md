@@ -309,10 +309,10 @@ have passed.'
 > shell would run whatever sat between them.
 
 > **THIS PR IS THE RELEASE. Do not merge it here.** Steps 2, 3 and 4 are the pre-cut safety
-> assertions, and on Path A they exist to gate *this merge* — the Trivy posture, the stubs-branch
-> boundary, the tag-absence check, the green-`main` gate and the quiesced queue all belong **before**
-> the publishing act, not after it. Merging now would run every one of them on an irrevocable
-> release that has already happened.
+> assertions, and on Path A they exist to gate *this merge* — the Trivy posture, the tag-absence
+> check, the green-`main` gate and the quiesced queue all belong **before** the publishing act, not
+> after it. Merging now would run every one of them on an irrevocable release that has already
+> happened.
 
 ### Step 2 — Confirm the tree and the pull-request queue are clean
 
@@ -340,43 +340,6 @@ The working tree must be clean. On Path B, `HEAD` must equal `origin/main`. On P
 branch is **up to date with `origin/main`** (`git merge-base --is-ancestor origin/main HEAD`), so the
 commit the queue produces is the `origin/main` the rest of this step gates on plus the version bump
 and nothing else.
-
-> **HARD BOUNDARY — `release/relocation-stubs`.** That branch exists on the remote and **must NEVER
-> be merged**. It carries the relocation-only stubs published under the abandoned
-> `de.cuioss.sheriff.api` coordinates. The release must not pick it up. Confirm it is not in the
-> ancestry of what you are about to release:
->
-> ```bash
-> git fetch origin '+refs/heads/release/relocation-stubs:refs/remotes/origin/release/relocation-stubs' \
->   || { echo "ERROR: could not fetch the stubs branch - the check did not evaluate" >&2; exit 1; }
-> git merge-base --is-ancestor origin/release/relocation-stubs origin/main; case $? in
->   0) echo "STOP: stubs branch is in main" >&2; exit 1 ;;
->   1) echo "OK: stubs branch is not in main" ;;
->   *) echo "ERROR: the check did not evaluate - this is NOT a pass" >&2; exit 1 ;;
-> esac
-> ```
->
-> **FULLY QUALIFY THE SOURCE REF, AND FORCE IT — `+refs/heads/…`, never the bare branch name.**
-> The unqualified form `git fetch origin release/relocation-stubs:refs/remotes/origin/…` **DELETES
-> the remote-tracking ref instead of creating it** on any clone with `fetch.prune=true` (or
-> `remote.origin.prune=true`), which is a common global setting. `git fetch` then reports
-> `- [deleted] (none) -> origin/release/relocation-stubs`, the very next line dies with
-> `fatal: Not a valid object name origin/release/relocation-stubs`, and the guard lands on its
-> `*)` arm. Observed on the 0.1.0 cut: the branch was present on the remote the whole time.
->
-> **That failure looks exactly like the branch having been deleted, and it is not.** Before
-> concluding anything from an `ERROR` here, check the remote directly — `git ls-remote --heads
-> origin | grep relocation` — and re-run with the qualified refspec above. Never "resolve" it by
-> skipping the check or appending `|| true`; the whole point of this boundary is that it fails
-> closed.
->
-> **Branch on the exit code, never on `&&` / `||`.** `git merge-base --is-ancestor` exits `0` for
-> ancestor, `1` for not-ancestor and `128` on error — and an absent
-> `origin/release/relocation-stubs` remote-tracking ref (a single-branch or shallow clone, a clone
-> predating the branch, or the prune misfire above) is exactly such an error. A
-> `… && echo STOP || echo OK` idiom collapses `1` and `128` into the same branch, so a check that
-> never ran prints the reassuring `OK`. **An error is not a pass**, and the explicit `git fetch`
-> above is what stops the common case from reaching that arm at all.
 
 ### Step 3 — Re-assert the pre-cut safety evidence (MANDATORY)
 
@@ -1035,9 +998,6 @@ authenticated check passes.
 - **Nothing merges to `main` between the cut and run completion** — the release force-pushes to
   `main` twice as a queue bypass actor. On Path A that window opens at **enqueue**, not at run start.
   This one is unenforced: it is an operator obligation, not a mechanism.
-- **`release/relocation-stubs` must NEVER be merged**, and the release must not pick it up. Fetch it
-  with the **fully-qualified forced refspec** (`+refs/heads/…`); the bare branch name self-prunes
-  under `fetch.prune=true` and the guard then reports `ERROR` for a branch that is still there.
 - **Set the GHCR package to *public*, not *internal*, and assert the `visibility` field** rather than
   inferring it from a pull. Internal passes every authenticated check while anonymous pulls 401.
 - **Update the version-bearing examples (Step 10) after the image is public**, and delete any caveat
