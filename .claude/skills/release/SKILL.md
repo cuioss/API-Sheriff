@@ -1039,10 +1039,8 @@ authenticated check passes.
   paths, the guard's role, and the rule that *a change which removes or weakens an event-driven
   trigger merges on its own*. **This runbook — not `release-process.adoc` — carries the surviving
   narrative account of the 2026-07-12 incident**; see *How the release is wired* above, and ADR-0035
-  for the decision record. The former *Coordinate history* note in
-  `README.adoc` was removed once `de.cuioss.sheriff.api` had been abandoned long enough that the
-  history was of no use to a reader arriving at the project. **ADR-0034 is superseded by ADR-0035**,
-  which records the guarded-merge-or-dispatch decision and which `release.yml`'s header references.
+  for the decision record. **ADR-0034 is superseded by ADR-0035**, which records the
+  guarded-merge-or-dispatch decision and which `release.yml`'s header references.
 - `.github/workflows/release.yml` — the release workflow, and the authoritative statement of both
   triggers. Its in-file comments carry the guard rationale, the run/skip-vs-value scope split, and
   the composability, ordering and attestation caveats behind the steps above.
