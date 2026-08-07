@@ -43,7 +43,7 @@ on:
 | Path | When it fires | Role |
 |---|---|---|
 | **Merge of a version bump** — a `pull_request` closed with `merged == true`, base `main`, touching `.github/project.yml` | only when the **central guard** inside the pinned `cuioss-organization` reusable workflow sees `release.current-version` actually changed between the merge commit and its first parent, **and** no tag for that version already exists | the ordinary way a release is cut |
-| **`workflow_dispatch`** | always, unconditionally — nothing gates this path but the operator, and that includes re-releasing an unchanged version | the deliberate fallback: recover a failed lane, or cut a version whose declaration already landed |
+| **`workflow_dispatch`** | whenever dispatched **from `main`** — the `release` job's `if:` confines the dispatch path to `refs/heads/main`, and nothing else gates it, which includes re-releasing an unchanged version | the deliberate fallback: recover a failed lane, or cut a version whose declaration already landed |
 
 **State them as a pair.** An operator whose merge did *not* cut a release needs to know which
 mechanism decided that before reaching for the other path — Step 5 *Path A* carries that diagnosis.
@@ -588,9 +588,11 @@ git ls-remote --refs --tags origin 'refs/tags/<version>'
 
 #### Path B — dispatch, deliberately
 
-The unconditional fallback: recover a lane that failed after a correct guard decision, or cut a
-version whose declaration already landed on `main`. **Nothing central refuses on this path** — the
-operator is the only gate, which is why Steps 2–4 are not optional here either.
+The fallback: recover a lane that failed after a correct guard decision, or cut a version whose
+declaration already landed on `main`. The `release` job's `if:` confines a dispatch to
+`refs/heads/main` — a dispatch from any other ref is skipped, silently. Past that ref test
+**nothing central refuses on this path**: the operator is the only remaining gate, which is why
+Steps 2–4 are not optional here either.
 
 **Record the pre-dispatch high-water mark first.** Run ids increase monotonically, so the newest
 existing `Release` run id is what lets the next step tell *your* dispatch apart from one that was
@@ -996,7 +998,7 @@ authenticated check passes.
   Never merge a version bump and then run the safety work.
 - **A merge that cut no release is a verdict to read, not a reason to dispatch.** Diagnose which
   mechanism refused — prefilter, `merged == true`, or the central guard — before reaching for Path B.
-  Dispatch is unconditional and will publish over an undiagnosed refusal.
+  A dispatch from `main` faces no central refusal and will publish over an undiagnosed one.
 - **Re-assert items (i), (iii) and (iv) at cut time.** They are time-varying and are never inherited
   from a recorded baseline.
 - **Dispatch only after re-reading `origin/main`.** Step 5 Path B aborts non-zero unless it still

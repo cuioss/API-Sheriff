@@ -5,9 +5,9 @@
 
 How a release of API Sheriff is cut. A release has two entry points: merging a pull request that
 changes the declared version in `.github/project.yml`, which *is* the publishing act once the
-centrally-owned version-changed guard lets it through, and a deliberate `workflow_dispatch`, which
-publishes unconditionally and is the operator-gated fallback. This page states the process and the
-rules that keep it safe.
+centrally-owned version-changed guard lets it through, and a deliberate `workflow_dispatch` from
+`main`, which faces no central refusal and is the operator-gated fallback. This page states the
+process and the rules that keep it safe.
 
 == Cutting a release
 
@@ -25,9 +25,11 @@ The ordinary path is a single act -- merge the version declaration:
 approving a Maven Central publication, and a published coordinate can be superseded but never
 withdrawn.
 
-*`workflow_dispatch` is the fallback, and it is unconditional.* Actions -> Release -> Run workflow
-publishes whatever `.github/project.yml` declares at the dispatched ref, including a re-declaration
-of a version already published; nothing central refuses it. Reach for it when the merge path did not
+*`workflow_dispatch` is the fallback, and past one ref test it is unconditional.* The `release`
+job's `if:` confines the dispatch path to `refs/heads/main`; a dispatch from any other ref is
+skipped silently and publishes nothing. Dispatched from `main`, Actions -> Release -> Run workflow
+publishes whatever `.github/project.yml` declares there, including a re-declaration of a version
+already published -- nothing central refuses it. Reach for it when the merge path did not
 fire -- and when a merge cut no release, establish *which* of the guard's two conditions refused it
 before dispatching (<<guard-refusal-predicates>>). Only an unmoved version is a reason to dispatch.
 An already-existing tag means that version was already released, and dispatching then republishes a
@@ -230,10 +232,13 @@ are normative.
 [#guard-refusal-predicates]
 === The version-changed guard is the release decision
 
-link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares two triggers: an
-unconditional `workflow_dispatch`, and a `pull_request` narrowed by `types: [closed]`,
-`branches: [main]` and `paths: ['.github/project.yml']`. On the merge path the question *"is this
-merge a release?"* is answered by the pinned cuioss-organization workflow's *version-changed guard*.
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares two triggers: a
+`workflow_dispatch` carrying no branch filter, and a `pull_request` narrowed by `types: [closed]`,
+`branches: [main]` and `paths: ['.github/project.yml']`. The `release` job's `if:` then narrows each
+path once more -- the dispatch path to `refs/heads/main`, the merge path to `merged == true` -- so a
+dispatch from a non-`main` ref is skipped before anything is published. On the merge path the
+question *"is this merge a release?"* is answered by the pinned cuioss-organization workflow's
+*version-changed guard*.
 
 *It refuses on either of two conditions, and a refusal announces neither of them:*
 
@@ -243,7 +248,8 @@ merge a release?"* is answered by the pinned cuioss-organization workflow's *ver
 Both must be false for the merge to publish. The guard is named for the first condition because that
 is what it was added for, but reading a no-release outcome as "the version didn't move" is a
 one-predicate reading of a two-predicate guard -- and it is exactly the misreading that sends an
-operator to the unconditional dispatch after a partial release (see <<release-not-atomic>>).
+operator to the dispatch fallback after a partial release (see <<release-not-atomic>>), where no
+central guard refuses at all.
 
 *That guard is consumed, never re-implemented here.* A local copy of a security-relevant decision is
 a second answer, and the local copy is the one that drifts out of sync. Do not add a caller-local
