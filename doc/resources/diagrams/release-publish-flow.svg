@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Release publish flow — two independent tracks: the release lane (one dispatch, one image build,
-  everything downstream addressing that one image) and the pull-request lane (an independent,
-  non-gating early signal). The two tracks deliberately never converge.
+  Release publish flow — two independent tracks: the release lane (one release run, entered by a
+  guarded version-bump merge or a deliberate dispatch, one image build, everything downstream
+  addressing that one image) and the pull-request lane (an independent, non-gating early signal).
+  The two tracks deliberately never converge.
   theme-handling: A (theme-neutral)
   see  pm-documents:ref-svg-diagrams/standards/diagram-type-flow.md
 -->
@@ -10,7 +11,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">API Sheriff release publish flow</title>
-  <desc id="desc">Two independent tracks. On the release lane, a manual workflow_dispatch cuts the Maven release, the publish job checks out the release tag and asserts the version, and the integration-test suite runs — that suite's docker compose build is the ONE and ONLY image build in the lane, so what is published is by construction exactly what was tested. A Syft SBOM and a gating Trivy scan at HIGH and CRITICAL then run before any registry write; a finding at either severity fails the release. Only then are the two tags pushed, the published digest pulled back and asserted identical to the tested image, and that same digest signed keylessly with Cosign. On the pull-request lane, an independent non-gating scan of the pinned base image and the repository filesystem reports on every change without ever building an image or failing the check. The two lanes never converge.</desc>
+  <desc id="desc">Two independent tracks. The release lane is entered by either of two triggers — merging a version change that the centrally-owned version-changed guard admits, or a deliberate workflow_dispatch. From there the Maven release is cut, the publish job checks out the release tag and asserts the version, and the integration-test suite runs — that suite's docker compose build is the ONE and ONLY image build in the lane, so what is published is by construction exactly what was tested. A Syft SBOM and a gating Trivy scan at HIGH and CRITICAL then run before any registry write; a finding at either severity fails the release. Only then are the two tags pushed, the published digest pulled back and asserted identical to the tested image, and that same digest signed keylessly with Cosign. On the pull-request lane, an independent non-gating scan of the pinned base image and the repository filesystem reports on every change without ever building an image or failing the check. The two lanes never converge.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -31,7 +32,7 @@
   </defs>
 
   <!-- ============================ release lane ============================ -->
-  <text x="580" y="24" class="note">Manual dispatch is the only trigger &#8212; no event-driven trigger exists on the release workflow</text>
+  <text x="580" y="24" class="note">Two entry paths &#8212; a version-bump merge the central guard admits, or a deliberate dispatch</text>
   <text x="20" y="54" class="lane">Release lane</text>
 
   <!-- track line (passes through every stage) -->
@@ -51,7 +52,7 @@
   <path class="stroke" d="M574,136 L629,98 L684,136 L629,174 Z"/>
 
   <!-- stage labels (above the track) -->
-  <text x="85"   y="88" class="stage">Dispatch</text>
+  <text x="85"   y="88" class="stage">Trigger</text>
   <text x="221"  y="88" class="stage">Maven release</text>
   <text x="357"  y="88" class="stage">Check out tag</text>
   <text x="493"  y="88" class="stage">IT suite</text>
@@ -61,7 +62,7 @@
   <text x="1037" y="88" class="stage">Cosign sign</text>
 
   <!-- stage sub-detail (below the track) -->
-  <text x="85"   y="192" class="sub">operator-initiated</text>
+  <text x="85"   y="192" class="sub">guarded merge<tspan x="85" dy="13">or dispatch</tspan></text>
   <text x="221"  y="192" class="sub">pushes the release tag</text>
   <text x="357"  y="192" class="sub">assert version match</text>
   <text x="493"  y="192" class="sub">THE one image build</text>

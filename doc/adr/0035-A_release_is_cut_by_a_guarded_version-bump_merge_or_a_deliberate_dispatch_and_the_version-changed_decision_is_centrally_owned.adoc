@@ -1,0 +1,223 @@
+= ADR-0035: A release is cut by a guarded version-bump merge or a deliberate dispatch, and the version-changed decision is centrally owned
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: The release workflow carries two triggers -- a pull_request: closed event narrowed by a base filter, a paths prefilter and a merged == true gate, and an unconditional workflow_dispatch -- and the question "is this merge a release?" is answered by the pinned cuioss-organization workflow's version-changed guard, which is consumed and never re-implemented locally; the paths filter is a prefilter and never the decision, and ADR-0034's trigger-removal-merges-on-its-own rule and residual operator risks carry forward unchanged.
+// tags: release, publication, irreversibility, workflow-trigger, version-changed-guard, central-ownership, prefilter, deliberate-action, runbook, supply-chain, check-then-act
+// affects: api-sheriff-parent, documentation
+// supersedes: 0034
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+NOTE: This record fills a numbering gap out of sequence -- ADR-0036 and ADR-0037 already exist. The
+number is not free choice: `.github/workflows/release.yml` forward-references *ADR-0035* by name for
+the decision recorded here, and that reference was written before this file existed. Filling the gap
+is intentional, not an error.
+
+== Context
+
+link:0034-Publication_is_triggered_only_by_a_deliberate_standalone_invocation_never_by_a_repository_event_or_an_automated_lifecycle_step.adoc[ADR-0034]
+decided that an irreversible publication is fired only by a person deciding to fire it, and realised
+that decision with a single mechanism: `workflow_dispatch` as the release workflow's *only* trigger.
+That mechanism has since been replaced. This record states what replaced it and why the replacement
+is not a reversal of ADR-0034's reasoning.
+
+*What ADR-0034 was actually defending against.* On 2026-07-12 a `pull_request: {types: [closed],
+paths: ['.github/project.yml']}` trigger fired a real Maven Central release: merging a pull request
+that touched the version-declaration file published `de.cuioss.sheriff.api:*:1.0.0`. Central
+artifacts are superseded, never withdrawn, so that version was abandoned, relocation-stubbed at
+1.0.1, the coordinates moved to `de.cuioss.sheriff.gateway`, and the version line restarted. The
+defect was not that an *event* fired the workflow. The defect was that the event fired on
+*merged-ness* -- every merge touching that file was a publication, because nothing in the lane ever
+asked whether the declared version had actually changed. A path filter cannot answer that question:
+`.github/project.yml` carries `name`, `description`, `maven-build`, `sonar`, `pages` and
+`github-automation` today, and that list is open. Editing any of them matched the filter and cut a
+release.
+
+*What changed.* The pinned `cuioss-organization` reusable release workflow now owns a
+*version-changed guard*: it compares the declared version against the parent commit's and refuses to
+release when it did not move. That is precisely the discrimination the 2026-07-12 trigger lacked, and
+it lives one level up -- in a versioned, centrally-maintained workflow consumed by every project in
+the organisation -- rather than in each caller's own YAML.
+
+*Why this reopens the trigger question rather than settling it by itself.* A guard that lives
+upstream is only as good as the caller's discipline in *consuming* it. A caller that re-implements
+the same comparison locally gets two answers that can disagree, and the local copy is the one that
+rots. A caller that treats its `paths:` filter as the decision reproduces the 2026-07-12 defect under
+a new name. And a guard that decides correctly still leaves ADR-0034's *other* residual risks
+untouched: nothing rejects a change that both removes a trigger and edits the paths it watches, and
+nothing enforces a merge hold while a release run is in flight.
+
+So the structural choice point is narrower than ADR-0034's, and different in kind: *given that the
+release decision can now be made correctly and centrally, where does that decision live, and what
+must the caller refrain from doing?*
+
+== Decision
+
+*A release is cut by either of two paths, and the question "is this merge a release?" is answered
+centrally, never locally.*
+
+The mechanisms that realise this:
+
+* *Two triggers, deliberately asymmetric.* `.github/workflows/release.yml` declares
+  `workflow_dispatch` and a `pull_request` event narrowed by `types: [closed]`, `branches: [main]`
+  and `paths: ['.github/project.yml']`. The merge path is *conditional* -- it publishes only when the
+  central guard says the declared version moved. The dispatch path is *unconditional* -- it publishes
+  whatever the version declaration says at the dispatched ref, including a re-declaration of an
+  unchanged version. That asymmetry is the design, not an oversight: the merge path is the ordinary
+  route and is guarded; the dispatch is the operator-gated fallback for when the ordinary route
+  cannot or did not fire, and its lack of a guard is exactly what makes it a fallback.
+* *The version-changed decision is consumed, never re-implemented.* The caller declares the trigger
+  and delegates the decision. There is no local version comparison, no local "did the version move"
+  step, and none may be added. A second implementation of a security-relevant decision is a second
+  answer, and the local copy is the one that drifts out of sync with the upstream it was copied from.
+* *The `paths:` filter is a prefilter and never the decision.* It matches *every* edit to
+  `.github/project.yml`, not just a version bump, so a merge arriving at the workflow proves nothing
+  about the version. Its only job is to keep unrelated merges from spending a runner. Reading it as
+  the release condition is the 2026-07-12 defect restated, and the workflow says so in-file at the
+  trigger.
+* *The `branches: [main]` filter bounds who may ask.* `branches:` filters on the pull request's
+  *base*, so only a pull request merging into the main line can reach the release job at all. Without
+  it, a merge into any long-lived branch that touched the declaration file would enter the workflow
+  and be decided by the central guard's comparison against *that* branch -- a release cut from a
+  non-main line. This is a base filter, not the version discriminator: it narrows what may ask, never
+  what is answered.
+* *`merged == true` is defence in depth, not the guard's substitute.* The release job additionally
+  refuses any `pull_request` close that was not a merge. The central guard checks merged-ness too, so
+  this is not here because the guard is blind to it; its merit is not spending a runner on a
+  close-without-merge, and one more independent refusal on the path to an irreversible act.
+* *Both reachable paths sign under the same ref.* A pull request closed *by being merged* runs
+  against the branch it was merged into, so `GITHUB_REF` is `refs/heads/main` on the merge path
+  exactly as on the dispatch path. This is read off the project's own signing certificates -- 0.1.0
+  (`workflow_dispatch`) and 0.1.1 (`pull_request`) both carry
+  `job_workflow_ref = .../release.yml@refs/heads/main` -- not inferred from the trigger
+  configuration. The accepted Cosign identity is therefore a single anchored ref, and widening it to
+  admit a merge ref would accept a ref no release has ever used.
+* *ADR-0034's carried-forward rules stand unchanged.* A change that removes or weakens an
+  event-driven trigger still merges on its own, ahead of any change that would fire that trigger,
+  because a `pull_request` workflow is evaluated from the *base* branch and a mixed change fires the
+  old definition on the very merge that removes it. The post-dispatch merge hold and the "exactly one
+  of each" verification carry forward likewise. Re-arming a trigger does not retire the rules that
+  make changing one safe -- it makes them load-bearing again.
+
+== Consequences
+
+=== Positive
+
+* *The publication decision is made where it can be made correctly.* Whether a version moved is a
+  fact about the declaration, and the guard that reads it is maintained once for the organisation
+  rather than once per repository. A defect in it is fixed in one place.
+* *The ordinary release path costs no separate act.* Landing the version bump is the release. The
+  step that ADR-0034 deliberately kept separate is re-merged, but only because the thing that makes
+  the merge safe is now checked rather than assumed.
+* *The 2026-07-12 failure mode is closed by mechanism rather than by prohibition.* ADR-0034 closed it
+  by forbidding the trigger; this closes it by answering the question the trigger could not. The
+  earlier defence depended on nobody re-adding an event; this one survives the event being present.
+* *A fallback exists when the guarded path does not fire.* An operator whose merge cut no release has
+  a documented, unconditional route -- and, because the two paths differ in exactly one respect, a
+  short explanation of why the merge did nothing.
+
+=== Negative
+
+* *Reviewing a version bump is again reviewing a publication.* The merge of a version-changing
+  `.github/project.yml` pull request *is* the irrevocable act. ADR-0034 rejected this shape outright;
+  this record accepts it, and accepts that the safety now rests on the guard rather than on the
+  reviewer's framing of what they are approving.
+* *The safety of the ordinary path depends on an upstream this repository does not own.* The guard is
+  consumed from a pinned `cuioss-organization` workflow. Pinning bounds the exposure to a deliberate
+  bump, but the decision itself is no longer inspectable in this repository's own YAML.
+* *Two paths mean two behaviours to document and to keep in agreement.* The runbook, the process
+  narrative, the workflow's own comments and the operator-facing verification command all state the
+  posture, and nothing mechanical keeps them in sync.
+
+=== Risks
+
+Every entry below is a *residual risk*, not a closed safeguard. As in ADR-0034, they are listed
+separately from the Decision precisely so the mechanisms above are never read as covering them.
+
+* *Nothing rejects a mixed trigger-removal change.* Unchanged from ADR-0034, and now materially more
+  likely to matter: an event-driven trigger exists again, so a future change that both weakens it and
+  edits the paths it watches will fire the *old* definition on the merge that removes it. Closing
+  this needs an executable check under `.github/workflows/`; until one exists the merges-on-its-own
+  rule is operator discipline.
+* *Nothing enforces the post-dispatch merge hold.* Unchanged from ADR-0034. No branch policy, merge
+  freeze or workflow check prevents a merge landing between the trigger and the run's completion, so
+  a queue landing can race the release's force-push to the protected branch. The merge path narrows
+  the window rather than closing it -- the run starts at the merge rather than at a separate operator
+  act -- but nothing bounds the far end.
+* *The `paths:` prefilter can be mistaken for the guard by a later reader.* The two are adjacent in
+  the same `on:` block and the prefilter is the visible one; the decision is in a workflow this
+  repository only references. The defence is the in-file comment at the trigger and this record. A
+  future change that narrows or widens the prefilter believing it is tuning the release condition
+  would be tuning nothing.
+* *A local re-implementation of the version check would be invisible until it disagreed.* Nothing
+  rejects a caller-local version comparison. The prohibition is normative prose, and a second answer
+  is only detectable at the moment it differs from the first -- during a release.
+* *Post-publication actions outside the repository still cannot be verified by the run itself.*
+  Unchanged from ADR-0034; registry package visibility remains the standing case.
+
+== Alternatives Considered
+
+*Keep `workflow_dispatch` as the only trigger (ADR-0034 as it stood).* The 2026-07-12 failure mode
+stays closed by construction and no upstream is trusted with the release decision. Rejected because
+the reason the event trigger was banned has been addressed at its root: the trigger fired on
+merged-ness, and now something asks whether the version moved. Retaining the ban would preserve the
+*remedy* after the *defect* was fixed, at the standing cost of a manual act on every release and of a
+runbook whose pre-dispatch gate asserts a trigger shape that is no longer true. A prohibition kept
+past its cause becomes folklore.
+
+*Re-implement the version-changed check locally, in this repository's workflow.* The release
+condition becomes inspectable in the file that carries the trigger, with no dependency on an upstream
+for a security-relevant decision. Rejected because it produces two implementations of one decision.
+They agree on the day the copy is made and diverge silently afterwards, and the divergence surfaces
+only during a release -- either as a release that should not have happened or as one that mysteriously
+did not. Central ownership is the point: consuming one answer is what makes the answer improvable.
+
+*Trigger on the merge but require a separate confirmation before publishing.* The merge starts the
+lane and an approval gate holds it short of the irrevocable act, restoring a deliberate human
+decision without losing the automatic path. Rejected as the worst of both: it reintroduces the manual
+act ADR-0034's critics find costly while leaving the reviewer of the version bump still unsure
+whether their approval was the decision, and it adds a second place a release can stall unnoticed. An
+approval that always follows a merge degenerates into a formality, which is the same substitution of
+a proxy for a decision that ADR-0034 rejected.
+
+*Drop the `paths:` prefilter and let the central guard decide every merge to the main line.* One less
+filter to reason about, and the guard is the decision anyway. Rejected because the prefilter is cheap
+and its job is real -- keeping unrelated merges from spending a runner and from appearing in the
+release workflow's run history, where a long list of no-op runs would make a genuine one harder to
+notice.
+
+== Generalisation
+
+When a mechanism is banned because it produced a bad outcome, distinguish the *mechanism* from the
+*missing discrimination* that let it misfire. A ban is the right immediate response and the wrong
+permanent one: it is cheap, verifiable and total, but it fixes the symptom by removing capability,
+and it survives its own justification because nothing forces a re-examination when the underlying gap
+is later closed. Two questions decide whether a ban may be lifted. Has something been added that
+answers the question the banned mechanism could not answer -- not merely narrowed the circumstances in
+which it fires? And is that answer owned somewhere it can be maintained and corrected, rather than
+copied into each consumer? Where both hold, the ban may be replaced by the guard, and the ban's
+*residual* rules -- the ones that were about operating the mechanism safely rather than about
+forbidding it -- must be carried forward explicitly, because lifting the ban is exactly when they
+start mattering again. Where either fails, a filter that narrows *when* the mechanism fires is not a
+substitute for a check on *whether it should*: narrowing reduces the frequency of the bad outcome
+while leaving it reachable, and a rare irreversible failure is harder to catch than a common one.
+
+== References
+
+* link:0034-Publication_is_triggered_only_by_a_deliberate_standalone_invocation_never_by_a_repository_event_or_an_automated_lifecycle_step.adoc[ADR-0034]
+  -- the superseded decision. Its 2026-07-12 incident record, its base-branch trigger-removal rule
+  and its residual operator risks remain the reasoning this record builds on.
+* link:../development/release-process.adoc[Release Process] -- the canonical process narrative: the
+  two release paths, the guard's role, and the surviving trigger rule.
+* link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] -- the two triggers, the
+  `merged == true` gate, the prefilter comment, and the signing identity assertion.
+* link:../user/container-image.adoc[Container Image] -- the operator layer for the published image:
+  digest pinning and signature verification under the single accepted ref.
+* The repository's standalone `release` runbook under `.claude/skills/release/` -- the two-path
+  procedure, the pre-cut assertions, and the "exactly one of each" verification.

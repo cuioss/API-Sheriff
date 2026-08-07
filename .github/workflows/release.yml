@@ -40,14 +40,37 @@ permissions:
 
 jobs:
   release:
-    # ANDed with the central version-changed guard inside the called workflow, NEVER an alternative
-    # to it. Its merit is defence-in-depth plus not spending a runner on a close-without-merge — it
-    # is NOT here because the central guard is blind to merged-ness; that guard checks merged-ness
-    # too.
-    # Written event-first so the dispatch path still runs: on workflow_dispatch there is no
-    # pull_request context, so the first operand is true and the condition short-circuits. This is
-    # the same shape .github/workflows/benchmark.yml already ships.
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    # TWO OPERANDS DOING TWO DIFFERENT JOBS. Both are ANDed with the central version-changed guard
+    # inside the called workflow, NEVER an alternative to it.
+    #
+    # THE DISPATCH OPERAND — `github.event_name != 'workflow_dispatch' || github.ref ==
+    # 'refs/heads/main'`. `workflow_dispatch:` above takes no branch filter (GitHub offers none), so
+    # a dispatch can be launched from any branch or tag. The signing-identity block on publish-image
+    # below (§ "THE IDENTITY NAMES EXACTLY ONE REF") narrows the accepted Cosign identity to the
+    # single ref refs/heads/main, resting that narrowing on the claim that both events able to reach
+    # the lane yield refs/heads/main. On the merge path `branches: [main]` above ENFORCES that claim;
+    # on the dispatch path nothing did — it was assumed. This operand is what makes it a checked
+    # fact, and it sits on the release job so a non-main dispatch is refused BEFORE the Maven
+    # publication rather than after it. The Cosign verify step is not the enforcement point: it
+    # matches a certificate against an already-produced signature, which is long after the jars are
+    # on Maven Central. Do not restate the certificate evidence here — it lives in that block.
+    #
+    # THE MERGE OPERAND — `github.event_name != 'pull_request' || github.event.pull_request.merged
+    # == true`. Its merit is defence-in-depth plus not spending a runner on a close-without-merge —
+    # it is NOT here because the central guard is blind to merged-ness; that guard checks
+    # merged-ness too.
+    #
+    # Both operands are written event-first so each path still runs: the event a given operand does
+    # not govern makes its first disjunct true and short-circuits the operand. This is the same shape
+    # .github/workflows/benchmark.yml already ships.
+    #
+    # The main-ref test is DELIBERATELY dispatch-scoped. The merge path is already base-filtered by
+    # `branches: [main]`, so extending the ref test to it would stake this project's primary release
+    # path on an assumption about github.ref under a closed-merge event, buying no guarantee that the
+    # base filter does not already provide.
+    if: >-
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+      && (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
     permissions:
       contents: write
     uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@937fbcf44d34d826b3bcd66d49d7a7d32030f39a # v0.18.0
@@ -392,27 +415,42 @@ jobs:
       # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES:
       #
       #   --certificate-oidc-issuer      https://token.actions.githubusercontent.com
-      #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$
+      #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$
       #
-      # THE IDENTITY HAS TWO LEGITIMATE REFS, NOT ONE. Fulcio puts the OIDC `job_workflow_ref` claim
-      # in the certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
+      # THE IDENTITY NAMES EXACTLY ONE REF. Fulcio puts the OIDC `job_workflow_ref` claim in the
+      # certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
       # workflow — so that claim names release.yml ITSELF (never the org reusable workflow) at the ref
-      # the run was triggered on, i.e. GITHUB_REF. This lane has two release paths and they carry
-      # different refs:
+      # the run was triggered on, i.e. GITHUB_REF. Only two events can reach this job, and BOTH of
+      # them yield refs/heads/main — each one because the release job's `if:` or the trigger's own
+      # filter refuses the alternative, never because the alternative is merely unlikely:
       #
-      #   * workflow_dispatch from main  -> GITHUB_REF = refs/heads/main
-      #   * merge of a .github/project.yml PR -> GITHUB_REF = refs/pull/<N>/merge
+      #   * workflow_dispatch -> GITHUB_REF = refs/heads/main. `workflow_dispatch:` carries no branch
+      #     filter, so this is not a property of the trigger; the `github.ref == 'refs/heads/main'`
+      #     operand on the release job above is what refuses a dispatch from any other ref, and it
+      #     refuses it before the Maven release runs.
+      #   * a MERGED-close .github/project.yml PR -> GITHUB_REF = refs/heads/main, the base branch it
+      #     was merged INTO, which `branches: [main]` on the trigger confines to main. A close
+      #     WITHOUT a merge never reaches here at all: the `merged == true` gate on the release job
+      #     above refuses it before anything runs.
       #
-      # The merge ref is a FIRST-CLASS release path, not an anomaly to be excluded: the org
-      # version-changed guard plus `merged == true` already decided that this merge is a real release
-      # (see the trigger comment at the top of this file), and this job only runs when
-      # needs.release.outputs.released-version is non-empty. Pinning the accepted identity to
-      # @refs/heads/main alone would therefore reject the signature of a perfectly legitimate release.
+      # THIS IS NOT ARGUED FROM DOCUMENTATION — IT IS READ OFF OUR OWN CERTIFICATES. Both signed
+      # digests this project has ever published carry the same single ref in their SAN:
+      #
+      #   * 0.1.0 (sha256:937b3995...) — github_workflow_trigger = workflow_dispatch,
+      #                                  job_workflow_ref = .../release.yml@refs/heads/main
+      #   * 0.1.1 (sha256:dbd73c2e...) — github_workflow_trigger = pull_request,
+      #                                  job_workflow_ref = .../release.yml@refs/heads/main
+      #
+      # 0.1.1 is the decisive one: a MERGE-triggered run that signed at refs/heads/main. No release
+      # this project has cut has ever carried a merge-ref identity, so an accepted set widened to
+      # admit one was widened for a ref that has never been used. GitHub's
+      # events-that-trigger-workflows reference agrees — on a close-by-merge GITHUB_REF is the base
+      # branch — but it is corroboration here, not the premise the identity rests on.
       #
       # The regexp is TIGHTLY ANCHORED, not a wildcard: anchored at both ends, bound to this exact
-      # repository and this exact workflow file, and the PR number is digits-only. It admits exactly
-      # the two refs above and nothing else. Do NOT relax it to a `.*` — a loose identity would accept
-      # a signature from any workflow in any repository and the check would prove nothing.
+      # repository and this exact workflow file, and it admits that one ref and nothing else. Do NOT
+      # relax it to a `.*` — a loose identity would accept a signature from any workflow in any
+      # repository and the check would prove nothing.
       #
       # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
       # below RUNS them — the lane proves its own signing identity rather than asserting it in prose.
@@ -440,7 +478,7 @@ jobs:
       - name: Verify the signature under the published identity
         env:
           DIGEST: ${{ steps.digest.outputs.value }}
-          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
+          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
         run: |
           set -euo pipefail
           REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"

@@ -286,7 +286,7 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   a set literal. *(Status: proposed.)*
 |===
 
-NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0034 are recorded in
+NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035 are recorded in
 link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
 table as a curated entry point; a missing row is index drift, never a withdrawn decision.
 

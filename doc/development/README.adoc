@@ -30,13 +30,15 @@ to *run* the finished gateway).
   merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,
   and the fix-by-default / suppress-with-rationale escape hatch.
 
-| link:release-process.adoc[Release Process -- dispatch-only]
-| How a release is cut -- declare the version in `.github/project.yml`, then deliberately dispatch
-  the Release workflow -- what one dispatch produces (Maven coordinates, the GHCR image, its SBOM
-  and its Cosign signature), why the image version is a checked fact rather than a convention, the
-  test-which-builds/push-that-digest inversion that makes "push exactly what was tested" true by
+| link:release-process.adoc[Release Process]
+| How a release is cut -- merge a version change in `.github/project.yml`, which is the publishing
+  act once the centrally-owned version-changed guard lets it through, with `workflow_dispatch` as the
+  unconditional fallback -- what one release run produces (Maven coordinates, the GHCR image, its
+  SBOM and its Cosign signature), why the image version is a checked fact rather than a convention,
+  the test-which-builds/push-that-digest inversion that makes "push exactly what was tested" true by
   construction, the two-tag scheme and the deliberate absence of `:latest`, and the two trigger
-  rules -- dispatch is the only trigger, and a trigger removal merges on its own.
+  rules -- the version-changed guard is the release decision, and a trigger removal merges on its
+  own.
 
 | link:protocol-processors.adoc[Protocol Processors -- SPI and dispatch seam]
 | The `ProtocolProcessor` SPI, the boot-time registry that binds a protocol to its processor, and

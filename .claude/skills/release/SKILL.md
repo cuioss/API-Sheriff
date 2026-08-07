@@ -43,7 +43,7 @@ on:
 | Path | When it fires | Role |
 |---|---|---|
 | **Merge of a version bump** — a `pull_request` closed with `merged == true`, base `main`, touching `.github/project.yml` | only when the **central guard** inside the pinned `cuioss-organization` reusable workflow sees `release.current-version` actually changed between the merge commit and its first parent, **and** no tag for that version already exists | the ordinary way a release is cut |
-| **`workflow_dispatch`** | always, unconditionally — nothing gates this path but the operator, and that includes re-releasing an unchanged version | the deliberate fallback: recover a failed lane, or cut a version whose declaration already landed |
+| **`workflow_dispatch`** | whenever dispatched **from `main`** — the `release` job's `if:` confines the dispatch path to `refs/heads/main`, and nothing else gates it, which includes re-releasing an unchanged version | the deliberate fallback: recover a failed lane, or cut a version whose declaration already landed |
 
 **State them as a pair.** An operator whose merge did *not* cut a release needs to know which
 mechanism decided that before reaching for the other path — Step 5 *Path A* carries that diagnosis.
@@ -75,8 +75,9 @@ trigger fired on *merged-ness* — every merge touching the file was a publicati
 `cuioss-organization` workflow now owns the version-changed decision, which is precisely the
 discrimination that trigger lacked. It is **consumed** here and **never re-implemented locally**:
 `publish-image` keys off `needs.release.outputs.released-version != ''`, which is the guard's own
-verdict surfaced. `release.yml`'s header forward-references **ADR-0035** for the decision; that ADR is
-still owed, so **the reference is dangling and this section is the current account.**
+verdict surfaced. The decision is recorded in **ADR-0035** (`doc/adr/`), which `release.yml`'s header
+references and which supersedes ADR-0034; read it there for the reasoning. This section remains the
+narrative account of the 2026-07-12 incident.
 
 Consequently:
 
@@ -87,15 +88,20 @@ Consequently:
   a block to report, never something to substitute locally.
 - A change that removes or weakens an event-driven trigger must merge **on its own**, before any
   change that would fire that trigger — for a `pull_request` event GitHub evaluates the workflow
-  definition **from the base branch**. `doc/development/release-process.adoc` records that rule (see
-  *See also* for the caveat about that document's current state); do not restate it from memory.
+  definition **from the base branch**. `doc/development/release-process.adoc` records that rule; do
+  not restate it from memory.
 
-### The guard has NEVER been observed — read this before cutting
+### The guard has fired once and has never been observed refusing — read this before cutting
 
-**No merge-triggered release has ever run in this repository, and the central version-changed guard
-has never been observed either refusing or firing.** The `0.1.0` cut went out by `workflow_dispatch`,
-which is the *unconditional* path — so the guard's discrimination was never exercised even then. It
-ships proven in self-test and **unproven in production**.
+**The merge path has run exactly once.** `0.1.1` was cut on 2026-08-07 by merging the version-bump
+PR (#186): its signing certificate carries `github_workflow_trigger = pull_request` at
+`github_workflow_sha = f3b9ed6`, the merge commit. The central version-changed guard has therefore
+been observed **firing** on a real version change. The `0.1.0` cut before it went out by
+`workflow_dispatch`, the *unconditional* path, which exercises no discrimination at all.
+
+**What has never been observed is the guard REFUSING.** No merge leaving the declared version
+unchanged has been watched arriving at the workflow and being turned away. That half ships proven in
+self-test and **unproven here**.
 
 That is not a reason to avoid the merge path. It is a reason to **read the run** rather than assume
 it: after the merge, open the `Release` run and observe what the `release` and `publish-image` jobs
@@ -113,9 +119,8 @@ actually did (Step 5, *Path A*), instead of inferring the outcome from the merge
 ## Ported reference — the facts this procedure depends on
 
 These six sections are the operative content of `doc/development/release-process.adoc`. They are
-reproduced here so the runbook can be followed cold; that document remains the canonical narrative
-**for everything except the trigger, where it is currently stale** — see *See also*. None of the six
-sections below concerns the trigger, so all six stand.
+reproduced here so the runbook can be followed cold; that document remains the canonical narrative.
+None of the six sections below concerns the trigger, so all six stand on their own terms.
 
 ### The image version is the Maven version
 
@@ -304,10 +309,10 @@ have passed.'
 > shell would run whatever sat between them.
 
 > **THIS PR IS THE RELEASE. Do not merge it here.** Steps 2, 3 and 4 are the pre-cut safety
-> assertions, and on Path A they exist to gate *this merge* — the Trivy posture, the stubs-branch
-> boundary, the tag-absence check, the green-`main` gate and the quiesced queue all belong **before**
-> the publishing act, not after it. Merging now would run every one of them on an irrevocable
-> release that has already happened.
+> assertions, and on Path A they exist to gate *this merge* — the Trivy posture, the tag-absence
+> check, the green-`main` gate and the quiesced queue all belong **before** the publishing act, not
+> after it. Merging now would run every one of them on an irrevocable release that has already
+> happened.
 
 ### Step 2 — Confirm the tree and the pull-request queue are clean
 
@@ -336,43 +341,6 @@ branch is **up to date with `origin/main`** (`git merge-base --is-ancestor origi
 commit the queue produces is the `origin/main` the rest of this step gates on plus the version bump
 and nothing else.
 
-> **HARD BOUNDARY — `release/relocation-stubs`.** That branch exists on the remote and **must NEVER
-> be merged**. It carries the relocation-only stubs published under the abandoned
-> `de.cuioss.sheriff.api` coordinates. The release must not pick it up. Confirm it is not in the
-> ancestry of what you are about to release:
->
-> ```bash
-> git fetch origin '+refs/heads/release/relocation-stubs:refs/remotes/origin/release/relocation-stubs' \
->   || { echo "ERROR: could not fetch the stubs branch - the check did not evaluate" >&2; exit 1; }
-> git merge-base --is-ancestor origin/release/relocation-stubs origin/main; case $? in
->   0) echo "STOP: stubs branch is in main" >&2; exit 1 ;;
->   1) echo "OK: stubs branch is not in main" ;;
->   *) echo "ERROR: the check did not evaluate - this is NOT a pass" >&2; exit 1 ;;
-> esac
-> ```
->
-> **FULLY QUALIFY THE SOURCE REF, AND FORCE IT — `+refs/heads/…`, never the bare branch name.**
-> The unqualified form `git fetch origin release/relocation-stubs:refs/remotes/origin/…` **DELETES
-> the remote-tracking ref instead of creating it** on any clone with `fetch.prune=true` (or
-> `remote.origin.prune=true`), which is a common global setting. `git fetch` then reports
-> `- [deleted] (none) -> origin/release/relocation-stubs`, the very next line dies with
-> `fatal: Not a valid object name origin/release/relocation-stubs`, and the guard lands on its
-> `*)` arm. Observed on the 0.1.0 cut: the branch was present on the remote the whole time.
->
-> **That failure looks exactly like the branch having been deleted, and it is not.** Before
-> concluding anything from an `ERROR` here, check the remote directly — `git ls-remote --heads
-> origin | grep relocation` — and re-run with the qualified refspec above. Never "resolve" it by
-> skipping the check or appending `|| true`; the whole point of this boundary is that it fails
-> closed.
->
-> **Branch on the exit code, never on `&&` / `||`.** `git merge-base --is-ancestor` exits `0` for
-> ancestor, `1` for not-ancestor and `128` on error — and an absent
-> `origin/release/relocation-stubs` remote-tracking ref (a single-branch or shallow clone, a clone
-> predating the branch, or the prune misfire above) is exactly such an error. A
-> `… && echo STOP || echo OK` idiom collapses `1` and `128` into the same branch, so a check that
-> never ran prints the reassuring `OK`. **An error is not a pass**, and the explicit `git fetch`
-> above is what stops the common case from reaching that arm at all.
-
 ### Step 3 — Re-assert the pre-cut safety evidence (MANDATORY)
 
 The plan that authored this skill recorded a baseline and the method. **Items (i), (iii) and (iv)
@@ -397,8 +365,13 @@ Confirm **all four**, and treat any one of them failing as a stop:
 1. The `on:` block carries **exactly** `workflow_dispatch` plus the `pull_request` trigger with
    `types: [closed]`, `branches: [main]`, `paths: ['.github/project.yml']` — **and nothing else.** No
    `push`, no `schedule`, no additional path, no widened `branches:`, no extra `types:`.
-2. The `release` job still carries its merged-ness gate:
-   `if: github.event_name != 'pull_request' || github.event.pull_request.merged == true`.
+2. The `release` job's `if:` still carries **both** operands, ANDed:
+   `(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')` and
+   `(github.event_name != 'pull_request' || github.event.pull_request.merged == true)`. The second is
+   the merged-ness gate. The first is what confines a dispatch to `main` — `workflow_dispatch:`
+   carries no branch filter of its own, and the Cosign identity Step 8 verifies accepts only
+   `refs/heads/main`, so losing that operand would let a dispatch from any ref publish under an
+   identity the project's own verification command then rejects.
 3. The `publish-image` job still carries `if: needs.release.outputs.released-version != ''` — the
    central guard's own verdict, surfaced. Without it a guard-skipped merge would still spend 90
    minutes on a native build and then re-push and re-sign an already-released tag.
@@ -456,7 +429,8 @@ anything else open can land ahead of it and move the commit your release is cut 
 >    team, and do not merge anything yourself, from the cut until Step 7 reports the run finished.
 >    No branch policy, merge freeze or workflow check enforces this — it is an operator obligation,
 >    and a merge landing inside that window can still race the release force-push. Treat it as a
->    residual operator risk, not a closed safeguard (ADR-0034 records it as one).
+>    residual operator risk, not a closed safeguard — ADR-0035 records it as exactly that residual
+>    risk, and states plainly that nothing enforces the post-dispatch merge hold.
 
 **(iv) Confirm no tag for the release version already exists.**
 
@@ -478,12 +452,12 @@ esac
 **Both must report `OK`. Anything else stops the release** — including `ERROR`, which means the
 check never evaluated and is therefore not a pass.
 
-> **Match the full ref, and branch on the exit code — the same discipline as the stubs check in
-> Step 2.** `git tag --list '<version>'` and `git ls-remote … | grep …` only *print*; a procedure
-> that reads their output by eye is not a guard, and a re-run that slips past it reaches the
-> workflow's `force: true` tag push. `grep -w '<version>'` is doubly wrong: `.` is a regex
-> any-character, and `-w` treats `-` as a word boundary, so `-w '0.1.0'` also matches
-> `refs/tags/0.1.0-rc1`. The exact `refs/tags/<version>` forms above match one ref and nothing else.
+> **Match the full ref, and branch on the exit code.** `git tag --list '<version>'` and
+> `git ls-remote … | grep …` only *print*; a procedure that reads their output by eye is not a guard,
+> and a re-run that slips past it reaches the workflow's `force: true` tag push. `grep -w '<version>'`
+> is doubly wrong: `.` is a regex any-character, and `-w` treats `-` as a word boundary, so
+> `-w '0.1.0'` also matches `refs/tags/0.1.0-rc1`. The exact `refs/tags/<version>` forms above match
+> one ref and nothing else.
 >
 > **Why this is checked directly:** the tag push is `force: true`, so a re-run can **MOVE** an
 > existing release tag rather than refusing. `release:prepare` would likely fail first, but that is
@@ -583,8 +557,9 @@ gh run view "$RUN_ID" --repo cuioss/API-Sheriff --json displayTitle,headBranch,h
 > confirm it names the version-bump PR before watching it.
 
 **Now READ THE RUN. Do not infer the outcome from the merge having happened** — see *The guard has
-NEVER been observed* above; until a cut has actually been read off a run, every outcome here is a
-first observation rather than a confirmation:
+fired once and has never been observed refusing* above. Exactly one merge-triggered cut (`0.1.1`) has
+been read off a run, so a firing guard is a confirmation of that single precedent; a *refusing* guard
+would still be a first observation:
 
 | what the run shows | what decided it | published? |
 |---|---|---|
@@ -613,9 +588,11 @@ git ls-remote --refs --tags origin 'refs/tags/<version>'
 
 #### Path B — dispatch, deliberately
 
-The unconditional fallback: recover a lane that failed after a correct guard decision, or cut a
-version whose declaration already landed on `main`. **Nothing central refuses on this path** — the
-operator is the only gate, which is why Steps 2–4 are not optional here either.
+The fallback: recover a lane that failed after a correct guard decision, or cut a version whose
+declaration already landed on `main`. The `release` job's `if:` confines a dispatch to
+`refs/heads/main` — a dispatch from any other ref is skipped, silently. Past that ref test
+**nothing central refuses on this path**: the operator is the only remaining gate, which is why
+Steps 2–4 are not optional here either.
 
 **Record the pre-dispatch high-water mark first.** Run ids increase monotonically, so the newest
 existing `Release` run id is what lets the next step tell *your* dispatch apart from one that was
@@ -648,11 +625,11 @@ run the two guarded commands above first and dispatch immediately after.)
 
 > **Why `--ref main` and not `--ref "$MAIN_SHA"`.** Dispatching at the gated SHA looks like the
 > tighter fix, and it is the wrong one here — for three independent reasons:
-> 1. **The signature identity is bound to the ref, and the accepted set is closed.** Step 8 verifies
->    the Cosign signature against a pattern accepting exactly `refs/heads/main` and
->    `refs/pull/<N>/merge`. That value is the OIDC `job_workflow_ref` of the `publish-image` job, so
->    it changes with the dispatch ref. A dispatch at a SHA is in neither branch of the pattern, so it
->    produces a certificate this runbook's own verification would reject.
+> 1. **The signature identity is bound to the ref, and the accepted set is a single value.** Step 8
+>    verifies the Cosign signature against a pattern accepting exactly one ref, `refs/heads/main`.
+>    That value is the OIDC `job_workflow_ref` of the `publish-image` job, so it changes with the
+>    dispatch ref. A dispatch at a SHA does not match that pattern, so it produces a certificate this
+>    runbook's own verification would reject.
 > 2. **The release force-pushes to a branch.** `maven-release-plugin` commits the version transition
 >    and the workflow force-pushes it to `main`; a dispatch at a detached SHA has no branch to push.
 > 3. **`ref` is documented as a branch or tag name.** The workflow-dispatch API documents exactly
@@ -816,25 +793,29 @@ nothing.
 
 Verify the Cosign signature **against that resolved digest**, using **exactly** these two identity
 values. They are derived from the `publish-image` job's OIDC identity, which embeds the ref the run
-was triggered from — so the accepted set is a pattern over the **two** refs a release can legitimately
-come from, not a single literal:
+was triggered from — and every release this project has cut embedded the **same** one,
+`refs/heads/main`:
 
 ```bash
 cosign verify "$IMAGE@$VERSION_DIGEST" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
+  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
 ```
 
-`refs/heads/main` is a `workflow_dispatch` release; `refs/pull/<N>/merge` is a merge-triggered one
-(a `pull_request` run's `GITHUB_REF` is the merge ref, and that path is legitimate because the central
-version-changed guard plus `merged == true` already decided it was a release). The pattern stays
-anchored at both ends and bound to this repository and this workflow file — **do not** relax it to a
-wildcard. The workflow runs this same command against every digest it signs, so a failure here is a
-real supply-chain signal, not a stale expectation.
+**Both release paths sign under `refs/heads/main`, and that is read off the certificates rather than
+inferred from the trigger config.** 0.1.0 (`github_workflow_trigger = workflow_dispatch`) and 0.1.1
+(`github_workflow_trigger = pull_request`) both carry
+`job_workflow_ref = .../workflows/release.yml@refs/heads/main`. A pull request closed *by being
+merged* runs against the branch it was merged into, so the merge path never produces a merge-ref
+identity. The value is a *regexp* only because the identity string contains dots that must be
+escaped; it stays anchored at both ends and bound to this repository and this workflow file — **do
+not** relax it to a wildcard. The workflow runs this same command against every digest it signs, so a
+failure here is a real supply-chain signal, not a stale expectation.
 
-**Three files carry this pattern** — `.github/workflows/release.yml` (the `publish-image` verify
-step), `doc/user/container-image.adoc` (the operator-facing command), and this runbook. Nothing
-mechanical keeps them in sync; changing one means changing all three.
+**Four sites in three files carry this pattern** — `.github/workflows/release.yml` **twice** (the
+`A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES` comment block and the `publish-image` verify
+step's `IDENTITY_REGEXP` env value), `doc/user/container-image.adoc` (the operator-facing command),
+and this runbook. Nothing mechanical keeps them in sync; changing one means changing all four.
 
 > **Ignore the benchmark run this triggers.** `.github/workflows/benchmark.yml` fires on
 > `push: tags: ["*"]`, so the release's tag push **starts a benchmark run**. That run belongs to the
@@ -1017,7 +998,7 @@ authenticated check passes.
   Never merge a version bump and then run the safety work.
 - **A merge that cut no release is a verdict to read, not a reason to dispatch.** Diagnose which
   mechanism refused — prefilter, `merged == true`, or the central guard — before reaching for Path B.
-  Dispatch is unconditional and will publish over an undiagnosed refusal.
+  A dispatch from `main` faces no central refusal and will publish over an undiagnosed one.
 - **Re-assert items (i), (iii) and (iv) at cut time.** They are time-varying and are never inherited
   from a recorded baseline.
 - **Dispatch only after re-reading `origin/main`.** Step 5 Path B aborts non-zero unless it still
@@ -1026,9 +1007,6 @@ authenticated check passes.
 - **Nothing merges to `main` between the cut and run completion** — the release force-pushes to
   `main` twice as a queue bypass actor. On Path A that window opens at **enqueue**, not at run start.
   This one is unenforced: it is an operator obligation, not a mechanism.
-- **`release/relocation-stubs` must NEVER be merged**, and the release must not pick it up. Fetch it
-  with the **fully-qualified forced refspec** (`+refs/heads/…`); the bare branch name self-prunes
-  under `fetch.prune=true` and the guard then reports `ERROR` for a branch that is still there.
 - **Set the GHCR package to *public*, not *internal*, and assert the `visibility` field** rather than
   inferring it from a pull. Internal passes every authenticated check while anonymous pulls 401.
 - **Update the version-bearing examples (Step 10) after the image is public**, and delete any caveat
@@ -1064,18 +1042,12 @@ authenticated check passes.
 
 ## See also
 
-- `doc/development/release-process.adoc` — the canonical process narrative. **It is currently STALE
-  on the trigger and must not be read as authoritative there:** it still describes the dispatch-only
-  posture (§ *Why the `pull_request` trigger was removed*, § *Why the guard had to merge before
-  anything else*), which PR #171 superseded. Its rewrite is tracked follow-up work. What it records
-  that **does** still hold is the rule that *a change which removes or weakens an event-driven
-  trigger merges on its own*. For everything about **what fires a release**, this file and
-  `.github/workflows/release.yml` are the current sources; **this file is also the surviving
-  narrative account of the 2026-07-12 incident** — see *How the release is wired* above. The former
-  *Coordinate history* note in `README.adoc` was removed once `de.cuioss.sheriff.api` had been
-  abandoned long enough that the history was of no use to a reader arriving at the project.
-  **ADR-0034 is likewise stale** — it records the dispatch-only decision and is superseded by
-  ADR-0035, which `release.yml`'s header already references.
+- `doc/development/release-process.adoc` — the canonical process narrative, including the two release
+  paths, the guard's role, and the rule that *a change which removes or weakens an event-driven
+  trigger merges on its own*. **This runbook — not `release-process.adoc` — carries the surviving
+  narrative account of the 2026-07-12 incident**; see *How the release is wired* above, and ADR-0035
+  for the decision record. **ADR-0034 is superseded by ADR-0035**, which records the
+  guarded-merge-or-dispatch decision and which `release.yml`'s header references.
 - `.github/workflows/release.yml` — the release workflow, and the authoritative statement of both
   triggers. Its in-file comments carry the guard rationale, the run/skip-vs-value scope split, and
   the composability, ordering and attestation caveats behind the steps above.
