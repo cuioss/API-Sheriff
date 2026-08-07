@@ -1037,8 +1037,9 @@ authenticated check passes.
 
 - `doc/development/release-process.adoc` — the canonical process narrative, including the two release
   paths, the guard's role, and the rule that *a change which removes or weakens an event-driven
-  trigger merges on its own*. **This file is also the surviving narrative account of the 2026-07-12
-  incident** — see *How the release is wired* above. The former *Coordinate history* note in
+  trigger merges on its own*. **This runbook — not `release-process.adoc` — carries the surviving
+  narrative account of the 2026-07-12 incident**; see *How the release is wired* above, and ADR-0035
+  for the decision record. The former *Coordinate history* note in
   `README.adoc` was removed once `de.cuioss.sheriff.api` had been abandoned long enough that the
   history was of no use to a reader arriving at the project. **ADR-0034 is superseded by ADR-0035**,
   which records the guarded-merge-or-dispatch decision and which `release.yml`'s header references.
