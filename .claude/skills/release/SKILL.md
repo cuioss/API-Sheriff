@@ -648,11 +648,11 @@ run the two guarded commands above first and dispatch immediately after.)
 
 > **Why `--ref main` and not `--ref "$MAIN_SHA"`.** Dispatching at the gated SHA looks like the
 > tighter fix, and it is the wrong one here — for three independent reasons:
-> 1. **The signature identity is bound to the ref, and the accepted set is closed.** Step 8 verifies
->    the Cosign signature against a pattern accepting exactly `refs/heads/main` and
->    `refs/pull/<N>/merge`. That value is the OIDC `job_workflow_ref` of the `publish-image` job, so
->    it changes with the dispatch ref. A dispatch at a SHA is in neither branch of the pattern, so it
->    produces a certificate this runbook's own verification would reject.
+> 1. **The signature identity is bound to the ref, and the accepted set is a single value.** Step 8
+>    verifies the Cosign signature against a pattern accepting exactly one ref, `refs/heads/main`.
+>    That value is the OIDC `job_workflow_ref` of the `publish-image` job, so it changes with the
+>    dispatch ref. A dispatch at a SHA does not match that pattern, so it produces a certificate this
+>    runbook's own verification would reject.
 > 2. **The release force-pushes to a branch.** `maven-release-plugin` commits the version transition
 >    and the workflow force-pushes it to `main`; a dispatch at a detached SHA has no branch to push.
 > 3. **`ref` is documented as a branch or tag name.** The workflow-dispatch API documents exactly
@@ -816,25 +816,29 @@ nothing.
 
 Verify the Cosign signature **against that resolved digest**, using **exactly** these two identity
 values. They are derived from the `publish-image` job's OIDC identity, which embeds the ref the run
-was triggered from — so the accepted set is a pattern over the **two** refs a release can legitimately
-come from, not a single literal:
+was triggered from — and every release this project has cut embedded the **same** one,
+`refs/heads/main`:
 
 ```bash
 cosign verify "$IMAGE@$VERSION_DIGEST" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
+  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
 ```
 
-`refs/heads/main` is a `workflow_dispatch` release; `refs/pull/<N>/merge` is a merge-triggered one
-(a `pull_request` run's `GITHUB_REF` is the merge ref, and that path is legitimate because the central
-version-changed guard plus `merged == true` already decided it was a release). The pattern stays
-anchored at both ends and bound to this repository and this workflow file — **do not** relax it to a
-wildcard. The workflow runs this same command against every digest it signs, so a failure here is a
-real supply-chain signal, not a stale expectation.
+**Both release paths sign under `refs/heads/main`, and that is read off the certificates rather than
+inferred from the trigger config.** 0.1.0 (`github_workflow_trigger = workflow_dispatch`) and 0.1.1
+(`github_workflow_trigger = pull_request`) both carry
+`job_workflow_ref = .../workflows/release.yml@refs/heads/main`. A pull request closed *by being
+merged* runs against the branch it was merged into, so the merge path never produces a merge-ref
+identity. The value is a *regexp* only because the identity string contains dots that must be
+escaped; it stays anchored at both ends and bound to this repository and this workflow file — **do
+not** relax it to a wildcard. The workflow runs this same command against every digest it signs, so a
+failure here is a real supply-chain signal, not a stale expectation.
 
-**Three files carry this pattern** — `.github/workflows/release.yml` (the `publish-image` verify
-step), `doc/user/container-image.adoc` (the operator-facing command), and this runbook. Nothing
-mechanical keeps them in sync; changing one means changing all three.
+**Four sites in three files carry this pattern** — `.github/workflows/release.yml` **twice** (the
+`A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES` comment block and the `publish-image` verify
+step's `IDENTITY_REGEXP` env value), `doc/user/container-image.adoc` (the operator-facing command),
+and this runbook. Nothing mechanical keeps them in sync; changing one means changing all four.
 
 > **Ignore the benchmark run this triggers.** `.github/workflows/benchmark.yml` fires on
 > `push: tags: ["*"]`, so the release's tag push **starts a benchmark run**. That run belongs to the

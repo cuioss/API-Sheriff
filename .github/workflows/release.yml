@@ -392,10 +392,10 @@ jobs:
       # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES:
       #
       #   --certificate-oidc-issuer      https://token.actions.githubusercontent.com
-      #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$
+      #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$
       #
-      # THE IDENTITY HAS TWO LEGITIMATE REFS, NOT ONE. Fulcio puts the OIDC `job_workflow_ref` claim
-      # in the certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
+      # THE IDENTITY NAMES EXACTLY ONE REF. Fulcio puts the OIDC `job_workflow_ref` claim in the
+      # certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
       # workflow — so that claim names release.yml ITSELF (never the org reusable workflow) at the ref
       # the run was triggered on, i.e. GITHUB_REF. This lane has two release paths and they carry
       # different refs:
@@ -403,16 +403,24 @@ jobs:
       #   * workflow_dispatch from main  -> GITHUB_REF = refs/heads/main
       #   * merge of a .github/project.yml PR -> GITHUB_REF = refs/pull/<N>/merge
       #
-      # The merge ref is a FIRST-CLASS release path, not an anomaly to be excluded: the org
-      # version-changed guard plus `merged == true` already decided that this merge is a real release
-      # (see the trigger comment at the top of this file), and this job only runs when
-      # needs.release.outputs.released-version is non-empty. Pinning the accepted identity to
-      # @refs/heads/main alone would therefore reject the signature of a perfectly legitimate release.
+      # THIS IS NOT ARGUED FROM DOCUMENTATION — IT IS READ OFF OUR OWN CERTIFICATES. Both signed
+      # digests this project has ever published carry the same single ref in their SAN:
+      #
+      #   * 0.1.0 (sha256:937b3995...) — github_workflow_trigger = workflow_dispatch,
+      #                                  job_workflow_ref = .../release.yml@refs/heads/main
+      #   * 0.1.1 (sha256:dbd73c2e...) — github_workflow_trigger = pull_request,
+      #                                  job_workflow_ref = .../release.yml@refs/heads/main
+      #
+      # 0.1.1 is the decisive one: a MERGE-triggered run that signed at refs/heads/main. No release
+      # this project has cut has ever carried a merge-ref identity, so an accepted set widened to
+      # admit one was widened for a ref that has never been used. GitHub's
+      # events-that-trigger-workflows reference agrees — on a close-by-merge GITHUB_REF is the base
+      # branch — but it is corroboration here, not the premise the identity rests on.
       #
       # The regexp is TIGHTLY ANCHORED, not a wildcard: anchored at both ends, bound to this exact
-      # repository and this exact workflow file, and the PR number is digits-only. It admits exactly
-      # the two refs above and nothing else. Do NOT relax it to a `.*` — a loose identity would accept
-      # a signature from any workflow in any repository and the check would prove nothing.
+      # repository and this exact workflow file, and it admits that one ref and nothing else. Do NOT
+      # relax it to a `.*` — a loose identity would accept a signature from any workflow in any
+      # repository and the check would prove nothing.
       #
       # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
       # below RUNS them — the lane proves its own signing identity rather than asserting it in prose.
@@ -440,7 +448,7 @@ jobs:
       - name: Verify the signature under the published identity
         env:
           DIGEST: ${{ steps.digest.outputs.value }}
-          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/(heads/main|pull/[0-9]+/merge)$'
+          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
         run: |
           set -euo pipefail
           REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
