@@ -17,7 +17,7 @@ This directory holds the design documentation; these documents define *what is b
 
 [IMPORTANT]
 ====
-*0.1.0 is an ALPHA release.* The configuration surface and the APIs described here *may change
+*0.1.1 is an ALPHA release.* The configuration surface and the APIs described here *may change
 without a migration path* -- pre-1.0 rules apply, so breaking changes are made freely and no
 deprecation shim or upgrade tooling is provided. Alpha is a statement about the *stability of the
 surface*, not about code quality: the intended use is evaluation, integration and feedback. The

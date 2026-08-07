@@ -15,7 +15,7 @@ contract; the guides in this layer are task-oriented entry points into it.
 
 [IMPORTANT]
 ====
-*0.1.0 is an ALPHA release.* The `gateway.yaml` surface and the APIs *may change without a
+*0.1.1 is an ALPHA release.* The `gateway.yaml` surface and the APIs *may change without a
 migration path*: keys may be renamed or removed and values may change meaning between releases,
 with no deprecation shim and no upgrade tooling. A descriptor that boots today may fail to boot on
 the next release -- deliberately and loudly, rather than silently changing behaviour.
