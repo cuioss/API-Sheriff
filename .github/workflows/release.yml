@@ -397,11 +397,13 @@ jobs:
       # THE IDENTITY NAMES EXACTLY ONE REF. Fulcio puts the OIDC `job_workflow_ref` claim in the
       # certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
       # workflow — so that claim names release.yml ITSELF (never the org reusable workflow) at the ref
-      # the run was triggered on, i.e. GITHUB_REF. This lane has two release paths and they carry
-      # different refs:
+      # the run was triggered on, i.e. GITHUB_REF. Only two events can reach this job, and BOTH of
+      # them yield refs/heads/main:
       #
-      #   * workflow_dispatch from main  -> GITHUB_REF = refs/heads/main
-      #   * merge of a .github/project.yml PR -> GITHUB_REF = refs/pull/<N>/merge
+      #   * workflow_dispatch from main -> GITHUB_REF = refs/heads/main
+      #   * a MERGED-close .github/project.yml PR -> GITHUB_REF = refs/heads/main, the base branch it
+      #     was merged INTO. A close WITHOUT a merge never reaches here at all: the
+      #     `merged == true` gate on the release job above refuses it before anything runs.
       #
       # THIS IS NOT ARGUED FROM DOCUMENTATION — IT IS READ OFF OUR OWN CERTIFICATES. Both signed
       # digests this project has ever published carry the same single ref in their SAN:
