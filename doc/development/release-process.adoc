@@ -18,7 +18,8 @@ The ordinary path is a single act -- merge the version declaration:
   version. Open a pull request with that change.
 . *Merge it.* Merging into `main` cuts the release. The Release workflow runs on the merged close,
   and the pinned cuioss-organization workflow's *version-changed guard* decides whether this merge
-  is a release: it publishes when the declared version actually moved, and refuses when it did not.
+  is a release. It publishes when the declared version actually moved *and* no tag for that version
+  exists yet, and refuses on either condition failing -- see <<guard-refusal-predicates>>.
 
 *The merge is the publishing act, so review the pull request as one.* Approving a version bump is
 approving a Maven Central publication, and a published coordinate can be superseded but never
@@ -27,8 +28,10 @@ withdrawn.
 *`workflow_dispatch` is the fallback, and it is unconditional.* Actions -> Release -> Run workflow
 publishes whatever `.github/project.yml` declares at the dispatched ref, including a re-declaration
 of a version already published; nothing central refuses it. Reach for it when the merge path did not
-fire -- and when a merge cut no release, check whether the declared version actually moved before
-dispatching, because that is what the guard was answering.
+fire -- and when a merge cut no release, establish *which* of the guard's two conditions refused it
+before dispatching (<<guard-refusal-predicates>>). Only an unmoved version is a reason to dispatch.
+An already-existing tag means that version was already released, and dispatching then republishes a
+published coordinate.
 
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] delegates to the
 cuioss-organization reusable Maven release workflow, pinned to a specific commit SHA. Neither the
@@ -81,8 +84,18 @@ a step runs "before anything is pushed", read it as *before anything is pushed t
 
 . *Do not re-trigger the whole workflow.* A second dispatch would attempt another Maven release of a
   version that is already published -- the dispatch path is unconditional and nothing central refuses
-  it. The merge path is no remedy either: re-merging the same version declaration moves nothing, so
-  the version-changed guard refuses it and no release runs at all.
+  it. The merge path is no remedy either, and *for two reasons rather than one*: re-merging the same
+  version declaration moves nothing, so the guard's version condition refuses it; and an edit that
+  makes the released version look like it moved again still publishes nothing, because the release
+  job pushed that version's tag before this lane failed and tag-absence is the guard's second
+  condition (<<guard-refusal-predicates>>). You are in the tag-exists case here by definition.
++
+[WARNING]
+====
+Do not read that silent no-release as "the version didn't move" and reach for the dispatch on the
+strength of it. The dispatch refuses nothing, so acting on that diagnosis republishes an
+already-published coordinate -- the failure class this whole procedure exists to prevent.
+====
 . *Classify the failure first -- a re-run cannot pick up a fix.* *Re-run failed jobs* creates a new
   *attempt of the same run*: it reuses the original event context and the original workflow
   definition, and `publish-image` checks out the *release tag*, not `main`. A commit merged to `main`
@@ -214,13 +227,23 @@ cryptographically verifying the published image.
 Two rules govern how the release workflow may be triggered, and how a trigger may be changed. Both
 are normative.
 
+[#guard-refusal-predicates]
 === The version-changed guard is the release decision
 
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares two triggers: an
 unconditional `workflow_dispatch`, and a `pull_request` narrowed by `types: [closed]`,
 `branches: [main]` and `paths: ['.github/project.yml']`. On the merge path the question *"is this
-merge a release?"* is answered by the pinned cuioss-organization workflow's *version-changed guard*,
-which compares the declared version against the parent commit's and refuses when it did not move.
+merge a release?"* is answered by the pinned cuioss-organization workflow's *version-changed guard*.
+
+*It refuses on either of two conditions, and a refusal announces neither of them:*
+
+. The declared `current-version` did not move against the parent commit.
+. A tag for the declared version already exists.
+
+Both must be false for the merge to publish. The guard is named for the first condition because that
+is what it was added for, but reading a no-release outcome as "the version didn't move" is a
+one-predicate reading of a two-predicate guard -- and it is exactly the misreading that sends an
+operator to the unconditional dispatch after a partial release (see <<release-not-atomic>>).
 
 *That guard is consumed, never re-implemented here.* A local copy of a security-relevant decision is
 a second answer, and the local copy is the one that drifts out of sync. Do not add a caller-local
