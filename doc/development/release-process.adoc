@@ -1,25 +1,34 @@
-= Release Process -- dispatch-only
+= Release Process
 :toc:
 :toclevels: 2
 :sectnums:
 
-How a release of API Sheriff is cut. Releases are *never* triggered by merging a pull request:
-the Release workflow runs only when a maintainer deliberately dispatches it. This page states the
-process and the rules that keep it deliberate.
+How a release of API Sheriff is cut. A release has two entry points: merging a pull request that
+changes the declared version in `.github/project.yml`, which *is* the publishing act once the
+centrally-owned version-changed guard lets it through, and a deliberate `workflow_dispatch`, which
+publishes unconditionally and is the operator-gated fallback. This page states the process and the
+rules that keep it safe.
 
 == Cutting a release
 
-A release is a two-part act -- declare the version, then deliberately publish it:
+The ordinary path is a single act -- merge the version declaration:
 
 . *Declare the version.* Edit link:../../.github/project.yml[`.github/project.yml`], setting
   `current-version` to the version being released and `next-version` to the following development
-  version. Open a pull request with that change and merge it in the normal way.
-. *Publish deliberately.* Once the version change is on `main`, dispatch the *Release* workflow by
-  hand (Actions -> Release -> Run workflow). This is the only way a release is cut.
+  version. Open a pull request with that change.
+. *Merge it.* Merging into `main` cuts the release. The Release workflow runs on the merged close,
+  and the pinned cuioss-organization workflow's *version-changed guard* decides whether this merge
+  is a release: it publishes when the declared version actually moved, and refuses when it did not.
 
-Merging the `project.yml` change publishes nothing on its own. The two steps are separate on
-purpose: the merge records *what* the next version is, and the dispatch is the explicit decision to
-*publish* it.
+*The merge is the publishing act, so review the pull request as one.* Approving a version bump is
+approving a Maven Central publication, and a published coordinate can be superseded but never
+withdrawn.
+
+*`workflow_dispatch` is the fallback, and it is unconditional.* Actions -> Release -> Run workflow
+publishes whatever `.github/project.yml` declares at the dispatched ref, including a re-declaration
+of a version already published; nothing central refuses it. Reach for it when the merge path did not
+fire -- and when a merge cut no release, check whether the declared version actually moved before
+dispatching, because that is what the guard was answering.
 
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] delegates to the
 cuioss-organization reusable Maven release workflow, pinned to a specific commit SHA. Neither the
@@ -27,7 +36,7 @@ pin nor the `secrets:` block is part of the release decision -- they are build w
 
 == What a release contains
 
-One dispatch produces one coherent set of artifacts, all carrying the same version:
+One release run produces one coherent set of artifacts, all carrying the same version:
 
 * *Maven coordinates on Maven Central* -- `de.cuioss.sheriff.gateway:api-sheriff` and its reactor
   siblings, published by the reusable release workflow.
@@ -40,7 +49,7 @@ release artifact*: it lives in the repository at `deployment/compose-sample/` an
 the source tree rather than pulled from a registry. Both are named here so their absence from the
 artifact list reads as a known boundary rather than an oversight.
 
-image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one dispatch drives the Maven release and a single image build whose output is scanned, pushed, smoked and signed, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
+image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one release run, entered by a guarded version-bump merge or a deliberate dispatch, drives the Maven release and a single image build whose output is scanned, pushed, smoked and signed, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
 
 === The image version is the Maven version
 
@@ -70,19 +79,21 @@ a step runs "before anything is pushed", read it as *before anything is pushed t
 
 ==== If the image lane fails after the Maven release
 
-. *Do not re-run the whole workflow.* A second dispatch would attempt another Maven release of a
-  version that is already published.
+. *Do not re-trigger the whole workflow.* A second dispatch would attempt another Maven release of a
+  version that is already published -- the dispatch path is unconditional and nothing central refuses
+  it. The merge path is no remedy either: re-merging the same version declaration moves nothing, so
+  the version-changed guard refuses it and no release runs at all.
 . *Classify the failure first -- a re-run cannot pick up a fix.* *Re-run failed jobs* creates a new
   *attempt of the same run*: it reuses the original event context and the original workflow
   definition, and `publish-image` checks out the *release tag*, not `main`. A commit merged to `main`
-  after the dispatch is therefore invisible to it. "Fix it on `main`, then re-run" does not work
-  here and must not be attempted.
+  after the release run started is therefore invisible to it. "Fix it on `main`, then re-run" does
+  not work here and must not be attempted.
 +
 --
 Transient job or runtime failure::
 A registry timeout, a runner flake, a Maven Central propagation race. *Re-run the failed
 `publish-image` job alone* from the Actions UI. It reads its version from `.github/project.yml` at
-the dispatch SHA and checks out the release tag, so it reproduces the same inputs without touching
+the triggering SHA and checks out the release tag, so it reproduces the same inputs without touching
 Maven Central.
 
 Anything carried in the tree or the workflow::
@@ -181,8 +192,8 @@ The human-facing release reference. `<version>` is the Maven version, verbatim.
 `ghcr.io/cuioss/api-sheriff:sha-<commit>`::
 *Provenance, not immutability.* `<commit>` is the *full 40-character SHA of the commit the release
 tag points at* -- the `release:prepare` commit whose poms carry the released version -- and *not* the
-`main` HEAD the release was dispatched from. That is the commit whose source produced the image;
-naming the dispatch commit would point at a tree that never built it. The tag answers "which source
+`main` HEAD the release ran from. That is the commit whose source produced the image; naming the
+triggering commit would point at a tree that never built it. The tag answers "which source
 produced this?" unambiguously, but it remains an ordinary mutable registry tag and is not the image
 digest -- which is exactly why Cosign signs the digest rather than either tag.
 
@@ -201,24 +212,39 @@ cryptographically verifying the published image.
 == Trigger rules
 
 Two rules govern how the release workflow may be triggered, and how a trigger may be changed. Both
-are normative, and both are load-bearing for the dispatch-only guarantee.
+are normative.
 
-=== Dispatch is the only trigger
+=== The version-changed guard is the release decision
 
-link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares
-`on: workflow_dispatch` and nothing else. *No merge -- of any pull request, touching any path --
-can cut a release.* Releasing is always an explicit act by a maintainer.
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares two triggers: an
+unconditional `workflow_dispatch`, and a `pull_request` narrowed by `types: [closed]`,
+`branches: [main]` and `paths: ['.github/project.yml']`. On the merge path the question *"is this
+merge a release?"* is answered by the pinned cuioss-organization workflow's *version-changed guard*,
+which compares the declared version against the parent commit's and refuses when it did not move.
 
-The scope of that statement is *release publication*, and it is stated narrowly on purpose. A merge
-to `main` is not inert: link:../../.github/workflows/maven.yml[`maven.yml`] runs on
-`push: branches: [main]`, and its snapshot deployment runs on that push (it is skipped on pull
-requests). So a merge can publish a *snapshot* -- what it cannot do is cut a release. The
-irrevocable act, a Maven Central GA coordinate, is reachable only through the dispatch.
+*That guard is consumed, never re-implemented here.* A local copy of a security-relevant decision is
+a second answer, and the local copy is the one that drifts out of sync. Do not add a caller-local
+version comparison.
 
-Do not add an event-driven trigger to the release workflow. A `pull_request` trigger scoped to
-`.github/project.yml` reads as a convenience -- merge the version bump, get the release -- but it
-makes every merge that touches that file a publication, and a Maven Central publication is
-irrevocable. Convenience is not worth an unintended GA.
+*The `paths:` filter is a prefilter, never the decision.* It matches *every* edit to
+`.github/project.yml` -- `name`, `description`, `maven-build`, `sonar`, `pages`, `github-automation`,
+and whatever key is added tomorrow -- so a merge arriving at the workflow proves nothing about the
+version. Its only job is to keep unrelated merges from spending a runner. Reading it as the release
+condition is precisely the 2026-07-12 defect: a trigger of exactly that shape fired on merged-ness
+and published an unintended GA coordinate that had to be abandoned and relocation-stubbed.
+
+`branches: [main]` filters on the pull request's *base*, so only a pull request merging into `main`
+can reach the release job at all, and the job additionally refuses any close that was not a merge.
+Both narrow *what may ask*, never *what is answered*.
+
+The scope of all this is *release publication*. A merge to `main` is not otherwise inert:
+link:../../.github/workflows/maven.yml[`maven.yml`] runs on `push: branches: [main]`, and its
+snapshot deployment runs on that push (it is skipped on pull requests). So a merge can publish a
+*snapshot* -- and, when the guard says the declared version moved, a release.
+
+The decision is recorded in
+link:../adr/0035-A_release_is_cut_by_a_guarded_version-bump_merge_or_a_deliberate_dispatch_and_the_version-changed_decision_is_centrally_owned.adoc[ADR-0035],
+which supersedes ADR-0034.
 
 === A trigger removal merges on its own
 
@@ -234,8 +260,8 @@ is gone from `main` before relying on it being gone.
 
 == See also
 
-* link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] -- the dispatch-only
-  release workflow.
+* link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] -- the release workflow
+  and its two triggers.
 * link:../../.github/project.yml[`.github/project.yml`] -- where the released version is declared.
 * link:../user/container-image.adoc[Container Image] -- the operator layer for the published image.
 * link:README.adoc[Contributor Guide] -- the index for this documentation layer.
