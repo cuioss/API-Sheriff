@@ -75,8 +75,9 @@ trigger fired on *merged-ness* — every merge touching the file was a publicati
 `cuioss-organization` workflow now owns the version-changed decision, which is precisely the
 discrimination that trigger lacked. It is **consumed** here and **never re-implemented locally**:
 `publish-image` keys off `needs.release.outputs.released-version != ''`, which is the guard's own
-verdict surfaced. `release.yml`'s header forward-references **ADR-0035** for the decision; that ADR is
-still owed, so **the reference is dangling and this section is the current account.**
+verdict surfaced. The decision is recorded in **ADR-0035** (`doc/adr/`), which `release.yml`'s header
+references and which supersedes ADR-0034; read it there for the reasoning. This section remains the
+narrative account of the 2026-07-12 incident.
 
 Consequently:
 
@@ -87,15 +88,20 @@ Consequently:
   a block to report, never something to substitute locally.
 - A change that removes or weakens an event-driven trigger must merge **on its own**, before any
   change that would fire that trigger — for a `pull_request` event GitHub evaluates the workflow
-  definition **from the base branch**. `doc/development/release-process.adoc` records that rule (see
-  *See also* for the caveat about that document's current state); do not restate it from memory.
+  definition **from the base branch**. `doc/development/release-process.adoc` records that rule; do
+  not restate it from memory.
 
-### The guard has NEVER been observed — read this before cutting
+### The guard has fired once and has never been observed refusing — read this before cutting
 
-**No merge-triggered release has ever run in this repository, and the central version-changed guard
-has never been observed either refusing or firing.** The `0.1.0` cut went out by `workflow_dispatch`,
-which is the *unconditional* path — so the guard's discrimination was never exercised even then. It
-ships proven in self-test and **unproven in production**.
+**The merge path has run exactly once.** `0.1.1` was cut on 2026-08-07 by merging the version-bump
+PR (#186): its signing certificate carries `github_workflow_trigger = pull_request` at
+`github_workflow_sha = f3b9ed6`, the merge commit. The central version-changed guard has therefore
+been observed **firing** on a real version change. The `0.1.0` cut before it went out by
+`workflow_dispatch`, the *unconditional* path, which exercises no discrimination at all.
+
+**What has never been observed is the guard REFUSING.** No merge leaving the declared version
+unchanged has been watched arriving at the workflow and being turned away. That half ships proven in
+self-test and **unproven here**.
 
 That is not a reason to avoid the merge path. It is a reason to **read the run** rather than assume
 it: after the merge, open the `Release` run and observe what the `release` and `publish-image` jobs
@@ -113,9 +119,8 @@ actually did (Step 5, *Path A*), instead of inferring the outcome from the merge
 ## Ported reference — the facts this procedure depends on
 
 These six sections are the operative content of `doc/development/release-process.adoc`. They are
-reproduced here so the runbook can be followed cold; that document remains the canonical narrative
-**for everything except the trigger, where it is currently stale** — see *See also*. None of the six
-sections below concerns the trigger, so all six stand.
+reproduced here so the runbook can be followed cold; that document remains the canonical narrative.
+None of the six sections below concerns the trigger, so all six stand on their own terms.
 
 ### The image version is the Maven version
 
@@ -456,7 +461,7 @@ anything else open can land ahead of it and move the commit your release is cut 
 >    team, and do not merge anything yourself, from the cut until Step 7 reports the run finished.
 >    No branch policy, merge freeze or workflow check enforces this — it is an operator obligation,
 >    and a merge landing inside that window can still race the release force-push. Treat it as a
->    residual operator risk, not a closed safeguard (ADR-0034 records it as one).
+>    residual operator risk, not a closed safeguard (ADR-0035 records it as one).
 
 **(iv) Confirm no tag for the release version already exists.**
 
@@ -1068,18 +1073,13 @@ authenticated check passes.
 
 ## See also
 
-- `doc/development/release-process.adoc` — the canonical process narrative. **It is currently STALE
-  on the trigger and must not be read as authoritative there:** it still describes the dispatch-only
-  posture (§ *Why the `pull_request` trigger was removed*, § *Why the guard had to merge before
-  anything else*), which PR #171 superseded. Its rewrite is tracked follow-up work. What it records
-  that **does** still hold is the rule that *a change which removes or weakens an event-driven
-  trigger merges on its own*. For everything about **what fires a release**, this file and
-  `.github/workflows/release.yml` are the current sources; **this file is also the surviving
-  narrative account of the 2026-07-12 incident** — see *How the release is wired* above. The former
-  *Coordinate history* note in `README.adoc` was removed once `de.cuioss.sheriff.api` had been
-  abandoned long enough that the history was of no use to a reader arriving at the project.
-  **ADR-0034 is likewise stale** — it records the dispatch-only decision and is superseded by
-  ADR-0035, which `release.yml`'s header already references.
+- `doc/development/release-process.adoc` — the canonical process narrative, including the two release
+  paths, the guard's role, and the rule that *a change which removes or weakens an event-driven
+  trigger merges on its own*. **This file is also the surviving narrative account of the 2026-07-12
+  incident** — see *How the release is wired* above. The former *Coordinate history* note in
+  `README.adoc` was removed once `de.cuioss.sheriff.api` had been abandoned long enough that the
+  history was of no use to a reader arriving at the project. **ADR-0034 is superseded by ADR-0035**,
+  which records the guarded-merge-or-dispatch decision and which `release.yml`'s header references.
 - `.github/workflows/release.yml` — the release workflow, and the authoritative statement of both
   triggers. Its in-file comments carry the guard rationale, the run/skip-vs-value scope split, and
   the composability, ordering and attestation caveats behind the steps above.
