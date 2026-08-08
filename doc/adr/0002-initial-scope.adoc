@@ -8,7 +8,7 @@ Accepted.
 
 == Context
 
-The link:../archive/manifest.adoc[manifest] lists a broad protocol and configuration surface, marking
+The original project manifest lists a broad protocol and configuration surface, marking
 some items mandatory and others optional/nice-to-have. Two scope decisions need to be fixed so
 the design documents and the configuration model agree:
 

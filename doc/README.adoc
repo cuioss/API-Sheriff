@@ -5,7 +5,7 @@
 
 API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and
 Java virtual threads. It is a purpose-built gateway rather than a configuration
-layer on top of an existing one -- the link:archive/others/README.adoc[competitive analysis]
+layer on top of an existing one -- the link:features-analysis.adoc[Feature Analysis]
 shows that no existing OSS gateway covers the required combination of confidential-client
 token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
 `X-Forwarded-*` behind a trusted-proxy allowlist), RFC 9470 step-up, and datastore-free
@@ -45,14 +45,6 @@ Limitations].
   validation),
   `token-sheriff-client` (the OIDC confidential-client engine used by the BFF variants),
   logging and testing.
-
-| link:archive/[Archived Sources]
-| The original link:archive/manifest.adoc[Project Manifest] and the
-  link:archive/others/README.adoc[competitor fact sheets] -- kept for history. Their content has
-  been fully adapted into the design documents below (requirements into
-  link:configuration.adoc[Configuration] and the link:variants/README.adoc[variants]; the
-  competitor analysis into link:features-analysis.adoc[Feature Analysis]) and the initial-scope
-  narrowing recorded in link:adr/0002-initial-scope.adoc[ADR-0002]. They are no longer edited.
 |===
 
 == Design Documents
@@ -301,6 +293,3 @@ table as a curated entry point; a missing row is index drift, never a withdrawn 
 . link:technical_aspects.adoc[Technical Aspects] -- the CUI library APIs behind the design.
 . The link:adr/0001-java25-runtime-baseline.adoc[ADRs] -- the recorded decisions and their
   rationale, referenced throughout the documents above.
-
-For historical context, the original requirements and competitor fact sheets are preserved
-under link:archive/[`archive/`].

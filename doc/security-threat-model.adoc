@@ -11,7 +11,7 @@ parts:
   threat categories per boundary.
 . *Failure catalogue* -- every failure class that has produced a real, cited CVE in a
   comparable API gateway, reverse proxy, or OAuth/OIDC stack (the gateways surveyed in
-  link:archive/others/README.adoc[the competitive analysis] -- APISIX, Kong, Traefik,
+  the competitive analysis -- APISIX, Kong, Traefik,
   KrakenD, Tyk, Gravitee -- plus the canonical proxy/JOSE CVEs). Each class carries the
   transferable lesson, the API Sheriff control that defeats it, a *status*, and a *testable
   assertion*.

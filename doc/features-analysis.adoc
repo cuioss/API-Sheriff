@@ -5,8 +5,8 @@
 
 == Purpose
 
-This document distils the link:archive/others/README.adoc[competitive analysis] of the major
-open-source API gateways (Apache APISIX, Traefik, KrakenD, Kong, Tyk, Gravitee) into a
+This document is the competitive analysis of the major open-source API gateways
+(Apache APISIX, Traefik, KrakenD, Kong, Tyk, Gravitee), distilled into a
 concrete feature agenda for API Sheriff: what to *adopt*, what to deliberately *avoid*,
 and the *differentiators* that no competitor covers.
 
@@ -196,7 +196,7 @@ set of things well, with zero mandatory external dependencies.
 [[_differentiators]]
 == Differentiators (No Competitor Covers)
 
-Per the link:archive/others/README.adoc[analysis], *none* of the six evaluated gateways support the
+Per the analysis above, *none* of the six evaluated gateways support the
 following. Each is a defensible differentiator, and API Sheriff's JVM + confidential-client
 architecture makes it uniquely able to close all three.
 
