@@ -28,13 +28,14 @@ endpoint:
                                    #   makes the env override visible in-file (ADR-0004 A1);
                                    #   a plain literal (enabled: true) is equally valid
   base_url: APP1                   # alias; resolved from topology.properties / env
-  anchor: api                      # anchor membership (see "Anchors"): default for every route
-                                   #   in this file, overridable per route; the route paths must
-                                   #   lie inside the anchor's path_prefix. Mandatory for routes
-                                   #   inside a configured anchor namespace
+  anchor: api                      # anchor membership (see "Anchors" in anchors.adoc): default
+                                   #   for every route in this file, overridable per route; the
+                                   #   route paths must lie inside the anchor's path_prefix.
+                                   #   Mandatory for routes inside a configured anchor namespace
   auth:                            # default auth posture for every route in this file; a route
     require: bearer                #   may override it (below). MANDATORY unless the endpoint's
-                                   #   anchor declares an auth block (see "Anchors")
+                                   #   anchor declares an auth block (see "Anchors" in
+                                   #   anchors.adoc)
   allowed_methods: [GET, POST]     # optional per-endpoint verb allowlist; REPLACES the
                                    #   anchor/global allowed_methods wholesale for this
                                    #   endpoint (no inheritance, no merge). Omit => the
@@ -42,7 +43,8 @@ endpoint:
   routes:                          # merged into one table across all endpoint files
                                    #   (see "Route ordering"); no match => 404
     - id: orders-api
-      protocol: http               # http | grpc | graphql | websocket (see "Protocols")
+      protocol: http               # http | grpc | graphql | websocket (see "protocol" in
+                                   #   ../configuration.adoc)
       match:
         path_prefix: /api/orders
         methods: [GET, POST]
@@ -56,7 +58,8 @@ endpoint:
       auth:                        # route-level override of endpoint.auth (whole block
         require: bearer            #   replaces, no merge)
         required_scopes: [orders.read]
-      security_filter:             # "basic filtering -- NOT a WAF"; see below
+      security_filter:             # "basic filtering -- NOT a WAF"; the field-level contract is
+                                   #   "security_filter" in ../configuration.adoc
         profile: strict
         allowed_paths: ["/api/orders", "/api/orders/{id}"]   # quoted: {} is YAML syntax
         max_header_count: 50
@@ -81,7 +84,8 @@ endpoint:
                                    #   (case-insensitively) -- operator config beats client input
       upstream:
         path: /orders              # replaces the matched path_prefix; the request-path
-                                   #   remainder is appended (see "upstream")
+                                   #   remainder is appended (see "upstream" in
+                                   #   ../configuration.adoc)
         connect_timeout_ms: 2000
         read_timeout_ms: 5000
         retry: { max_attempts: 3, idempotent_only: true }
@@ -222,6 +226,7 @@ hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full p
 Routes remain free to use neighbouring prefixes; only the exact reserved paths on that one host
 are carved out.
 
+[[_defaults_for_omitted_blocks]]
 === Defaults for omitted blocks
 
 What an omitted block resolves to, and where the resolution comes from. Most rows are

@@ -92,8 +92,12 @@ link:../../README.adoc#_known_limitations[Known Limitations].
 | Which knobs the deployment owns and which `gateway.yaml` owns: the three-way classification
   (policy / deployment-bound / build-time), the precedence rule and why it has no exceptions, the
   enumerated deployment-bound variables (ports, certificate and trust material, the management TLS
-  selection), and an audit of where else the codebase offers a secure default with an override
-  route. Read it before assuming an environment variable can change a given behaviour.
+  selection), the relocated
+  link:environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology
+  (`topology.properties`)] section -- `base_url` alias resolution, the `TOPOLOGY_<ALIAS>` and
+  `ENDPOINT_<ID>_ENABLED` overrides and their resolution semantics -- and an audit of where else
+  the codebase offers a secure default with an override route. Read it before assuming an
+  environment variable can change a given behaviour.
 
 | link:container-image.adoc[Container Image -- Pulling, Running and Verifying]
 | The operator layer for the published image at `ghcr.io/cuioss/api-sheriff`: the two-tag scheme and

@@ -68,8 +68,9 @@ policy blocks above:
 
 * *`type`* -- what terminal behaviour the anchor's routes expose: `proxy` (a reverse-proxy
   surface), `bff` (a Backend-For-Frontend surface), or `asset` (a static-asset surface, see
-  "Asset terminal action"). The anchor-`type` value space is entirely unrelated to the TLS-L4
-  `tls.passthrough_sni` surface, despite the adjacent vocabulary.
+  link:endpoint-routes.adoc#_asset_terminal_action[Asset terminal action]). The anchor-`type`
+  value space is entirely unrelated to the TLS-L4 `tls.passthrough_sni` surface, despite the
+  adjacent vocabulary.
 * *`access`* -- the audience the anchor admits: `public` (an anonymous surface, no
   authentication) or `authenticated` (requires a fully-backed auth posture).
 

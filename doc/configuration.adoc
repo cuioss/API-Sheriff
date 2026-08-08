@@ -222,11 +222,13 @@ allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTT
                                    #   is rejected 405. TRACE and CONNECT are never permitted and
                                    #   cannot be listed. Omit => the standard set shown here.
 
-anchors:                           # OPTIONAL namespace-scoped policy (see "Anchors"); each
-  api:                             #   anchor OWNS a disjoint path namespace and carries the
-    path_prefix: /api              #   policy floor for every route inside it
+anchors:                           # OPTIONAL namespace-scoped policy (see "Anchors" in
+  api:                             #   user/anchors.adoc); each anchor OWNS a disjoint path
+    path_prefix: /api              #   namespace and carries the policy floor for every route
+                                   #   inside it
     type: proxy                    # MANDATORY classification axis (proxy | bff | asset); see
-                                   #   "Type and access axes". Unrelated to tls.passthrough_sni.
+                                   #   "Type and access axes" in user/anchors.adoc. Unrelated to
+                                   #   tls.passthrough_sni.
     access: authenticated          # MANDATORY audience axis (public | authenticated); a bearer
                                    #   floor is what `authenticated` requires
     auth: { require: bearer }      # every /api route presents a bearer token; a member route
@@ -237,7 +239,8 @@ anchors:                           # OPTIONAL namespace-scoped policy (see "Anch
     type: bff                      # a bff surface MUST declare access: authenticated
     access: authenticated
     auth: { require: session }     # the BFF surface: mediated OIDC session per the oidc block
-  static:                          # an asset surface (see "Asset terminal action")
+  static:                          # an asset surface (see "Asset terminal action" in
+                                   #   user/endpoint-routes.adoc)
     path_prefix: /static
     type: asset
     access: public                 # a public anchor declares NO auth block (public is the
@@ -353,7 +356,8 @@ place, and these are links to it -- never a second copy.
   link:user/anchors.adoc#_type_and_access_axes[`type` and `access` axes].
 * link:user/endpoint-routes.adoc[Endpoint route configuration] (`endpoints/*.yaml`), including the
   link:user/endpoint-routes.adoc#_asset_terminal_action[asset terminal action],
-  link:user/endpoint-routes.adoc#_route_ordering[route ordering], the defaults for omitted blocks,
+  link:user/endpoint-routes.adoc#_route_ordering[route ordering], the
+  link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[defaults for omitted blocks],
   and the link:user/endpoint-routes.adoc#_edge_hardening_defaults[edge-hardening defaults].
 * link:user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[Topology
   (`topology.properties`)] -- alias resolution and the environment-variable override.
@@ -966,7 +970,7 @@ is called out in the boot log, so weakening is always an explicit, audited choic
 |===
 | Value | Behaviour
 
-| `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see "Defaults for omitted blocks").
+| `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
 | `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; enforce `required_scopes`. link:variants/01-base-gateway.adoc[Variant 1].
 | `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. `required_scopes` on a session route are enforced against the *mediated* access token's granted scopes -- so they must be requested in `oidc.scopes` at login, or every request on the route fails with `403`.
 |===
@@ -1359,7 +1363,8 @@ Matchers compose with AND semantics; a route matches only if every declared matc
 
 | `path_prefix`
 | Literal path prefix, compared segment-wise against the validated, normalized path
-  (`/api` matches `/api/orders` but not `/apifoo`). Also the precedence key (see "Route ordering").
+  (`/api` matches `/api/orders` but not `/apifoo`). Also the precedence key (see
+  link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
 
 | `methods`
 | HTTP method list; omitted means all methods.
@@ -2023,7 +2028,8 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   to a well-formed URL; otherwise boot fails.
 * Every endpoint file declares an `auth` block (the default posture for its routes) *unless*
   its anchor declares one (see link:user/anchors.adoc#_anchors[Anchors]); an endpoint with neither fails the
-  boot. Routes may override it per route (see "Defaults for omitted blocks").
+  boot. Routes may override it per route (see
+  link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
 * Anchor `path_prefix` values are pairwise disjoint -- no anchor prefix is a prefix of another;
   overlap fails the boot.
 * When an `anchors` block is configured: every enabled route's `match.path_prefix` lies inside
@@ -2041,7 +2047,7 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   disjoint (both declare different `host` values, or non-overlapping `methods`, or same-name
   header matchers with different exact values or opposite presence assertions -- `present: true`
   on one and `present: false` on the other; a lone `present: true` establishes nothing);
-  otherwise the boot fails (see "Route ordering").
+  otherwise the boot fails (see link:user/endpoint-routes.adoc#_route_ordering[Route ordering]).
 * `allowed_methods` (global, anchor, or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`,
   `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint
   `allowed_methods` *replaces* the anchor/global list wholesale, an anchor's replaces the
