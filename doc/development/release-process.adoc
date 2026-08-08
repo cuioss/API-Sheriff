@@ -323,9 +323,13 @@ repository's history. It is retained because it corroborates the four rows, neve
 substitutes for them.
 
 *Provenance of the discriminator.* link:../../.github/workflows/release.yml[`release.yml`] lines
-87--101 state the workflow's own contract: `released-version` "is EMPTY exactly when the central
-guard decided the declared version had not changed and skipped the release". The evidence is the
-mechanism's declared contract, not an inference drawn over its behaviour.
+87--101 declare `released-version` the run/skip discriminator for the downstream jobs: an empty
+value skips them. What an empty value proves is exactly that *no release was produced* -- not that
+the declared version was unchanged. Emptiness is the union of both refusal predicates named in
+<<guard-refusal-predicates>>, so it cannot discriminate a version that did not move from a tag that
+already exists. Row 2 is therefore evidence drawn from the mechanism's declared contract rather
+than an inference over its behaviour -- but read as the narrower claim it would be the very
+one-predicate reading <<guard-refusal-predicates>> warns against.
 
 *Escalation condition.* If the observed rendering does not match the predicted signature, that is a
 finding about the guard, not a run id to file. It goes in-tree, in a follow-up PR, and the

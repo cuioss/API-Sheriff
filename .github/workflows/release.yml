@@ -87,10 +87,10 @@ jobs:
   # WHY `needs.release.outputs.released-version != ''` IS THE RUN/SKIP DISCRIMINATOR.
   # At the pinned 937fbcf (v0.18.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
   # block, so `released-version` is genuinely readable here. It is EMPTY exactly when the central
-  # guard decided the declared version had not changed and skipped the release — so the empty string
-  # IS that guard's own decision, surfaced. The caller consumes it and derives nothing. Without this
-  # `if:`, a guard-skipped merge would still spend 90 minutes on a native build and then re-push and
-  # re-sign an already-released tag.
+  # guard declined to release — the declared version did not move, or a tag for it already exists —
+  # so an empty string proves no release was produced, never which predicate refused. The caller
+  # consumes it and derives nothing. Without this `if:`, a guard-skipped merge would still spend 90
+  # minutes on a native build, then re-push and re-sign an already-released tag.
   #
   # The two obvious alternatives are both wrong. `needs.release.result` reports a non-failure for a
   # called workflow whose internal jobs all skipped, so it cannot tell a real release from a skipped
