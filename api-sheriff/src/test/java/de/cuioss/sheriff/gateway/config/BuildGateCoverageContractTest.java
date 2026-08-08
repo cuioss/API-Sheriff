@@ -139,7 +139,7 @@ class BuildGateCoverageContractTest {
 
     @Test
     @DisplayName("Every declared gate-requiring file class is mapped with role config and build_class verify")
-    void buildMapCoversEveryDeclaredGateRequiringFileClass() throws IOException {
+    void buildMapCoversEveryDeclaredGateRequiringFileClass() throws Exception {
         // Arrange
         JsonNode entries = javaBuildMap();
 
@@ -168,7 +168,7 @@ class BuildGateCoverageContractTest {
      */
     @Test
     @DisplayName("The detector accepts a correct entry and rejects both a wrong build_class and an absent glob")
-    void detectorAcceptsOnlyAnEntryMatchingGlobRoleAndBuildClass() throws IOException {
+    void detectorAcceptsOnlyAnEntryMatchingGlobRoleAndBuildClass() throws Exception {
         // Arrange
         JsonNode entries = MAPPER.readTree(SYNTHETIC_JAVA_MAP);
 
