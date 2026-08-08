@@ -110,18 +110,18 @@ class ShippedApplicationPropertiesTest {
     void detectorFlagsProfileKeysAndIgnoresPercentInsideValues() {
         List<String> lines = List.of(
                 "# a comment naming %it.sheriff.token.issuers.it-static.url",
-                "! a bang comment naming %dev.quarkus.log.file.enable",
+                "! a bang comment naming %dev.quarkus.log.file.enabled",
                 "",
                 "quarkus.log.file.format=%d{yyyy-MM-dd HH:mm:ss,SSS z} %-5p [%c{3.}] (%t) %s%e%n",
                 "quarkus.arc.exclude-types=de.cuioss.sheriff.token.quarkus.health.*",
                 "quarkus.log.file.path=${LOG_FILE_PATH:/quarkus.log}",
                 "%it.sheriff.token.issuers.it-static.url=https://keycloak:8443/realms/it",
-                "%dev.quarkus.log.file.enable:false");
+                "%dev.quarkus.log.file.enabled:false");
 
         List<String> offendingKeys = profileKeysIn(lines);
 
         assertEquals(
-                List.of("%it.sheriff.token.issuers.it-static.url", "%dev.quarkus.log.file.enable"), offendingKeys,
+                List.of("%it.sheriff.token.issuers.it-static.url", "%dev.quarkus.log.file.enabled"), offendingKeys,
                 "the detector must flag a %-profile key whichever separator declares it, must not be fooled by a "
                         + "% inside a VALUE (quarkus.log.file.format) or inside a comment, and must not truncate a "
                         + "key at a colon that belongs to the value (quarkus.log.file.path)");

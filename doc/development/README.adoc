@@ -240,7 +240,7 @@ A profile branch is not a harmless convenience:
 * *It can mask a defect that only the unbranched production profile would expose.* A branch means
   the configuration the tests exercise is not the configuration production runs. Every green test is
   then evidence about the branch, not about the artifact. The `%dev` file-logging exemption was
-  exactly this: it existed to hide a shipped default (`quarkus.log.file.enable=true` with a path
+  exactly this: it existed to hide a shipped default (`quarkus.log.file.enabled=true` with a path
   resolving to the filesystem root) that was wrong for any run which did not override it.
 
 === The guard, and what it does not cover
@@ -283,9 +283,9 @@ with the property, not by which is least work:
   services load through `QUARKUS_CONFIG_LOCATIONS`. The shipped file now binds no trust profile in
   any profile.
 . *A shipped-default flip*, when the branch existed only to correct a default that was wrong for the
-  unconfigured case. `%dev.quarkus.log.file.enable=false` disappeared by shipping
-  `quarkus.log.file.enable=false` and having deployments that want a log file set
-  `QUARKUS_LOG_FILE_ENABLE=true` beside their `LOG_FILE_PATH`.
+  unconfigured case. `%dev.quarkus.log.file.enabled=false` disappeared by shipping
+  `quarkus.log.file.enabled=false` and having deployments that want a log file set
+  `QUARKUS_LOG_FILE_ENABLED=true` beside their `LOG_FILE_PATH`.
 
 The trap to avoid is a fourth, non-shape: deleting the branch and leaving the default it was
 correcting. That is a regression wearing the invariant's clothes -- deleting the `%dev` line alone

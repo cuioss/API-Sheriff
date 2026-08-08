@@ -222,7 +222,7 @@ services:
       # File logging to mounted target directory. The shipped artifact ships file logging OFF, so a
       # deployment that wants a log file switches it on here — the enable flag and the path are one
       # decision and travel together. Every QUARKUS_PROFILE=it gateway instance sets both.
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus.log
       # Accept-time SNI passthrough split: gateway.yaml declares tls.passthrough_sni, so the Vert.x
       # SNI front listener owns the public TLS port (sheriff.tls.public-port=8443) and the terminated
@@ -372,7 +372,7 @@ services:
       # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
       # service — see that service's comment for the mechanism.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus-mtls.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -468,7 +468,7 @@ services:
       # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
       # service — see that service's comment for the mechanism.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus-cookie.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -570,7 +570,7 @@ services:
       # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
       # service — see that service's comment for the mechanism.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus-cookie-2.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -655,7 +655,7 @@ services:
       # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
       # service — see that service's comment for the mechanism.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus-ws-admission.log
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -755,7 +755,7 @@ services:
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       # ManagementPlainHttpOptOutIT reads this container's log FILE for the ApiSheriff-115 downgrade
       # warning, so the enable flag is load-bearing here, not decorative.
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus-plain-mgmt.log
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -860,7 +860,7 @@ services:
       # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
       # service — see that service's comment for the mechanism.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
-      - QUARKUS_LOG_FILE_ENABLE=true
+      - QUARKUS_LOG_FILE_ENABLED=true
       - LOG_FILE_PATH=/logs/quarkus-passthrough-empty.log
       # NO QUARKUS_HTTP_SSL_PORT here — see the service comment. The overlaid gateway.yaml declares no
       # passthrough_sni, so no front listener is created and the terminated listener owns 8443.
