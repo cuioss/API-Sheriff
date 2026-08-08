@@ -95,14 +95,6 @@ class BuildGateCoverageContractTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private static final String BUILD = "build";
-    private static final String MAP = "map";
-    private static final String JAVA_DOMAIN = "java";
-
-    private static final String GLOB = "glob";
-    private static final String ROLE = "role";
-    private static final String BUILD_CLASS = "build_class";
-
     /** The role every required entry must carry: these are build-affecting configuration files. */
     private static final String REQUIRED_ROLE = "config";
 
@@ -232,9 +224,9 @@ class BuildGateCoverageContractTest {
      */
     private static boolean carriesGateEntry(JsonNode entries, String glob) {
         for (JsonNode entry : entries) {
-            if (glob.equals(entry.path(GLOB).asText())
-                    && REQUIRED_ROLE.equals(entry.path(ROLE).asText())
-                    && REQUIRED_BUILD_CLASS.equals(entry.path(BUILD_CLASS).asText())) {
+            if (glob.equals(entry.path("glob").asText())
+                    && REQUIRED_ROLE.equals(entry.path("role").asText())
+                    && REQUIRED_BUILD_CLASS.equals(entry.path("build_class").asText())) {
                 return true;
             }
         }
@@ -253,7 +245,7 @@ class BuildGateCoverageContractTest {
      */
     private static JsonNode javaBuildMap() throws IOException {
         Path marshalJson = repoRoot().resolve(MARSHAL_JSON);
-        JsonNode entries = MAPPER.readTree(Files.readString(marshalJson)).path(BUILD).path(MAP).path(JAVA_DOMAIN);
+        JsonNode entries = MAPPER.readTree(Files.readString(marshalJson)).path("build").path("map").path("java");
         if (!entries.isArray()) {
             return fail(marshalJson + ": build.map.java is absent or is not an array, so the file-to-build"
                     + " contract this guard asserts over does not exist. Restore the build.map.java block"
