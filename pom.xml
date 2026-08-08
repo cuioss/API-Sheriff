@@ -160,6 +160,7 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <configuration>
                         <release>25</release>
+                        <showDeprecation>true</showDeprecation>
                     </configuration>
                 </plugin>
                 <plugin>
