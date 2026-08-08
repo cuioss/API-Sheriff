@@ -10,29 +10,30 @@ link:../architecture.adoc[Architecture]). The variants differ only in the *authe
 stage*.
 
 NOTE: For the two BFF variants, the authoritative specification is `TokenSheriff/doc/client`
-(`CLIENT-1..22`); the canonical statement of that seam -- including precedence over the archived
-manifest -- is in link:../architecture.adoc#_authentication_layer[Architecture -- Authentication
-Layer]. The manifest's Variant A / Variant B labels map onto `CLIENT-19`'s stateless / stateful
-BFF shapes.
+(`CLIENT-1..22`); the canonical statement of that seam -- including its standing as the sole
+authority for the BFF surface -- is in
+link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer]. The two
+BFF variants below are the two token-binding shapes `CLIENT-19` requires to stay viable, and the
+last column names which one each realizes.
 
 [cols="1,2,1,1"]
 |===
-| Variant | Authentication | State | Manifest
+| Variant | Authentication | State | `CLIENT-19` shape
 
 | link:01-base-gateway.adoc[1. Base Security Gateway]
 | Offline bearer validation on `auth.require: bearer` routes (client holds its own token)
 | Stateless
-| --
+| -- (not a BFF)
 
 | link:02-bff-session.adoc[2. BFF -- Session-based]
 | OIDC confidential client; tokens held server-side; opaque session-id cookie
 | Stateful (needs a store)
-| Variant B
+| Stateful BFF
 
 | link:03-bff-cookie.adoc[3. BFF -- Cookie-based]
 | OIDC confidential client; tokens in an AES-256-GCM `HttpOnly` cookie, decrypted per request
 | Stateless (key only)
-| Variant A
+| Stateless BFF
 |===
 
 == Variants Are Route Postures, Not a Global Switch

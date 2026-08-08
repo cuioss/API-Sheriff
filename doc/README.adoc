@@ -34,8 +34,9 @@ Limitations].
 | https://github.com/cuioss/TokenSheriff[`TokenSheriff/doc/client`] (`CLIENT-1..22`)
 | *Authoritative for all BFF concerns* -- the confidential-client flow, grants, `state`/`nonce`,
   mix-up defence, PAR, step-up, logout, token lifecycle, and the two token-binding shapes.
-  *Where it and the archived manifest differ, `doc/client` governs.* The canonical, resolvable
-  home for the many bare `TokenSheriff/doc/client` references throughout these documents is
+  *It is the sole authority for that surface: these documents describe how API Sheriff realizes
+  it and never override it.* The canonical, resolvable home for the many bare
+  `TokenSheriff/doc/client` references throughout these documents is
   https://github.com/cuioss/TokenSheriff[cuioss/TokenSheriff].
 
 | link:technical_aspects.adoc[Technical Aspects]
@@ -131,11 +132,12 @@ configuration. Each has its own design section:
 
 | link:variants/02-bff-session.adoc[2. BFF -- Session-based]
 | Backend-For-Frontend acting as an OIDC confidential client. Tokens held *server-side*;
-  the browser carries only an opaque session-id cookie. Stateful (manifest Variant B).
+  the browser carries only an opaque session-id cookie. Stateful -- the `CLIENT-19` *stateful
+  BFF* shape.
 
 | link:variants/03-bff-cookie.adoc[3. BFF -- Cookie-based (non-session)]
 | Backend-For-Frontend where the tokens travel only inside an AES-256-GCM encrypted
-  `HttpOnly` cookie, decrypted per request. Stateless (manifest Variant A).
+  `HttpOnly` cookie, decrypted per request. Stateless -- the `CLIENT-19` *stateless BFF* shape.
 
 | Variant 2 -- three-layer guides
 | Task-oriented companions to the Variant 2 design section above:

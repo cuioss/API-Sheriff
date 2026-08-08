@@ -303,9 +303,9 @@ The active authentication strategy depends on the variant:
 [IMPORTANT]
 ====
 For everything BFF-related, the authoritative specification is `TokenSheriff/doc/client` (the
-`CLIENT-1..22` contract). *Where it and the archived manifest differ, `doc/client` governs.*
-This block is the canonical statement of that seam; the variant
-documents reference it rather than restating it.
+`CLIENT-1..22` contract). *It is the sole authority for that surface: these documents describe
+how API Sheriff realizes it and never override it.* This block is the canonical statement of
+that seam; the variant documents reference it rather than restating it.
 
 That specification defines a strict seam. The confidential-client *engine* owns retrieval and
 flow (auth-code + PKCE, `state` / `nonce` / exact `redirect_uri`, mix-up `iss` defence, PAR,

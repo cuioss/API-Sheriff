@@ -12,13 +12,13 @@ server-side store it *encrypts the tokens (AES-256-GCM) into an `HttpOnly` cooki
 decrypts them per request. There is *no server-side store* -- the encrypted cookie carries the
 session state, so all gateway instances need only share the encryption key.
 
-This is manifest *Variant A* (the "token-mediating backend"), and it is the *preferred* target
+This is the *token-mediating backend* shape, and it is the *preferred* target
 because it preserves the gateway's stateless, self-contained posture. It is planned to follow
 the session-based variant.
 
 NOTE: This variant is the *stateless BFF* shape of `CLIENT-19` (tokens returned to the browser
 only inside an `HttpOnly` cookie encrypted with a server-side symmetric key). The authoritative
-specification, its precedence over the archived manifest, and the current
+specification, its standing as the sole authority for the BFF surface, and the current
 `token-sheriff-client` engine dependency (the engine performs the OAuth legs; API Sheriff
 owns the browser-facing BFF side) are stated canonically in
 link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer].
@@ -92,16 +92,16 @@ and the gateway holds no per-user state.
 
 Because the encrypted cookie carries all session state:
 
-* No session store, no Redis, no database -- the manifest's self-contained requirement holds
-  fully.
+* No session store, no Redis, no database -- the gateway's no-mandatory-external-dependency
+  posture holds fully.
 * Any gateway instance can serve any request *of an established session* as long as it has the
   encryption key -- no sticky sessions, no coordination. The login leg is the one exception: it
   holds per-instance pending state and requires affinity until the callback lands (see
   <<_stateless_after_login_not_during_it,Stateless after login, not during it>>).
 * Horizontal scaling is linear; a node can be added or removed with no session migration.
 
-This is the property that distinguishes Variant A from Variant B and the reason it is the
-preferred target.
+This is the property that distinguishes this variant from the
+link:02-bff-session.adoc[session-based variant] and the reason it is the preferred target.
 
 == Transparent Refresh and Step-Up
 
