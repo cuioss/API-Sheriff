@@ -347,9 +347,8 @@ oidc:                              # only used by the BFF variants (2 and 3)
 
 == Operator-Layer Sections
 
-Three sections that previously sat here now live in the operator layer. This document keeps the
-design-layer preamble above and the field reference below; the moved content exists in exactly one
-place, and these are links to it -- never a second copy.
+This document carries the design-layer preamble above and the field reference below. Three
+operator-layer topics live in their own pages -- linked here, never copied:
 
 * link:user/anchors.adoc#_anchors[Anchors -- namespace-scoped policy] (the `gateway.yaml`
   `anchors` block), including the

@@ -38,9 +38,7 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   limits and the full field reference. It carries a
   *dual role*: the operator-facing YAML reference and a design document (see the
   link:../README.adoc[design documentation index]). Operators read it as the configuration
-  contract; the *retained* reference (the field reference and the validation rules) stays under
-  `doc/` and is not relocated here -- the anchor, endpoint-route and topology sections *have*
-  been relocated, and are indexed as their own rows below.
+  contract; the field reference and the validation rules stay under `doc/` rather than here.
 
 | link:anchors.adoc[Anchors -- Namespace-Scoped Policy]
 | Declaring and operating anchors: namespace ownership, the single-membership rule, the policy
@@ -92,7 +90,7 @@ link:../../README.adoc#_known_limitations[Known Limitations].
 | Which knobs the deployment owns and which `gateway.yaml` owns: the three-way classification
   (policy / deployment-bound / build-time), the precedence rule and why it has no exceptions, the
   enumerated deployment-bound variables (ports, certificate and trust material, the management TLS
-  selection), the relocated
+  selection), the
   link:environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology
   (`topology.properties`)] section -- `base_url` alias resolution, the `TOPOLOGY_<ALIAS>` and
   `ENDPOINT_<ID>_ENABLED` overrides and their resolution semantics -- and an audit of where else
