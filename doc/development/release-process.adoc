@@ -227,7 +227,8 @@ cryptographically verifying the published image.
 == Trigger rules
 
 Two rules govern how the release workflow may be triggered, and how a trigger may be changed. Both
-are normative.
+are normative. The two subsections following the first rule are not further rules: they record the
+empirical control run against that rule, and what that control does and does not establish.
 
 [#guard-refusal-predicates]
 === The version-changed guard is the release decision
@@ -274,6 +275,96 @@ snapshot deployment runs on that push (it is skipped on pull requests). So a mer
 The decision is recorded in
 link:../adr/0035-A_release_is_cut_by_a_guarded_version-bump_merge_or_a_deliberate_dispatch_and_the_version-changed_decision_is_centrally_owned.adoc[ADR-0035],
 which supersedes ADR-0034.
+
+[#guard-negative-control]
+=== The observed refusal: a negative control over the guard
+
+*This subsection was written before the merge it describes.* What follows is a prediction, not a
+report. That ordering is what makes it falsifiable: an artifact written afterwards can only agree
+with whatever happened, while this one can be shown wrong.
+
+*The design.* A change to one non-`release:` key of
+link:../../.github/project.yml[`.github/project.yml`] is merged. The `paths:` prefilter matches
+*every* edit to that file, so the workflow fires; both `if:` operands are true on a merged pull
+request, so the `release` job runs; and the version-changed guard executes inside it and refuses,
+because the declared `current-version` did not move. Nothing in the `release:` block is touched --
+not `current-version`, not `next-version`, not `create-github-release` -- and that is the whole
+point of the control. The guard's two refusal predicates and its central ownership are described in
+<<guard-refusal-predicates>> and decided by ADR-0035; they are consumed here, not restated.
+
+*The run is identified by a rule, not by a value:* *the Release workflow run attached to this pull
+request's merge commit*. No run id is committed here. An id would need a future edit to stay
+correct, and a placeholder for one would be an untrue statement sitting in the tree.
+
+*The predicted signature is a conjunction of four rows:*
+
+. `release / guard` -- *success*
+. `release.outputs.released-version` -- *empty*
+. `release / release` -- *skipped*
+. `Publish the tested image to GHCR` (`publish-image`) -- *skipped*
+
+*Row 4 alone is insufficient.* That same rendering also occurs when the `release` job *fails*.
+Without row 1 you cannot tell *refused by decision* from *died before deciding* -- and a crashed
+guard, the more alarming of the two, wears exactly the same clothes.
+
+*Two further rows are inert, and naming them is required.* `wait-for-maven-central` and
+`propagate-to-consumers` are `if:`-gated on a non-empty `consumers` output, and
+link:../../.github/project.yml[`.github/project.yml`] declares no `consumers` key at all. They skip
+on every run of this workflow and so carry no information in either direction. Left unnamed, a
+reader counts three skips and credits two of them.
+
+*Cite the specific prefixed rows, never "the release job".* The run renders the called workflow's
+inner jobs prefixed -- `release / guard`, `release / release`. There is no separate outer row to
+cite.
+
+*The absence evidence is end-state corroboration only.* No new tag, no Maven Central artifact, no
+GHCR push. On its own it passes vacuously: it is equally true of every non-release merge in this
+repository's history. It is retained because it corroborates the four rows, never because it
+substitutes for them.
+
+*Provenance of the discriminator.* link:../../.github/workflows/release.yml[`release.yml`] lines
+87--101 declare `released-version` the run/skip discriminator for the downstream jobs: an empty
+value skips them. What an empty value proves is exactly that *no release was produced* -- not that
+the declared version was unchanged. Emptiness is the union of both refusal predicates named in
+<<guard-refusal-predicates>>, so it cannot discriminate a version that did not move from a tag that
+already exists. Row 2 is therefore evidence drawn from the mechanism's declared contract rather
+than an inference over its behaviour -- but read as the narrower claim it would be the very
+one-predicate reading <<guard-refusal-predicates>> warns against.
+
+*Escalation condition.* If the observed rendering does not match the predicted signature, that is a
+finding about the guard, not a run id to file. It goes in-tree, in a follow-up PR, and the
+artifact's claim is withdrawn until it does.
+
+The observed run id and the rendered conclusions are posted as a comment on the merged pull request
+-- public, permanent, and reachable from the merge commit -- not committed here.
+
+[#guard-negative-control-limits]
+=== What that control proves, and what it does not
+
+*The caveat, undiminished:* the four-row signature above is *also* exactly what a guard permanently
+stuck on "unchanged" would render. Such a guard refuses this merge for entirely the wrong reason and
+looks identical doing it. The control therefore proves the guard *refused*. It does *not* prove the
+guard *can proceed*, and it must never be cited as though it did.
+
+*Two things settle that, and both are cited rather than re-manufactured.* The 0.1.1 cut -- run
+`31157727796` -- is the positive control: the guard did let a release through when the declared
+version had genuinely moved, so a second deliberate release is not needed to re-establish it. And
+the checkout depth of the pinned reusable workflow is what settles the *mechanism*, because the
+guard decides by comparing the declared version against the parent commit and can only do so when
+the checkout actually reaches that commit. Citing one without the other lets the negative control
+imply more than it shows.
+
+*The asymmetry is recorded, not erased.* The two stuck-guard failure modes are not equally bad:
+
+* *Stuck on "unchanged" fails SAFE.* Releases are blocked -- visible, annoying, and recoverable
+  through the `workflow_dispatch` path, which carries no version-changed guard at all.
+* *Stuck on "changed" fails DANGEROUS.* It publishes irrevocably. A wrong GA coordinate cannot be
+  withdrawn, only abandoned and relocation-stubbed, as the 2026-07-12 defect required.
+
+The dangerous direction is therefore the one worth an empirical control, and it is the one this
+control covers -- deliberately, and first. *Anyone later tempted to "balance" the two directions
+must not do so by weakening the negative control.* The remedy for an under-evidenced safe direction
+is more evidence on that side, never less on this one.
 
 === A trigger removal merges on its own
 

@@ -67,6 +67,13 @@ Skip when **every** changed file is one of:
 or a build script. A mixed commit is *not* documentation-only: one Java file in an otherwise-prose
 change makes the whole commit subject to the gate.
 
+This enumeration and the `build.map` contract that `build-decision` reads now cover the same path
+classes, so what the rule declares gate-requiring is what the tooling actually gates. Naming that
+agreement next to the rule is what makes a future divergence visible — if the two ever stop covering
+the same classes, this paragraph is the claim that has become false. The cost is real and intended:
+every workflow, Dockerfile and compose change now pays a full gate instead of passing as
+documentation-only. That is the trade the rule above asks for, not a regression to be tuned away.
+
 Doubt resolves toward running it. The cost of an unnecessary build is minutes; the cost of a skipped
 one is a red `main`.
 
