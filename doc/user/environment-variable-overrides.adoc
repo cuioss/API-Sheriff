@@ -158,6 +158,7 @@ A downgrade by either route emits `ApiSheriff-115` at `WARN` on boot, naming the
 breaks. See link:tls-edge.adoc[TLS Edge] for when the downgrade is legitimate, and for why
 `QUARKUS_MANAGEMENT_ENABLED=false` is *not* an equivalent shortcut.
 
+[[_topology_and_endpoint_enablement]]
 === Topology and endpoint enablement
 
 Topology aliases and endpoint enablement are also deployment-supplied, but through a different --
@@ -165,8 +166,75 @@ and deliberately *visible* -- mechanism: an in-file `${VAR}` placeholder written
 document (link:../adr/0004-topology-indirection.adoc[ADR-0004] Amendment A1). An environment value
 reaches these fields only through an explicit placeholder, never through an invisible lookup, so
 reading the file tells you every override point. The conventional names are `TOPOLOGY_<ALIAS>` and
-`ENDPOINT_<ID>_ENABLED`; the contract is in
-link:../configuration.adoc#_topology[Configuration Reference -- Topology].
+`ENDPOINT_<ID>_ENABLED`.
+
+==== `topology.properties`
+
+Each `base_url` alias maps to *one URL* -- the concrete location of the current installation.
+One atomic URL is the unit of authoring and of override; the gateway decomposes it once on load
+into its components. Rationale and the researched alternatives:
+link:../adr/0004-topology-indirection.adoc[ADR-0004].
+
+[source,properties]
+----
+# topology.properties  (the ONLY file that changes between environments)
+APP1=https://app1.internal:8443/app1
+KEYCLOAK=https://kc.internal:8443
+----
+
+==== Environment-variable override (takes precedence)
+
+Any alias may be overridden per environment: the entry declares its override point as an
+in-file placeholder (link:../adr/0004-topology-indirection.adoc#_amendment_a1[ADR-0004
+Amendment A1]), with the file value as the default and the environment winning when set:
+
+[source,properties]
+----
+APP1=${TOPOLOGY_APP1:-https://app1.internal:8443/app1}
+----
+
+An operator relocates a backend by setting `TOPOLOGY_APP1=https://app1.mycompany.com` --
+no file edit. Precedence, highest first: the `TOPOLOGY_<ALIAS>` environment variable -> the
+placeholder's default. A `${VAR}` placeholder without a default whose variable is unset, or
+an alias referenced by an endpoint file that resolves to nothing, is a *boot failure*.
+
+==== Resolution semantics
+
+* An alias name must match `[A-Z][A-Z0-9_]*` (upper-case, starting with a letter); a
+  `topology.properties` entry whose key does not match this pattern is ignored.
+* The resolved value is a full URL (`scheme://host[:port][/base-path]`), validated and decomposed
+  once into `{scheme, host, port, base-path}`.
+* A route's upstream target is `resolved(base_url) + route.upstream.path + remainder`, where
+  *remainder* is the request path with the matched `match.path_prefix` stripped (segments are
+  joined with exactly one `/`). `/api/orders/42` on `path_prefix: /api/orders` with
+  `upstream.path: /orders` therefore reaches `<resolved APP1>/orders/42`.
+* Component overrides (e.g. changing only the port) are intentionally *not* supported initially; the
+  whole URL is the unit of override. A `TOPOLOGY_<ALIAS>_PORT`-style escape hatch may be added later
+  if a real partial-override need appears -- see
+  link:../adr/0004-topology-indirection.adoc[ADR-0004].
+
+=== Secret placeholders written into the configuration
+
+`SHERIFF_CLIENT_SECRET` and `SHERIFF_SESSION_KEY` belong to this same visible-placeholder class,
+and the distinction matters: they are *conventional placeholder names written inside an in-file
+`${VAR}` reference*, exactly like `TOPOLOGY_<ALIAS>` and `ENDPOINT_<ID>_ENABLED`. They are *not*
+fixed runtime keys like the `QUARKUS_*` variables the tables above enumerate.
+
+Nothing in the gateway looks either name up. The name is whatever the configuration author wrote
+between `${` and `}` -- rename it and the deployment keeps working, provided the environment
+supplies the same name. The two below are simply the names the worked examples use:
+
+[source,yaml]
+----
+oidc:
+  client_secret: ${SHERIFF_CLIENT_SECRET}     # any name works; this is the one the examples use
+  session:
+    encryption_key: ${SHERIFF_SESSION_KEY}    # cookie-mode key material
+----
+
+The practical consequence: searching the codebase for either name tells you nothing about whether
+a deployment needs it. What a deployment needs is whatever `${VAR}` references its own
+`gateway.yaml` actually contains -- read the file, not this page, for that list.
 
 === The configuration directory
 

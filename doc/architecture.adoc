@@ -262,7 +262,7 @@ Action"), never both. Matchers are
 bounded and composable with AND semantics (path prefix, HTTP method, host, header
 presence/value). The most specific matching route wins; a request that matches no route is rejected
 with `404` (deny-by-default). Routes from all endpoint files form one table ordered
-most-specific-first; see link:configuration.adoc#_route_ordering[Configuration -- Route ordering]. Routing
+most-specific-first; see link:user/endpoint-routes.adoc#_route_ordering[Endpoint Routes -- Route ordering]. Routing
 carries no dynamic rule language.
 
 Only routes of *enabled* endpoints enter the table: an endpoint switched off by its resolved
