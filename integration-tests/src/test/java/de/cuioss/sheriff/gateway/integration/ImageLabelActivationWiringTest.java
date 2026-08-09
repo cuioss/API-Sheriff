@@ -26,10 +26,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import org.yaml.snakeyaml.Yaml;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.yaml.snakeyaml.Yaml;
 
 /**
  * Fast, no-Docker <em>surefire</em> guard that the committed Compose descriptor actually
@@ -67,8 +67,8 @@ class ImageLabelActivationWiringTest {
 
     @Test
     @DisplayName("the api-sheriff build declares every provenance-label arg in the ${VAR:-dev} form")
-    void imageBuildDeclaresEveryProvenanceLabelArg() throws Exception {
-        Map<String, Object> args = buildArgs(IMAGE_SERVICE);
+    void imageBuildDeclaresEveryProvenanceLabelArg() throws IOException {
+        Map<String, Object> args = declaredBuildArgs();
 
         // The vacuity guard: an empty map would satisfy the per-key loop below by never running it.
         assertFalse(args.isEmpty(),
@@ -87,39 +87,23 @@ class ImageLabelActivationWiringTest {
         }
     }
 
-    /**
-     * The declared {@code build.args} map of one Compose service.
-     *
-     * @param service the Compose service name
-     * @return the declared build args, never {@code null}
-     * @throws IOException when the descriptor cannot be read
-     */
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> buildArgs(String service) throws IOException {
-        Object node = composeServices().get(service);
-        assertNotNull(node, "docker-compose.yml must declare the '" + service + "' service");
-        Map<String, Object> serviceMap = (Map<String, Object>) node;
-        Object build = serviceMap.get("build");
-        assertInstanceOf(Map.class, build, "the '" + service + "' service must declare a build section");
-        Object args = ((Map<String, Object>) build).get("args");
-        assertInstanceOf(Map.class, args,
-                "the '" + service + "' service build.args must be a mapping, not a list — the mapping form"
-                        + " is what lets a value carry the ${VAR:-dev} passthrough default");
-        return (Map<String, Object>) args;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> composeServices() throws IOException {
-        Map<String, Object> doc = loadYaml(MODULE.resolve("docker-compose.yml"));
+    private static Map<String, Object> declaredBuildArgs() throws IOException {
+        Map<String, Object> doc;
+        try (InputStream in = Files.newInputStream(MODULE.resolve("docker-compose.yml"))) {
+            doc = new Yaml().loadAs(in, Map.class);
+        }
         Object services = doc.get("services");
         assertInstanceOf(Map.class, services, "docker-compose.yml must declare services");
-        return (Map<String, Object>) services;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> loadYaml(Path path) throws IOException {
-        try (InputStream in = Files.newInputStream(path)) {
-            return new Yaml().loadAs(in, Map.class);
-        }
+        Object service = ((Map<String, Object>) services).get(IMAGE_SERVICE);
+        assertNotNull(service, "docker-compose.yml must declare the '" + IMAGE_SERVICE + "' service");
+        Object build = ((Map<String, Object>) service).get("build");
+        assertInstanceOf(Map.class, build,
+                "the '" + IMAGE_SERVICE + "' service must declare a build section");
+        Object args = ((Map<String, Object>) build).get("args");
+        assertInstanceOf(Map.class, args,
+                "the '" + IMAGE_SERVICE + "' service build.args must be a mapping, not a list — the mapping"
+                        + " form is what lets a value carry the ${VAR:-dev} passthrough default");
+        return (Map<String, Object>) args;
     }
 }

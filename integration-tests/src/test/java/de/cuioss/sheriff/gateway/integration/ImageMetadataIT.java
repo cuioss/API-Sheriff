@@ -62,7 +62,7 @@ import org.junit.jupiter.api.Test;
 class ImageMetadataIT {
 
     /** The image the integration-test harness builds and the release lane publishes. */
-    static final String IMAGE = "api-sheriff:distroless";
+    private static final String IMAGE = "api-sheriff:distroless";
 
     private static final String VERSION_LABEL = "org.opencontainers.image.version";
     private static final String REVISION_LABEL = "org.opencontainers.image.revision";
