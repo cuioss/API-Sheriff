@@ -85,11 +85,14 @@ Generalise it before adding the next control: *any control whose enforcement liv
 the navigation context a response arrives in (a top-level redirect GET versus a cross-site form
 POST) -- cannot be proven by a programmatic HTTP client, however faithful.* Only a real browser
 applies the policy. The last member is the one the defect above turned on, and it is listed here so
-the class matches the story rather than trailing it. *This Playwright suite is the only gate in this
-repository that covers that class.* When you add or change one of those controls, add the assertion
-here; a green `Bff*IT` run tells you nothing about it. That limitation is now recorded on
-`BffKeycloakLoginFlow` itself, so the next reader meets it at the helper rather than in this
-document.
+the class matches the story rather than trailing it. *This Playwright suite is the only suite in
+this repository that covers that class -- and it gates nothing.* It runs on pushes to `main` and on
+demand, never on a pull request, so a pull request that breaks one of those controls can merge with
+this suite never having run. Coverage and enforcement are separate things here, and only the first
+one exists. When you add or change one of those controls, add the assertion here and run the suite
+deliberately; a green `Bff*IT` run tells you nothing about it. That RestAssured limitation is now
+recorded on `BffKeycloakLoginFlow` itself, so the next reader meets it at the helper rather than in
+this document.
 ====
 
 [#_module_layout]
