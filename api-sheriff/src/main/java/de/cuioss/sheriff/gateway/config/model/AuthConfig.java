@@ -29,6 +29,11 @@ import lombok.Builder;
  * before binding. {@code required_scopes} is valid at either level; because override
  * is wholesale, a route-level block that omits it drops endpoint-level scope
  * enforcement for that route.
+ * <p>
+ * <strong>Thread safety.</strong> This immutable record is thread-safe and may be shared
+ * freely across request threads: {@link Require} is an enum, and the canonical constructor
+ * defensively copies {@code requiredScopes} into an unmodifiable list, so no caller can
+ * mutate an instance after construction.
  *
  * @param require        the authentication requirement (mandatory)
  * @param requiredScopes the scopes enforced for this posture, empty when none
