@@ -175,14 +175,10 @@ jobs:
   #
   # DELIBERATE DIVERGENCE FROM ADR-0030, which holds that a repository invariant asserted only by an
   # explanatory comment becomes a positively-phrased, machine-checked fitness function. This lane is
-  # deliberately NOT that shape. The tree is observed clean at the active recipes' fixed point today,
-  # but that is an observation about the current tree and not a guarantee: a hard fail-on-dirty gate
-  # would block every pull request from the moment any drift lands, including the ones that did not
-  # cause it. So this job reports the dirty set and the OpenRewrite recipe attribution and leaves the
-  # disposition to the author. It could be upgraded to ADR-0030's shape once the fixed point is HELD
-  # rather than merely observed — i.e. once drift is caught and corrected by the change that
-  # introduces it, so that "the tree is clean after the rewriting gate" is an invariant rather than a
-  # blanket blocker.
+  # deliberately NOT that shape, because the fixed point is observed rather than held. The argument,
+  # and the condition under which ADR-0030's shape becomes the right call, are in
+  # doc/development/build-gate-discipline.adoc under "The enforcement" — read it before converting
+  # this job into a hard fail-on-dirty gate.
   #
   # No `needs:` — patterned on supply-chain-scan above; the job neither delays nor is delayed by
   # `build`. It commits nothing and pushes nothing: the mutated tree exists only inside the runner.
