@@ -66,9 +66,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class AuthenticationStage {
 
-    private static final String REQUIRE_NONE = "none";
-    private static final String REQUIRE_BEARER = "bearer";
-    private static final String REQUIRE_SESSION = "session";
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final Provider<TokenValidator> tokenValidator;
@@ -112,20 +109,13 @@ public final class AuthenticationStage {
         Objects.requireNonNull(request, "request");
         RouteRuntime route = requireSelectedRoute(request);
         AuthConfig auth = route.getEffectiveAuth();
-        String require = auth.require();
-        if (REQUIRE_NONE.equals(require)) {
-            return;
+        switch (auth.require()) {
+            case NONE -> {
+                // Anonymous surface: nothing to enforce.
+            }
+            case BEARER -> validateBearer(request, auth, route);
+            case SESSION -> requireSessionStage(route).process(request);
         }
-        if (REQUIRE_BEARER.equals(require)) {
-            validateBearer(request, auth, route);
-            return;
-        }
-        if (REQUIRE_SESSION.equals(require)) {
-            requireSessionStage(route).process(request);
-            return;
-        }
-        throw new IllegalStateException(
-                "Route " + route.getId() + " reached authentication with unsupported require '" + require + "'");
     }
 
     private SessionAuthenticationStage requireSessionStage(RouteRuntime route) {

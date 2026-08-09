@@ -36,9 +36,11 @@ import java.util.regex.Pattern;
 
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.networknt.schema.Error;
 import com.networknt.schema.InputFormat;
@@ -53,12 +55,13 @@ import org.junit.jupiter.api.Test;
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Four shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Six shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
- * {@link AssetResponseEnvelope#builtInExtensions()}, and one lists the inbound-filter mode set
- * carried by {@link SecurityProfile}. A restated list has no mechanical tie to its source, so adding
- * a mapping or a mode leaves every restatement silently stale — the documentation still reads as
- * authoritative while describing a gateway that no longer exists. The project's own review policy
+ * {@link AssetResponseEnvelope#builtInExtensions()}, one lists the inbound-filter mode set
+ * carried by {@link SecurityProfile}, and the two bundled JSON Schemas each list the authentication
+ * posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
+ * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
+ * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
  * treats a hardcoded list mirroring a set defined elsewhere as a defect unless it is derived from
  * that source at build or run time; deriving these at build time would mean generating prose, so
  * this contract test is the sanctioned alternative: the lists stay hand-written and readable, and
@@ -87,9 +90,11 @@ import org.junit.jupiter.api.Test;
  * against the bundled schema through the same {@code com.networknt} code path {@code ConfigLoader}
  * boots with, and must produce zero errors.
  * <p>
- * <strong>No vacuous pass.</strong> Every extraction is anchored on a literal sentence fragment held
- * in a named constant. When an anchor cannot be located, or locates an empty set, the test fails
- * naming both the document and the anchor rather than asserting over nothing. A guard that stops
+ * <strong>No vacuous pass.</strong> Every extraction is anchored on a named constant — a literal
+ * sentence fragment for the prose surfaces, and a JSON pointer for the posture set, which the schema
+ * already models as an array and so needs no text scraping. When an anchor cannot be located, or
+ * locates an empty set, the test fails naming both the document and the anchor rather than asserting
+ * over nothing. A guard that stops
  * matching after a rewrite must break loudly; one that quietly matches nothing is worse than absent.
  * The exhibit guards carry the same discipline in two parts: each extracted exhibit must be non-empty
  * and must still carry the budget key whose absence from the schema motivated the guard, and a
@@ -110,7 +115,21 @@ class DocumentedSetsContractTest {
     private static final Path BFF_COOKIE_ADOC = repoRoot().resolve("doc/user/bff-cookie.adoc");
 
     /** The bundled schema, read off the classpath so the assertion sees the shipped copy. */
-    private static final String SCHEMA_RESOURCE = "/schema/gateway.schema.json";
+    private static final String GATEWAY_SCHEMA_RESOURCE = "/schema/gateway.schema.json";
+
+    /**
+     * The bundled endpoint schema. It declares the same {@code auth} block as the gateway schema, so
+     * both copies restate the {@link Require} posture set and both are asserted against it.
+     */
+    private static final String ENDPOINT_SCHEMA_RESOURCE = "/schema/endpoint.schema.json";
+
+    /**
+     * JSON pointer to the {@code require} enum array both bundled schemas declare on their shared
+     * {@code auth} definition. A pointer is used rather than a text anchor because the value being
+     * asserted is a JSON array the schema already models — extracting it structurally cannot be
+     * defeated by reformatting, and a moved definition fails naming this pointer.
+     */
+    private static final String REQUIRE_ENUM_POINTER = "/$defs/auth/properties/require/enum";
 
     /**
      * Anchor for {@code doc/configuration.adoc}'s bare extension enumeration. The stated count
@@ -238,21 +257,33 @@ class DocumentedSetsContractTest {
     @DisplayName("the bundled gateway schema enumerates exactly the built-in asset extensions")
     void gatewaySchemaEnumeratesTheBuiltInExtensions() throws Exception {
         // Arrange
-        String schema = readSchema();
-        int anchor = anchorIndex(schema, SCHEMA_EXTENSION_ANCHOR, SCHEMA_RESOURCE);
+        String schema = readSchema(GATEWAY_SCHEMA_RESOURCE);
+        int anchor = anchorIndex(schema, SCHEMA_EXTENSION_ANCHOR, GATEWAY_SCHEMA_RESOURCE);
 
         // Act — the schema lists the extensions bare (no backticks), comma separated
         int listStart = anchor + SCHEMA_EXTENSION_ANCHOR.length();
         int listEnd = schema.indexOf(')', listStart);
         if (listEnd < 0) {
-            fail(SCHEMA_RESOURCE + ": the extension list opened by \"" + SCHEMA_EXTENSION_ANCHOR
+            fail(GATEWAY_SCHEMA_RESOURCE + ": the extension list opened by \"" + SCHEMA_EXTENSION_ANCHOR
                     + "\" is never closed; the anchor no longer describes the schema");
         }
         TokenList documented = separatedTokens(schema.substring(listStart, listEnd), ",");
 
         // Assert — the schema states no count of its own, so only the set and the number of entries
         // it listed to name that set are asserted
-        assertExtensionSet(documented, SCHEMA_RESOURCE);
+        assertExtensionSet(documented, GATEWAY_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the bundled gateway schema enumerates exactly the Require posture set")
+    void gatewaySchemaEnumeratesTheRequirePostures() throws Exception {
+        assertRequirePostures(GATEWAY_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the bundled endpoint schema enumerates exactly the Require posture set")
+    void endpointSchemaEnumeratesTheRequirePostures() throws Exception {
+        assertRequirePostures(ENDPOINT_SCHEMA_RESOURCE);
     }
 
     @Test
@@ -410,6 +441,65 @@ class DocumentedSetsContractTest {
     }
 
     /**
+     * Asserts one bundled schema's {@code auth.require} enum array against {@link Require} — the set
+     * it names, and how many entries it listed to name it.
+     * <p>
+     * The comparison is against {@link Require#toString()} rather than against the constant names
+     * because that method <em>is</em> the configuration spelling: the constants are uppercase per Java
+     * convention and the schema declares the lowercase form an operator writes. Binding to the
+     * spelling the type itself publishes means a renamed constant and a schema that was not updated
+     * with it fail here, and so does a {@code toString()} that stops producing the config spelling.
+     * <p>
+     * The listed-entry count is asserted alongside the set for the same reason the extension guards
+     * assert it: a {@link Set} cannot observe a duplicate, so an array naming {@code bearer} twice
+     * collapses into exactly the set a correct array produces and would otherwise pass.
+     *
+     * @param resource the classpath resource of the schema to assert
+     * @throws IOException when the bundled schema cannot be read
+     */
+    private static void assertRequirePostures(String resource) throws IOException {
+        TokenList declared = schemaRequireEnum(resource);
+
+        assertFalse(declared.tokens().isEmpty(), resource + ": " + REQUIRE_ENUM_POINTER + " resolved to"
+                + " an empty enum array — the guard would pass vacuously");
+        assertEquals(postureNames(), sorted(declared.tokens()),
+                resource + " enumerates the auth.require posture set, which is authoritatively defined"
+                        + " by the Require enum, and has drifted from it. The schema is what refuses an"
+                        + " unknown posture before binding ever reaches the type, so a posture the enum"
+                        + " declares and the schema omits is unreachable configuration, and one the schema"
+                        + " declares and the enum omits fails the boot bind instead of the validation");
+        assertEquals(Require.values().length, declared.rawCount(),
+                resource + " lists a different number of postures than Require declares. The count is"
+                        + " taken over the raw array entries rather than over the de-duplicated set, so a"
+                        + " posture listed twice fails here even though the set equality above still holds");
+    }
+
+    /**
+     * The {@code auth.require} enum array of a bundled schema, read structurally through
+     * {@link #REQUIRE_ENUM_POINTER}.
+     *
+     * @param resource the classpath resource of the schema to read
+     * @return the de-duplicated posture values and the number of entries that produced them
+     * @throws IOException when the bundled schema cannot be read
+     */
+    private static TokenList schemaRequireEnum(String resource) throws IOException {
+        JsonNode array = new ObjectMapper().readTree(readSchema(resource)).at(REQUIRE_ENUM_POINTER);
+        if (!array.isArray()) {
+            return fail(resource + ": nothing resolves at " + REQUIRE_ENUM_POINTER + ", so this contract"
+                    + " guard no longer reaches the posture enumeration it protects. Restore the auth"
+                    + " definition, or update REQUIRE_ENUM_POINTER in DocumentedSetsContractTest to match"
+                    + " where the schema now declares it.");
+        }
+        Set<String> tokens = new LinkedHashSet<>();
+        int rawCount = 0;
+        for (JsonNode value : array) {
+            tokens.add(value.asText());
+            rawCount++;
+        }
+        return new TokenList(tokens, rawCount);
+    }
+
+    /**
      * The body of the first AsciiDoc {@code [source,yaml]} listing block following an anchor.
      *
      * @param document the document text
@@ -495,13 +585,13 @@ class DocumentedSetsContractTest {
                 builder -> builder.schemaRegistryConfig(SchemaRegistryConfig.builder()
                         .errorMessageKeyword(ERROR_MESSAGE_KEYWORD)
                         .build()));
-        try (InputStream in = DocumentedSetsContractTest.class.getResourceAsStream(SCHEMA_RESOURCE)) {
+        try (InputStream in = DocumentedSetsContractTest.class.getResourceAsStream(GATEWAY_SCHEMA_RESOURCE)) {
             if (in == null) {
-                return fail("the bundled schema " + SCHEMA_RESOURCE + " is not on the test classpath");
+                return fail("the bundled schema " + GATEWAY_SCHEMA_RESOURCE + " is not on the test classpath");
             }
             return registry.getSchema(in);
         } catch (IOException e) {
-            return fail("cannot read the bundled schema " + SCHEMA_RESOURCE + ": " + e.getMessage());
+            return fail("cannot read the bundled schema " + GATEWAY_SCHEMA_RESOURCE + ": " + e.getMessage());
         }
     }
 
@@ -671,6 +761,19 @@ class DocumentedSetsContractTest {
         return new TokenList(tokens, rawCount);
     }
 
+    /**
+     * The configuration spellings {@link Require} publishes, sorted for comparison.
+     *
+     * @return the lowercase posture values as an operator writes them
+     */
+    private static Set<String> postureNames() {
+        Set<String> names = new TreeSet<>();
+        for (Require posture : Require.values()) {
+            names.add(posture.toString());
+        }
+        return names;
+    }
+
     private static Set<String> modeNames() {
         Set<String> names = new TreeSet<>();
         for (SecurityProfile profile : SecurityProfile.values()) {
@@ -687,10 +790,17 @@ class DocumentedSetsContractTest {
         return Files.readString(document);
     }
 
-    private static String readSchema() throws IOException {
-        try (InputStream in = DocumentedSetsContractTest.class.getResourceAsStream(SCHEMA_RESOURCE)) {
+    /**
+     * One bundled schema's text, read off the classpath so every assertion sees the shipped copy.
+     *
+     * @param resource the classpath resource of the schema to read
+     * @return the schema document
+     * @throws IOException when the resource cannot be read
+     */
+    private static String readSchema(String resource) throws IOException {
+        try (InputStream in = DocumentedSetsContractTest.class.getResourceAsStream(resource)) {
             if (in == null) {
-                return fail("the bundled schema " + SCHEMA_RESOURCE + " is not on the test classpath");
+                return fail("the bundled schema " + resource + " is not on the test classpath");
             }
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }

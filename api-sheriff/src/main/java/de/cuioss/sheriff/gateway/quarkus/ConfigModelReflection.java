@@ -34,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RateLimitConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
@@ -105,7 +106,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         HttpMethod.class,
         Protocol.class,
         AnchorType.class,
-        AccessLevel.class
+        AccessLevel.class,
+        Require.class
 })
 public final class ConfigModelReflection {
 

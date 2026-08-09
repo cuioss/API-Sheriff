@@ -47,6 +47,7 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
@@ -144,7 +145,7 @@ class ConfigValidatorTest {
                 .id(id)
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig("none", List.of()))
+                .auth(new AuthConfig(Require.NONE, List.of()))
                 .allowedMethods(allowedMethods)
                 .routes(List.of(routes))
                 .build();
@@ -157,7 +158,7 @@ class ConfigValidatorTest {
                         + messageContains + "', but got: " + errors);
     }
 
-    private static AnchorConfig anchor(String name, String prefix, String require) {
+    private static AnchorConfig anchor(String name, String prefix, @Nullable Require require) {
         // The ADR-0007 anchor rules (prefix disjointness, namespace membership, auth floor) are
         // orthogonal to the ADR-0013 access->auth matrix, so these fixtures stay matrix-consistent
         // by construction: an anchor with no auth floor is access: public (public + no auth block is
@@ -173,7 +174,7 @@ class ConfigValidatorTest {
     }
 
     private static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
-            String require) {
+            @Nullable Require require) {
         return AnchorConfig.builder()
                 .name(name)
                 .pathPrefix(prefix)
@@ -245,7 +246,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -259,7 +260,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     assetRoute("cdn", "/assets", "assets", upstreamAsset("SECONDARY"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
@@ -273,7 +274,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     anchoredRoute("noasset", "/assets", "assets", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -287,7 +288,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api",
                     matrixAnchor("api", "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     assetRoute("mixed", "/api", "api", directoryAsset("/srv/assets"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -301,7 +302,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = validGateway().build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("plain").enabled(true).baseUrl("PLAIN")
-                    .auth(new AuthConfig("none", List.of()))
+                    .auth(new AuthConfig(Require.NONE, List.of()))
                     .routes(List.of(assetRoute("loose", "/loose", null, directoryAsset("/srv/assets"), HttpMethod.GET)))
                     .build();
 
@@ -316,7 +317,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     assetRoute("cdn", "/assets", "assets", upstreamAsset("MISSING"), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -330,7 +331,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
                     matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     assetRoute("bundle", "/assets", "assets", directoryAsset(null), HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
@@ -586,7 +587,7 @@ class ConfigValidatorTest {
         void shouldRejectBearerWithoutIssuer() {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("bearer", List.of()))
+                    .auth(new AuthConfig(Require.BEARER, List.of()))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -601,7 +602,7 @@ class ConfigValidatorTest {
         void shouldRejectSessionWithoutOidc() {
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("session", List.of()))
+                    .auth(new AuthConfig(Require.SESSION, List.of()))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -632,7 +633,7 @@ class ConfigValidatorTest {
                     .build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("none", List.of()))
+                    .auth(new AuthConfig(Require.NONE, List.of()))
                     .routes(List.of(route))
                     .build();
 
@@ -879,7 +880,7 @@ class ConfigValidatorTest {
                     .build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("ORDERS")
-                    .auth(new AuthConfig("bearer", List.of()))
+                    .auth(new AuthConfig(Require.BEARER, List.of()))
                     .routes(List.of(route("r", HttpMethod.GET)))
                     .build();
 
@@ -950,7 +951,7 @@ class ConfigValidatorTest {
         void shouldRejectUndefinedAnchorReference() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "ghost",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     anchoredRoute("r", "/other", null, HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -963,7 +964,7 @@ class ConfigValidatorTest {
         void shouldRejectRoutePathOutsideDeclaredAnchor() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     anchoredRoute("r", "/billing", "api", HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -976,7 +977,7 @@ class ConfigValidatorTest {
         void shouldRejectUndeclaredSquatter() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", null)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null,
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     anchoredRoute("r", "/api/secret", null, HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -987,10 +988,10 @@ class ConfigValidatorTest {
         @Test
         @DisplayName("Rule 5: Should reject an effective 'none' auth that weakens a non-none anchor floor")
         void shouldRejectWeakenedAuthFloor() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", "bearer")));
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", Require.BEARER)));
             RouteConfig weakening = RouteConfig.builder().id("r").anchor("api")
                     .match(match("/api/x", HttpMethod.GET))
-                    .auth(new AuthConfig("none", List.of())).build();
+                    .auth(new AuthConfig(Require.NONE, List.of())).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null, weakening);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -1015,7 +1016,7 @@ class ConfigValidatorTest {
         void shouldAcceptEndpointWhereEveryRouteSuppliesOwnAuth() {
             GatewayConfig gateway = validGateway().build();
             RouteConfig selfAuth = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
-                    .auth(new AuthConfig("none", List.of())).build();
+                    .auth(new AuthConfig(Require.NONE, List.of())).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", null, null, selfAuth);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -1028,7 +1029,7 @@ class ConfigValidatorTest {
         @DisplayName("Rule 6: Should catch a route overriding to an auth-less anchor that the endpoint anchor would mask")
         void shouldCatchRouteAnchorOverrideToAuthLessAnchor() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "secured", anchor("secured", "/api", "bearer"),
+                    "secured", anchor("secured", "/api", Require.BEARER),
                     "open", anchor("open", "/open", null)));
             RouteConfig override = RouteConfig.builder().id("r").anchor("open")
                     .match(match("/open/x", HttpMethod.GET)).build();
@@ -1048,7 +1049,7 @@ class ConfigValidatorTest {
         @Test
         @DisplayName("Rule 7: Should carry an anchor-provided bearer posture into the effective-auth completeness check")
         void shouldPropagateAnchorAuthIntoEffectiveAuthCheck() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", "bearer")));
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("api", anchor("api", "/api", Require.BEARER)));
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null,
                     anchoredRoute("r", "/api/x", "api", HttpMethod.GET));
 
@@ -1061,7 +1062,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a well-formed anchored configuration")
         void shouldAcceptValidAnchoredConfig() {
             GatewayConfig gateway = validGateway()
-                    .anchors(Map.of("api", anchor("api", "/api", "bearer")))
+                    .anchors(Map.of("api", anchor("api", "/api", Require.BEARER)))
                     .tokenValidation(new TokenValidationConfig(List.of(
                             IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
@@ -1080,7 +1081,7 @@ class ConfigValidatorTest {
                     "api", anchor("api", "/api", null),
                     "apiv1", anchor("apiv1", "/api/v1", null)));
             EndpointConfig squatter = anchoredEndpoint("s", "S", null,
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     anchoredRoute("sr", "/api/secret", null, HttpMethod.GET));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(squatter), topologyWith("S"));
@@ -1141,7 +1142,7 @@ class ConfigValidatorTest {
         void shouldExemptGrpcRouteFromDeclaredAnchorContainment() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     grpcRoute("grpc-echo", ECHO_PATH, "grpc", null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
@@ -1156,7 +1157,7 @@ class ConfigValidatorTest {
         void shouldAcceptTwoGrpcRoutesUnderOneAnchorOnBareServicePaths() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", null)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc",
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     grpcRoute("grpc-echo", ECHO_PATH, "grpc", null),
                     grpcRoute("grpc-bearer", SECURE_ECHO_PATH, "grpc", null));
 
@@ -1171,7 +1172,7 @@ class ConfigValidatorTest {
         void shouldExemptGrpcRouteFromUndeclaredSquatterRule() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("root", anchor("root", "/", null)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", null,
-                    new AuthConfig("none", List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     grpcRoute("grpc-echo", ECHO_PATH, null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
@@ -1188,7 +1189,7 @@ class ConfigValidatorTest {
             RouteConfig websocket = RouteConfig.builder().id("ws").anchor("api")
                     .protocol(Protocol.WEBSOCKET)
                     .match(match("/billing", HttpMethod.GET))
-                    .auth(new AuthConfig("none", List.of())).build();
+                    .auth(new AuthConfig(Require.NONE, List.of())).build();
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api", null, websocket);
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
@@ -1199,9 +1200,9 @@ class ConfigValidatorTest {
         @Test
         @DisplayName("Auth floor stays enforced for a gRPC route: effective 'none' still weakens a non-none anchor floor")
         void shouldStillEnforceAuthFloorForGrpcRoute() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", "bearer")));
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("grpc", anchor("grpc", "/grpc", Require.BEARER)));
             EndpointConfig endpoint = anchoredEndpoint("echo", "ECHO", "grpc", null,
-                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", new AuthConfig("none", List.of())));
+                    grpcRoute("grpc-echo", ECHO_PATH, "grpc", new AuthConfig(Require.NONE, List.of())));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ECHO"));
 
@@ -1229,7 +1230,7 @@ class ConfigValidatorTest {
         @DisplayName("Rule public+auth: Should reject an access: public anchor declaring an auth block for any non-bff type")
         void shouldRejectPublicAnchorDeclaringAuthBlock(AnchorType type) {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
-                    "open", matrixAnchor("open", "/open", type, AccessLevel.PUBLIC, "bearer")));
+                    "open", matrixAnchor("open", "/open", type, AccessLevel.PUBLIC, Require.BEARER)));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
@@ -1237,9 +1238,9 @@ class ConfigValidatorTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"none", "bearer", "session"})
+        @EnumSource(Require.class)
         @DisplayName("Rule public+auth: Should reject an access: public anchor for every auth-floor value in the vocabulary")
-        void shouldRejectPublicAnchorForEveryAuthFloorValue(String require) {
+        void shouldRejectPublicAnchorForEveryAuthFloorValue(Require require) {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
                     "open", matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, require)));
 
@@ -1251,17 +1252,18 @@ class ConfigValidatorTest {
         static Stream<Arguments> authenticatedAnchorsWithoutBackedFloor() {
             return Stream.of(
                     Arguments.of("no auth floor at all", null, "declares no non-'none' auth floor"),
-                    Arguments.of("an explicit 'none' floor", "none", "declares no non-'none' auth floor"),
-                    Arguments.of("a bearer floor with no token_validation issuer", "bearer",
+                    Arguments.of("an explicit 'none' floor", Require.NONE, "declares no non-'none' auth floor"),
+                    Arguments.of("a bearer floor with no token_validation issuer", Require.BEARER,
                             "access: authenticated bearer floor requires token_validation with at least one issuer"),
-                    Arguments.of("a session floor with no oidc block", "session",
+                    Arguments.of("a session floor with no oidc block", Require.SESSION,
                             "access: authenticated session floor requires an oidc block"));
         }
 
         @ParameterizedTest(name = "{0}")
         @MethodSource("authenticatedAnchorsWithoutBackedFloor")
         @DisplayName("Rules authenticated→floor and authenticated backing: Should reject an access: authenticated anchor without a backed auth floor")
-        void shouldRejectAuthenticatedAnchorWithoutBackedFloor(String label, String require, String expectedDetail) {
+        void shouldRejectAuthenticatedAnchorWithoutBackedFloor(String label, @Nullable Require require,
+                String expectedDetail) {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
                     "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, require)));
 
@@ -1274,7 +1276,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a type 'bff' anchor that is access: authenticated with a backed bearer floor")
         void shouldAcceptAuthenticatedBffWithBackedBearerFloor() {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
-                    matrixAnchor("portal", "/portal", AnchorType.BFF, AccessLevel.AUTHENTICATED, "bearer"));
+                    matrixAnchor("portal", "/portal", AnchorType.BFF, AccessLevel.AUTHENTICATED, Require.BEARER));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
 
@@ -1300,7 +1302,7 @@ class ConfigValidatorTest {
         void shouldAggregateMatrixViolationsInOnePass() {
             GatewayConfig gateway = gatewayWithAnchors(Map.of(
                     "portal", matrixAnchor("portal", "/portal", AnchorType.BFF, AccessLevel.PUBLIC, null),
-                    "open", matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, "bearer"),
+                    "open", matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, Require.BEARER),
                     "secure", matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null)));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(), topologyWith());
@@ -1340,7 +1342,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = GatewayConfig.builder().version(2).build();
             EndpointConfig endpoint = EndpointConfig.builder()
                     .id("orders").enabled(true).baseUrl("MISSING")
-                    .auth(new AuthConfig("none", List.of()))
+                    .auth(new AuthConfig(Require.NONE, List.of()))
                     .allowedMethods(List.of(HttpMethod.GET))
                     .routes(List.of(route("orders-post", HttpMethod.POST)))
                     .build();
@@ -1369,7 +1371,7 @@ class ConfigValidatorTest {
         private static EndpointConfig webSocketEndpoint(String alias, RouteConfig route) {
             return EndpointConfig.builder()
                     .id("ws-ep").enabled(true).baseUrl(alias)
-                    .auth(new AuthConfig("none", List.of()))
+                    .auth(new AuthConfig(Require.NONE, List.of()))
                     .routes(List.of(route))
                     .build();
         }
@@ -1386,7 +1388,7 @@ class ConfigValidatorTest {
         }
 
         private static AuthConfig bearer() {
-            return new AuthConfig("bearer", List.of());
+            return new AuthConfig(Require.BEARER, List.of());
         }
 
         @Test
@@ -1643,8 +1645,6 @@ class ConfigValidatorTest {
     class SecurityProfileMinimalRefusal {
 
         private static final String MINIMAL_PROFILE = "minimal";
-        private static final String REQUIRE_NONE = "none";
-        private static final String REQUIRE_BEARER = "bearer";
         private static final String REFUSAL_MESSAGE = "resolves inbound-filter profile 'minimal'";
 
         private static RouteConfig profiledRoute(String id, String prefix, String anchorName, String profile,
@@ -1660,7 +1660,7 @@ class ConfigValidatorTest {
         }
 
         private static AnchorConfig anchorWithProfile(String name, String prefix, AnchorType type,
-                AccessLevel access, String require, String profile) {
+                AccessLevel access, @Nullable Require require, String profile) {
             return AnchorConfig.builder()
                     .name(name)
                     .pathPrefix(prefix)
@@ -1699,7 +1699,7 @@ class ConfigValidatorTest {
         void shouldRejectMinimalOnAuthenticatedAnchor() {
             // Arrange — the anchor's bearer floor makes every route under it effectively authenticated.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
-                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, Require.BEARER));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", MINIMAL_PROFILE, null));
 
@@ -1717,7 +1717,7 @@ class ConfigValidatorTest {
             // Arrange — a bff anchor is required to be access: authenticated (ADR-0013), so a matrix-clean
             // bff fixture necessarily trips both refusal dimensions; the anchor-type one must be named.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
-                    matrixAnchor("shell", "/shell", AnchorType.BFF, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+                    matrixAnchor("shell", "/shell", AnchorType.BFF, AccessLevel.AUTHENTICATED, Require.BEARER));
             EndpointConfig endpoint = anchoredEndpoint("bff", "BFF", "shell", null,
                     profiledRoute("shell-view", "/shell/view", "shell", MINIMAL_PROFILE, null));
 
@@ -1737,9 +1737,9 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
                     matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     profiledRoute("open-secured", "/open/secured", "open", MINIMAL_PROFILE,
-                            new AuthConfig(REQUIRE_BEARER, List.of())));
+                            new AuthConfig(Require.BEARER, List.of())));
 
             // Act
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1755,7 +1755,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("open",
                     matrixAnchor("open", "/open", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     profiledRoute("open-read", "/open/read", "open", MINIMAL_PROFILE, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1769,7 +1769,7 @@ class ConfigValidatorTest {
             // Arrange — the route declares no security_filter at all; 'minimal' reaches it through the
             // gateway-wide fallback, which is the same violation as declaring it per route.
             GatewayConfig gateway = gatewayWithGlobalProfile(
-                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER),
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, Require.BEARER),
                     MINIMAL_PROFILE);
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", null, null));
@@ -1791,7 +1791,7 @@ class ConfigValidatorTest {
                             null, null))
                     .build();
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     profiledRoute("open-read", "/open/read", "open", null, null));
 
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
@@ -1805,7 +1805,7 @@ class ConfigValidatorTest {
             // Arrange — the middle leg of the resolution chain: the route declares no security_filter,
             // so 'minimal' reaches it from the anchor's own block rather than per route or gateway-wide.
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(anchorWithProfile("secure", "/secure",
-                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, MINIMAL_PROFILE));
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, Require.BEARER, MINIMAL_PROFILE));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", null, null));
 
@@ -1824,7 +1824,7 @@ class ConfigValidatorTest {
             GatewayConfig gateway = gatewayWithAnchors(Map.of("open", anchorWithProfile("open", "/open",
                     AnchorType.PROXY, AccessLevel.PUBLIC, null, MINIMAL_PROFILE)));
             EndpointConfig endpoint = anchoredEndpoint("public-api", "API", "open",
-                    new AuthConfig(REQUIRE_NONE, List.of()),
+                    new AuthConfig(Require.NONE, List.of()),
                     profiledRoute("open-read", "/open/read", "open", null, null));
 
             // Act
@@ -1841,7 +1841,7 @@ class ConfigValidatorTest {
             // declaring 'minimal'. The block is replaced wholesale, so the profile falls back to the
             // gateway-wide 'strict' and never to the anchor's 'minimal' — a merge would refuse here.
             GatewayConfig gateway = gatewayWithGlobalProfile(anchorWithProfile("secure", "/secure",
-                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER, MINIMAL_PROFILE), "strict");
+                    AnchorType.PROXY, AccessLevel.AUTHENTICATED, Require.BEARER, MINIMAL_PROFILE), "strict");
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profileLessFilterRoute("secure-read", "/secure/read", "secure"));
 
@@ -1857,7 +1857,7 @@ class ConfigValidatorTest {
         @DisplayName("Should accept a non-'minimal' profile on an authenticated route, case-insensitively")
         void shouldAcceptNonMinimalProfileOnAuthenticatedRoute(String profile) {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
-                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, Require.BEARER));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", profile, null));
 
@@ -1874,7 +1874,7 @@ class ConfigValidatorTest {
                     .version(2)
                     .anchors(Map.of("secure",
                             matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
-                                    REQUIRE_BEARER)))
+                                    Require.BEARER)))
                     .tokenValidation(new TokenValidationConfig(List.of(
                             IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
                     .build();
@@ -1894,7 +1894,7 @@ class ConfigValidatorTest {
         @DisplayName("Should name the remedy and echo no configured scalar value")
         void shouldNameRemedyWithoutEchoingConfiguredScalars() {
             GatewayConfig gateway = gatewayWithAnchorAndIssuer(
-                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, REQUIRE_BEARER));
+                    matrixAnchor("secure", "/secure", AnchorType.PROXY, AccessLevel.AUTHENTICATED, Require.BEARER));
             EndpointConfig endpoint = anchoredEndpoint("api", "API", "secure", null,
                     profiledRoute("secure-read", "/secure/read", "secure", MINIMAL_PROFILE, null));
 

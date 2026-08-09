@@ -67,7 +67,7 @@ class ConfigModelContractTest {
     // --- Shared fixtures ---------------------------------------------------
 
     private static AuthConfig auth() {
-        return new AuthConfig("bearer", List.of("read"));
+        return new AuthConfig(Require.BEARER, List.of("read"));
     }
 
     private static AnchorConfig anchorConfig() {
@@ -358,7 +358,7 @@ class ConfigModelContractTest {
                             new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
                             .id("other").baseUrl("svc").auth(auth()).build()),
-                    voCase("AuthConfig", auth(), auth(), new AuthConfig("none", List.of())),
+                    voCase("AuthConfig", auth(), auth(), new AuthConfig(Require.NONE, List.of())),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
@@ -423,8 +423,9 @@ class ConfigModelContractTest {
 
         @Test
         void authConfigBuilderMatchesConstructor() {
-            AuthConfig viaCtor = new AuthConfig("bearer", List.of("read"));
-            AuthConfig viaBuilder = AuthConfig.builder().require("bearer").requiredScopes(List.of("read")).build();
+            AuthConfig viaCtor = new AuthConfig(Require.BEARER, List.of("read"));
+            AuthConfig viaBuilder = AuthConfig.builder().require(Require.BEARER)
+                    .requiredScopes(List.of("read")).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
@@ -571,7 +572,7 @@ class ConfigModelContractTest {
 
         @Test
         void collectionBearingRecordsNormalizeNullToEmpty() {
-            assertTrue(new AuthConfig("none", null).requiredScopes().isEmpty());
+            assertTrue(new AuthConfig(Require.NONE, null).requiredScopes().isEmpty());
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
             assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
             assertTrue(new ForwardConfig(null, null, null, null, null).setHeaders().isEmpty());
@@ -906,7 +907,7 @@ class ConfigModelContractTest {
         void resolvedRouteCarriesTheMaterializedEffectivePosture() {
             ResolvedRoute cfg = resolvedRoute();
             assertEquals("api", cfg.anchor());
-            assertEquals("bearer", cfg.effectiveAuth().require());
+            assertEquals(Require.BEARER, cfg.effectiveAuth().require());
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.effectiveAllowedMethods());
             assertNotNull(cfg.effectiveSecurityFilter());
             assertNotNull(cfg.effectiveSecurityHeaders());

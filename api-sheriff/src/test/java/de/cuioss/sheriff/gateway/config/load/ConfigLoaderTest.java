@@ -42,6 +42,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
@@ -464,7 +465,7 @@ class ConfigLoaderTest {
         assertNotNull(api, "the anchor keyed 'api' should bind");
         assertEquals("api", api.name(), "the map key is injected as the anchor name");
         assertEquals("/api", api.pathPrefix());
-        assertEquals("bearer", api.auth().require());
+        assertEquals(Require.BEARER, api.auth().require());
         assertEquals("strict", api.securityFilter().profile());
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), api.allowedMethods());
         assertEquals(AnchorType.PROXY, api.type(), "the required type axis binds (case-insensitive from 'proxy')");
@@ -673,7 +674,7 @@ class ConfigLoaderTest {
                 loaded.gateway().anchors().get("api").securityFilter().profile());
         assertEquals("minimal", loaded.endpoints().getFirst().routes().getFirst()
                 .securityFilter().profile());
-        assertEquals("none", loaded.endpoints().getFirst().auth().require(),
+        assertEquals(Require.NONE, loaded.endpoints().getFirst().auth().require(),
                 "auth.require: none is a different knob and survives the profile rename");
     }
 

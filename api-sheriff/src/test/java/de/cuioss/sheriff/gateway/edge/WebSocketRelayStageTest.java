@@ -42,6 +42,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -126,14 +127,14 @@ class WebSocketRelayStageTest {
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
         RouteTable routeTable = new RouteTable(List.of(
-                wsRoute("wsopen", "/ws-open", "none", upstreamPort, Set.of(), null, positiveListNamingNothing()),
-                wsRoute("wsforwardall", "/ws-forward-all", "none", upstreamPort, Set.of(), null, null),
-                wsRoute("wsorigin", "/ws-origin", "none", upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                wsRoute("wsopen", "/ws-open", Require.NONE, upstreamPort, Set.of(), null, positiveListNamingNothing()),
+                wsRoute("wsforwardall", "/ws-forward-all", Require.NONE, upstreamPort, Set.of(), null, null),
+                wsRoute("wsorigin", "/ws-origin", Require.NONE, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
                         positiveListNamingNothing()),
-                wsRoute("wssecure", "/ws-secure", "bearer", upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                wsRoute("wssecure", "/ws-secure", Require.BEARER, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
                         positiveListNamingNothing()),
-                wsRoute("wsidle", "/ws-idle", "none", upstreamPort, Set.of(), 1, positiveListNamingNothing()),
-                wsRoute("wsdead", "/ws-dead", "none", deadPort, Set.of(), null, positiveListNamingNothing())));
+                wsRoute("wsidle", "/ws-idle", Require.NONE, upstreamPort, Set.of(), 1, positiveListNamingNothing()),
+                wsRoute("wsdead", "/ws-dead", Require.NONE, deadPort, Set.of(), null, positiveListNamingNothing())));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
                 .version(1)
@@ -492,7 +493,7 @@ class WebSocketRelayStageTest {
      * made these fixtures silently change meaning when the absent state flipped from nothing-crosses
      * to forward-all, so the posture is now stated at each call site.
      */
-    private static ResolvedRoute wsRoute(String id, String pathPrefix, String require, int upstreamPort,
+    private static ResolvedRoute wsRoute(String id, String pathPrefix, Require require, int upstreamPort,
             Set<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds, @Nullable ForwardConfig forward) {
         return ResolvedRoute.builder()
                 .id(id)

@@ -37,6 +37,7 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -420,7 +421,7 @@ class SessionAuthenticationStageTest {
     }
 
     private static AuthConfig authConfig(List<String> requiredScopes) {
-        return AuthConfig.builder().require("session").requiredScopes(requiredScopes).build();
+        return AuthConfig.builder().require(Require.SESSION).requiredScopes(requiredScopes).build();
     }
 
     private static Map<String, List<String>> navigationHeaders() {

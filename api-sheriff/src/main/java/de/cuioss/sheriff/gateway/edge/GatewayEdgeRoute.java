@@ -57,6 +57,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -167,7 +168,6 @@ public class GatewayEdgeRoute {
      * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
      */
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
-    private static final String REQUIRE_SESSION = "session";
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
@@ -717,7 +717,7 @@ public class GatewayEdgeRoute {
             // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
             // provenance before the session runtime resolves it. A bearer-only gateway has no session
             // routes and never reaches this guard.
-            if (bffRuntime.isActive() && REQUIRE_SESSION.equals(route.getEffectiveAuth().require())) {
+            if (bffRuntime.isActive() && route.getEffectiveAuth().require() == Require.SESSION) {
                 bffRuntime.csrfDefence().enforce(request);
             }
             authenticationStage.process(request);

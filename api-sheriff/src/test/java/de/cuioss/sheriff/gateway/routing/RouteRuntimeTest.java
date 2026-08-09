@@ -31,6 +31,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
 import org.junit.jupiter.api.DisplayName;
@@ -168,7 +169,7 @@ class RouteRuntimeTest {
                     .id("r")
                     .protocol(Protocol.HTTP)
                     .matcher(RouteMatcher.from(MatchConfig.builder().pathPrefix("/r").build()))
-                    .effectiveAuth(AuthConfig.builder().require("none").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET));
         }
     }
