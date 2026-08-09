@@ -216,16 +216,39 @@ jobs:
       # fetch this job does not otherwise need — and when Central answers 429 the prefix does not
       # resolve, the gate never runs, and the job dies with `No plugin found for prefix 'rewrite'`.
       # Full coordinates resolve the version from the pre-commit profile's own plugin declaration.
+      # The log goes to `.plan/temp/`, which `.gitignore:20` already excludes, NOT to the checkout
+      # root. A log in the root is picked up by the `git status --porcelain` below as `?? rewrite-run.log`
+      # — the job would manufacture one tree mutation of its own and report it next to the real ones,
+      # leaving a reader unable to tell the artefact from the finding.
       - name: Run the rewriting gate
         shell: bash
         run: |
-          ./mvnw -B -ntp -Ppre-commit org.openrewrite.maven:rewrite-maven-plugin:run -DskipTests 2>&1 | tee rewrite-run.log
+          mkdir -p .plan/temp
+          ./mvnw -B -ntp -Ppre-commit org.openrewrite.maven:rewrite-maven-plugin:run -DskipTests 2>&1 | tee .plan/temp/rewrite-run.log
 
       # Report, without a verdict. Nothing here asserts cleanliness, so there is no `exit 1` path:
       # a dirty tree produces a longer summary and a green check, which is the whole point.
+      #
+      # The attribution parser is coupled to OpenRewrite's log wording and to its indentation, and
+      # that coupling cannot be removed short of reimplementing the plugin's reporting. What CAN be
+      # removed is the SILENCE. When the wording or the indentation moves, the matcher stops matching
+      # and an empty attribution block reads exactly like "no recipe changed anything" — a confident
+      # report of nothing having happened. So the match counts are cross-checked against the working
+      # tree: a dirty tree with zero matched headers, or headers with no recipe lines beneath them,
+      # is reported as a BROKEN PARSER and never as a clean run.
       - name: Publish the dirty-tree report to the job summary
         shell: bash
         run: |
+          tree_status="$(git status --porcelain)"
+          counts="$(awk -v out=.plan/temp/attribution.txt '
+            /Changes have been made to /                { block = 1; headers++; print > out; next }
+            block && /^\[INFO\][[:space:]][[:space:]]+/ { detail++; print > out; next }
+            block && /^[[:space:]][[:space:]]+/         { detail++; print > out; next }
+                                                        { block = 0 }
+            END                                         { print headers + 0, detail + 0 }
+          ' .plan/temp/rewrite-run.log)"
+          headers="${counts% *}"
+          detail="${counts#* }"
           {
             echo "## OpenRewrite dirty-tree report (non-gating)"
             echo
@@ -235,16 +258,33 @@ jobs:
             echo
             echo "### Working tree after the gate"
             echo '```'
-            git status --porcelain
+            if [ -n "$tree_status" ]; then
+              printf '%s\n' "$tree_status"
+            else
+              echo "(clean - the gate rewrote nothing)"
+            fi
             echo '```'
             echo
             echo "### Recipe attribution"
             echo '```'
-            awk '
-              /Changes have been made to /            { show = 1; print; next }
-              show && /^\[INFO\][[:space:]][[:space:]]+/ { print; next }
-              show && /^[[:space:]][[:space:]]+/      { print; next }
-                                                      { show = 0 }
-            ' rewrite-run.log
+            if [ "$headers" -gt 0 ]; then
+              cat .plan/temp/attribution.txt
+            else
+              echo "(no recipe reported a change)"
+            fi
             echo '```'
+            if [ "$headers" -eq 0 ] && [ -n "$tree_status" ]; then
+              echo
+              echo "> **Parser drift, not a clean run.** The tree above is dirty, yet no"
+              echo "> \`Changes have been made to\` line matched. Do NOT read the empty attribution as"
+              echo "> \"no recipe ran\" — OpenRewrite's log wording has most likely moved. Attribute the"
+              echo "> changes from the raw gate log in the previous step, and fix the awk matcher in"
+              echo "> \`.github/workflows/maven.yml\`."
+            elif [ "$headers" -gt 0 ] && [ "$detail" -eq 0 ]; then
+              echo
+              echo "> **Parser drift, partial match.** $headers change header(s) matched but no recipe"
+              echo "> line beneath them did, so the attribution above names no recipe. OpenRewrite's log"
+              echo "> indentation has most likely moved; fix the awk matcher in"
+              echo "> \`.github/workflows/maven.yml\`."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
