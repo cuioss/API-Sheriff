@@ -81,11 +81,15 @@ regardless. The suite was therefore structurally incapable of observing this def
 green throughout. It was not a weak test; it was a test of something else.
 
 Generalise it before adding the next control: *any control whose enforcement lives in the browser --
-`SameSite`, `Secure`, the `__Host-` prefix, CORS, `Referrer-Policy`, CSP -- cannot be proven by a
-programmatic HTTP client, however faithful.* Only a real browser applies the policy. When you add or
-change one, add the assertion to this Playwright suite; a green `Bff*IT` run tells you nothing about
-it. That limitation is now recorded on `BffKeycloakLoginFlow` itself, so the next reader meets it at
-the helper rather than in this document.
+`SameSite`, `Secure`, the `__Host-` prefix, cookie partitioning, CORS, `Referrer-Policy`, CSP, and
+the navigation context a response arrives in (a top-level redirect GET versus a cross-site form
+POST) -- cannot be proven by a programmatic HTTP client, however faithful.* Only a real browser
+applies the policy. The last member is the one the defect above turned on, and it is listed here so
+the class matches the story rather than trailing it. *This Playwright suite is the only gate in this
+repository that covers that class.* When you add or change one of those controls, add the assertion
+here; a green `Bff*IT` run tells you nothing about it. That limitation is now recorded on
+`BffKeycloakLoginFlow` itself, so the next reader meets it at the helper rather than in this
+document.
 ====
 
 [#_module_layout]

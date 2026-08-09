@@ -31,6 +31,11 @@ Use a 10-minute Bash timeout. On a loaded machine the whole cycle can exceed the
    ```
 3. Curl the health endpoints (below) and read `docker compose logs api-sheriff`. Re-run only step 3 while iterating.
 
+## Two pointers out of this stack
+
+- **A green run here is not evidence about browser-enforced controls.** These suites drive the gateway with RestAssured. `demo-client/doc/playwright-suite.adoc` states why that leaves a whole class of controls outside their reach, enumerates the class, and carries the Playwright suite that is the only gate in this repository covering it — read it before concluding anything about that class from a green run here.
+- **Need a subset of this stack rather than all of it?** `demo-client/scripts/start-dev-environment.sh` already carries the working invocation for a trimmed three-container bring-up. Do not reach for a Compose profile instead: the standing prohibition, with its reasoning, is in `demo-client/doc/playwright-suite.adoc`.
+
 ## Port & health map
 
 | Service | Container | Host | Notes |
