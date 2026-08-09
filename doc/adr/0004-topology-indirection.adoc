@@ -92,8 +92,9 @@ value as default, environment wins" -- the role the convention override played. 
 `TOPOLOGY_<ALIAS>` variable *names* survive as a sample-config convention; the *mechanism* is
 the placeholder, resolved once before schema validation. Everything else in this ADR
 (one URL per alias, decompose-on-read, no component split, no concrete host in endpoint
-files) stands. The mechanism is implemented, and `configuration.adoc`'s
-link:../configuration.adoc#_topology[topology section] documents it.
+files) stands. The mechanism is implemented, and the operator guide's
+link:../user/environment-variable-overrides.adoc#_topology_and_endpoint_enablement[topology and
+endpoint enablement section] documents it.
 
 == References
 

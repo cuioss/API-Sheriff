@@ -1,0 +1,354 @@
+= API Sheriff -- Endpoint Route Configuration (`endpoints/*.yaml`)
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+How to author the `endpoints/*.yaml` files: the route schema, the asset terminal action, route
+ordering, what an omitted block resolves to, and the transport bounds at the edge. The
+field-level contract for every key mentioned here lives in the
+link:../configuration.adoc[Configuration Reference]; anchors are covered in
+link:anchors.adoc[Anchors].
+
+== Endpoint Configuration Files (`endpoints/*.yaml`)
+
+One file per endpoint (service / host / app) or logical group. The file binds to a single
+`base_url` alias and lists its routes. *No concrete upstream host appears here* -- the
+`base_url` alias is resolved from the topology at startup.
+
+[source,yaml]
+----
+# endpoints/app1.yaml
+endpoint:
+  id: app1                         # unique endpoint name (mandatory); a duplicate id across
+                                   #   endpoint files fails the boot
+  enabled: ${ENDPOINT_APP1_ENABLED:-true}   # default true. false => this endpoint is inert:
+                                   #   its routes are not added to the table and its base_url
+                                   #   alias need not resolve. The ${VAR:-default} placeholder
+                                   #   makes the env override visible in-file (ADR-0004 A1);
+                                   #   a plain literal (enabled: true) is equally valid
+  base_url: APP1                   # alias; resolved from topology.properties / env
+  anchor: api                      # anchor membership (see "Anchors" in anchors.adoc): default
+                                   #   for every route in this file, overridable per route; the
+                                   #   route paths must lie inside the anchor's path_prefix.
+                                   #   Mandatory for routes inside a configured anchor namespace
+  auth:                            # default auth posture for every route in this file; a route
+    require: bearer                #   may override it (below). MANDATORY unless the endpoint's
+                                   #   anchor declares an auth block (see "Anchors" in
+                                   #   anchors.adoc)
+  allowed_methods: [GET, POST]     # optional per-endpoint verb allowlist; REPLACES the
+                                   #   anchor/global allowed_methods wholesale for this
+                                   #   endpoint (no inheritance, no merge). Omit => the
+                                   #   anchor's list applies, else the global list
+  routes:                          # merged into one table across all endpoint files
+                                   #   (see "Route ordering"); no match => 404
+    - id: orders-api
+      protocol: http               # http | grpc | graphql | websocket (see "protocol" in
+                                   #   ../configuration.adoc)
+      match:
+        path_prefix: /api/orders
+        methods: [GET, POST]
+        host: ${GATEWAY_PUBLIC_HOST:-api.example.com}
+                                   # matches the INBOUND request's Host header -- the gateway's
+                                   #   own public vhost, not an upstream location. It is
+                                   #   therefore environment-specific: express it as a ${VAR}
+                                   #   placeholder rather than a literal
+        headers:                   # optional header matchers (presence or exact value)
+          - { name: X-Tenant, present: true }
+      auth:                        # route-level override of endpoint.auth (whole block
+        require: bearer            #   replaces, no merge)
+        required_scopes: [orders.read]
+      security_filter:             # "basic filtering -- NOT a WAF"; the field-level contract is
+                                   #   "security_filter" in ../configuration.adoc
+        profile: strict
+        allowed_paths: ["/api/orders", "/api/orders/{id}"]   # quoted: {} is YAML syntax
+        max_header_count: 50
+        max_header_value_length: 8192   # characters (cui-http unit)
+        max_query_params: 20
+        max_param_value_length: 2048    # characters
+        max_body_bytes: 1048576
+      forward:                     # OPTIONAL. Omit the whole block for FORWARD-ALL, the
+                                   #   baseline. Per dimension, declaring *_allow selects a
+                                   #   positive-list and *_deny a negative-list; declaring BOTH
+                                   #   for one dimension is REFUSED AT BOOT
+        headers_allow: [x-tenant]  # positive-list. The gateway-understood protocol headers
+                                   #   (Accept, Accept-Encoding, Accept-Language, Content-Type,
+                                   #   Range, + the conditional validators) cross WITHOUT being
+                                   #   listed -- do not enumerate HTTP mechanics here
+        query_deny: [debug]        # negative-list on the OTHER dimension: every other client
+                                   #   parameter crosses. The two dimensions are independent
+        set_headers:               # additional STATIC gateway-set headers only; the mediated
+          x-gateway: api-sheriff   #   Authorization (session routes) and the forwarding-
+                                   #   header set are injected automatically, never configured.
+                                   #   set_headers WINS over a client header of the same name
+                                   #   (case-insensitively) -- operator config beats client input
+      upstream:
+        path: /orders              # replaces the matched path_prefix; the request-path
+                                   #   remainder is appended (see "upstream" in
+                                   #   ../configuration.adoc)
+        connect_timeout_ms: 2000
+        read_timeout_ms: 5000
+        retry: { max_attempts: 3, idempotent_only: true }
+        circuit_breaker: { failures: 5, reset_ms: 30000 }
+      rate_limit: { requests_per_second: 100, burst: 20 }   # reserved; feature deferred
+----
+
+The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
+the `KEYCLOAK` alias:
+
+[source,yaml]
+----
+# endpoints/keycloak.yaml
+endpoint:
+  id: keycloak
+  base_url: KEYCLOAK
+  auth: { require: none }          # endpoint default: the login flow is necessarily
+                                   #   unauthenticated; inherited by both routes
+  routes:
+    - id: auth
+      match: { path_prefix: /auth }
+      forward:                     # a POSITIVE-list, chosen deliberately: this route reaches an
+                                   #   IdP authorization endpoint, so only the OIDC request
+                                   #   params should cross
+        query_allow: [client_id, redirect_uri, response_type, scope, state, nonce,
+                      code_challenge, code_challenge_method]
+      upstream: { path: /realms/main/protocol/openid-connect/auth }
+    - id: token
+      match: { path_prefix: /token, methods: [POST] }
+                                   # no forward block: FORWARD-ALL. Content-Type would cross
+                                   #   even under a positive-list -- it is gateway-understood
+      upstream: { path: /realms/main/protocol/openid-connect/token }
+----
+
+[[_asset_terminal_action]]
+=== Asset terminal action
+
+A route carries *exactly one terminal action*: it either proxies to an `upstream` (every example
+above) *or* serves static content through an `asset` block -- `upstream` and `asset` are mutually
+exclusive (decision: link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]). An asset route
+rides a `type: asset` anchor; declaring an `asset` block on a non-asset route, or omitting it on
+an asset-anchor route, fails the boot.
+
+The `asset` block selects one of two sources:
+
+[source,yaml]
+----
+# endpoints/assets.yaml -- ROUTE FRAGMENT: the routes: list of an endpoint file whose anchor
+#   is type: asset. The enclosing endpoint: block (id, base_url, anchor, auth) has the same
+#   shape as the complete files above -- this fragment on its own is not a valid endpoint file.
+routes:
+  - id: bundle                       # a local directory / volume mount
+    match: { path_prefix: /static/app }
+    asset:
+      source: directory              # directory | upstream
+      directory: /srv/app-bundle     # the configured root; the request sub-path is confined
+                                     #   UNDER this root and any escape is a 404. No
+                                     #   classpath-embedded resources.
+  - id: cdn                          # a secondary origin
+    match: { path_prefix: /static/cdn }
+    asset:
+      source: upstream               # reuses the existing upstream model -- the resolved
+      upstream: ASSET_ORIGIN         #   base_url + remainder -- the shared data-plane client and
+                                     #   the SSRF controls (scheme allowlist, followRedirects
+                                     #   NEVER, bounded size/timeout). No parallel fetch stack.
+----
+
+Two cross-cutting rules govern *both* sources:
+
+* *Canonicalize-and-confine, before the source is touched.* The request sub-path is canonicalized
+  through cui-http's `URLPathValidationPipeline` (percent-decoding, `..`/dot-segment and
+  duplicate-slash collapse, unconditional traversal / `%00` / overlong / backslash rejection),
+  then confined to the configured root / synthetic base; any escape is a `404`. No file is opened
+  and no upstream is fetched for a rejected path.
+* *Auth before source resolution.* The route's effective auth (materialized from its `access`
+  axis and auth floor) is enforced at stage 4 *before* the source is resolved, so an unauthorized
+  request to an `access: authenticated` asset is rejected `401` and never triggers a directory
+  read or an upstream fetch.
+
+Every served response passes through the *gateway-owned response envelope*, so the gateway -- never
+the backing directory or upstream -- governs the response metadata: the `Content-Type` is set from
+the gateway's own extension map (overriding whatever the source claimed), `X-Content-Type-Options:
+nosniff` is always added, any source `Set-Cookie` is stripped, and an `access: authenticated`
+asset is forced to `Cache-Control: no-store` even when the source sent `Cache-Control: public`.
+Only `GET` and `HEAD` are served; any other verb is rejected `405`.
+
+An operator may *teach* the gateway an extension it does not already map -- but never *restate* one
+it does. See link:../configuration.adoc#_asset_defaults[`asset_defaults`] for the add-only block
+and the security rationale behind that asymmetry.
+
+[[_route_ordering]]
+=== Route ordering
+
+The routes of *all* endpoint files are merged into a single immutable route table at startup.
+Matching is a two-step rule:
+
+. *Candidates* are the routes whose *entire* matcher set holds for the request (path prefix
+  AND methods AND host AND headers). A route whose `path_prefix` matches but whose `host` or
+  `methods` do not is simply not a candidate -- shorter-prefix routes are still considered.
+. Among the candidates, the one with the *longest* `path_prefix` wins.
+
+So that the winner is never ambiguous, any two routes with an *identical* `path_prefix` --
+in the same file or across files -- must be *statically disjoint*, meaning one of:
+
+* *both* declare `host`, with different values (a route that omits `host` matches every host,
+  so a declared-host route paired with a host-less route at the same prefix is *not* disjoint
+  and is rejected -- there is deliberately no "specific host + any-host fallback at the same
+  prefix" pattern; give the fallback a different prefix or declare hosts on both);
+* their `methods` sets do not overlap (an omitted `methods` means all methods and overlaps
+  everything); or
+* both declare a matcher on the *same header name* that cannot both hold -- either different
+  exact values (e.g. `X-Tenant: a` vs `X-Tenant: b`), or *opposite presence assertions*
+  (`present: true` on one and `present: false` on the other, which no single request satisfies
+  at once). A lone `present: true`, with no opposing `present: false` at the same prefix and
+  header, establishes nothing.
+
+Any same-prefix pair that fails all three tests is rejected at boot; precedence never depends
+on file-system or declaration order. This keeps the canonical virtual-hosting case
+expressible: `/api` on `a.example.com` -> `APP_A` and `/api` on `b.example.com` -> `APP_B`
+live in two endpoint files and are disjoint by host.
+
+A request that matches no route is rejected with `404`.
+
+*Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
+route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). The keys that
+register them, and the field-level contract for each, are owned by
+link:../configuration.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
+path, not what the keys mean. Up to *six* paths are carved out:
+
+. the `oidc.redirect_uri` path -- the auth-code *callback*, reached by a top-level `GET` with
+  `code` and `state` in the query string (`response_mode=query`) and carrying no request body;
+. `oidc.logout.path` -- RP-initiated *logout*;
+. its return path (`oidc.logout.post_logout_redirect_uri`) -- the *logout-return* leg;
+. `oidc.logout.backchannel_path` -- the *back-channel logout* receiver (`mode: server` only);
+. `oidc.user_info.path` -- the session/*user-info* endpoint serving the curated identity view;
+. `oidc.login.path` -- the gateway-owned *login-initiation* entry point that starts a login.
+
+Each is registered only when its configuration key is present, so a deployment that omits
+`oidc.user_info` or `oidc.login` carves out fewer than six. A proxy route such as
+`path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while other virtual
+hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path namespace.
+Routes remain free to use neighbouring prefixes; only the exact reserved paths on that one host
+are carved out.
+
+[[_defaults_for_omitted_blocks]]
+=== Defaults for omitted blocks
+
+What an omitted block resolves to, and where the resolution comes from. Most rows are
+fail-closed -- an omitted `auth` inherits a declared posture rather than inventing one, and an
+omitted `security_filter` lands on `strict`. The `forward` row is the deliberate exception,
+and is explained in its own cell:
+
+[cols="1,3"]
+|===
+| Omitted block | Effect
+
+| `auth` (route level)
+| The route inherits the *endpoint's* `auth` block (or, when the endpoint omits one, its
+  *anchor's* -- see link:anchors.adoc#_anchors[Anchors]). The authentication posture is defined per
+  endpoint file -- `endpoint.auth` is *mandatory unless the endpoint's anchor declares an
+  `auth` block*, and anonymous access is `auth: { require: none }`, written out; there is no
+  implicit default. A route-level `auth` block *replaces* the endpoint/anchor default
+  wholesale (no field merging). An endpoint file with neither its own nor an anchor-provided
+  `auth` block fails the boot.
+
+| `enabled` (endpoint level)
+| The endpoint is *active* (`enabled: true`). Set `false` -- or the env override
+  `ENDPOINT_<ID>_ENABLED=false` -- to make the endpoint inert (see
+  link:../configuration.adoc#_endpoint_identity[`endpoint`]).
+
+| `allowed_methods` (endpoint level)
+| The *anchor's* `allowed_methods` applies if the route's anchor declares one, else the
+  *global* `gateway.allowed_methods` (which itself defaults to the standard verb set when
+  omitted). A *declared* endpoint list is the first choice and *replaces* the anchor/global list
+  wholesale for that endpoint -- the omission above is what hands the choice on. No
+  inheritance/merge at any step -- see
+  link:../configuration.adoc#_allowed_methods[`allowed_methods`].
+
+| `security_filter`
+| The block is resolved by *wholesale replacement* down the chain
+  `route` -> `anchor` -> `security_defaults`, never merged: the first level that declares a
+  `security_filter` block supplies it entirely. (The endpoint level carries no `security_filter`
+  block and is not part of this chain.) A route declaring a block that omits `profile` falls back to
+  `security_defaults.profile`, not to its anchor's profile; an omitted `security_defaults` block --
+  or one omitting `profile` -- resolves to `strict`. The resolved profile's preset supplies the
+  limits, and any explicit limit keys in the winning block override them individually.
+
+| `forward`
+| *Forward-all* on both dimensions: every client request header and query parameter crosses,
+  minus the gateway-owned request-direction never-forward set (`Authorization`, `Cookie`, the
+  hop-by-hop and connection-specific names, `Content-Length`, `Host`, `Origin`, `Referer`,
+  `Date`), which no configuration can re-admit apart from the single `Authorization` carve-out.
+  The *automatic* injections apply as always: the mediated `Authorization: Bearer` on session
+  routes and the regenerated forwarding-header set. A route that wants a stricter posture
+  declares it -- see link:../configuration.adoc#_forward[`forward`]. Note this is the one
+  omitted-block default that
+  is *permissive*: it filters within a route the request is already authorised for, so the
+  deny-by-default guarantee is unaffected (it lives at route matching).
+
+| `rate_limit`
+| No rate limiting (the feature is out of scope regardless; the field is reserved).
+|===
+
+[[_edge_hardening_defaults]]
+=== Edge hardening (transport) defaults
+
+The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
+
+The *transport bounds* — the framing limits and the drain window — are fixed secure defaults applied
+in code (`EdgeHardeningOptions`) and are not operator-configurable. They fail fast on abusive framing
+before a request is admitted to the pipeline. These values are recorded here doc-first: they are the
+contract the edge-hardening code implements, and any change to a constant must be reflected in this
+table.
+
+The *admission budgets* — how many requests, and how many WebSocket relays, may be in flight at once
+— are operator-facing and configurable through the optional
+link:../configuration.adoc#_edge_hardening[`edge_hardening`] block in `gateway.yaml`. Their sizing
+depends on the
+deployment's traffic shape rather than on protocol safety, which is why they are the two bounds the
+operator owns. Omitting the block, or either key, resolves to the defaults in the table below, so a
+deployment that never writes it keeps the behaviour shown here.
+
+[cols="2,1,3"]
+|===
+| Bound | Default | Effect
+
+| Maximum request header block
+| 16 KiB
+| An over-large header block is rejected by the Vert.x codec before the request reaches the pipeline.
+
+| Maximum HTTP/1.x request-line length
+| 8 KiB
+| An over-long `METHOD SP request-target SP HTTP/x` line is rejected at the transport.
+
+| Maximum chunked-transfer chunk size
+| 16 KiB
+| An over-large single chunk is rejected at the transport.
+
+| Idle-connection reap
+| 60 s
+| An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
+  connection slots.
+
+| Admission cap (in-flight requests) +
+  [`edge_hardening.admission_cap`]
+| 2048
+| Requests beyond the cap are rejected `503` *before* a virtual thread is dispatched, so a flood
+  cannot spawn unbounded virtual threads. Operator-configurable; minimum 1.
+
+| WebSocket relay cap (established relays) +
+  [`edge_hardening.websocket_relay_cap`]
+| 512 +
+  (a quarter of the effective `admission_cap`)
+| A sub-budget acquired *in addition to* the general admission permit, never instead of it. An
+  established relay holds both permits for the connection's whole lifetime rather than for one
+  round-trip, so without this second bound a modest number of long-lived relays would consume the
+  general pool and starve ordinary HTTP traffic. An upgrade beyond the cap is refused `503` and
+  releases the general permit on the way out. Operator-configurable; minimum 1, and must not exceed
+  `admission_cap`. Omitting it takes a quarter of the *effective* `admission_cap` rather than a fixed
+  `512`, so the three-quarters-for-HTTP reservation holds at every admission cap.
+
+| Graceful-drain timeout
+| 25 s
+| The bounded wait for in-flight requests to complete on `SIGTERM`; kept below the Quarkus default
+  shutdown timeout so the drain completes within the shutdown window rather than being cut short.
+|===

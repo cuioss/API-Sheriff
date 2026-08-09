@@ -1,0 +1,95 @@
+= API Sheriff -- Anchors (Namespace-Scoped Policy)
+:toc:
+:toclevels: 2
+:sectnums:
+
+How to declare and operate *anchors* -- the namespace-scoped policy scopes configured in
+`gateway.yaml`. The decisions behind them are recorded in
+link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] and
+link:../adr/0013-anchor-type-access-axes.adoc[ADR-0013]; this page describes how to use them.
+The field-level contract for every key mentioned here lives in the
+link:../configuration.adoc[Configuration Reference].
+
+[[_anchors]]
+== Anchors -- Namespace-Scoped Policy
+
+Anchors (decision: link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]) are *named policy scopes
+that own a URL path namespace*. They are declared in `gateway.yaml` and answer one question the
+per-endpoint model cannot: "how is an invariant like _every call under `/api` presents a valid
+bearer token_ declared once and *enforced*, instead of restated in every endpoint file?"
+
+Semantics -- deliberately few rules:
+
+* *Ownership.* Each anchor declares a `path_prefix`; anchor prefixes are pairwise disjoint
+  (no anchor prefix is a prefix of another). The anchor owns everything under its prefix.
+* *Membership: at most one anchor per route, declared, never derived.* An endpoint file
+  declares `anchor: <name>` as the default for its routes; a route may override it. Membership is
+  mandatory exactly where a namespace claims the route, never universally. When any `anchors`
+  block is configured, membership and namespace must agree *both ways*: a route whose declared
+  anchor does not contain its `match.path_prefix` fails the boot, and a route whose path falls
+  inside an anchor namespace without declaring that anchor fails the boot. A route whose path
+  lies outside every anchor namespace declares no anchor at all and is unaffected. No `anchors`
+  block => this section does not apply. `protocol: grpc` routes are exempt from both containment
+  directions -- a gRPC method path is service-rooted on a single opaque segment and can never
+  nest inside a gateway path namespace on a segment boundary -- but still declare an anchor for
+  the classification axes and the auth floor.
+* *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
+  `allowed_methods`. Resolution follows one chain -- *gateway defaults -> anchor -> endpoint ->
+  route* -- and every step *replaces the whole block, never merges* (the same rule as
+  endpoint -> route `auth` today). The chain applies per block *at the scopes where the block
+  exists*: `auth` -> anchor, endpoint, route; `allowed_methods` -> anchor, endpoint (there is
+  no route-level `allowed_methods` -- routes constrain via `match.methods` *within* the
+  effective list); `security_filter` -> anchor, route; `security_headers` -> anchor *only*
+  (below).
+* *`security_headers` resolves at gateway -> anchor level only* -- endpoints and routes cannot
+  override it. Rationale: response headers (and the CORS preflight answer) are emitted
+  *before* route selection, but an anchor is identifiable from the raw path prefix alone -- so
+  stage-0 header preparation and preflight handling use the anchor's block when the request
+  path lies inside an anchor namespace, and the gateway block otherwise (including every
+  pre-routing rejection).
+* *The auth floor cannot be weakened.* Where the anchor declares `require: bearer` or
+  `require: session`, a member whose *effective* auth resolves to `require: none` fails the
+  boot. Replacing one non-`none` posture with another (anchor `bearer`, route `session`) is
+  allowed. Non-auth overrides that relax anchor limits are replacements logged as boot WARNs.
+* *Anchored endpoints may omit `auth`.* The endpoint-level `auth` block becomes optional when
+  the endpoint's anchor declares one; every route must still resolve to an unambiguous
+  effective auth (route, else endpoint, else anchor) or the boot fails.
+* *Anchors vanish at runtime.* They are resolved during route-table assembly into the
+  materialized per-route *effective* values (auth, `allowed_methods`, filter, headers); the
+  request pipeline never consults an anchor. The boot log reports the effective posture per
+  route.
+
+The one modelling consequence: a service exposed on two surfaces -- the same upstream reachable
+under `/api` with bearer *and* under `/bff` with a session -- is *two routes* (in the same
+endpoint file, sharing the `base_url` alias), one per anchor. Multi-anchor membership does not
+exist; it would reintroduce merge-order ambiguity.
+
+[[_type_and_access_axes]]
+=== Type and access axes
+
+Every anchor carries two *mandatory* classification axes (decision:
+link:../adr/0013-anchor-type-access-axes.adoc[ADR-0013]), orthogonal to one another and to the
+policy blocks above:
+
+* *`type`* -- what terminal behaviour the anchor's routes expose: `proxy` (a reverse-proxy
+  surface), `bff` (a Backend-For-Frontend surface), or `asset` (a static-asset surface, see
+  link:endpoint-routes.adoc#_asset_terminal_action[Asset terminal action]). The anchor-`type`
+  value space is entirely unrelated to the TLS-L4 `tls.passthrough_sni` surface, despite the
+  adjacent vocabulary.
+* *`access`* -- the audience the anchor admits: `public` (an anonymous surface, no
+  authentication) or `authenticated` (requires a fully-backed auth posture).
+
+The two axes are enforced fail-closed at boot by the *access -> auth matrix*, which aggregates
+every violation in the single validation pass (never fails fast):
+
+* A `type: bff` anchor *must* declare `access: authenticated` -- a BFF surface is authenticated
+  by construction.
+* An `access: authenticated` anchor *must* declare a non-`none` auth floor whose backing block is
+  present: a `bearer` floor needs `token_validation` with at least one issuer; a `session` floor
+  needs an `oidc` block.
+* An `access: public` anchor *must not* declare an `auth` block at all -- public is the *absence*
+  of auth, so the `require: none` posture lives on the endpoint (or route) rather than the anchor.
+
+Like the policy blocks, the axes vanish at runtime: `type` selects the route's terminal action
+during route-table assembly and `access` is materialized onto each asset route's response
+envelope; the request pipeline never consults an anchor.

@@ -11,16 +11,16 @@ browser-based SPA, holds the resulting tokens *server-side*, and gives the brows
 opaque *session-id cookie*. On each API call the gateway looks up the stored token by session
 id and injects it as `Authorization: Bearer` into the upstream request.
 
-This is manifest *Variant B*. It is *stateful* -- it requires a server-side session/token
+This variant is *stateful* -- it requires a server-side session/token
 store -- but provides strong isolation: the token never leaves the server, not even in
 encrypted form. This is the variant to start with; the link:03-bff-cookie.adoc[cookie-based
 variant] is the stateless evolution.
 
 NOTE: This variant is the *stateful BFF* shape of `CLIENT-19` (opaque session-id cookie +
-server-side token store, backend proxies resource calls). The authoritative specification,
-its precedence over the archived manifest, and the `token-sheriff-client` engine dependency
-(the engine performs the OAuth legs; API Sheriff owns the browser-facing BFF side) are stated
-canonically in
+server-side token store, backend proxies resource calls). The authoritative specification, its
+standing as the sole authority for the BFF surface, and the `token-sheriff-client` engine
+dependency (the engine performs the OAuth legs; API Sheriff owns the browser-facing BFF side)
+are stated canonically in
 link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer].
 
 == Login Flow

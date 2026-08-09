@@ -150,7 +150,7 @@ from any HTTP/1.1 route to the same `host:port`.
 A gRPC route carries no extra per-route fields beyond the standard `match`, `auth`, and
 `upstream` keys -- the forced-HTTP/2 upstream dial and the trailer relay are automatic. Two gRPC
 routes that share the same service path must be *statically disjoint* (by host, method, or a header
-matcher -- see link:../configuration.adoc#_route_ordering[Configuration -- route ordering]); a
+matcher -- see link:endpoint-routes.adoc#_route_ordering[Endpoint Routes -- route ordering]); a
 public route and a bearer route on the *same* service path are not disjoint, so give each its own
 service path.
 

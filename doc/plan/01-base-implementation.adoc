@@ -117,7 +117,7 @@ All compose images stay digest/tag-pinned (existing convention).
 === D3 -- Minimal proxy: a Vert.x catch-all route, property-configured
 
 One real end-to-end path, deliberately interim but on the final architecture line
-(link:04-request-pipeline.adoc[Plan 04] keeps the edge, replaces the internals):
+(Plan 04 keeps the edge, replaces the internals):
 
 * A Vert.x route handler (`quarkus-vertx-http`, already present transitively) registered as
   catch-all on the data plane, executing per-request on a *virtual thread*.
@@ -209,7 +209,7 @@ must be green after every one.
 
 * Real configuration files/schemas (Plan 02, delivered).
 * Security filtering, token validation, forward policy, events/metrics/error contract
-  (link:04-request-pipeline.adoc[Plan 04]).
+  (Plan 04).
 * gRPC/WebSocket/GraphQL processors, TLS passthrough, mTLS, BFF variants (later plans).
 * Toxiproxy wiring (arrives with the circuit breaker in Plan 04).
 

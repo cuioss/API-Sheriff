@@ -9,8 +9,7 @@
  *
  * That is deliberate and is the benchmark's stated intent: pointing this aspect at a
  * JSON-serializing backend would fold the backend's parse cost into the gateway's number, and
- * would do so asymmetrically across the two gateways. See the fairness section of
- * doc/plan/04b-comparative-benchmark.adoc and the fairness invariant in apisix.yaml.
+ * would do so asymmetrically across the two gateways. See the fairness invariant in apisix.yaml.
  */
 import http from 'k6/http';
 import { check } from 'k6';

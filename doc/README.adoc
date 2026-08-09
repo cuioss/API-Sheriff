@@ -5,7 +5,7 @@
 
 API Sheriff is a security-focused, lightweight API Gateway built on Quarkus and
 Java virtual threads. It is a purpose-built gateway rather than a configuration
-layer on top of an existing one -- the link:archive/others/README.adoc[competitive analysis]
+layer on top of an existing one -- the link:features-analysis.adoc[Feature Analysis]
 shows that no existing OSS gateway covers the required combination of confidential-client
 token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
 `X-Forwarded-*` behind a trusted-proxy allowlist), RFC 9470 step-up, and datastore-free
@@ -34,8 +34,9 @@ Limitations].
 | https://github.com/cuioss/TokenSheriff[`TokenSheriff/doc/client`] (`CLIENT-1..22`)
 | *Authoritative for all BFF concerns* -- the confidential-client flow, grants, `state`/`nonce`,
   mix-up defence, PAR, step-up, logout, token lifecycle, and the two token-binding shapes.
-  *Where it and the archived manifest differ, `doc/client` governs.* The canonical, resolvable
-  home for the many bare `TokenSheriff/doc/client` references throughout these documents is
+  *It is the sole authority for that surface: these documents describe how API Sheriff realizes
+  it and never override it.* The canonical, resolvable home for the many bare
+  `TokenSheriff/doc/client` references throughout these documents is
   https://github.com/cuioss/TokenSheriff[cuioss/TokenSheriff].
 
 | link:technical_aspects.adoc[Technical Aspects]
@@ -45,14 +46,6 @@ Limitations].
   validation),
   `token-sheriff-client` (the OIDC confidential-client engine used by the BFF variants),
   logging and testing.
-
-| link:archive/[Archived Sources]
-| The original link:archive/manifest.adoc[Project Manifest] and the
-  link:archive/others/README.adoc[competitor fact sheets] -- kept for history. Their content has
-  been fully adapted into the design documents below (requirements into
-  link:configuration.adoc[Configuration] and the link:variants/README.adoc[variants]; the
-  competitor analysis into link:features-analysis.adoc[Feature Analysis]) and the initial-scope
-  narrowing recorded in link:adr/0002-initial-scope.adoc[ADR-0002]. They are no longer edited.
 |===
 
 == Design Documents
@@ -73,8 +66,11 @@ Limitations].
 | The static, immutable YAML mapping schema: routing, URL/parameter whitelisting,
   security filtering, TLS (termination and passthrough), and per-route limits. This document
   has a *dual role* -- it is both the authoritative operator-facing configuration reference
-  (indexed from the link:user/README.adoc[operator guide]) and a design document; it stays
-  under `doc/` and is not relocated into `doc/user/`.
+  (indexed from the link:user/README.adoc[operator guide]) and a design document. It carries the
+  design-layer principles and the field reference; the anchor, endpoint-route and topology
+  material lives in link:user/anchors.adoc[`doc/user/anchors.adoc`],
+  link:user/endpoint-routes.adoc[`doc/user/endpoint-routes.adoc`] and
+  link:user/environment-variable-overrides.adoc[`doc/user/environment-variable-overrides.adoc`].
 
 | link:security-threat-model.adoc[Threat Model & CVE-Derived Validation Baseline]
 | Trust boundaries and STRIDE, plus a failure catalogue where every class that produced a
@@ -135,11 +131,12 @@ configuration. Each has its own design section:
 
 | link:variants/02-bff-session.adoc[2. BFF -- Session-based]
 | Backend-For-Frontend acting as an OIDC confidential client. Tokens held *server-side*;
-  the browser carries only an opaque session-id cookie. Stateful (manifest Variant B).
+  the browser carries only an opaque session-id cookie. Stateful -- the `CLIENT-19` *stateful
+  BFF* shape.
 
 | link:variants/03-bff-cookie.adoc[3. BFF -- Cookie-based (non-session)]
 | Backend-For-Frontend where the tokens travel only inside an AES-256-GCM encrypted
-  `HttpOnly` cookie, decrypted per request. Stateless (manifest Variant A).
+  `HttpOnly` cookie, decrypted per request. Stateless -- the `CLIENT-19` *stateless BFF* shape.
 
 | Variant 2 -- three-layer guides
 | Task-oriented companions to the Variant 2 design section above:
@@ -301,6 +298,3 @@ table as a curated entry point; a missing row is index drift, never a withdrawn 
 . link:technical_aspects.adoc[Technical Aspects] -- the CUI library APIs behind the design.
 . The link:adr/0001-java25-runtime-baseline.adoc[ADRs] -- the recorded decisions and their
   rationale, referenced throughout the documents above.
-
-For historical context, the original requirements and competitor fact sheets are preserved
-under link:archive/[`archive/`].
