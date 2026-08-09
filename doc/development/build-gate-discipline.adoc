@@ -15,6 +15,14 @@ Three distinct mechanisms in this repository mutate the working tree during a gr
 `verify -Ppre-commit` run. None of them is visible in the build result -- that is the whole
 difficulty. `BUILD SUCCESS` is printed either way.
 
+Where the tree stands today: a whole-reactor `verify -Ppre-commit` drives `rewrite:run` with the
+full `pre-commit` recipe list in every module, produces *zero* `Changes have been made to`
+attributions, and leaves the working tree clean. The repository is at the active recipes' fixed
+point. That is a property of the tree at a point in time, not a guarantee -- the fixed point is
+lost the moment a change lands that the recipes want to rewrite, and nothing announces the loss.
+The three mechanisms below are what happens on that run. They are dormant, not retired, and every
+rule on this page is written for the run on which they wake up.
+
 === OpenRewrite import-group churn
 
 The `pre-commit` profile's `activeRecipes` override in the root `pom.xml` activates
@@ -30,13 +38,15 @@ interaction, not a lost build.
 
 === The pre-commit formatter is not idempotent
 
-`org.openrewrite.java.format.AutoFormat` and its companions do not converge in one pass on this
-tree: a run takes A to B, and the next run takes B to C rather than leaving B alone. The root
-cause is that `main` is not at the formatter's fixed point, so every run has real work to do and
-the work is not stable.
+`org.openrewrite.java.format.AutoFormat` and its companions do not converge in one pass: on a tree
+away from their fixed point, a run takes A to B, and the next run takes B to C rather than leaving
+B alone. What was observed when this was diagnosed was a `main` that gave every run real work to
+do, and the work was not stable.
 
-The practical consequence is that "run the formatter again and see if it settles" is not a
-diagnostic here. It will not settle.
+`main` is at the fixed point today, so the recipes have nothing to do and the instability has
+nothing to act on. It comes back with the first change the recipes want to rewrite. The practical
+consequence, on any run that does have work to do, is that "run the formatter again and see if it
+settles" is not a diagnostic here. It will not settle.
 
 === `SimplifyTestThrows` silently reverts an accepted narrowing
 
@@ -83,17 +93,18 @@ the formatter will accept -- there is not one.
 *Revert unrelated churn; keep the rewrite only for files the branch itself authored.* A scoped pull
 request carries the files its change is about.
 
-The countervailing argument is real and should be stated rather than ignored: the reverted diff
-*will reappear on the next run*, so reverting it is work that has to be repeated. That is true, and
-it is not a reason to commit the churn. The reappearance is the standing cost of `main` not being
-at the formatter's fixed point, and paying that cost once per pull request is cheaper than
-polluting every scoped pull request with roughly 170 unrelated files -- which destroys the
-reviewability of each one and buries the actual change.
+The countervailing argument is real and should be stated rather than ignored: on a tree away from
+the fixed point the reverted diff *will reappear on the next run*, so reverting it is work that has
+to be repeated. That is true, and it is not a reason to commit the churn. Paying that cost once per
+pull request is cheaper than polluting every scoped pull request with roughly 170 unrelated files
+-- which destroys the reviewability of each one and buries the actual change.
 
-The durable fix is to bring `main` to the formatter's fixed point in a single dedicated pass. That
-has not been done. It is recorded here as an open debt rather than left as folklore, and it is
-deliberately out of scope for any scoped change, because it is a mechanical rewrite of
-`api-sheriff/src/main/java/**` and belongs in a change that does nothing else.
+The rule stands even though the tree is at the fixed point today, and it stands *because* of how
+that fixed point is held: it is a property of the current tree rather than a guarantee about future
+ones, and it is lost silently the first time a change the recipes want to rewrite lands. On that
+run the churn is back and the revert-versus-commit question is live again, with the same answer.
+Running `git status --porcelain` after the gate is what tells a contributor which kind of run they
+are on -- there is no other signal, because the gate exits 0 either way.
 
 == The recipe-scoping trap
 
@@ -113,10 +124,17 @@ carries a `rewrite-report` job, named "OpenRewrite dirty-tree report (non-gating
 rewriting gate itself and then prints, into the job summary, the post-gate `git status --porcelain`
 listing and every `Changes have been made to <file> by:` block with its recipe chain.
 
-The job *deliberately never fails the build on a dirty verdict*. A blocking assertion over "the
-tree is clean after the rewriting gate" would be red on every run for as long as `main` is not at
-the formatter's fixed point -- so the job reports and does not judge. A genuine Maven or tooling
-failure still turns the check red; only the dirty verdict is non-gating.
+The job *deliberately never fails the build on a dirty verdict*. The tree is observed clean at the
+fixed point today, but that is not guaranteed to hold, and a hard fail-on-dirty gate would block
+every pull request from the moment any drift lands -- including the pull requests that did not
+cause it. So the job reports the dirty set and the recipe attribution and leaves the disposition to
+the author. A genuine Maven or tooling failure still turns the check red; only the dirty verdict is
+non-gating.
+
+The condition under which the ADR-0030 fitness-function shape becomes the right call is a fixed
+point that is *held* rather than merely observed: once drift is caught and corrected by the change
+that introduces it, a positively-phrased "the tree is clean after the rewriting gate" assertion
+stops being a blanket blocker and becomes an invariant worth asserting.
 
 == A build whose output says it did nothing has verified nothing
 
