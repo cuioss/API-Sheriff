@@ -62,6 +62,65 @@ Reaching zero by *silently marking issues won't-fix or false-positive in the Son
 *not acceptable* -- that decision leaves no trace in the codebase and cannot be reviewed in a pull
 request. Every deviation from a clean gate must be visible and justified in the source.
 
+== The plan's footprint governs in both directions
+
+Two rules answer the same question from opposite ends: *what does a change do about the lines and
+findings its own declared footprint does not cover?* One keeps unrelated lines out of the
+measurement; the other keeps the diff from being pulled out past its boundary.
+
+=== Do not let a cosmetic sweep pull unrelated lines in
+
+Sonar's new-code window is *the diff*, not the semantics of the diff. A line touched for any reason
+enters the new-code measurement, and the gate does not ask whether the change authored the
+behaviour on it.
+
+The consequence is sharper than it sounds, and the sentence above also bounds it: a *purely
+cosmetic* edit inside an already-uncovered branch turns *the lines it changed* into uncovered new
+code. Pull-request analysis is scoped to the changed lines, so the untouched siblings in that branch
+never enter the measurement -- the window really is the diff -- but the changed lines are enough on
+their own. A pure rename inside an uncovered `catch` block can fail the new-coverage condition on
+lines the change did not author and does not test.
+
+The remedy is prevention rather than repair. Keep a cosmetic sweep -- a rename, a reformat, a
+comment tidy -- *out of the interior of uncovered branches*. Where the sweep has already landed and
+the condition is red, the honest options are to cover the branch or to back the cosmetic edit out;
+neither is cheap, which is why the rule is stated as prevention.
+
+=== Do not let a finding pull your diff out
+
+The mirror case: a finding lands *inside* the scanned surface but *outside* the plan's declared
+write-boundary.
+
+That finding is dispositioned `taken_into_account` and reported as a *named follow-up* -- never
+silently absorbed into the current change.
+
+The two halves of that rule are backed very differently, and the difference is worth stating. The
+*disposition* is mechanised, though not in this repository: plan-marshall's triage tooling records it
+in the plan's findings ledger via `manage-findings resolve --resolution taken_into_account`, one of
+that store's resolution values, so the decision survives as an artefact rather than an intention.
+The *named follow-up* is not mechanised at all. No workflow check and no plan-validation rule here
+asserts that the follow-up was actually filed; it is a process rule, kept by whoever runs the
+triage.
+
+Naming that boundary is not a caveat, it is the point. Absorbing the finding widens the blast radius
+past the boundary the specification declared, and the widening is *invisible in the gate result*,
+because a gate only ever gets greener as more is fixed. A green gate over a change twice the size it
+was scoped to is still a scope breach; the gate simply cannot report it. A section built on that
+observation must not itself claim an enforcement it does not have.
+
+=== Cross-references here name documents, not lines
+
+This policy names *documents and rules*. It does not carry `file:line` anchors, and neither should
+anything written into it. A line number is unowned duplicated state: it decays the moment the file
+it points into is edited, and it decays *without any signal* -- nothing fails, the reference simply
+starts pointing somewhere else.
+
+The evidence this section deliberately omits is the worked example. An earlier four-anchor deferral
+table belongs here by subject and is *not* landed: its anchors no longer resolve, and one of them
+now points at a comment recording that the finding was *fixed* rather than deferred -- so
+re-landing the table would ship a stale deferral list that reads as current. Where a deferral list
+is wanted, re-derive it from the live gate rather than restoring a decayed one.
+
 == See also
 
 * link:../../.github/project.yml[`.github/project.yml`] -- the repository's SonarCloud declaration.

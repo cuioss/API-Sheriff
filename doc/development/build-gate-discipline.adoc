@@ -1,0 +1,202 @@
+= Build-Gate Discipline -- A Green Gate That Changed Your Files
+:toc:
+:toclevels: 2
+:sectnums:
+
+link:../../CLAUDE.md[`CLAUDE.md`] states the class, in its *Pre-Commit Process* section: a gate that
+exits 0 can still have changed your files. This page is the detail behind that line -- which
+mechanisms in this repository do it, what a contributor does about them, and the two neighbouring
+rules about reading build output honestly. The class statement is not restated here; the
+enforcement is named at the end.
+
+== The three mechanisms that exit 0 while mutating the tree
+
+Three distinct mechanisms in this repository mutate the working tree during a green
+`verify -Ppre-commit` run. None of them is visible in the build result -- that is the whole
+difficulty. `BUILD SUCCESS` is printed either way.
+
+Where the tree stands today: a whole-reactor `verify -Ppre-commit` drives `rewrite:run` with the
+full `pre-commit` recipe list in every module, produces *zero* `Changes have been made to`
+attributions, and leaves the working tree clean. The repository is at the active recipes' fixed
+point. That is a property of the tree at a point in time, not a guarantee -- the fixed point is
+lost the moment a change lands that the recipes want to rewrite, and nothing announces the loss.
+The three mechanisms below are what happens on that run. They are dormant, not retired, and every
+rule on this page is written for the run on which they wake up.
+
+=== OpenRewrite import-group churn
+
+The `pre-commit` profile's `activeRecipes` override in the root `pom.xml` activates
+`org.openrewrite.java.OrderImports` and `org.openrewrite.java.RemoveUnusedImports`. Against a tree
+that is not already at their fixed point, they rewrite import blocks across roughly *170 files* --
+almost all of them untouched by whatever branch is running the gate.
+
+This one has a second-order effect that is easy to miss. The plan-marshall change-ledger stamps
+`worktree_sha` at *build end*, so it records the *churned* tree. Reverting the churn restores the
+pre-build sha, and the freshness check then reports `stale` for a commit whose gate has just
+passed. A "the worktree was never verified" refusal immediately after a green gate is this
+interaction, not a lost build.
+
+=== The pre-commit formatter is not idempotent
+
+`org.openrewrite.java.format.AutoFormat` and its companions do not converge in one pass: on a tree
+away from their fixed point, a run takes A to B, and the next run takes B to C rather than leaving
+B alone. What was observed when this was diagnosed was a `main` that gave every run real work to
+do, and the work was not stable.
+
+`main` is at the fixed point today, so the recipes have nothing to do and the instability has
+nothing to act on. It comes back with the first change the recipes want to rewrite. The practical
+consequence, on any run that does have work to do, is that "run the formatter again and see if it
+settles" is not a diagnostic here. It will not settle.
+
+=== `SimplifyTestThrows` silently reverts an accepted narrowing
+
+`org.openrewrite.java.testing.junit5.JUnit5BestPractices` -- also in the `pre-commit` profile's
+recipe list -- reaches `SimplifyTestThrows`, which broadens a narrowed `throws` clause on a test
+method back to `throws Exception`. When a review bot asks for a narrower clause and the narrowing
+is implemented and then run through the gate, the recipe reverts it, and the gate exits 0 over the
+reverted form. The change is gone and every visible signal says the work landed.
+
+== The three operational consequences
+
+=== Verify a review-bot suggestion by surviving the gate, not by implementing it
+
+Implementing a suggestion is not evidence that the suggestion is in the tree. Run the gate, then
+run `git status --porcelain`, and read the result: a file you edited that now shows as modified
+against your own commit has been rewritten by the gate, and a file that shows nothing may have been
+rewritten back to where it started. A suggestion is verified only by *surviving the gate*.
+
+=== Attribute a post-gate dirty tree before reverting it
+
+The reflex on a dirty tree is "the usual import churn, revert it and move on". That reflex is what
+loses a `SimplifyTestThrows` reversion, because it discards the evidence unread.
+
+OpenRewrite prints its attribution into the build log, as a
+`Changes have been made to <file> by:` block followed by the recipe chain responsible. Read that
+block before reverting anything: it distinguishes the three mechanisms above from each other and
+from a genuine change of yours.
+
+One trap in the tooling around that log: the `build-maven` rewrite-log parser can report
+`verdict: not_observed` for a build in which `rewrite:run` demonstrably ran, because it keys on a
+findings marker rather than on the recipe-attribution blocks. That verdict is *not* evidence that
+OpenRewrite was inactive. When it disagrees with the log, the log wins.
+
+=== Never hand-edit formatter-owned whitespace, wrapping or import order
+
+Whitespace, line wrapping and import order belong to the formatter. Editing them by hand puts you
+in a loop against a mechanism that is not idempotent: two rounds of "reformat by hand, re-run the
+gate, get a different result" is not bad luck, it is a proof of the non-idempotency described
+above. Stop at that point and revert the cosmetic edits rather than trying to find the arrangement
+the formatter will accept -- there is not one.
+
+== The revert rule, and the objection to it
+
+*Revert unrelated churn; keep the rewrite only for files the branch itself authored.* A scoped pull
+request carries the files its change is about.
+
+The countervailing argument is real and should be stated rather than ignored: on a tree away from
+the fixed point the reverted diff *will reappear on the next run*, so reverting it is work that has
+to be repeated. That is true, and it is not a reason to commit the churn. Paying that cost once per
+pull request is cheaper than polluting every scoped pull request with roughly 170 unrelated files
+-- which destroys the reviewability of each one and buries the actual change.
+
+The rule stands even though the tree is at the fixed point today, and it stands *because* of how
+that fixed point is held: it is a property of the current tree rather than a guarantee about future
+ones, and it is lost silently the first time a change the recipes want to rewrite lands. On that
+run the churn is back and the revert-versus-commit question is live again, with the same answer.
+Running `git status --porcelain` after the gate is what tells a contributor which kind of run they
+are on -- there is no other signal, because the gate exits 0 either way.
+
+== The recipe-scoping trap
+
+A reproduction that drops the profile does not reproduce anything. `rewrite:run` *without*
+`-Ppre-commit` reports `Using active recipe(s) []` and changes no file, because the recipe list
+that reaches all three mechanisms is the `pre-commit` profile's `activeRecipes` override.
+
+The failure mode is a false negative that reads as an exoneration: a narrower, faster invocation
+comes back clean, and OpenRewrite appears to be innocent of a mutation it did in fact perform.
+`-Ppre-commit` is load-bearing in every reproduction of anything on this page.
+
+== The enforcement
+
+All three mechanisms are invisible in the build result by construction, so the one thing that can
+be done about them mechanically is to *report* them. link:../../.github/workflows/maven.yml[`.github/workflows/maven.yml`]
+carries a `rewrite-report` job, named "OpenRewrite dirty-tree report (non-gating)", which runs the
+rewriting gate itself and then prints, into the job summary, the post-gate `git status --porcelain`
+listing and every `Changes have been made to <file> by:` block with its recipe chain.
+
+The job *deliberately never fails the build on a dirty verdict*. The tree is observed clean at the
+fixed point today, but that is not guaranteed to hold, and a hard fail-on-dirty gate would block
+every pull request from the moment any drift lands -- including the pull requests that did not
+cause it. So the job reports the dirty set and the recipe attribution and leaves the disposition to
+the author. A genuine Maven or tooling failure still turns the check red; only the dirty verdict is
+non-gating.
+
+The condition under which the ADR-0030 fitness-function shape becomes the right call is a fixed
+point that is *held* rather than merely observed: once drift is caught and corrected by the change
+that introduces it, a positively-phrased "the tree is clean after the rewriting gate" assertion
+stops being a blanket blocker and becomes an invariant worth asserting.
+
+== A build whose output says it did nothing has verified nothing
+
+This is the specific case of the general rule in link:../../CLAUDE.md[`CLAUDE.md`] -- a successful
+build is not evidence that work happened -- applied to Maven's incremental compilation.
+
+Maven's `testCompile` compares test-source timestamps against the compiled test classes. A change
+confined to `src/main/java`, or a pure signature change, leaves every test source older than its
+class file, so `testCompile` skips compilation entirely and prints
+`Nothing to compile - all classes are up to date`. Plain `test` inherits the same defect, because
+Surefire runs whatever is already sitting in `target/test-classes`.
+
+*After any production-only or signature change, run `clean test-compile` -- or `clean verify`.*
+That marker line in the output is the detection signal: a build that reports it has verified
+nothing about the change, whatever its exit code says.
+
+Two instances of this repository's own history are the evidence for the single rule, not two
+separate rules: a production-only change that looked green and yielded *142 compilation errors*
+under `clean test-compile`, and a signature change that yielded *26*.
+
+== Two rules about reading a check's output
+
+=== An ERROR from a guard is a statement about the guard, not about its subject
+
+When a guard, gate or analysis step reports an error, the first reading is almost always "the thing
+being checked is broken". Frequently the correct reading is "the check could not evaluate" -- a
+missing input, an unresolvable path, a tool that never started.
+
+Establish that the check actually ran before treating its output as a finding about its subject.
+Establish the same before treating a *green* as evidence: a check that silently could not run
+reports success indistinguishable from a real pass, and that is the more dangerous half of this
+rule. An error at least draws attention to itself.
+
+=== A plausible root cause is not the root cause
+
+A story that explains every symptom is not thereby true. An explanation that fits all the available
+facts is a hypothesis with good fit, and it survives exactly until someone re-derives it against
+the implementing source -- at which point a comfortable, load-bearing explanation can turn out to
+describe code that does not exist.
+
+Before a diagnosis is acted on, read the implementation it claims to describe.
+
+== Recorded discard: the fully-qualified-refspec fix
+
+A proposal to make the release tag check use fully-qualified refspecs is recorded here as
+*discarded*, so it is not re-opened from memory.
+
+It has nothing left to apply to. The project-local release skill's tag check now uses
+`git fetch --tags --force` together with `git ls-remote --exit-code --tags`, and its only surviving
+`merge-base` use is an ancestry assertion rather than a resolution against a prunable
+remote-tracking ref -- which was the failure the refspec change existed to prevent.
+
+Its companion prescription, "run the guard checks serially", is likewise *not* landed, and
+deliberately so: it was refuted by the correction that followed it, which found that serial
+execution merely hid the problem rather than fixing it.
+
+== See also
+
+* link:../../CLAUDE.md[`CLAUDE.md`] -- the class statement, the general build-success rule, and the
+  pre-commit process this page details.
+* link:../../.github/workflows/maven.yml[`.github/workflows/maven.yml`] -- the non-gating
+  `rewrite-report` job.
+* link:sonar-quality-gate.adoc[SonarCloud Quality Gate -- Compliance Policy] -- the other blocking
+  gate a contributor answers to, and what a plan's declared footprint does about its findings.
+* link:README.adoc[Contributor Guide] -- the index for this documentation layer.

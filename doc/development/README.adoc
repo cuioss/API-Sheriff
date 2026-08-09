@@ -30,6 +30,15 @@ to *run* the finished gateway).
   merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,
   and the fix-by-default / suppress-with-rationale escape hatch.
 
+| link:build-gate-discipline.adoc[Build-Gate Discipline -- A Green Gate That Changed Your Files]
+| The three mechanisms that mutate the working tree while the gate exits 0 -- OpenRewrite's
+  import-group churn, the pre-commit formatter's non-idempotency, and the `SimplifyTestThrows`
+  reversion -- the three consequences a contributor acts on (verify by surviving the gate,
+  attribute a dirty tree before reverting it, never hand-edit formatter-owned formatting), the
+  revert rule with the objection to it and the standing fixed-point debt, the recipe-scoping trap,
+  the non-gating `rewrite-report` job that reports all of it, the incremental-build rule, and the
+  recorded discard of the fully-qualified-refspec fix.
+
 | link:release-process.adoc[Release Process]
 | How a release is cut -- merge a version change in `.github/project.yml`, which is the publishing
   act once the centrally-owned version-changed guard lets it through, with `workflow_dispatch` as the
@@ -71,7 +80,7 @@ to *run* the finished gateway).
   `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
 
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
-| Which declared gateway limit has a boundary assertion and which does not -- the twelve-file
+| Which declared gateway limit has a boundary assertion and which does not -- the thirteen-file
   descriptor surface, the strict preset's resolved caps that appear in no yaml, one row per limit
   naming its enforcing component and its asserting test, the standing gap remainder, and the two
   report-only findings -- that the body-cap wiring guard's glob never reaches the `endpoints/` tree,

@@ -156,3 +156,135 @@ jobs:
             trivy-filesystem.sarif
           retention-days: 30
           if-no-files-found: error
+
+  # OPENREWRITE DIRTY-TREE REPORT — deliberately NON-GATING.
+  #
+  # Three mechanisms in this repository mutate the working tree while the gate exits 0, and all three
+  # are invisible in the build result by construction. They are documented in
+  # doc/development/build-gate-discipline.adoc; this job is the only part of that story a machine can
+  # carry, so it PRINTS what the rewriting gate changed and which recipe changed it, and never judges.
+  #
+  # `-Ppre-commit` IS LOAD-BEARING. The recipe list that reaches all three mechanisms is the
+  # pre-commit profile's `activeRecipes` override in the root pom.xml. Without the profile,
+  # `rewrite:run` reports `Using active recipe(s) []`, changes nothing, and this job becomes a false
+  # green that appears to exonerate OpenRewrite. Do not "simplify" the profile away.
+  #
+  # No CI lane runs the rewriting gate today, so this job has to invoke it before it has a dirty tree
+  # to report. That is CI time this repository did not previously spend; the invocation is kept to the
+  # narrowest form that still produces all three mutations.
+  #
+  # DELIBERATE DIVERGENCE FROM ADR-0030, which holds that a repository invariant asserted only by an
+  # explanatory comment becomes a positively-phrased, machine-checked fitness function. This lane is
+  # deliberately NOT that shape, because the fixed point is observed rather than held. The argument,
+  # and the condition under which ADR-0030's shape becomes the right call, are in
+  # doc/development/build-gate-discipline.adoc under "The enforcement" — read it before converting
+  # this job into a hard fail-on-dirty gate.
+  #
+  # No `needs:` — patterned on supply-chain-scan above; the job neither delays nor is delayed by
+  # `build`. It commits nothing and pushes nothing: the mutated tree exists only inside the runner.
+  rewrite-report:
+    name: OpenRewrite dirty-tree report (non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      # `shell: bash` is required, not decorative: it selects `-eo pipefail`, whereas the default
+      # `bash -e` leaves pipefail OFF and the `| tee` below would swallow a Maven failure. A genuine
+      # gate or tooling failure must still turn this check red — only the DIRTY VERDICT is non-gating,
+      # which is why `continue-on-error` is deliberately not used on this job or any of its steps.
+      # The goal is invoked by FULL COORDINATES, not by the `rewrite:` prefix. A prefix has to be
+      # resolved through `org.openrewrite.maven/maven-metadata.xml` on Central, which is a network
+      # fetch this job does not otherwise need — and when Central answers 429 the prefix does not
+      # resolve, the gate never runs, and the job dies with `No plugin found for prefix 'rewrite'`.
+      # Full coordinates resolve the version from the pre-commit profile's own plugin declaration.
+      # The log goes to `.plan/temp/`, which `.gitignore` already excludes, NOT to the checkout
+      # root. A log in the root is picked up by the `git status --porcelain` below as `?? rewrite-run.log`
+      # — the job would manufacture one tree mutation of its own and report it next to the real ones,
+      # leaving a reader unable to tell the artefact from the finding.
+      - name: Run the rewriting gate
+        shell: bash
+        run: |
+          mkdir -p .plan/temp
+          ./mvnw -B -ntp -Ppre-commit org.openrewrite.maven:rewrite-maven-plugin:run -DskipTests 2>&1 | tee .plan/temp/rewrite-run.log
+
+      # Report, without a verdict. Nothing here asserts cleanliness, so there is no `exit 1` path:
+      # a dirty tree produces a longer summary and a green check, which is the whole point.
+      #
+      # The attribution parser is coupled to OpenRewrite's log wording and to its indentation, and
+      # that coupling cannot be removed short of reimplementing the plugin's reporting. What CAN be
+      # removed is the SILENCE. When the wording or the indentation moves, the matcher stops matching
+      # and an empty attribution block reads exactly like "no recipe changed anything" — a confident
+      # report of nothing having happened. So the match counts are cross-checked against the working
+      # tree: a dirty tree with zero matched headers, or headers with no recipe lines beneath them,
+      # is reported as a BROKEN PARSER and never as a clean run.
+      - name: Publish the dirty-tree report to the job summary
+        shell: bash
+        run: |
+          tree_status="$(git status --porcelain)"
+          counts="$(awk -v out=.plan/temp/attribution.txt '
+            /Changes have been made to /                { block = 1; headers++; print > out; next }
+            block && /^\[INFO\][[:space:]][[:space:]]+/ { detail++; print > out; next }
+            block && /^[[:space:]][[:space:]]+/         { detail++; print > out; next }
+                                                        { block = 0 }
+            END                                         { print headers + 0, detail + 0 }
+          ' .plan/temp/rewrite-run.log)"
+          headers="${counts% *}"
+          detail="${counts#* }"
+          {
+            echo "## OpenRewrite dirty-tree report (non-gating)"
+            echo
+            echo "The findings below NEVER fail this check. They record what the rewriting gate"
+            echo "changed in the runner's working tree while exiting 0. See"
+            echo "\`doc/development/build-gate-discipline.adoc\` for what to do about them."
+            echo
+            echo "### Working tree after the gate"
+            echo '```'
+            if [ -n "$tree_status" ]; then
+              printf '%s\n' "$tree_status"
+            else
+              echo "(clean - the gate rewrote nothing)"
+            fi
+            echo '```'
+            echo
+            echo "### Recipe attribution"
+            echo '```'
+            if [ "$headers" -gt 0 ]; then
+              cat .plan/temp/attribution.txt
+            else
+              echo "(no recipe reported a change)"
+            fi
+            echo '```'
+            if [ "$headers" -eq 0 ] && [ -n "$tree_status" ]; then
+              echo
+              echo "> **Parser drift, not a clean run.** The tree above is dirty, yet no"
+              echo "> \`Changes have been made to\` line matched. Do NOT read the empty attribution as"
+              echo "> \"no recipe ran\" — OpenRewrite's log wording has most likely moved. Attribute the"
+              echo "> changes from the raw gate log in the previous step, and fix the awk matcher in"
+              echo "> \`.github/workflows/maven.yml\`."
+            elif [ "$headers" -gt 0 ] && [ "$detail" -eq 0 ]; then
+              echo
+              echo "> **Parser drift, partial match.** $headers change header(s) matched but no recipe"
+              echo "> line beneath them did, so the attribution above names no recipe. OpenRewrite's log"
+              echo "> indentation has most likely moved; fix the awk matcher in"
+              echo "> \`.github/workflows/maven.yml\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
