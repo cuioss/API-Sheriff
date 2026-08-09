@@ -216,7 +216,7 @@ jobs:
       # fetch this job does not otherwise need — and when Central answers 429 the prefix does not
       # resolve, the gate never runs, and the job dies with `No plugin found for prefix 'rewrite'`.
       # Full coordinates resolve the version from the pre-commit profile's own plugin declaration.
-      # The log goes to `.plan/temp/`, which `.gitignore:20` already excludes, NOT to the checkout
+      # The log goes to `.plan/temp/`, which `.gitignore` already excludes, NOT to the checkout
       # root. A log in the root is picked up by the `git status --porcelain` below as `?? rewrite-run.log`
       # — the job would manufacture one tree mutation of its own and report it next to the real ones,
       # leaving a reader unable to tell the artefact from the finding.
