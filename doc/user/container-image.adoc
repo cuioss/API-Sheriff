@@ -68,6 +68,34 @@ for you but works for a maintainer, this is the reason -- the field to check is 
 `visibility`, and only the literal value `public` serves anonymous consumers.
 ====
 
+=== Reading the source commit off the image
+
+The published image carries the same commit in an OCI label, so you can recover it from an image you
+already hold without knowing which tag it was pulled under:
+
+[source,bash]
+----
+docker image inspect \
+  --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+  ghcr.io/cuioss/api-sheriff@sha256:...
+----
+
+The value is the full 40-character SHA of the release-tag commit -- the same commit
+`ghcr.io/cuioss/api-sheriff:sha-<commit>` names. `org.opencontainers.image.version` sits beside it
+and carries the released version. The release lane reads both off the *pulled* image and fails the
+release when either disagrees with what it just published, so a released image whose labels lie does
+not ship.
+
+*This is a convenience, not a security control.* An image label is ordinary image metadata: anyone
+who can build an image can write any value into it, and reading one back proves nothing about where
+the image came from. Provenance authority remains the Cosign certificate -- verify it as described
+under <<_verify_the_signature_before_deploying,Verify the signature before deploying>> and treat the
+label as a lookup aid once that verification has passed.
+
+A locally or PR-built image carries `dev` in both labels. That default is deliberate: such an image
+is never published, and a version- or SHA-shaped placeholder would read as a claim about a release
+that does not exist.
+
 == Pull and run
 
 The image is distroless: it carries no shell and no package manager, and it runs as `nonroot`. It

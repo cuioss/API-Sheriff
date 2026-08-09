@@ -170,10 +170,14 @@ services:
       dockerfile: src/main/docker/Dockerfile.native
       # The harness build is the ONE image build in this project — the release lane runs this very
       # compose build and pushes exactly the digest it produced — so this is the single supply point
-      # for the image's org.opencontainers.image.version label. The release lane exports
-      # APP_VERSION=<released version> into the Maven step's environment; locally it stays `dev`.
+      # for the image's org.opencontainers.image.version and .revision labels. release.yml performs
+      # no docker build of its own, which makes these build.args the ONLY channel reaching the
+      # Dockerfile ARGs. The release lane exports APP_VERSION=<released version> and
+      # APP_REVISION=<release-tag commit sha> into the Maven step's environment; locally both stay
+      # `dev`.
       args:
         APP_VERSION: ${APP_VERSION:-dev}
+        APP_REVISION: ${APP_REVISION:-dev}
       cache_from:
         - quay.io/quarkus/quarkus-distroless-image:2.0
         - quay.io/quarkus/ubi9-quarkus-micro-image:2.0
