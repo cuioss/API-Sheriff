@@ -211,10 +211,15 @@ jobs:
       # `bash -e` leaves pipefail OFF and the `| tee` below would swallow a Maven failure. A genuine
       # gate or tooling failure must still turn this check red — only the DIRTY VERDICT is non-gating,
       # which is why `continue-on-error` is deliberately not used on this job or any of its steps.
+      # The goal is invoked by FULL COORDINATES, not by the `rewrite:` prefix. A prefix has to be
+      # resolved through `org.openrewrite.maven/maven-metadata.xml` on Central, which is a network
+      # fetch this job does not otherwise need — and when Central answers 429 the prefix does not
+      # resolve, the gate never runs, and the job dies with `No plugin found for prefix 'rewrite'`.
+      # Full coordinates resolve the version from the pre-commit profile's own plugin declaration.
       - name: Run the rewriting gate
         shell: bash
         run: |
-          ./mvnw -B -ntp -Ppre-commit rewrite:run -DskipTests 2>&1 | tee rewrite-run.log
+          ./mvnw -B -ntp -Ppre-commit org.openrewrite.maven:rewrite-maven-plugin:run -DskipTests 2>&1 | tee rewrite-run.log
 
       # Report, without a verdict. Nothing here asserts cleanliness, so there is no `exit 1` path:
       # a dirty tree produces a longer summary and a green check, which is the whole point.
