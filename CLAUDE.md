@@ -130,7 +130,7 @@ one is a red `main`.
 - Minimum 80% coverage
 - CUI Test Generator for test data (`@GeneratorsSource` preferred)
 - **Forbidden**: Mockito, PowerMock, Hamcrest
-- **A configuration key that parses is not a configuration key that acts.** Ask: *if the key were deleted entirely, would any test go red?* If not, the control it names is not in effect — see `doc/development/declared-limit-assertion-coverage.adoc`
+- **A configuration key that parses is not a configuration key that acts.** Ask: *if the key were deleted entirely, would any test go red?* If not, the control it names is not test-proven — that is all a green suite settles, so trace the key to its production reader before concluding anything about whether it is in effect — see `doc/development/declared-limit-assertion-coverage.adoc`
 
 ### Javadoc
 

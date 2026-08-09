@@ -559,19 +559,27 @@ Every visible signal agrees, and every one of them is about the declaration rath
 behaviour.
 
 The one-line test is: *if the key were deleted entirely, would any test go red?* If the answer is
-no, the control is not in effect, whatever the descriptor says.
+no, the control is *not test-proven* -- and that is the whole of what the test settles. It does not
+settle whether the control is in effect. Two shapes come back green and are still live: a key with a
+production reader but no asserting test -- rows *G7*, *G8* and *G9* of the matrix above are exactly
+that, each naming an enforcer and `none` in the asserting-test column -- and a key whose default or
+inherited value carries the same behaviour once the explicit declaration is gone. So the deletion
+test is the first of two steps, not the verdict. Confirm production consumption separately, by
+tracing the key to the reader that consumes it.
 
 This note carries its own worked instance. The `tls.min_version` protocol floor and the
 `tls.cipher_suites` restriction (row *G11*) were declared, valid and inert -- they had *zero*
 production readers until `TlsServerCustomizer` became one, so they constrained no listener at all
 while the descriptor, the schema and the build all reported health. Deleting either key at that
-point would have turned nothing red.
+point would have turned nothing red. The deletion test is what raised the suspicion; the trace to a
+production reader -- finding none -- is what settled it.
 
 === Wiring an inert key is a behavioural flip for every consumer
 
 The day an inert key becomes live, every consumer that reads the surface it governs changes
-behaviour at once. Some test fails, and the trap is to treat that one failure as the scope of the
-change.
+behaviour at once. An existing test may fail, and the trap is to treat that one failure as the scope
+of the change. Where the surface carries no asserting test at all -- rows *G7*, *G8* and *G9* again
+-- the flip lands with nothing going red, and the trap has no trigger to spring.
 
 *The test that fails first is a sample of the dependant set, not the whole of it.* Fixing it closes
 the investigation while the un-sampled dependants stay broken, and they surface later and further
