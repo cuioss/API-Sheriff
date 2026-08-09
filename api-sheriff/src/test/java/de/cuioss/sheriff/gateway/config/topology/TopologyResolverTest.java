@@ -33,6 +33,7 @@ import java.util.stream.Stream;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.topology.TopologyResolver.TopologyResolutionException;
@@ -62,7 +63,7 @@ class TopologyResolverTest {
                 .id(alias.toLowerCase(Locale.ROOT))
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig("none", List.of()))
+                .auth(new AuthConfig(Require.NONE, List.of()))
                 .build();
     }
 

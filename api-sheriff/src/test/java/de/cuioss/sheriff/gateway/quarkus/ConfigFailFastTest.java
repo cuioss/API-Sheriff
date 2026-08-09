@@ -19,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.math.BigInteger;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 
@@ -56,7 +55,7 @@ class ConfigFailFastTest {
         assertNotNull(resource, resourceDir + " fixture must be on the test classpath");
         ConfigProducer producer = new ConfigProducer();
         producer.configDir = Path.of(resource.toURI()).toString();
-        producer.frameworkBodyLimit = new MemorySize(BigInteger.valueOf(FRAMEWORK_LIMIT_BYTES));
+        producer.frameworkBodyLimit = MemorySize.of(FRAMEWORK_LIMIT_BYTES);
         return producer;
     }
 

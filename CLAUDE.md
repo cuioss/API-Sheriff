@@ -54,6 +54,19 @@ docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:lat
 1. Quality gate (canonical `quality-gate` command above)
 2. Full verify (canonical `verify` command above)
 
+**"Zero warnings" is now enforced by the compiler, not just asked for.** The reactor-wide
+`maven-compiler-plugin` configuration sets `<showDeprecation>true</showDeprecation>` **and**
+`<failOnWarning>true</failOnWarning>`, so javac runs with `-Werror`: a compiler warning — a
+deprecated API, an unchecked cast — **fails the build** in all six modules rather than scrolling past
+in the log. The failure reaches the executor's structured payload, with the offending file and line
+on the `warnings[]` row and the `-Werror` cause naming the file on `errors[]`. Read both arrays; the
+line number lives on the warning row.
+
+Answer such a failure by **migrating off the warned construct**, the way every site this gate was
+turned on over was retired. A `@SuppressWarnings` added to get back to green hollows the gate out
+while leaving it reporting success, which is worse than not having it — and it collides with the
+Pre-1.0 rule below that forbids carrying deprecated code at all.
+
 **Documentation-only commits skip both.** A commit whose entire footprint is prose or agent
 instructions cannot change build output, so a Maven run proves nothing and only burns minutes.
 Skip when **every** changed file is one of:

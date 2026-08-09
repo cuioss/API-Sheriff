@@ -44,6 +44,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -102,8 +103,8 @@ class RouteRuntimeAssemblerTest {
                     SecurityConfiguration.builder().build());
         };
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", sharedFilter, upstream("a.example")),
-                route("r2", Protocol.HTTP, "none", sharedFilter, upstream("a.example"))));
+                route("r1", Protocol.HTTP, Require.NONE, sharedFilter, upstream("a.example")),
+                route("r2", Protocol.HTTP, Require.NONE, sharedFilter, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -117,9 +118,9 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should build distinct SecurityConfigurations for different security-filter shapes")
     void shouldBuildDistinctSecurityConfigurationsForDifferentShapes() {
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none",
+                route("r1", Protocol.HTTP, Require.NONE,
                         SecurityFilterConfig.builder().allowedPaths(List.of("/a")).build(), upstream("a.example")),
-                route("r2", Protocol.HTTP, "none",
+                route("r2", Protocol.HTTP, Require.NONE,
                         SecurityFilterConfig.builder().allowedPaths(List.of("/b")).build(), upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
@@ -133,9 +134,9 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should reuse one client for routes sharing an upstream tuple and split by tuple")
     void shouldReuseClientForSharedUpstreamTuple() {
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", null, upstream("a.example")),
-                route("r2", Protocol.HTTP, "none", null, upstream("a.example")),
-                route("r3", Protocol.HTTP, "none", null, upstream("b.example"))));
+                route("r1", Protocol.HTTP, Require.NONE, null, upstream("a.example")),
+                route("r2", Protocol.HTTP, Require.NONE, null, upstream("a.example")),
+                route("r3", Protocol.HTTP, Require.NONE, null, upstream("b.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -151,8 +152,8 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should preserve the route-table order")
     void shouldPreserveRouteTableOrder() {
         RouteTable table = new RouteTable(List.of(
-                route("first", Protocol.HTTP, "none", null, upstream("a.example")),
-                route("second", Protocol.GRAPHQL, "bearer", null, upstream("b.example"))));
+                route("first", Protocol.HTTP, Require.NONE, null, upstream("a.example")),
+                route("second", Protocol.GRAPHQL, Require.BEARER, null, upstream("b.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -166,11 +167,11 @@ class RouteRuntimeAssemblerTest {
         // A require:session route now assembles like any other route — its stage-4 runtime is the
         // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection.
         RouteTable sessionTable = new RouteTable(List.of(
-                route("s", Protocol.HTTP, "session", null, upstream("a.example"))));
+                route("s", Protocol.HTTP, Require.SESSION, null, upstream("a.example"))));
         List<RouteRuntime> sessionRuntimes = assertDoesNotThrow(
                 () -> assembler.assemble(sessionTable, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
                 "a require:session route assembles now the boot-time rejection is removed");
-        assertEquals("session", sessionRuntimes.getFirst().getEffectiveAuth().require(),
+        assertEquals(Require.SESSION, sessionRuntimes.getFirst().getEffectiveAuth().require(),
                 "the assembled route keeps its require:session posture for the stage-4 runtime to dispatch on");
 
         // A session-auth WebSocket route likewise assembles — session auth no longer gates boot, so
@@ -178,12 +179,12 @@ class RouteRuntimeAssemblerTest {
         // runtime it produced rather than on the absence of a throw: an assemble() that quietly
         // dropped the route would return an empty list and satisfy a bare no-throw assertion.
         RouteTable webSocketSessionTable = new RouteTable(List.of(
-                route("sw", Protocol.WEBSOCKET, "session", null, upstream("a.example"))));
+                route("sw", Protocol.WEBSOCKET, Require.SESSION, null, upstream("a.example"))));
         RouteRuntime webSocketSession = assembler.assemble(webSocketSessionTable, securityConfigFactory,
                 clientFactory, guardFactory, assetSourceFactory).getFirst();
         assertEquals("sw", webSocketSession.getId(),
                 "the session-auth WebSocket route reaches the assembled table");
-        assertEquals("session", webSocketSession.getEffectiveAuth().require(),
+        assertEquals(Require.SESSION, webSocketSession.getEffectiveAuth().require(),
                 "and keeps its require:session posture for the stage-4 runtime to dispatch on");
 
         // A gRPC route with non-session auth assembles cleanly — and asks for a forced-h2 upstream
@@ -194,7 +195,7 @@ class RouteRuntimeAssemblerTest {
         // or not forced-h2 was ever requested.
         List<RouteRuntimeAssembler.UpstreamTarget> grpcTargets = new ArrayList<>();
         RouteTable grpcTable = new RouteTable(List.of(
-                route("g", Protocol.GRPC, "none", null, upstream("a.example"))));
+                route("g", Protocol.GRPC, Require.NONE, null, upstream("a.example"))));
         RouteRuntime grpc = assembler.assemble(grpcTable, securityConfigFactory,
                 capturingClientFactory(grpcTargets), guardFactory, assetSourceFactory).getFirst();
         assertEquals("g", grpc.getId(), "the gRPC route reaches the assembled table");
@@ -209,11 +210,11 @@ class RouteRuntimeAssemblerTest {
         // protocol rather than passing for every route the assembler builds.
         List<RouteRuntimeAssembler.UpstreamTarget> webSocketTargets = new ArrayList<>();
         RouteTable webSocketNoneTable = new RouteTable(List.of(
-                route("w", Protocol.WEBSOCKET, "none", null, upstream("a.example"))));
+                route("w", Protocol.WEBSOCKET, Require.NONE, null, upstream("a.example"))));
         RouteRuntime webSocketNone = assembler.assemble(webSocketNoneTable, securityConfigFactory,
                 capturingClientFactory(webSocketTargets), guardFactory, assetSourceFactory).getFirst();
         assertEquals("w", webSocketNone.getId(), "the WebSocket route reaches the assembled table");
-        assertEquals("none", webSocketNone.getEffectiveAuth().require(),
+        assertEquals(Require.NONE, webSocketNone.getEffectiveAuth().require(),
                 "and carries its declared require:none posture");
         assertEquals(1, webSocketTargets.size(), "the WebSocket route resolves exactly one upstream client");
         assertFalse(webSocketTargets.getFirst().forcedHttp2(),
@@ -236,7 +237,8 @@ class RouteRuntimeAssemblerTest {
     @Test
     @DisplayName("Should carry the required scopes from the effective auth")
     void shouldCarryRequiredScopes() {
-        AuthConfig auth = AuthConfig.builder().require("bearer").requiredScopes(List.of("read", "write")).build();
+        AuthConfig auth = AuthConfig.builder().require(Require.BEARER)
+                .requiredScopes(List.of("read", "write")).build();
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("scoped").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/s").build())
                 .effectiveAuth(auth).effectiveAllowedMethods(List.of(HttpMethod.GET))
@@ -255,7 +257,7 @@ class RouteRuntimeAssemblerTest {
                 Map.of("X-Gateway", "api-sheriff"));
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
-                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
@@ -271,7 +273,7 @@ class RouteRuntimeAssemblerTest {
         ForwardConfig forward = new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of());
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("deny").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/d").build())
-                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
@@ -285,7 +287,7 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should default an absent forward block to the forward-all posture")
     void shouldDefaultAbsentForwardToForwardAll() {
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", null, upstream("a.example"))));
+                route("r1", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
 
@@ -303,7 +305,7 @@ class RouteRuntimeAssemblerTest {
         ResolvedRoute assetRoute = ResolvedRoute.builder()
                 .id("bundle").protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/assets").build())
-                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC))
                 .build();
@@ -323,7 +325,7 @@ class RouteRuntimeAssemblerTest {
     @DisplayName("Should assemble the null (no-asset) proxy path into an upstream/client/guard runtime without throwing (S3655 guard)")
     void shouldAssembleNoAssetProxyPathWithoutThrowing() {
         RouteTable table = new RouteTable(List.of(
-                route("proxy-only", Protocol.HTTP, "none", null, upstream("a.example"))));
+                route("proxy-only", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
 
         List<RouteRuntime> runtimes = assertDoesNotThrow(
                 () -> assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory),
@@ -348,7 +350,7 @@ class RouteRuntimeAssemblerTest {
                     SecurityProfile.STRICT.preset());
         };
         RouteTable table = new RouteTable(List.of(
-                route("block-less", Protocol.HTTP, "none", null, upstream("a.example"))));
+                route("block-less", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
 
         // Act
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
@@ -373,9 +375,9 @@ class RouteRuntimeAssemblerTest {
         securityConfigFactory = _ -> new RouteRuntimeAssembler.SecurityPosture(resolved,
                 SecurityProfile.limitsProfile(resolved, resolved).preset());
         RouteTable table = new RouteTable(List.of(
-                route("declared", Protocol.HTTP, "none",
+                route("declared", Protocol.HTTP, Require.NONE,
                         SecurityFilterConfig.builder().build(), upstream("a.example")),
-                route("block-less", Protocol.HTTP, "none", null, upstream("a.example"))));
+                route("block-less", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
 
         // Act
         List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory,
@@ -403,9 +405,9 @@ class RouteRuntimeAssemblerTest {
         };
         SecurityFilterConfig declared = SecurityFilterConfig.builder().allowedPaths(List.of("/shared")).build();
         RouteTable table = new RouteTable(List.of(
-                route("r1", Protocol.HTTP, "none", declared, upstream("a.example")),
-                route("r2", Protocol.HTTP, "none", declared, upstream("a.example")),
-                route("r3", Protocol.HTTP, "none", null, upstream("a.example"))));
+                route("r1", Protocol.HTTP, Require.NONE, declared, upstream("a.example")),
+                route("r2", Protocol.HTTP, Require.NONE, declared, upstream("a.example")),
+                route("r3", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
 
         // Act
         assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, assetSourceFactory);
@@ -415,7 +417,7 @@ class RouteRuntimeAssemblerTest {
                 "the shared declared shape resolves once and the absent block resolves once more");
     }
 
-    private static ResolvedRoute route(String id, Protocol protocol, String require,
+    private static ResolvedRoute route(String id, Protocol protocol, Require require,
             @Nullable SecurityFilterConfig filter, ResolvedUpstream upstream) {
         return ResolvedRoute.builder()
                 .id(id)

@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
@@ -129,9 +130,6 @@ public final class ConfigValidator {
     private static final int BROAD_PREFIX_IPV4 = 8;
     private static final int BROAD_PREFIX_IPV6 = 32;
     private static final String WILDCARD_ORIGIN = "*";
-    private static final String REQUIRE_NONE = "none";
-    private static final String REQUIRE_BEARER = "bearer";
-    private static final String REQUIRE_SESSION = "session";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
@@ -762,9 +760,9 @@ public final class ConfigValidator {
                 if (anchorAuth == null) {
                     continue;
                 }
-                String anchorRequire = anchorAuth.require();
-                if (!REQUIRE_NONE.equals(anchorRequire)
-                        && REQUIRE_NONE.equals(effectiveRequire(gateway, endpoint, route))) {
+                Require anchorRequire = anchorAuth.require();
+                if (anchorRequire != Require.NONE
+                        && effectiveRequire(gateway, endpoint, route) == Require.NONE) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
                                     .formatted(route.id(), anchor.name(), anchorRequire)));
@@ -775,17 +773,17 @@ public final class ConfigValidator {
 
     private static void validateEffectiveAuth(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
-        Set<String> requires = new HashSet<>();
+        Set<Require> requires = EnumSet.noneOf(Require.class);
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 requires.add(effectiveRequire(gateway, endpoint, route));
             }
         }
-        if (requires.contains(REQUIRE_BEARER) && lacksConfiguredIssuer(gateway)) {
+        if (requires.contains(Require.BEARER) && lacksConfiguredIssuer(gateway)) {
             errors.add(new ConfigError(GATEWAY_FILE, "/token_validation",
                     "effective auth 'bearer' requires token_validation with at least one issuer"));
         }
-        if (requires.contains(REQUIRE_SESSION) && gateway.oidc() == null) {
+        if (requires.contains(Require.SESSION) && gateway.oidc() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc", "effective auth 'session' requires an oidc block"));
         }
     }
@@ -838,19 +836,19 @@ public final class ConfigValidator {
     private static void validateAuthenticatedAnchorBacking(GatewayConfig gateway, AnchorConfig anchor, String pointer,
             List<ConfigError> errors) {
         AuthConfig anchorAuth = anchor.auth();
-        String require = anchorAuth == null ? REQUIRE_NONE : anchorAuth.require();
-        if (REQUIRE_NONE.equals(require)) {
+        Require require = anchorAuth == null ? Require.NONE : anchorAuth.require();
+        if (require == Require.NONE) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' is access: authenticated but declares no non-'none' auth floor"
                             .formatted(anchor.name())));
             return;
         }
-        if (REQUIRE_BEARER.equals(require) && lacksConfiguredIssuer(gateway)) {
+        if (require == Require.BEARER && lacksConfiguredIssuer(gateway)) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated bearer floor requires token_validation with at least one issuer"
                             .formatted(anchor.name())));
         }
-        if (REQUIRE_SESSION.equals(require) && gateway.oidc() == null) {
+        if (require == Require.SESSION && gateway.oidc() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
         }
@@ -1363,7 +1361,7 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         WebSocketConfig websocket = route.websocket();
         List<String> origins = websocket == null ? List.of() : websocket.allowedOrigins();
-        if (REQUIRE_BEARER.equals(effectiveRequire(gateway, endpoint, route)) && origins.isEmpty()) {
+        if (effectiveRequire(gateway, endpoint, route) == Require.BEARER && origins.isEmpty()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' with effective auth 'bearer' must declare a non-empty allowed_origins allowlist (fail-closed)"
                             .formatted(route.id())));
@@ -1431,9 +1429,9 @@ public final class ConfigValidator {
         return anchor == null ? null : anchor.auth();
     }
 
-    private static String effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
+    private static Require effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
         AuthConfig auth = effectiveAuth(gateway, endpoint, route);
-        return auth == null ? REQUIRE_NONE : auth.require();
+        return auth == null ? Require.NONE : auth.require();
     }
 
     private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,

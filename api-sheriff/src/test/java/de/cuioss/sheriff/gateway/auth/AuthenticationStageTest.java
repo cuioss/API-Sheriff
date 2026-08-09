@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -69,7 +70,7 @@ class AuthenticationStageTest {
         AuthenticationStage stage = new AuthenticationStage(() -> {
             throw new AssertionError("require:none must not resolve the token validator");
         });
-        PipelineRequest request = request(authConfig("none", List.of()), Map.of());
+        PipelineRequest request = request(authConfig(Require.NONE, List.of()), Map.of());
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
@@ -81,7 +82,7 @@ class AuthenticationStageTest {
         // Arrange
         TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
         AuthenticationStage stage = stageFor(holder);
-        PipelineRequest request = bearerRequest(holder.getRawToken(), authConfig("bearer", List.of()));
+        PipelineRequest request = bearerRequest(holder.getRawToken(), authConfig(Require.BEARER, List.of()));
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
@@ -92,7 +93,7 @@ class AuthenticationStageTest {
     void rejectsMissingBearerToken() {
         // Arrange
         AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = request(authConfig("bearer", List.of()), Map.of());
+        PipelineRequest request = request(authConfig(Require.BEARER, List.of()), Map.of());
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
@@ -107,7 +108,7 @@ class AuthenticationStageTest {
     void rejectsInvalidBearerToken() {
         // Arrange
         AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = bearerRequest("not.a.valid.jwt", authConfig("bearer", List.of()));
+        PipelineRequest request = bearerRequest("not.a.valid.jwt", authConfig(Require.BEARER, List.of()));
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
@@ -123,7 +124,7 @@ class AuthenticationStageTest {
         // Arrange
         TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
         AuthenticationStage stage = stageFor(holder);
-        PipelineRequest request = bearerRequest(holder.getRawToken(), authConfig("bearer", List.of(ABSENT_SCOPE)));
+        PipelineRequest request = bearerRequest(holder.getRawToken(), authConfig(Require.BEARER, List.of(ABSENT_SCOPE)));
 
         // Act
         GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
@@ -138,7 +139,7 @@ class AuthenticationStageTest {
         // Arrange — a session stage wired with a live session; a require:session request carrying the
         // session cookie must be dispatched here and complete, recording the mediated bearer.
         AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
-        PipelineRequest request = sessionRequest(authConfig("session", List.of()));
+        PipelineRequest request = sessionRequest(authConfig(Require.SESSION, List.of()));
 
         // Act + Assert
         assertDoesNotThrow(() -> stage.process(request));
@@ -152,7 +153,7 @@ class AuthenticationStageTest {
     void rejectsSessionRouteWithoutWiredSessionRuntime() {
         // Arrange — a stage built without a session runtime (non-BFF gateway).
         AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
-        PipelineRequest request = sessionRequest(authConfig("session", List.of()));
+        PipelineRequest request = sessionRequest(authConfig(Require.SESSION, List.of()));
 
         // Act
         IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> stage.process(request));
@@ -203,7 +204,7 @@ class AuthenticationStageTest {
         return request;
     }
 
-    private static AuthConfig authConfig(String require, List<String> requiredScopes) {
+    private static AuthConfig authConfig(Require require, List<String> requiredScopes) {
         return AuthConfig.builder().require(require).requiredScopes(requiredScopes).build();
     }
 

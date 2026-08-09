@@ -30,6 +30,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
@@ -97,7 +98,7 @@ class ConfigValidatorRouteDisjointnessTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(new AuthConfig("none", List.of()))
+                .auth(new AuthConfig(Require.NONE, List.of()))
                 .routes(List.of(route("first", first), route("second", second)))
                 .build();
 

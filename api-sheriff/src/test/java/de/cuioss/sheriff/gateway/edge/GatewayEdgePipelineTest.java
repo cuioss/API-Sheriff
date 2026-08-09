@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -106,8 +107,8 @@ class GatewayEdgePipelineTest {
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
         RouteTable routeTable = new RouteTable(List.of(
-                route("secure", "/secure", "bearer", upstreamPort, HttpMethod.GET),
-                route("echo", "/echo", "none", upstreamPort, HttpMethod.GET, HttpMethod.POST),
+                route("secure", "/secure", Require.BEARER, upstreamPort, HttpMethod.GET),
+                route("echo", "/echo", Require.NONE, upstreamPort, HttpMethod.GET, HttpMethod.POST),
                 minimalModeRoute(upstreamPort)));
 
         GatewayConfig gatewayConfig = GatewayConfig.builder()
@@ -366,14 +367,14 @@ class GatewayEdgePipelineTest {
                 .id("open")
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/open").build())
-                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
                 .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .build();
     }
 
-    private static ResolvedRoute route(String id, String pathPrefix, String require, int upstreamPort,
+    private static ResolvedRoute route(String id, String pathPrefix, Require require, int upstreamPort,
             HttpMethod... methods) {
         return ResolvedRoute.builder()
                 .id(id)

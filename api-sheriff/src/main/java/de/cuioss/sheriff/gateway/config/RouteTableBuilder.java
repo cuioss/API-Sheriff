@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
@@ -107,9 +108,8 @@ public final class RouteTableBuilder {
 
     private static final List<HttpMethod> STANDARD_ALLOWED_METHODS = List.copyOf(EnumSet.allOf(HttpMethod.class));
 
-    /** The {@link AuthConfig#require()} value meaning no authentication is required; also the
-     * display fallback for an absent anchor name in {@link #logPosture}. */
-    private static final String NONE = "none";
+    /** The display fallback for an absent anchor name in {@link #logPosture}. */
+    private static final String NO_ANCHOR_NAME = "none";
 
     /** The default {@code websocket.idle_timeout_seconds} applied when a WebSocket route omits it. */
     private static final int DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS = 300;
@@ -411,7 +411,7 @@ public final class RouteTableBuilder {
      *         auth requires authentication
      */
     public static AccessLevel effectiveAccessLevel(@Nullable AnchorConfig anchor, AuthConfig effectiveAuth) {
-        if (!NONE.equals(effectiveAuth.require())) {
+        if (effectiveAuth.require() != Require.NONE) {
             return AccessLevel.AUTHENTICATED;
         }
         return anchor == null ? AccessLevel.PUBLIC : anchor.access();
@@ -425,7 +425,7 @@ public final class RouteTableBuilder {
      * placeholder would report a partial-disable posture for every route that merely omits the knob.
      */
     private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
-        String anchorName = route.anchor() != null ? route.anchor() : NONE;
+        String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
         SecurityFilterConfig securityFilter = route.effectiveSecurityFilter();
         SecurityProfile effectiveProfile = SecurityProfile
                 .parse(securityFilter == null ? null : securityFilter.profile())

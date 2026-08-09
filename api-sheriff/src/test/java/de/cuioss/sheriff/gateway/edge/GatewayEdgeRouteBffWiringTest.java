@@ -65,6 +65,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -279,7 +280,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .id("auth-proxy")
                     .protocol(Protocol.HTTP)
                     .match(MatchConfig.builder().pathPrefix("/auth").build())
-                    .effectiveAuth(AuthConfig.builder().require("none").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                     .effectiveAllowedMethods(List.of(HttpMethod.GET))
                     .effectiveSecurityFilter(SecurityFilterConfig.builder()
                             .allowedPaths(List.of("/auth/never-matches")).build())
@@ -700,7 +701,7 @@ class GatewayEdgeRouteBffWiringTest {
                 .id("s")
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/s").build())
-                .effectiveAuth(AuthConfig.builder().require("session").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", "s.example", 443, ""))
                 .build();

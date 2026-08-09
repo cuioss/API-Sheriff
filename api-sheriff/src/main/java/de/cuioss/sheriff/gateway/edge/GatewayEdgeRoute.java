@@ -57,6 +57,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -167,7 +168,6 @@ public class GatewayEdgeRoute {
      * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
      */
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
-    private static final String REQUIRE_SESSION = "session";
     private static final String COOKIE_HEADER = "Cookie";
     private static final String LOCATION_HEADER = "Location";
     private static final String SET_COOKIE_HEADER = "Set-Cookie";
@@ -358,7 +358,11 @@ public class GatewayEdgeRoute {
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
         this.originValidationStage = new OriginValidationStage();
-        this.webSocketRelayStage = new WebSocketRelayStage(upstreamFailureMapper, gatewayEventCounter);
+        // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
+        // the dedicated client, and the dialer carries no per-route state — the upstream host, port,
+        // TLS flag and URI all ride on the per-dial WebSocketConnectOptions.
+        this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(),
+                upstreamFailureMapper, gatewayEventCounter);
         this.grpcStatusMapper = new GrpcStatusMapper();
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
@@ -457,7 +461,7 @@ public class GatewayEdgeRoute {
         if (!"POST".equalsIgnoreCase(ctx.request().method().name())) {
             return false;
         }
-        String host = ctx.request().authority() != null ? ctx.request().authority().host() : ctx.request().host();
+        String host = authorityHost(ctx.request());
         return reservedPathRegistry.match(host, ctx.request().path())
                 .filter(kind -> kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
                 .isPresent();
@@ -717,7 +721,7 @@ public class GatewayEdgeRoute {
             // Fixed CSRF defence (D7): every unsafe-method require:session request must prove same-origin
             // provenance before the session runtime resolves it. A bearer-only gateway has no session
             // routes and never reaches this guard.
-            if (bffRuntime.isActive() && REQUIRE_SESSION.equals(route.getEffectiveAuth().require())) {
+            if (bffRuntime.isActive() && route.getEffectiveAuth().require() == Require.SESSION) {
                 bffRuntime.csrfDefence().enforce(request);
             }
             authenticationStage.process(request);
@@ -736,12 +740,10 @@ public class GatewayEdgeRoute {
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers. Every other protocol takes the HTTP dispatch path.
-            if (route.getProtocol() == Protocol.WEBSOCKET) {
-                dispatchWebSocket(ctx, request, route, forward);
-            } else if (route.getProtocol() == Protocol.GRPC) {
-                dispatchGrpc(ctx, request, route, forward);
-            } else {
-                dispatchAndRelay(ctx, request, route, forward);
+            switch (route.getProtocol()) {
+                case WEBSOCKET -> dispatchWebSocket(ctx, request, route, forward);
+                case GRPC -> dispatchGrpc(ctx, request, route, forward);
+                default -> dispatchAndRelay(ctx, request, route, forward);
             }
         } catch (GatewayException rejected) {
             handleGatewayRejection(ctx, request, rejected);
@@ -788,14 +790,18 @@ public class GatewayEdgeRoute {
         if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
             gatewayEventCounter.increment(rejected.getEventType());
         }
-        if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+        switch (rejected.getEventType()) {
             // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
             // rejected.getMessage() already carries a sanitized description (see GatewayException).
-            LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
-        } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
+            case SECURITY_FILTER_VIOLATION -> LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION,
+                    routeLabel(ctx), rejected.getMessage());
             // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
             // message is a fixed disposition (never the raw Host value).
-            LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
+            case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
+                    rejected.getMessage());
+            default -> {
+                // Every other rejection is rendered without a security WARN; it is metered above.
+            }
         }
         recordError(ctx, rejected.getEventType());
         renderRejection(ctx, request, rejected.getEventType());
@@ -1143,11 +1149,31 @@ public class GatewayEdgeRoute {
                 .requestPath(rawPath)
                 .queryParameters(toListMap(raw.params()))
                 .headers(toListMap(raw.headers()))
-                .host(raw.authority() != null ? raw.authority().host() : raw.host())
+                .host(authorityHost(raw))
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)
                 .build();
+    }
+
+    /**
+     * The request's authority host, or {@code null} when the request declares no authority.
+     * <p>
+     * Reads {@link HttpServerRequest#authority()} directly instead of the deprecated
+     * {@code HttpServerRequest#host()}. The two are <em>not</em> interchangeable: {@code host()}
+     * returns the raw {@code Host} header, so it carries the port ({@code example.com:8443}) where
+     * {@code authority().host()} does not ({@code example.com}). Substituting {@code host()} back
+     * would leak the port into the reserved-path match and the security-validated request host.
+     * <p>
+     * Dropping the former {@code host()} fallback is nonetheless behaviour-preserving: it applied
+     * only when {@code authority()} was {@code null}, which happens only when the {@code Host}
+     * header is absent — and there {@code host()} is {@code null} too. A malformed header makes
+     * authority parsing throw rather than return {@code null}, so that path never reached the
+     * fallback either. Both host-reading sites share this one seam so the two cannot drift apart.
+     */
+    private static @Nullable String authorityHost(HttpServerRequest raw) {
+        var authority = raw.authority();
+        return authority == null ? null : authority.host();
     }
 
     private static Map<String, List<String>> toListMap(MultiMap multiMap) {

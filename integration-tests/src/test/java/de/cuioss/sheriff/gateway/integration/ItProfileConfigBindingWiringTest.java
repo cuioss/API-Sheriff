@@ -80,7 +80,7 @@ class ItProfileConfigBindingWiringTest {
     private static final String BUCKET_PREFIX = "quarkus.tls.benchmark-idp.trust-store.p12.";
 
     /** The deployment switch for file logging, now that the shipped artifact defaults it to off. */
-    private static final String LOG_FILE_ENABLED = "QUARKUS_LOG_FILE_ENABLE=true";
+    private static final String LOG_FILE_ENABLED = "QUARKUS_LOG_FILE_ENABLED=true";
 
     @Test
     @DisplayName("every it-profile gateway instance binds the mounted trust file")
@@ -104,7 +104,7 @@ class ItProfileConfigBindingWiringTest {
         // Arrange — same derived set, same reason: a seventh instance is covered without an edit here.
         List<String> itServices = itProfileServices();
 
-        // Act + Assert — the shipped artifact now defaults quarkus.log.file.enable to false, so a
+        // Act + Assert — the shipped artifact now defaults quarkus.log.file.enabled to false, so a
         // LOG_FILE_PATH on its own produces no file at all. The IT suite reads those files
         // (ManagementPlainHttpOptOutIT asserts on the ApiSheriff-115 downgrade warning inside the
         // plain-management container's log), and a missing switch would surface as a puzzling

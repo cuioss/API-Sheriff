@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -147,7 +148,7 @@ class GatewayEdgeRouteTest {
     void bootsSessionAuthRoute() {
         // Arrange
         RouteTable sessionTable = new RouteTable(List.of(
-                route("s", Protocol.HTTP, "session")));
+                route("s", Protocol.HTTP, Require.SESSION)));
 
         // Act + Assert — a require:session route now assembles at boot; its stage-4 runtime is the
         // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection. This
@@ -161,7 +162,7 @@ class GatewayEdgeRouteTest {
     void bootsGrpcProtocol() {
         // Arrange
         RouteTable grpcTable = new RouteTable(List.of(
-                route("g", Protocol.GRPC, "none")));
+                route("g", Protocol.GRPC, Require.NONE)));
 
         // Act + Assert — GRPC is now registered, so a gRPC route assembles cleanly at boot (the boot
         // rejection was removed with the gRPC processor).
@@ -174,7 +175,7 @@ class GatewayEdgeRouteTest {
     void bootsWebSocketProtocol() {
         // Arrange
         RouteTable webSocketTable = new RouteTable(List.of(
-                route("w", Protocol.WEBSOCKET, "none")));
+                route("w", Protocol.WEBSOCKET, Require.NONE)));
 
         // Act + Assert — WEBSOCKET is now registered, so a WebSocket route assembles cleanly at boot
         // (the boot rejection was removed with the WebSocket processor).
@@ -187,7 +188,7 @@ class GatewayEdgeRouteTest {
     void bootsSessionAuthWebSocketRoute() {
         // Arrange
         RouteTable webSocketTable = new RouteTable(List.of(
-                route("w", Protocol.WEBSOCKET, "session")));
+                route("w", Protocol.WEBSOCKET, Require.SESSION)));
 
         // Act + Assert — session auth no longer gates boot, so a session-auth WebSocket route
         // assembles exactly like any other WebSocket route.
@@ -792,7 +793,7 @@ class GatewayEdgeRouteTest {
                 .id("w")
                 .protocol(Protocol.WEBSOCKET)
                 .match(MatchConfig.builder().pathPrefix("/w").build())
-                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
                 .build();
@@ -867,7 +868,7 @@ class GatewayEdgeRouteTest {
         }
     }
 
-    private static ResolvedRoute route(String id, Protocol protocol, String require) {
+    private static ResolvedRoute route(String id, Protocol protocol, Require require) {
         return ResolvedRoute.builder()
                 .id(id)
                 .protocol(protocol)

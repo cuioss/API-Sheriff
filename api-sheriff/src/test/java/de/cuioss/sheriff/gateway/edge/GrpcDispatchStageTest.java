@@ -42,6 +42,7 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
@@ -353,7 +354,7 @@ class GrpcDispatchStageTest {
                 .id(id)
                 .protocol(protocol)
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
-                .effectiveAuth(AuthConfig.builder().require("none").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.POST))
                 .upstream(upstream)
                 .build();

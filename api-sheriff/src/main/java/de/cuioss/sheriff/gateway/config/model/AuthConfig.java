@@ -24,10 +24,16 @@ import lombok.Builder;
  * The {@code auth} block, declarable at endpoint level (mandatory default
  * posture) and per route (wholesale override).
  * <p>
- * {@code require} is one of {@code none} / {@code bearer} / {@code session}; the
- * value set is enforced by the configuration validator. {@code required_scopes}
- * is valid at either level; because override is wholesale, a route-level block
- * that omits it drops endpoint-level scope enforcement for that route.
+ * {@code require} is a {@link Require} posture ({@code none} / {@code bearer} /
+ * {@code session}); the value set is declared in the JSON schemas and refused there
+ * before binding. {@code required_scopes} is valid at either level; because override
+ * is wholesale, a route-level block that omits it drops endpoint-level scope
+ * enforcement for that route.
+ * <p>
+ * <strong>Thread safety.</strong> This immutable record is thread-safe and may be shared
+ * freely across request threads: {@link Require} is an enum, and the canonical constructor
+ * defensively copies {@code requiredScopes} into an unmodifiable list, so no caller can
+ * mutate an instance after construction.
  *
  * @param require        the authentication requirement (mandatory)
  * @param requiredScopes the scopes enforced for this posture, empty when none
@@ -35,7 +41,7 @@ import lombok.Builder;
  * @since 1.0
  */
 @Builder
-public record AuthConfig(String require, List<String> requiredScopes) {
+public record AuthConfig(Require require, List<String> requiredScopes) {
 
     /**
      * Canonical constructor defensively copying {@code requiredScopes} into an
