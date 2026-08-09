@@ -413,18 +413,24 @@ public final class ConfigLoader {
 
     private void substitute(JsonNode node, JsonNode schemaTree, String file, String pointer,
             List<ConfigError> errors) {
-        if (node instanceof ObjectNode object) {
-            List<String> names = new ArrayList<>();
-            object.fieldNames().forEachRemaining(names::add);
-            for (String name : names) {
-                substituteChild(object.get(name), schemaTree, file, pointer + "/" + name, errors,
-                        resolved -> object.set(name, resolved));
+        switch (node) {
+            case ObjectNode object -> {
+                List<String> names = new ArrayList<>();
+                object.fieldNames().forEachRemaining(names::add);
+                for (String name : names) {
+                    substituteChild(object.get(name), schemaTree, file, pointer + "/" + name, errors,
+                            resolved -> object.set(name, resolved));
+                }
             }
-        } else if (node instanceof ArrayNode array) {
-            for (int index = 0; index < array.size(); index++) {
-                int position = index;
-                substituteChild(array.get(index), schemaTree, file, pointer + "/" + index, errors,
-                        resolved -> array.set(position, resolved));
+            case ArrayNode array -> {
+                for (int index = 0; index < array.size(); index++) {
+                    int position = index;
+                    substituteChild(array.get(index), schemaTree, file, pointer + "/" + index, errors,
+                            resolved -> array.set(position, resolved));
+                }
+            }
+            default -> {
+                // A scalar node has no children to walk; substituteChild already resolved it.
             }
         }
     }

@@ -736,12 +736,10 @@ public class GatewayEdgeRoute {
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers. Every other protocol takes the HTTP dispatch path.
-            if (route.getProtocol() == Protocol.WEBSOCKET) {
-                dispatchWebSocket(ctx, request, route, forward);
-            } else if (route.getProtocol() == Protocol.GRPC) {
-                dispatchGrpc(ctx, request, route, forward);
-            } else {
-                dispatchAndRelay(ctx, request, route, forward);
+            switch (route.getProtocol()) {
+                case WEBSOCKET -> dispatchWebSocket(ctx, request, route, forward);
+                case GRPC -> dispatchGrpc(ctx, request, route, forward);
+                default -> dispatchAndRelay(ctx, request, route, forward);
             }
         } catch (GatewayException rejected) {
             handleGatewayRejection(ctx, request, rejected);
@@ -788,14 +786,18 @@ public class GatewayEdgeRoute {
         if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
             gatewayEventCounter.increment(rejected.getEventType());
         }
-        if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+        switch (rejected.getEventType()) {
             // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
             // rejected.getMessage() already carries a sanitized description (see GatewayException).
-            LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, routeLabel(ctx), rejected.getMessage());
-        } else if (rejected.getEventType() == EventType.PASSTHROUGH_HOST_SMUGGLED) {
+            case SECURITY_FILTER_VIOLATION -> LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION,
+                    routeLabel(ctx), rejected.getMessage());
             // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
             // message is a fixed disposition (never the raw Host value).
-            LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED, rejected.getMessage());
+            case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
+                    rejected.getMessage());
+            default -> {
+                // Every other rejection is rendered without a security WARN; it is metered above.
+            }
         }
         recordError(ctx, rejected.getEventType());
         renderRejection(ctx, request, rejected.getEventType());
