@@ -161,6 +161,21 @@
                     <configuration>
                         <release>25</release>
                         <showDeprecation>true</showDeprecation>
+                        <!--
+                            showDeprecation alone only PRINTS the warning, and a printed warning is
+                            not a signal anything acts on: it scrolls past in CI and never reaches
+                            the build executor's error payload. failOnWarning is what converts it
+                            into a build failure carrying the file and line, so a newly deprecated
+                            API cannot re-accumulate silently. Reactor-wide by virtue of living in
+                            pluginManagement — all six modules inherit it.
+
+                            The flag is only affordable because every deprecation site was retired
+                            by MIGRATION, not by suppression: a clean whole-reactor test-compile is
+                            deprecation-free and this plan introduced no @SuppressWarnings.
+                            Answering a future warning with a suppression rather than a fix would
+                            hollow the gate out while leaving it green.
+                        -->
+                        <failOnWarning>true</failOnWarning>
                     </configuration>
                 </plugin>
                 <plugin>
