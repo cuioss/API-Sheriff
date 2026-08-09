@@ -27,12 +27,12 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.tools.logging.CuiLogger;
 
 import io.vertx.core.Vertx;
-import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketBase;
+import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
 import io.vertx.ext.web.RoutingContext;
@@ -43,8 +43,11 @@ import org.jspecify.annotations.Nullable;
  * HTTP {@link DispatchStage} for a {@code protocol: websocket} route once the pipeline and the
  * {@code OriginValidationStage} have accepted the handshake.
  * <p>
- * <strong>Dial-before-upgrade.</strong> The upstream WebSocket is dialed first, over the route's
- * shared Vert.x {@link HttpClient}. Only when the upstream confirms {@code 101} is the client
+ * <strong>Dial-before-upgrade.</strong> The upstream WebSocket is dialed first, over the edge-wide
+ * Vert.x {@link WebSocketClient} — the dedicated dialer that replaced the deprecated
+ * {@code HttpClient.webSocket(WebSocketConnectOptions)}. One client serves every route because the
+ * dialer carries no per-route state: host, port, TLS and URI all ride on the per-dial
+ * {@link WebSocketConnectOptions}. Only when the upstream confirms {@code 101} is the client
  * upgrade completed ({@link io.vertx.core.http.HttpServerRequest#toWebSocket()}); the two legs are
  * then relayed opaquely. If the upstream is unreachable or times out, the failure is mapped to
  * {@code 502}/{@code 504} <em>before</em> the client upgrade, so no half-open upgrade is ever left
@@ -88,14 +91,18 @@ public final class WebSocketRelayStage {
     private static final short CLOSE_NORMAL = 1000;
     private static final short CLOSE_INTERNAL_ERROR = 1011;
 
+    private final WebSocketClient webSocketClient;
     private final UpstreamFailureMapper failureMapper;
     private final GatewayEventCounter eventCounter;
 
     /**
+     * @param webSocketClient the edge-wide dialer for every upstream WebSocket handshake
      * @param failureMapper the shared mapper turning an upstream dial failure into the error contract
      * @param eventCounter  the shared in-process event counter
      */
-    public WebSocketRelayStage(UpstreamFailureMapper failureMapper, GatewayEventCounter eventCounter) {
+    public WebSocketRelayStage(WebSocketClient webSocketClient, UpstreamFailureMapper failureMapper,
+            GatewayEventCounter eventCounter) {
+        this.webSocketClient = Objects.requireNonNull(webSocketClient, "webSocketClient");
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
         this.eventCounter = Objects.requireNonNull(eventCounter, "eventCounter");
     }
@@ -128,10 +135,9 @@ public final class WebSocketRelayStage {
         Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(releaseAdmission, "releaseAdmission");
         Map<String, String> retainedSecurityHeaders = Map.copyOf(securityHeaders);
-        HttpClient client = route.getHttpClient();
-        if (client == null) {
-            throw new IllegalStateException("WebSocket dispatch requires an upstream client");
-        }
+        // No per-route HttpClient guard here: the handshake is dialed by the edge-wide WebSocketClient,
+        // so the route's own client is not an input to this path. DispatchStage keeps that guard for the
+        // HTTP leg, which does consume it. The resolved upstream below IS this path's input.
         ResolvedUpstream upstream = route.getUpstream();
         if (upstream == null) {
             throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
@@ -142,7 +148,7 @@ public final class WebSocketRelayStage {
                 .setSsl(HTTPS.equalsIgnoreCase(upstream.scheme()))
                 .setURI(requestUri);
         forwardHeaders.forEach(options::addHeader);
-        ctx.vertx().runOnContext(v -> client.webSocket(options)
+        ctx.vertx().runOnContext(v -> webSocketClient.connect(options)
                 .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs, releaseAdmission))
                 .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }

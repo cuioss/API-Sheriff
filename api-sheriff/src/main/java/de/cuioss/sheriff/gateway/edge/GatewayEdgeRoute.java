@@ -358,7 +358,11 @@ public class GatewayEdgeRoute {
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         this.responseStage = new ResponseStage();
         this.originValidationStage = new OriginValidationStage();
-        this.webSocketRelayStage = new WebSocketRelayStage(upstreamFailureMapper, gatewayEventCounter);
+        // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
+        // the dedicated client, and the dialer carries no per-route state — the upstream host, port,
+        // TLS flag and URI all ride on the per-dial WebSocketConnectOptions.
+        this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(),
+                upstreamFailureMapper, gatewayEventCounter);
         this.grpcStatusMapper = new GrpcStatusMapper();
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
@@ -457,7 +461,7 @@ public class GatewayEdgeRoute {
         if (!"POST".equalsIgnoreCase(ctx.request().method().name())) {
             return false;
         }
-        String host = ctx.request().authority() != null ? ctx.request().authority().host() : ctx.request().host();
+        String host = authorityHost(ctx.request());
         return reservedPathRegistry.match(host, ctx.request().path())
                 .filter(kind -> kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
                 .isPresent();
@@ -1145,11 +1149,24 @@ public class GatewayEdgeRoute {
                 .requestPath(rawPath)
                 .queryParameters(toListMap(raw.params()))
                 .headers(toListMap(raw.headers()))
-                .host(raw.authority() != null ? raw.authority().host() : raw.host())
+                .host(authorityHost(raw))
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)
                 .build();
+    }
+
+    /**
+     * The request's authority host, or {@code null} when the request declares no authority.
+     * <p>
+     * Reads {@link HttpServerRequest#authority()} directly instead of the deprecated
+     * {@code HttpServerRequest#host()}: Vert.x defines the latter as the authority's host, so the two
+     * agree wherever an authority exists and both are absent where none does. Both host-reading sites
+     * share this one seam so the two cannot drift apart.
+     */
+    private static @Nullable String authorityHost(HttpServerRequest raw) {
+        var authority = raw.authority();
+        return authority == null ? null : authority.host();
     }
 
     private static Map<String, List<String>> toListMap(MultiMap multiMap) {

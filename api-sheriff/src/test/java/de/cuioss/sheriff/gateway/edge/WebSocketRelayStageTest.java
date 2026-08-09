@@ -96,7 +96,7 @@ class WebSocketRelayStageTest {
     private HttpServer upstreamServer;
     private HttpServer frontServer;
     private WebSocketClient wsClient;
-    private HttpClient relayUpstreamClient;
+    private WebSocketClient relayUpstreamClient;
     private int frontPort;
     private int upstreamPort;
     private int deadPort;
@@ -115,7 +115,7 @@ class WebSocketRelayStageTest {
             ws.textMessageHandler(ws::writeTextMessage);
         }).listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
         upstreamPort = upstreamServer.actualPort();
-        relayUpstreamClient = vertx.createHttpClient();
+        relayUpstreamClient = vertx.createWebSocketClient();
 
         // A definitely-closed port for the unreachable-upstream case.
         HttpServer throwaway = vertx.createHttpServer().requestHandler(req -> req.response().end())
@@ -428,10 +428,9 @@ class WebSocketRelayStageTest {
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
                 .upstream(new ResolvedUpstream("http", "localhost", upstreamTargetPort, ""))
-                .httpClient(relayUpstreamClient)
                 .effectiveWebSocketIdleTimeoutSeconds(300)
                 .build();
-        WebSocketRelayStage stage = new WebSocketRelayStage(
+        WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
                 new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter());
         Router router = Router.router(vertx);
         router.route().handler(ctx -> {

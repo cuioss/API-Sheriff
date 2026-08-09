@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -176,7 +175,7 @@ class ConfigProducerTest {
         Files.writeString(configDir.resolve("gateway.yaml"), gatewayYaml);
         ConfigProducer producer = new ConfigProducer();
         producer.configDir = configDir.toString();
-        producer.frameworkBodyLimit = new MemorySize(BigInteger.valueOf(FRAMEWORK_LIMIT_BYTES));
+        producer.frameworkBodyLimit = MemorySize.of(FRAMEWORK_LIMIT_BYTES);
         return producer;
     }
 
