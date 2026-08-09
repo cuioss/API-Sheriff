@@ -67,6 +67,17 @@ turned on over was retired. A `@SuppressWarnings` added to get back to green hol
 while leaving it reporting success, which is worse than not having it — and it collides with the
 Pre-1.0 rule below that forbids carrying deprecated code at all.
 
+**A successful build is not evidence that work happened.** `BUILD SUCCESS` says the build
+completed — not that it compiled what you changed, ran what you wrote, or kept what you fixed. The
+gate below and every specific case documented off it are instances of that one rule.
+
+**A gate that exits 0 can still have changed your files**, and three different mechanisms in this
+repository do. So a review-bot suggestion is verified by *surviving* the gate, never by being
+implemented: run the gate, then `git status --porcelain`, and attribute a dirty tree before
+reverting it. Revert unrelated churn; keep the rewrite only for files the branch itself authored.
+See `doc/development/build-gate-discipline.adoc` for the three mechanisms, the three operational
+consequences and the recipe-scoping trap.
+
 **Documentation-only commits skip both.** A commit whose entire footprint is prose or agent
 instructions cannot change build output, so a Maven run proves nothing and only burns minutes.
 Skip when **every** changed file is one of:
@@ -119,6 +130,7 @@ one is a red `main`.
 - Minimum 80% coverage
 - CUI Test Generator for test data (`@GeneratorsSource` preferred)
 - **Forbidden**: Mockito, PowerMock, Hamcrest
+- **A configuration key that parses is not a configuration key that acts.** Ask: *if the key were deleted entirely, would any test go red?* If not, the control it names is not in effect — see `doc/development/declared-limit-assertion-coverage.adoc`
 
 ### Javadoc
 
