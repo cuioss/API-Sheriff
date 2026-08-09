@@ -156,3 +156,90 @@ jobs:
             trivy-filesystem.sarif
           retention-days: 30
           if-no-files-found: error
+
+  # OPENREWRITE DIRTY-TREE REPORT — deliberately NON-GATING.
+  #
+  # Three mechanisms in this repository mutate the working tree while the gate exits 0, and all three
+  # are invisible in the build result by construction. They are documented in
+  # doc/development/build-gate-discipline.adoc; this job is the only part of that story a machine can
+  # carry, so it PRINTS what the rewriting gate changed and which recipe changed it, and never judges.
+  #
+  # `-Ppre-commit` IS LOAD-BEARING. The recipe list that reaches all three mechanisms is the
+  # pre-commit profile's `activeRecipes` override in the root pom.xml. Without the profile,
+  # `rewrite:run` reports `Using active recipe(s) []`, changes nothing, and this job becomes a false
+  # green that appears to exonerate OpenRewrite. Do not "simplify" the profile away.
+  #
+  # No CI lane runs the rewriting gate today, so this job has to invoke it before it has a dirty tree
+  # to report. That is CI time this repository did not previously spend; the invocation is kept to the
+  # narrowest form that still produces all three mutations.
+  #
+  # DELIBERATE DIVERGENCE FROM ADR-0030, which holds that a repository invariant asserted only by an
+  # explanatory comment becomes a positively-phrased, machine-checked fitness function. This lane is
+  # deliberately NOT that shape: a gate asserting "the tree is clean after the rewriting gate" would be
+  # red on every run for as long as `main` is not the formatter's fixed point. Bringing it there is a
+  # mechanical rewrite of api-sheriff/src/main/java/** that no plan has done — and doing it is exactly
+  # the condition under which this lane could be upgraded to ADR-0030's shape.
+  #
+  # No `needs:` — patterned on supply-chain-scan above; the job neither delays nor is delayed by
+  # `build`. It commits nothing and pushes nothing: the mutated tree exists only inside the runner.
+  rewrite-report:
+    name: OpenRewrite dirty-tree report (non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      # `shell: bash` is required, not decorative: it selects `-eo pipefail`, whereas the default
+      # `bash -e` leaves pipefail OFF and the `| tee` below would swallow a Maven failure. A genuine
+      # gate or tooling failure must still turn this check red — only the DIRTY VERDICT is non-gating,
+      # which is why `continue-on-error` is deliberately not used on this job or any of its steps.
+      - name: Run the rewriting gate
+        shell: bash
+        run: |
+          ./mvnw -B -ntp -Ppre-commit rewrite:run -DskipTests 2>&1 | tee rewrite-run.log
+
+      # Report, without a verdict. Nothing here asserts cleanliness, so there is no `exit 1` path:
+      # a dirty tree produces a longer summary and a green check, which is the whole point.
+      - name: Publish the dirty-tree report to the job summary
+        shell: bash
+        run: |
+          {
+            echo "## OpenRewrite dirty-tree report (non-gating)"
+            echo
+            echo "The findings below NEVER fail this check. They record what the rewriting gate"
+            echo "changed in the runner's working tree while exiting 0. See"
+            echo "\`doc/development/build-gate-discipline.adoc\` for what to do about them."
+            echo
+            echo "### Working tree after the gate"
+            echo '```'
+            git status --porcelain
+            echo '```'
+            echo
+            echo "### Recipe attribution"
+            echo '```'
+            awk '
+              /Changes have been made to /            { show = 1; print; next }
+              show && /^\[INFO\][[:space:]][[:space:]]+/ { print; next }
+              show && /^[[:space:]][[:space:]]+/      { print; next }
+                                                      { show = 0 }
+            ' rewrite-run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
