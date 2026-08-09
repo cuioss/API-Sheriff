@@ -126,14 +126,16 @@ endpoint:
 A route carries *exactly one terminal action*: it either proxies to an `upstream` (every example
 above) *or* serves static content through an `asset` block -- `upstream` and `asset` are mutually
 exclusive (decision: link:../adr/0014-asset-serving-terminal-action.adoc[ADR-0014]). An asset route
-rides an `type: asset` anchor; declaring an `asset` block on a non-asset route, or omitting it on
+rides a `type: asset` anchor; declaring an `asset` block on a non-asset route, or omitting it on
 an asset-anchor route, fails the boot.
 
 The `asset` block selects one of two sources:
 
 [source,yaml]
 ----
-# endpoints/assets.yaml -- routes under an `type: asset` anchor
+# endpoints/assets.yaml -- ROUTE FRAGMENT: the routes: list of an endpoint file whose anchor
+#   is type: asset. The enclosing endpoint: block (id, base_url, anchor, auth) has the same
+#   shape as the complete files above -- this fragment on its own is not a valid endpoint file.
 routes:
   - id: bundle                       # a local directory / volume mount
     match: { path_prefix: /static/app }
@@ -208,8 +210,10 @@ live in two endpoint files and are disjoint by host.
 A request that matches no route is rejected with `404`.
 
 *Reserved gateway paths.* The gateway's own OIDC endpoints are matched *exactly, before the
-route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). Up to *six* paths
-are carved out:
+route table*, but only on the *OIDC host* (the host of `oidc.redirect_uri`). The keys that
+register them, and the field-level contract for each, are owned by
+link:../configuration.adoc#_oidc[`oidc`] -- the list below names which of those keys carve out a
+path, not what the keys mean. Up to *six* paths are carved out:
 
 . the `oidc.redirect_uri` path -- the auth-code *callback*, reached by a top-level `GET` with
   `code` and `state` in the query string (`response_mode=query`) and carrying no request body;
@@ -255,7 +259,9 @@ and is explained in its own cell:
 | `allowed_methods` (endpoint level)
 | The *anchor's* `allowed_methods` applies if the route's anchor declares one, else the
   *global* `gateway.allowed_methods` (which itself defaults to the standard verb set when
-  omitted). No inheritance/merge -- see
+  omitted). A *declared* endpoint list is the first choice and *replaces* the anchor/global list
+  wholesale for that endpoint -- the omission above is what hands the choice on. No
+  inheritance/merge at any step -- see
   link:../configuration.adoc#_allowed_methods[`allowed_methods`].
 
 | `security_filter`

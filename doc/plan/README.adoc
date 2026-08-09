@@ -36,7 +36,10 @@ corpus, so no record supersedes it; plan 09 is not yet delivered.
 | The operator configuration guide, the ADR-0005 module-extraction checkpoint, a
   full-surface security audit, benchmark completion with per-variant baselines, native +
   container hardening, the 1.0.0 release (and the flip of the pre-1.0 rules).
-| All previously delivered work (see the landing records described above)
+| All previously delivered work -- described by the link:../README.adoc[design documentation]
+  and dated by the repository's own git history, both readable here. The landing records above
+  are the orchestrator's audit trail of *how* that work landed, not a source a reader must open
+  to understand this dependency.
 |===
 
 Explicitly *not* on the roadmap: *rate limiting* (out of scope -- the `rate_limit`

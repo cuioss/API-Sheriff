@@ -204,10 +204,16 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
   `topology.properties` entry whose key does not match this pattern is ignored.
 * The resolved value is a full URL (`scheme://host[:port][/base-path]`), validated and decomposed
   once into `{scheme, host, port, base-path}`.
-* A route's upstream target is `resolved(base_url) + route.upstream.path + remainder`, where
-  *remainder* is the request path with the matched `match.path_prefix` stripped (segments are
-  joined with exactly one `/`). `/api/orders/42` on `path_prefix: /api/orders` with
-  `upstream.path: /orders` therefore reaches `<resolved APP1>/orders/42`.
+* A route's upstream target keeps the resolved alias's *scheme, host and port* and combines them
+  with an *effective base path* plus the *remainder* -- the request path with the matched
+  `match.path_prefix` stripped (segments are joined with exactly one `/`). The effective base
+  path is the route's `upstream.path` when declared and the alias-derived base path otherwise:
+  a declared `upstream.path` *replaces* the alias's base path rather than appending to it
+  (link:../adr/0004-topology-indirection.adoc[ADR-0004]). So `/api/orders/42` on
+  `path_prefix: /api/orders` with `upstream.path: /orders` reaches
+  `https://app1.internal:8443/orders/42` -- APP1's own `/app1` base path is replaced, not
+  prefixed. Omit `upstream.path` and the same request reaches
+  `https://app1.internal:8443/app1/orders/42`.
 * Component overrides (e.g. changing only the port) are intentionally *not* supported initially; the
   whole URL is the unit of override. A `TOPOLOGY_<ALIAS>_PORT`-style escape hatch may be added later
   if a real partial-override need appears -- see

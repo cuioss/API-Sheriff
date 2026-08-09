@@ -22,12 +22,17 @@ Semantics -- deliberately few rules:
 
 * *Ownership.* Each anchor declares a `path_prefix`; anchor prefixes are pairwise disjoint
   (no anchor prefix is a prefix of another). The anchor owns everything under its prefix.
-* *Membership: exactly one anchor per route, declared, never derived.* An endpoint file
-  declares `anchor: <name>` as the default for its routes; a route may override it. When any
-  `anchors` block is configured, membership and namespace must agree *both ways*: a route whose
-  declared anchor does not contain its `match.path_prefix` fails the boot, and a route whose
-  path falls inside an anchor namespace without declaring that anchor fails the boot. No
-  `anchors` block => this section does not apply.
+* *Membership: at most one anchor per route, declared, never derived.* An endpoint file
+  declares `anchor: <name>` as the default for its routes; a route may override it. Membership is
+  mandatory exactly where a namespace claims the route, never universally. When any `anchors`
+  block is configured, membership and namespace must agree *both ways*: a route whose declared
+  anchor does not contain its `match.path_prefix` fails the boot, and a route whose path falls
+  inside an anchor namespace without declaring that anchor fails the boot. A route whose path
+  lies outside every anchor namespace declares no anchor at all and is unaffected. No `anchors`
+  block => this section does not apply. `protocol: grpc` routes are exempt from both containment
+  directions -- a gRPC method path is service-rooted on a single opaque segment and can never
+  nest inside a gateway path namespace on a segment boundary -- but still declare an anchor for
+  the classification axes and the auth floor.
 * *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
   `allowed_methods`. Resolution follows one chain -- *gateway defaults -> anchor -> endpoint ->
   route* -- and every step *replaces the whole block, never merges* (the same rule as
