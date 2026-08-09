@@ -15,15 +15,11 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
+import static de.cuioss.sheriff.gateway.integration.ImageLabelInspector.inspectLabel;
+import static de.cuioss.sheriff.gateway.integration.ImageLabelInspector.passthrough;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -74,17 +70,12 @@ class ImageMetadataIT {
      */
     private static final String ABSENT_LABEL = "de.cuioss.sheriff.no-such-label";
 
-    /** The Compose passthrough default for both args ({@code ${APP_VERSION:-dev}}). */
-    private static final String DEFAULT_VALUE = "dev";
-
-    private static final long INSPECT_TIMEOUT_SECONDS = 30L;
-
     @Test
     @DisplayName("the version label carries the version the build was given")
     void versionLabelCarriesTheBuildVersion() {
         String expected = passthrough("APP_VERSION");
 
-        String actual = inspectLabel(VERSION_LABEL);
+        String actual = inspectLabel(IMAGE, VERSION_LABEL);
 
         assertFalse(actual.isEmpty(), () -> IMAGE + " carries no " + VERSION_LABEL
                 + " — the label is absent or the APP_VERSION build arg never reached the Dockerfile");
@@ -98,7 +89,7 @@ class ImageMetadataIT {
     void revisionLabelCarriesTheBuildRevision() {
         String expected = passthrough("APP_REVISION");
 
-        String actual = inspectLabel(REVISION_LABEL);
+        String actual = inspectLabel(IMAGE, REVISION_LABEL);
 
         assertFalse(actual.isEmpty(), () -> IMAGE + " carries no " + REVISION_LABEL
                 + " — the label is absent or the APP_REVISION build arg never reached the Dockerfile."
@@ -112,55 +103,10 @@ class ImageMetadataIT {
     @Test
     @DisplayName("a label the image does not carry reads back empty — the inspect helper discriminates")
     void absentLabelReadsBackEmpty() {
-        String actual = inspectLabel(ABSENT_LABEL);
+        String actual = inspectLabel(IMAGE, ABSENT_LABEL);
 
         assertTrue(actual.isEmpty(), () -> "inspecting the absent label " + ABSENT_LABEL + " on " + IMAGE
                 + " returned '" + actual + "' rather than an empty result. The helper is not reading the"
                 + " label map, so the version and revision assertions above prove nothing.");
-    }
-
-    /**
-     * Resolves a build variable the way the Compose {@code ${VAR:-dev}} passthrough does: an unset
-     * <em>or empty</em> value falls back to {@code dev}.
-     *
-     * @param variable the environment variable name
-     * @return the resolved value, never empty
-     */
-    private static String passthrough(String variable) {
-        String value = System.getenv(variable);
-        return value == null || value.isBlank() ? DEFAULT_VALUE : value;
-    }
-
-    /**
-     * Reads one label off the built image via {@code docker image inspect}, the same read the release
-     * lane's smoke step performs on the published digest.
-     *
-     * @param label the OCI label key
-     * @return the label value, stripped; empty when the image does not carry the label
-     */
-    private static String inspectLabel(String label) {
-        ProcessBuilder builder = new ProcessBuilder(
-                "docker", "image", "inspect",
-                "--format", "{{index .Config.Labels \"" + label + "\"}}",
-                IMAGE);
-        builder.redirectErrorStream(true);
-        try {
-            Process process = builder.start();
-            String output;
-            try (InputStream in = process.getInputStream()) {
-                output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            assertTrue(process.waitFor(Duration.ofSeconds(INSPECT_TIMEOUT_SECONDS)),
-                    () -> "docker image inspect on " + IMAGE + " did not complete within "
-                            + INSPECT_TIMEOUT_SECONDS + "s");
-            assertEquals(0, process.exitValue(), () -> "docker image inspect on " + IMAGE
-                    + " failed — is the image built? Output: " + output.strip());
-            return output.strip();
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot run docker image inspect on " + IMAGE, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted while inspecting " + IMAGE, e);
-        }
     }
 }

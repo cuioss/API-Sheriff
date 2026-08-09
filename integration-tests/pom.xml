@@ -238,6 +238,14 @@
                                     <includes>
                                         <include>**/integration/**/*IT.java</include>
                                     </includes>
+                                    <!-- The mirror image of the jfr profile's exclusion below:
+                                         ImageMetadataJfrIT asserts the version label on
+                                         api-sheriff:jfr, which only the jfr lane builds. This lane
+                                         builds and tags api-sheriff:distroless, so the IT would
+                                         inspect an image this profile never produced. -->
+                                    <excludes>
+                                        <exclude>**/ImageMetadataJfrIT.java</exclude>
+                                    </excludes>
                                     <systemPropertyVariables>
                                         <test.https.port>${test.https.port}</test.https.port>
                                         <!-- mTLS handshake suite: the dedicated api-sheriff-mtls instance
@@ -423,8 +431,9 @@
                                     <!-- ImageMetadataIT asserts the OCI labels on api-sheriff:distroless,
                                          but this lane builds and tags api-sheriff:jfr — the IT would
                                          inspect an image this profile never produced. The JFR image's
-                                         own label honesty is deliberately not machine-asserted, because
-                                         no automated run builds that image. -->
+                                         own version label IS machine-asserted, by ImageMetadataJfrIT,
+                                         which runs in this lane against the image the docker-build-jfr
+                                         execution below builds. -->
                                     <excludes>
                                         <exclude>**/ImageMetadataIT.java</exclude>
                                     </excludes>
@@ -453,6 +462,24 @@
                                 <configuration>
                                     <executable>./scripts/build-native-if-needed.sh</executable>
                                     <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <!-- Prepare the JFR bind-mount host directory BEFORE any compose command
+                                 resolves the jfr overlay: whichever compose command touches it first
+                                 would otherwise create it root-owned, and the uid-1001 container could
+                                 not write the recording. See scripts/prepare-jfr-output-dir.sh. -->
+                            <execution>
+                                <id>prepare-jfr-output-dir</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>./scripts/prepare-jfr-output-dir.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>${project.basedir}</argument>
+                                    </arguments>
                                 </configuration>
                             </execution>
                             <!-- Build Docker image with native JFR support -->
