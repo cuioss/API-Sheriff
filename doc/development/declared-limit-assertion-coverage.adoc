@@ -541,3 +541,56 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
 
 When you add a limit-shaped key to any of the thirteen files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
+
+== Declared Is Not Asserted: Three Rules Behind the Matrix
+
+The matrix answers *which declared limit has an asserting test*. These three rules are the *why*
+behind that question -- what a key with no asserting test actually is, what happens the day it
+acquires one, and which shape of test settles the question for an opt-in feature. Together they are
+the reason this note counts gaps instead of trusting the descriptors.
+
+=== The deletion discriminator
+
+*A configuration key that parses is not a configuration key that acts.* A key that is spelled
+correctly, passes schema validation and reads exactly like a security control can still have no
+production consumer at all -- in which case it is a *silent security no-op*: the descriptor reads
+correctly, the schema accepts it, the build is green, and the control it names applies to nothing.
+Every visible signal agrees, and every one of them is about the declaration rather than the
+behaviour.
+
+The one-line test is: *if the key were deleted entirely, would any test go red?* If the answer is
+no, the control is not in effect, whatever the descriptor says.
+
+This note carries its own worked instance. The `tls.min_version` protocol floor and the
+`tls.cipher_suites` restriction (row *G11*) were declared, valid and inert -- they had *zero*
+production readers until `TlsServerCustomizer` became one, so they constrained no listener at all
+while the descriptor, the schema and the build all reported health. Deleting either key at that
+point would have turned nothing red.
+
+=== Wiring an inert key is a behavioural flip for every consumer
+
+The day an inert key becomes live, every consumer that reads the surface it governs changes
+behaviour at once. Some test fails, and the trap is to treat that one failure as the scope of the
+change.
+
+*The test that fails first is a sample of the dependant set, not the whole of it.* Fixing it closes
+the investigation while the un-sampled dependants stay broken, and they surface later and further
+from the change that caused them -- by which point the wiring commit no longer looks like a
+suspect. Enumerate the dependants before declaring the wiring done, rather than letting the test
+suite enumerate them for you one failure at a time.
+
+When the contract needs a new assertion, *extend `SingleSourceTlsContractTest`* -- or its siblings
+`CipherSuiteFixtureWiringTest` and `ManagementPlainHttpActivationWiringTest` -- rather than writing
+a new contract test beside them. The guards already exist, and a second one splits the contract
+across two files that then drift apart.
+
+=== An opt-in runtime feature needs a deployment-activation test
+
+Unit tests prove `config -> behaviour`: given this configuration, the component does this. They do
+not prove that *the deployment sets that configuration*. An opt-in feature can be fully unit-tested
+and entirely off in every running instance, and no unit test can see the difference.
+
+The shape that closes the other half is the `*ActivationWiringTest` family this note already
+indexes, with `TlsEdgeActivationWiringTest` as the reference: it asserts the *deployed descriptor
+actually turns the feature on*. That is the assertion a unit test structurally cannot reach, and it
+is why a feature landing without one is recorded here as a gap rather than as coverage.
