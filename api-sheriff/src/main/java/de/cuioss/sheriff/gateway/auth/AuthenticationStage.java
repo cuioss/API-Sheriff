@@ -109,12 +109,20 @@ public final class AuthenticationStage {
         Objects.requireNonNull(request, "request");
         RouteRuntime route = requireSelectedRoute(request);
         AuthConfig auth = route.getEffectiveAuth();
+        // The `case null` label is load-bearing, not defensive: it makes this an ENHANCED switch,
+        // which javac is required to check for exhaustiveness. Without it a constant-only switch
+        // statement is a legacy switch — a fourth Require constant would compile clean and fall
+        // through silently, leaving the posture unenforced while the route still reports itself
+        // AUTHENTICATED. `require` is non-null by AuthConfig's canonical constructor, so this arm
+        // is unreachable; its job is to make the omission a compile error rather than a bypass.
         switch (auth.require()) {
             case NONE -> {
                 // Anonymous surface: nothing to enforce.
             }
             case BEARER -> validateBearer(request, auth, route);
             case SESSION -> requireSessionStage(route).process(request);
+            case null -> throw new IllegalStateException(
+                    "Route " + route.getId() + " reached authentication with a null auth posture");
         }
     }
 

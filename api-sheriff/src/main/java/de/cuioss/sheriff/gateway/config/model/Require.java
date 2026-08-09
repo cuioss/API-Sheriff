@@ -27,7 +27,15 @@ import java.util.Locale;
  * carries no behavioural delta at the configuration boundary: it replaces the three
  * duplicated {@code REQUIRE_*} string-constant sets that had drifted across the
  * validator, the authentication stage and the edge route with one shared type, and
- * lets the posture dispatch be an exhaustive switch the compiler checks.
+ * lets the posture dispatch be a switch over a closed set.
+ * <p>
+ * Compile-time exhaustiveness is <em>not</em> automatic. A switch statement whose labels
+ * are all enum constants is a legacy switch, which javac neither requires to be exhaustive
+ * nor warns about — adding a fourth constant would compile clean and fall through silently.
+ * A dispatch that must not miss a posture therefore carries a {@code case null} arm, which
+ * makes it an enhanced switch and obliges javac to reject a non-exhaustive one. See
+ * {@code AuthenticationStage#process}, where a missed posture would leave a route
+ * unenforced while still reporting itself authenticated.
  * <p>
  * The constants are uppercase per Java convention; the case-insensitive YAML binding
  * ({@code MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS}) maps the lowercase

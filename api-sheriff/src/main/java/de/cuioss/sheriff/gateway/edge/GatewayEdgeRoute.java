@@ -1160,9 +1160,16 @@ public class GatewayEdgeRoute {
      * The request's authority host, or {@code null} when the request declares no authority.
      * <p>
      * Reads {@link HttpServerRequest#authority()} directly instead of the deprecated
-     * {@code HttpServerRequest#host()}: Vert.x defines the latter as the authority's host, so the two
-     * agree wherever an authority exists and both are absent where none does. Both host-reading sites
-     * share this one seam so the two cannot drift apart.
+     * {@code HttpServerRequest#host()}. The two are <em>not</em> interchangeable: {@code host()}
+     * returns the raw {@code Host} header, so it carries the port ({@code example.com:8443}) where
+     * {@code authority().host()} does not ({@code example.com}). Substituting {@code host()} back
+     * would leak the port into the reserved-path match and the security-validated request host.
+     * <p>
+     * Dropping the former {@code host()} fallback is nonetheless behaviour-preserving: it applied
+     * only when {@code authority()} was {@code null}, which happens only when the {@code Host}
+     * header is absent — and there {@code host()} is {@code null} too. A malformed header makes
+     * authority parsing throw rather than return {@code null}, so that path never reached the
+     * fallback either. Both host-reading sites share this one seam so the two cannot drift apart.
      */
     private static @Nullable String authorityHost(HttpServerRequest raw) {
         var authority = raw.authority();
