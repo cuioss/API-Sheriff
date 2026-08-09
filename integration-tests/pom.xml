@@ -420,6 +420,14 @@
                                     <includes>
                                         <include>**/integration/**/*IT.java</include>
                                     </includes>
+                                    <!-- ImageMetadataIT asserts the OCI labels on api-sheriff:distroless,
+                                         but this lane builds and tags api-sheriff:jfr — the IT would
+                                         inspect an image this profile never produced. The JFR image's
+                                         own label honesty is deliberately not machine-asserted, because
+                                         no automated run builds that image. -->
+                                    <excludes>
+                                        <exclude>**/ImageMetadataIT.java</exclude>
+                                    </excludes>
                                     <systemPropertyVariables>
                                         <test.https.port>${test.https.port}</test.https.port>
                                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
