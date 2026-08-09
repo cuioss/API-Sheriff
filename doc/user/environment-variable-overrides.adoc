@@ -217,7 +217,7 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
 
 `SHERIFF_CLIENT_SECRET` and `SHERIFF_SESSION_KEY` belong to this same visible-placeholder class,
 and the distinction matters: they are *conventional placeholder names written inside an in-file
-`${VAR}` reference*, exactly like `TOPOLOGY_<ALIAS>` and `ENDPOINT_<ID>_ENABLED`. They are *not*
+`${VAR}` reference*, like `TOPOLOGY_<ALIAS>` and `ENDPOINT_<ID>_ENABLED`. They are *not*
 fixed runtime keys like the `QUARKUS_*` variables the tables above enumerate.
 
 Nothing in the gateway looks either name up. The name is whatever the configuration author wrote
@@ -231,6 +231,14 @@ oidc:
   session:
     encryption_key: ${SHERIFF_SESSION_KEY}    # cookie-mode key material
 ----
+
+*The resemblance stops at the name, and the difference is load-bearing.* A secret field must be a
+*bare* `${VAR}` reference. The `${VAR:-default}` form that the topology and endpoint-enablement
+examples above use is *refused at boot* for `oidc.client_secret` and `oidc.session.encryption_key`,
+and so is a literal -- because a default on a secret is, by construction, a credential written into
+a document you commit. Write no fallback: an unset variable must fail the boot loudly rather than
+silently select a checked-in secret. This is the one place where the secret placeholders and the
+other two conventions genuinely diverge.
 
 The practical consequence: searching the codebase for either name tells you nothing about whether
 a deployment needs it. What a deployment needs is whatever `${VAR}` references its own

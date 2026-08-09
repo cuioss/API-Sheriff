@@ -2067,8 +2067,9 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second
   restriction, which existed only for the `cui-http` `HttpHandler` builder).
-* Secrets in `oidc` (`client_secret`, the session encryption key) must be `${ENV_VAR}` references,
-  not literals.
+* Secrets in `oidc` (`client_secret`, the session encryption key) must be *bare* `${ENV_VAR}`
+  references -- not literals, and not the defaulted `${ENV_VAR:-...}` form, whose default would
+  itself be a literal secret in a committed document. Both shapes fail the boot.
 * `session.mode: cookie` does *not* require `session.encryption_key` -- omitting it selects the
   generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
   across replicas). `session.mode: server` requires an explicit `session.store` (only `memory` is
