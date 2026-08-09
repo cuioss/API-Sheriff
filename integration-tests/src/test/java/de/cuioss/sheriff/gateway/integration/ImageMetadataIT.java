@@ -23,7 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -150,7 +150,7 @@ class ImageMetadataIT {
             try (InputStream in = process.getInputStream()) {
                 output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
-            assertTrue(process.waitFor(INSPECT_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+            assertTrue(process.waitFor(Duration.ofSeconds(INSPECT_TIMEOUT_SECONDS)),
                     () -> "docker image inspect on " + IMAGE + " did not complete within "
                             + INSPECT_TIMEOUT_SECONDS + "s");
             assertEquals(0, process.exitValue(), () -> "docker image inspect on " + IMAGE

@@ -26,10 +26,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import org.yaml.snakeyaml.Yaml;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.yaml.snakeyaml.Yaml;
 
 /**
  * Fast, no-Docker <em>surefire</em> guard that the committed Compose descriptor actually
@@ -67,7 +67,7 @@ class ImageLabelActivationWiringTest {
 
     @Test
     @DisplayName("the api-sheriff build declares every provenance-label arg in the ${VAR:-dev} form")
-    void imageBuildDeclaresEveryProvenanceLabelArg() throws IOException {
+    void imageBuildDeclaresEveryProvenanceLabelArg() throws Exception {
         Map<String, Object> args = buildArgs(IMAGE_SERVICE);
 
         // The vacuity guard: an empty map would satisfy the per-key loop below by never running it.
