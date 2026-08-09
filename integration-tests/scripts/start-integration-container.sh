@@ -94,6 +94,14 @@ mkdir -p "${LOG_TARGET_DIR}"
 chmod 1777 "${LOG_TARGET_DIR}"
 echo "📁 Quarkus logs will be written to: ${LOG_TARGET_DIR}/quarkus.log"
 
+# The JFR overlay bind-mounts ./target/jfr-recordings at /tmp/jfr-output, and that host directory
+# must exist and be container-writable before the first compose command resolves the overlay —
+# see scripts/prepare-jfr-output-dir.sh for why, and for why both this script and the `jfr` Maven
+# profile call it. Only the JFR overlay needs it, so it runs only when that overlay is composed.
+if [[ "$IMAGE_TYPE" == "jfr" ]]; then
+    ./scripts/prepare-jfr-output-dir.sh "${PROJECT_DIR}"
+fi
+
 # Discover every host-side probe target from the resolved Compose model, BEFORE anything is started.
 #
 # The service set, each service's published management port, and the scheme its management interface

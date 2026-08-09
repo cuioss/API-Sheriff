@@ -8,14 +8,17 @@
 # quarkus.management.tls-configuration-name=plain-management.
 FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:58c30907e6d4417251c90963e1d14e6918a0baa6f8a7d046497584972dc2a378
 
-# Supplied by the build (docker compose build.args.APP_VERSION). The `dev` default is deliberate and
-# honest: a locally or PR-built image is never published, and a version-shaped default would lie the
-# moment the project version moved. The release lane exports the released version into this arg.
+# Both supplied by the build (docker compose build.args.APP_VERSION / build.args.APP_REVISION). The
+# `dev` defaults are deliberate and honest: a locally or PR-built image is never published, and a
+# version- or sha-shaped default would lie the moment the project version or the commit moved. The
+# release lane exports the released version and the release-tag commit sha into these args.
 ARG APP_VERSION=dev
+ARG APP_REVISION=dev
 
 LABEL org.opencontainers.image.title="API Sheriff"
 LABEL org.opencontainers.image.description="Security-focused API Gateway — Quarkus native executable"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
+LABEL org.opencontainers.image.revision="${APP_REVISION}"
 LABEL org.opencontainers.image.vendor="CUIoss"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"

@@ -3,9 +3,15 @@
 # No baked-in certificates — mount TLS certs at runtime via volumes or secrets
 FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:a26d1276dee47e331805a2d89a0faa16dbfcf4ade3f7669a4dae16a752861677
 
+# Supplied by the build (docker compose build.args.APP_VERSION); the jfr Compose overlay re-specifies
+# only context and dockerfile, so it inherits that arg from the base service. The `dev` default is
+# deliberate and honest: this profiling image is never published, and a version-shaped default would
+# start lying the moment the project version moved.
+ARG APP_VERSION=dev
+
 LABEL org.opencontainers.image.title="API Sheriff - JFR"
 LABEL org.opencontainers.image.description="Security-focused API Gateway — Quarkus native executable with JFR profiling"
-LABEL org.opencontainers.image.version="0.1.0-SNAPSHOT"
+LABEL org.opencontainers.image.version="${APP_VERSION}"
 LABEL org.opencontainers.image.vendor="CUIoss"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/cuioss/API-Sheriff"

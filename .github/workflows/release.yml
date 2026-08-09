@@ -212,11 +212,15 @@ jobs:
       # so the harness always builds the image. Letting that build be authoritative is what makes
       # "push exactly what was tested" true BY CONSTRUCTION — there is only one build, so nothing can
       # drift. Do NOT add a second `docker build` here, and do NOT add a skip-guard to
-      # integration-tests/pom.xml. APP_VERSION reaches the image label through the Compose service's
-      # build.args (see integration-tests/docker-compose.yml).
+      # integration-tests/pom.xml. APP_VERSION and APP_REVISION reach the image labels through the
+      # Compose service's build.args (see integration-tests/docker-compose.yml) — that is the only
+      # channel, because this lane performs no `docker build` of its own. APP_REVISION carries the
+      # release-tag commit resolved above, so org.opencontainers.image.revision names the very commit
+      # the `sha-` tag names.
       - name: Run the integration-test suite (builds the image)
         env:
           APP_VERSION: ${{ steps.config.outputs.current-version }}
+          APP_REVISION: ${{ steps.commit.outputs.sha }}
         run: |
           ./mvnw --no-transfer-progress verify -Pintegration-tests -pl integration-tests -am
 
@@ -371,6 +375,12 @@ jobs:
           PULLED_VERSION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$REF")"
           if [ "$PULLED_VERSION" != "$RELEASED_VERSION" ]; then
             echo "::error::Published image label org.opencontainers.image.version='${PULLED_VERSION}' but the released version is '${RELEASED_VERSION}'."
+            exit 1
+          fi
+
+          PULLED_REVISION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$REF")"
+          if [ "$PULLED_REVISION" != "$TAG_SHA" ]; then
+            echo "::error::Published image label org.opencontainers.image.revision='${PULLED_REVISION}' but the release-tag commit is '${TAG_SHA}'."
             exit 1
           fi
 
