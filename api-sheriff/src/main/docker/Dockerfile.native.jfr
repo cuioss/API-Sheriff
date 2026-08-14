@@ -1,7 +1,7 @@
 # JFR-enabled Dockerfile for API Sheriff native executable
 # UBI micro base (has shell, needed for HEALTHCHECK and JFR output)
 # No baked-in certificates — mount TLS certs at runtime via volumes or secrets
-FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:a26d1276dee47e331805a2d89a0faa16dbfcf4ade3f7669a4dae16a752861677
+FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:0c71064c81a42e6fa776d2deb1183fce538b4a97b24236ccc3a7ea730d83c267
 
 # Supplied by the build (docker compose build.args.APP_VERSION); the jfr Compose overlay re-specifies
 # only context and dockerfile, so it inherits that arg from the base service. The `dev` default is
