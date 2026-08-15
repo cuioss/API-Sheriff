@@ -1,0 +1,267 @@
+= Documentation Quality Report
+:toc: macro
+:toclevels: 2
+
+Review of the AsciiDoc tree (root README, `doc/` with 37 ADRs, `doc/user/`,
+`doc/development/`, `doc/plan/`, `doc/variants/`, module docs) and the production Javadoc,
+checked for structure, accuracy against code, completeness, ambiguity, duplication drift, and
+currency. See link:README.adoc[the index] for conventions.
+
+toc::[]
+
+== Verdict
+
+*One of the most accurate documentation trees reviewed.* Every cheaply checkable technical
+claim verified exactly: config keys against the bundled JSON schemas, a dozen numeric defaults
+against code constants, the complete log-message catalogue including template strings, the
+never-forward header set, the 21-entry content-type map, the six reserved paths. The link
+graph of 751 local references contains zero broken targets. The `LogMessages.adoc`/code parity
+is perfect in both directions. The needed fixes are a small number of stale self-descriptions,
+not systemic quality problems.
+
+== Findings
+
+=== DOC-1 — architecture.adoc "Implementation Deviations" materially misstates the product
+
+[cols="1,4"]
+|===
+|Severity |*HIGH* — Confidence HIGH — Category: inaccurate/stale
+|Location |`doc/architecture.adoc:1039-1044`
+|===
+
+The section claims: "*Data-plane structured logging is not yet emitted*. The data-plane
+LogRecord catalogue (`ApiSheriffLogMessages` …) is defined but no edge stage emits it yet. The
+only catalogue currently emitted is the configuration subsystem's `ConfigLogMessages` … those,
+and only those, are catalogued in `LogMessages.adoc`." Every part of this is false today:
+`ApiSheriffLogMessages`/`BffLogMessages` records are emitted from at least 10 production
+classes (`edge/GatewayEdgeRoute.java:317,796`, `edge/UpstreamFailureMapper.java:119-121`,
+`edge/WebSocketRelayStage.java`, `pipeline/OriginValidationStage.java`,
+`tls/SniFrontListener.java`, `tls/PassthroughRelay.java`, `asset/DirectoryAssetSource.java`,
+`bff/cookie/*`, `bff/refresh/TokenRefreshCoordinator.java`), and `LogMessages.adoc` catalogues
+all three gateway catalogues (34 gateway records), not only Config. The bullet also
+misattributes the "auth-weakened / route-load" records to `ApiSheriffLogMessages` (they live in
+`ConfigLogMessages`, IDs 3/101). Drift in the flagship architecture doc that a reader would use
+to judge observability maturity.
+
+=== DOC-2 — CLAUDE.md pins the wrong Quarkus version
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: stale
+|Location |`CLAUDE.md:7` (and `AGENTS.md:8`)
+|===
+
+Both claim "Quarkus 3.37.4"; `pom.xml:59` declares `<version.quarkus>3.38.2</version.quarkus>`.
+Same finding as link:build-and-peripherals.adoc[PER-1].
+
+=== DOC-3 — CLAUDE.md describes the benchmarks as WRK; they are k6
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: stale
+|Location |`CLAUDE.md` (Project Structure)
+|===
+
+"`benchmarks/` — WRK HTTP load testing benchmarks" — the module is k6-based
+(`benchmarks/README.adoc`, `Dockerfile.k6`, `K6BenchmarkLogMessages`; root `README.adoc:92`
+correctly says k6). WRK survives only in historical plan text.
+
+=== DOC-4 — CLAUDE.md and root README under-count the reactor's modules
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: incomplete
+|Location |`CLAUDE.md` (Project Structure); `README.adoc:80-92` (Modules)
+|===
+
+Both list 3 modules; the reactor has 5 (also `demo-client` and `deployment`). CLAUDE.md itself
+later says "-Werror … fails the build in all six modules" (root + 5), contradicting its own
+3-module structure section. `demo-client` has substantial docs (`demo-client/doc/*.adoc`) that
+no root-level index reaches.
+
+=== DOC-5 — doc/user/README.adoc cites a Known Limitation that no longer exists
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: duplication-drift
+|Location |`doc/user/README.adoc:26`
+|===
+
+Cites "the single-node in-memory session store and *the cookie-mode schema gap*" as examples
+"listed in Known Limitations". The root README's Known Limitations contains no
+cookie-mode-schema-gap item, and "schema gap" appears nowhere else in the repo — a limitation
+evidently fixed/renamed in the root list but not in this pointer.
+
+=== DOC-6 — ADR status hygiene: 20 of 37 "Proposed" while shipped and enforced
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence MEDIUM — Category: ambiguous/stale
+|Location |`doc/adr/*`
+|===
+
+Examples verified in code: ADR-0017 (SNI split) is Proposed, yet configuration.adoc's
+`[[_tls_active]]` says "Status — active … enforced at runtime" and `tls/SniFrontListener.java`
+exists; ADR-0036 Proposed but implemented in `forward/ForwardPolicyStage.java`; ADR-0037
+Proposed but `http/ConnectionHeaders.java` implements the exact sets; ADR-0025 Proposed but
+`config/NeutralTlsConfigSource.java` ships. A reader cannot tell a genuinely pending proposal
+from an accepted-in-practice decision.
+
+=== DOC-7 — Plan 09 premise outdated by the doc/user layer
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: stale
+|Location |`doc/plan/09-release-readiness.adoc:8-9`
+|===
+
+Premise "an operator-facing configuration guide (*none exists today* — `doc/` is design
+documentation)" is outdated: `doc/user/` exists with 10 documents. The plan README correctly
+marks plan 09 undelivered, but the plan body's inventory no longer matches reality.
+
+=== DOC-8 — FAPI status not re-stamped for 0.1.1
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: stale (version stamp)
+|Location |`doc/fapi_status.adoc:1,8,15`; `doc/README.adoc:82`
+|===
+
+Titled and asserted "as of the 0.1.0 alpha release" while the current cut is 0.1.1. The root
+README re-verifies the FAPI gap "at the 0.1.1 cut", but the FAPI doc and its doc-index row were
+not re-stamped.
+
+=== DOC-9 — Historical version citations reading as current
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: stale (point-in-time)
+|Location |`doc/adr/0001-java25-runtime-baseline.adoc:37`; `doc/plan/01-base-implementation.adoc:41`
+|===
+
+ADR-0001 cites "cui-java-parent 1.5.1 and Quarkus 3.37.2" (now 1.5.4 / 3.38.2) with "Today's …
+support" phrasing that reads as current; plan 01 is explicitly frozen by its merge banner, so
+its stale citations are acceptable.
+
+=== DOC-10 — Curated ADR index omits 16 of 37 ADRs (self-declared drift)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: structure
+|Location |`doc/README.adoc:286-288`
+|===
+
+The index table stops rows at ADR-0019 + 0036/0037; ADR-0020–0035 have no row. The doc admits
+this ("a missing row is index drift"), so it is transparent — but 16 ADRs are undiscoverable
+from the curated index.
+
+=== DOC-11 — ADR filename convention flips mid-series
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: structure
+|Location |`doc/adr/` filenames
+|===
+
+ADR-0001–0009 and 0013–0016 use short kebab-case slugs; ADR-0010–0012 and 0017–0037 use
+full-sentence underscore filenames up to ~150 chars. Cosmetic, but directory listings and
+links are unwieldy.
+
+=== DOC-12 — Javadoc misses the thread-safety-note and usage-example pillars
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: javadoc-missing (vs project standard)
+|Location |`api-sheriff/src/main/java` (corpus-wide)
+|===
+
+The CLAUDE.md standard demands thread-safety notes and usage examples. Measured: only 24/163
+production files mention thread-safety/concurrency; ~6 carry usage examples. Mitigating: most
+classes are immutable records/final types where safety is implicit, and every other pillar is
+met (see the compliance table).
+
+=== DOC-13 — benchmarks/doc contains a single mislabeled pointer stub
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: structure
+|Location |`benchmarks/doc/performance-scoring.adoc`
+|===
+
+A 5-line pointer stub titled "JWT Performance Scoring System" — TokenSheriff branding in an
+API-gateway benchmarks module; the sole doc under `benchmarks/doc/`.
+
+== Verified-clean checks (positives)
+
+* *Link check: 0 broken references.* All 751 local `link:`/`xref:`/`include::` targets across
+  all `.adoc` files resolve; all 214 cross-file anchored references resolve to real anchors.
+* *`LogMessages.adoc` is 100% in sync with code* — every LogRecord identifier in all four
+  catalogues documented, no doc entry lacks code, every template string matches
+  character-for-character, ID ranges (INFO 1-99 / WARN 100-199 / ERROR 200-299) hold, no
+  cross-catalogue collision. (Note: six documented BFF records have no *emission site* — a code
+  finding, link:code-correctness.adoc[BFF-2], not a catalogue mismatch.)
+* *configuration.adoc matches the bundled JSON schemas field-for-field* (all 14 gateway
+  top-level keys, the full oidc/tls/edge_hardening/forward/websocket/rate_limit trees, the
+  endpoint/route tree).
+* *Documented defaults verified in code*: admission_cap 2048 + relay quarter-derivation,
+  websocket idle 300, max_cookie_size 4096, auth-header budget 8192, management port 9000,
+  ssl-port 8443, 64M framework body floor, refresh leeway 30, `final_redirect` "/", the
+  21-entry content-type map (exact list match), the never-forward header set including
+  provenance aliases, the six reserved paths.
+* ADR numbering 0001–0037 continuous, no gaps/duplicates; every ADR has a Status section; the
+  one Superseded ADR (0034) and its superseder (0035) record the supersession in both
+  directions.
+* No TODO/TBD/WIP/FIXME markers anywhere in the doc tree; no empty/stub docs besides DOC-13.
+* variants/ vs user/ duplication candidates are consistent where sampled (ttl 3600, leeway 30,
+  cookie budget, session-store constraints agree across `variants/02|03`,
+  `user/bff-session|cookie`, configuration.adoc, root README).
+* All class names referenced in architecture/dev docs exist in code; the only unresolvable
+  names are genuinely external library types.
+* README "rate limiting not implemented" verified true in code.
+
+== Structure assessment
+
+`doc/` follows an explicit, well-executed three-layer model: design/reference under `doc/`
+(architecture, configuration, threat model, ADRs), operator layer under `doc/user/`,
+contributor layer under `doc/development/`, each with its own README index, plus
+`doc/variants/` for the three deployment postures and `doc/plan/` for surviving plan docs.
+Cross-linking is exceptional. Multi-layer topics (TLS edge, compose sample, container image,
+BFF variants) deliberately name their layer split instead of duplicating.
+`configuration.adoc`'s declared dual role (design + operator reference) is unusual but
+consciously documented in three places. Weak spots: the curated ADR index omits 16 ADRs
+(DOC-10); the ADR filename convention flips mid-series (DOC-11); `demo-client/` documentation
+is a well-built island unreachable from the root or `doc/` indexes (DOC-4); and the plan
+layer's frozen historical statements sit next to living docs with only plan 01 carrying a
+"body is frozen" banner.
+
+== Javadoc compliance
+
+All 27 packages containing classes have substantive `package-info.java` (21–60+ lines, with
+class-by-class stage maps). `@since` present in 163/163 files. A heuristic scan found 0
+undocumented public/protected methods (excluding `@Override`) across 358 method declarations;
+manual reads (ReservedPathRegistry, GatewayConfig, EdgeHardeningConfig, CsrfDefence,
+ConnectionHeaders, AssetResponseEnvelope, RpInitiatedLogout) found Javadoc consistent with
+implementation. Individual Javadoc-vs-behavior contradictions found by the code passes are
+filed as code findings (CFG-7, CFG-14, CFG-16, BFF-2, BFF-10, SEC-12, DP-7).
+
+[cols="3,1,3"]
+|===
+|Package (de.cuioss.sheriff.gateway…) |Rating |Note
+
+|(root), asset, auth, bff.*, edge, events, forward, http, pipeline, routing, tls
+|Good
+|Full class+method docs, security rationale in prose
+
+|config, config.load, config.topology, config.validation(.rule), config.model (36 files)
+|Good
+|Records with per-`@param` docs
+
+|quarkus
+|Good
+|
+
+|Cross-cutting gap
+|—
+|Thread-safety notes in ~15% of files, usage examples in ~4% (DOC-12) — below the letter of the
+CLAUDE.md standard, mostly mitigated by immutability
+|===

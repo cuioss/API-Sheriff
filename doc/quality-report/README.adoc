@@ -1,0 +1,113 @@
+= Repository Quality Report
+:toc: macro
+:toclevels: 2
+
+toc::[]
+
+== Scope and provenance
+
+Full-repository review of code and documentation at commit `b54eb12` (branch cut 2026-08-15),
+covering correctness, edge-case handling, hidden traps / false security, fail-closed posture,
+test substance, generator usage, and documentation accuracy (Javadoc and AsciiDoc).
+
+The review was produced by seven parallel automated deep-review passes (Claude Code), each
+reading its slice in full:
+
+1. `config` / `asset` / `auth` / `events` production code (findings `CFG-*`)
+2. `bff` production code — OIDC/BFF, cookies, sessions, CSRF (findings `BFF-*`)
+3. Data plane — `edge` / `pipeline` / `routing` / `tls` / `forward` / `http` / `quarkus` (findings `DP-*`)
+4. Cross-cutting security posture — claimed vs. implemented (findings `SEC-*`)
+5. Test quality — unit, integration, benchmark suites (findings `TST-*`)
+6. Documentation — AsciiDoc tree and Javadoc (findings `DOC-*`)
+7. Peripherals — demo-client, benchmarks, scripts, Docker/compose, CI, POMs (findings `PER-*`)
+
+Every finding was then re-verified end-to-end by an independent adversarial verification pass
+started with no prior context; per-finding verification status is recorded in each report.
+This review changed no production code, tests, or documentation outside `doc/quality-report/`.
+
+== Reports
+
+|===
+|Report |Contents
+
+|link:code-correctness.adoc[Code correctness]
+|Production-code findings: `CFG-*` (config/asset/auth/events), `BFF-*` (BFF/OIDC), `DP-*` (data plane)
+
+|link:security-posture.adoc[Security posture]
+|Claimed-vs-implemented verification table and `SEC-*` findings; fail-closed audit
+
+|link:test-quality.adoc[Test quality]
+|`TST-*` findings, coverage map, generator-usage assessment
+
+|link:documentation.adoc[Documentation]
+|`DOC-*` findings, structure assessment, Javadoc compliance table
+
+|link:build-and-peripherals.adoc[Build and peripherals]
+|`PER-*` findings: demo-client, benchmarks, scripts, Docker/compose, CI, POMs
+|===
+
+== Severity and confidence conventions
+
+* *Severity* — CRITICAL (exploitable or data-loss), HIGH (functional contradiction or materially
+  wrong claim), MEDIUM (real defect, bounded impact), LOW (polish-level defect), INFO
+  (observation, accepted risk, or latent issue with no current trigger).
+* *Confidence* — HIGH (proven from code), MEDIUM (probable, one step of inference), LOW
+  (plausible, not fully traced).
+
+== Executive summary
+
+*Overall verdict: the repository is in unusually strong shape for a pre-1.0 codebase.* The
+review found *no critical finding, no exploitable authentication or routing bypass, no
+fail-open security path, no crypto misuse, and no secret leakage*. The claimed fail-closed
+posture is real at essentially every enforcement point traced (deny-by-default routing, boot
+refusal on ambiguous auth or trust configuration, bounded stores, tamper-rejecting sealed
+cookies, clean sensitive-data log sweep). Documentation accuracy is exemplary — zero broken
+links across 751 cross-references, `LogMessages.adoc` in perfect two-way sync with the code,
+configuration docs matching the JSON schemas field-for-field — and the test corpus is
+substantive, with matched positive/negative controls and a self-auditing doctrine whose claims
+check out against HEAD.
+
+The findings that matter most, in priority order:
+
+1. *`token_validation` is effectively mandatory at boot* (CFG-1, HIGH): the validator producer
+   forces eager assembly and throws when the block is absent, contradicting the schema, the
+   config validator, `AuthenticationStage` Javadoc, and the readiness check — a validated-correct
+   public-only or BFF-only gateway cannot start. Fails closed, but a hard functional
+   contradiction between four in-repo contracts.
+2. *Stale self-description in the flagship architecture doc* (DOC-1, HIGH):
+   `architecture.adoc`'s "Implementation Deviations" still claims data-plane structured logging
+   is unimplemented; it shipped long ago across at least 10 classes.
+3. *Session-WebSocket CSWSH gap* (SEC-1 = CFG-4, MEDIUM): a `require: session` WebSocket route
+   gets neither Origin-allowlist enforcement (boot rule covers bearer only) nor CSRF coverage
+   (GET-exempt). Doc-admitted in ADR-0015/threat model, but the largest genuinely open hole for
+   a BFF deployment using WebSockets.
+4. *Parsed-but-inert configuration keys* (DP-2, DP-10, BFF-1, MEDIUM): per-upstream
+   `connect_timeout_ms` / `read_timeout_ms` / `retry.max_attempts` / `circuit_breaker.*` bind but
+   nothing consumes them (contradicting ADR-0008); `rate_limit` is documented-inert; the RFC 9470
+   step-up coordinator is fully built and never invoked. Exactly the "key that parses is not a
+   key that acts" class the project's own CLAUDE.md warns about.
+5. *Silent YAML config traps* (CFG-2, CFG-3, MEDIUM): duplicate keys last-win and trailing YAML
+   documents are silently dropped — on a gateway whose whole posture is this file, a duplicated
+   `require:` key can weaken auth with zero diagnostic.
+6. *Security-headers stage weaknesses* (SEC-3, SEC-4, TST-1, MEDIUM): headers are entirely
+   opt-in, `hsts: {}` actively emits `max-age=0` (clears HSTS in browsers), and the
+   HSTS/nosniff/frame-deny half of the stage is assertion-free in the whole corpus and inactive
+   in the whole IT topology.
+7. *Missing RFC 7230 Connection-nominated header stripping* (DP-1, MEDIUM) in both directions,
+   and *protocol verb semantics enforced only in documentation* (DP-7, MEDIUM — a non-upgrade
+   request on a WebSocket route leaves the client hanging with no response).
+8. *Dead security observability* (BFF-2, MEDIUM): six catalogued session-lifecycle/CSRF/logout
+   LogRecords have no emission site; CSRF rejections log at DEBUG only — a SIEM keying on the
+   documented records never fires.
+9. *Instruction-file drift* (PER-1 = DOC-2, DOC-3, DOC-4, MEDIUM): CLAUDE.md/AGENTS.md pin
+   Quarkus 3.37.4 (actual: 3.38.2), call the k6 benchmarks "WRK", and under-count the reactor's
+   modules.
+10. *Integration stack exposes admin surfaces on all interfaces* (PER-3, MEDIUM): admin/admin
+    Keycloak console and unauthenticated Toxiproxy control API published on `0.0.0.0`, where the
+    sibling compose-sample deliberately binds the same class of ports to loopback.
+
+The remaining ~45 findings are LOW/INFO: attribution and normalization inconsistencies, stale
+point-in-time comments, ADR status hygiene (20 of 37 still "Proposed" while shipped), Javadoc
+falling short of the project's thread-safety-note/usage-example standard, generator
+under-adoption relative to the stated preference, and a handful of accepted-risk items already
+documented by the project itself.

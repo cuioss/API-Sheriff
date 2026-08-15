@@ -1,0 +1,798 @@
+= Code Correctness Report
+:toc: macro
+:toclevels: 2
+
+Production-code findings from three deep-review passes: `CFG-*`
+(config/asset/auth/events), `BFF-*` (BFF/OIDC/session/cookie/CSRF), and `DP-*` (data plane:
+edge/pipeline/routing/tls/forward/http/quarkus). Every file in scope was read in full, with
+callers/callees and governing ADRs consulted. See link:README.adoc[the index] for severity and
+confidence conventions.
+
+toc::[]
+
+== Summary
+
+No CRITICAL finding. One HIGH finding (CFG-1). No exploitable authentication or routing
+bypass, no fail-open error path, no resource-exhaustion path reachable without configuration
+opt-in, and no crypto misuse were found. The dominant defect classes are: internal contract
+contradictions (CFG-1, DP-2, DP-7, BFF-1), silent config-parsing hazards (CFG-2, CFG-3), and
+consistency drift between validation-time and runtime semantics (CFG-9, DP-13).
+
+== config / asset / auth / events (CFG)
+
+=== CFG-1 — `token_validation` is effectively mandatory at every boot
+
+[cols="1,4"]
+|===
+|Severity |*HIGH* — Confidence HIGH — Category: consistency / correctness
+|Location |`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java:92-96,110-114`
+|===
+
+`onStartup` unconditionally forces validator assembly at every boot (`validator.toString()` on
+the ArC proxy), and `gatewayTokenValidator()` throws `CONFIG_INVALID` when `tokenValidation ==
+null`. Consequence: any `gateway.yaml` without a `token_validation` block cannot boot, even
+though four in-repo contracts promise otherwise:
+
+* the schema marks `token_validation` optional (`required: ['version']` only);
+* `ConfigValidator.validateEffectiveAuth` requires it only when some route resolves
+  `require: bearer` (`ConfigValidator.java:782-789`);
+* `AuthenticationStage`'s constructor Javadoc (`AuthenticationStage.java:77-84`) explicitly
+  promises "a gateway serving only `require: none` routes (with no `token_validation` block)
+  never triggers the validator producer and therefore never fails boot";
+* `GatewayReadinessCheck` (`quarkus/GatewayReadinessCheck.java:142-152`) carries a
+  reachable-looking `jwks: not-applicable` UP branch for exactly that state.
+
+A public-only or pure session/BFF gateway (which needs `oidc`, not `token_validation`) is
+validated as correct and then aborted by the producer. The failure direction is closed (denial,
+not bypass), but it is a hard functional contradiction between four in-repo contracts.
+
+=== CFG-2 — Duplicate YAML keys silently last-win
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: edge-case / false-security
+|Location |`config/load/ConfigLoader.java:382-402,637-673`
+|===
+
+Neither the compose-only pre-pass (`LoaderOptions` default `allowDuplicateKeys=true`; the
+Composer does not check duplicates) nor the Jackson bind (`STRICT_DUPLICATE_DETECTION` not
+enabled on the `YAMLMapper`) rejects a document declaring the same key twice. A
+`gateway.yaml`/endpoint file with, e.g., two `require:` keys or two `security_filter:` blocks
+silently drops the first — on a security gateway whose whole posture is this file, a duplicated
+key can silently weaken auth with zero diagnostic. `hardenedYamlFactory()` sets only
+alias/nesting/code-point limits; `buildMapper()` enables only `ACCEPT_CASE_INSENSITIVE_ENUMS`
+and snake-case.
+
+=== CFG-3 — Multi-document YAML is half-processed
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: edge-case
+|Location |`config/load/ConfigLoader.java:392-396,328`
+|===
+
+`withinExpansionLimits` runs `composeAll` and walks every document, but `mapper.readTree
+(snapshot)` binds only the first document (`FAIL_ON_TRAILING_TOKENS` not enabled). A file
+containing `--- doc1 --- doc2` has doc2's routes/settings silently discarded while the
+bomb-guard's own iteration proves the loader knows more documents exist. Silent config loss, no
+`ConfigError`.
+
+=== CFG-4 — Session-WebSocket routes may carry an empty Origin allowlist
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: false-security
+|Location |`config/validation/ConfigValidator.java:1364-1367`
+|===
+
+`validateWebSocketRoute` mandates a non-empty `allowed_origins` only when effective auth is
+`BEARER`. A `require: session` WebSocket route — the case where the browser auto-attaches the
+session cookie, i.e. the actual CSWSH vector — may carry an empty allowlist, and an empty
+allowlist at the edge means no Origin enforcement. ADR-0015 explicitly records this as an open
+GAP for session routes, so it is known and documented rather than an oversight — but it remains
+live false-security: the rule reads "fail-closed WebSocket allowlist contract" while covering
+only the leg that browsers cannot attack (JS cannot set `Authorization` on a WebSocket
+handshake). Independently found by the security-posture pass as SEC-1 (see
+link:security-posture.adoc[security posture]).
+
+=== CFG-5 — Validator fabricates endpoint file names in error locations
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: consistency
+|Location |`config/validation/ConfigValidator.java:1468-1470`
+|===
+
+`endpointFile()` fabricates the error location as `"endpoints/" + endpoint.id() + ".yaml"`, but
+nothing enforces that an endpoint's file name equals its `id` — `ConfigLoader.loadEndpoint` uses
+the real `path.getFileName()`. For a file `orders-v2.yaml` declaring `id: orders`, validator
+errors point at the nonexistent `endpoints/orders.yaml` while loader errors point at the real
+file. Two attribution schemes for the same error channel.
+
+=== CFG-6 — `UpstreamAssetSource` never validates `maxBytes`
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: consistency / edge-case
+|Location |`asset/UpstreamAssetSource.java:152-161,280`
+|===
+
+`DirectoryAssetSource` (lines 181-185) rejects negative values and values above
+`MAX_ENFORCEABLE_BYTES` at construction with an extensively documented rationale;
+`UpstreamAssetSource` performs no such validation. A negative `maxBytes` makes every fetch 413
+(fail-closed but silent); `maxBytes = Long.MAX_VALUE` makes `Math.min(maxBytes + 1,
+body.length)` overflow negative (latent — `truncated` cannot be true at that cap). The
+documented "unenforceable cap" reasoning of the directory source applies equally here and is
+not enforced.
+
+=== CFG-7 — `AssetSource.Served` Javadoc contradicts the upstream source
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: javadoc
+|Location |`asset/AssetSource.java:99-100`
+|===
+
+`Served` Javadoc: "body: empty for HEAD and every non-200 outcome". Contradicted by
+`UpstreamAssetSource.serve` (line 210): `serveBody = method == GET && fetched.status() < 400` —
+a governed 201/206/301/302 upstream response is relayed *with* its body. The contract as
+documented matches only the directory source.
+
+=== CFG-8 — `RouteTable.lookup` is production dead code with divergent semantics
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: consistency
+|Location |`config/model/RouteTable.java:59-81`
+|===
+
+The data plane selects routes via `RouteSelectionStage` iterating
+`RouteRuntime.getMatcher().matches(...)`; no production caller of `lookup` exists. Its
+semantics also differ from real selection (first-prefix-only; would mis-serve legal same-prefix
+routes distinguished by host/method/header). A drift trap; under the project's Pre-1.0
+"remove unused API" rule it should be deleted rather than carried.
+
+=== CFG-9 — Trailing-slash and host-case asymmetry between validation and runtime
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: edge-case / consistency
+|Location |`config/model/RouteTable.java:76-81`, `config/RouteTableBuilder.java:163-170`, `routing/RouteMatcher.java:85-91,113`
+|===
+
+Validation and sorting normalize trailing slashes (`/api` ≡ `/api/` collide in
+`validateRouteDisjointness`; the sort key is normalized), but runtime matching uses the raw
+prefix: a route declared `path_prefix: /api/` matches `/api/x` but never `/api` itself, while
+the validator treats the two spellings as identical. An operator writing the trailing-slash
+form silently loses the exact-path match. Related: `RouteMatcher.matches` compares `host`
+case-sensitively (`host.equals(requestHost)`) while `ConfigValidator.hostsOverlap` (line 570)
+compares case-insensitively — the boot model and the runtime disagree about whether
+`Host: API.example.com` is the same host.
+
+=== CFG-10 — Topology property-name filter silently drops entries, then misleads
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: edge-case
+|Location |`config/topology/TopologyResolver.java:172-178`
+|===
+
+`readProperties` silently drops any property whose name fails `[A-Z][A-Z0-9_]*`. An operator
+defining `orders_api=http://...` (lowercase) gets "Unresolved topology alias 'orders_api'
+referenced by enabled endpoint ..." with no hint the entry exists but was filtered.
+`Properties.load` also last-wins on duplicate keys silently. Fail-closed, but the diagnostic
+actively misleads.
+
+=== CFG-11 — Topology URL userinfo/query/fragment silently discarded
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: edge-case
+|Location |`config/topology/TopologyResolver.java:181-201`
+|===
+
+`decompose` keeps scheme/host/port/path and silently drops userinfo, query, and fragment:
+`http://user:pass@host/path?x=1#f` is partially honoured instead of refused (contrast: a
+non-http scheme *is* refused). A credential embedded in a topology URL is silently thrown away
+rather than flagged.
+
+=== CFG-12 — `require: none` plus `required_scopes` is accepted and inert
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: false-security
+|Location |`auth/AuthenticationStage.java:118-127` + `config/validation/ConfigValidator.java`
+|===
+
+An `auth` block of `require: none` with a non-empty `required_scopes` is accepted by schema and
+validator, and the `NONE` switch arm enforces nothing — the declared scopes are silently inert.
+No cross-cutting rule refuses the incoherent pair (unlike the analogous refusals for
+`websocket` blocks on non-websocket routes and `*_allow`+`*_deny`). An operator reading the
+file sees a scope requirement that is never enforced.
+
+=== CFG-13 — Omitted `audience` silently disables audience validation
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: false-security (deliberate; flagged for posture)
+|Location |`auth/TokenValidatorProducer.java:125-135`
+|===
+
+Omitting `audience` on an issuer silently sets `audienceValidationDisabled(true)`. Deliberate
+and commented, but it is a security-relevant silent default on a security gateway: any token
+minted by the issuer for any audience is accepted. Neither a validator rule nor a boot WARN
+surfaces it (contrast: `management.tls.enabled: false` gets a loud WARN).
+
+=== CFG-14 — Stale rule inventory in `config.validation` package Javadoc
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: javadoc
+|Location |`config/validation/package-info.java:24-31`
+|===
+
+Names a "whole-second timeouts" rule that does not exist in `DEFAULT_RULES`, and omits several
+rules that do exist (terminal-action matrix, minimal-profile refusal, forward-mode exclusivity,
+asset content-type rules, edge hardening).
+
+=== CFG-15 — `asset` package lacks `@NullMarked` unlike every sibling
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: consistency
+|Location |`asset/package-info.java`
+|===
+
+The `asset` package is the only in-scope package without `@NullMarked`, while its code uses
+jspecify annotations (`Flow.@Nullable Subscription` in `UpstreamAssetSource.java:304`) and every
+sibling package (auth, events, config.*) is NullMarked. Nullness defaults silently differ
+across the slice.
+
+=== CFG-16 — `GatewayEventCounter` Javadoc overstates snapshot/reset semantics
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: javadoc
+|Location |`events/GatewayEventCounter.java:59-72`
+|===
+
+`getCounters()` says "all non-zero counters" but returns every map entry; under the
+`computeIfAbsent`→`incrementAndGet` race a transiently zero entry can appear. `reset()` says
+"resets every counter to zero" but clears the map; a concurrent `increment` racing `clear()`
+can be lost. Acceptable for metrics; worth one sentence of Javadoc honesty.
+
+=== CFG-17 — JSON-pointer construction does not escape `~`/`/` in keys
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: edge-case (latent)
+|Location |`config/load/ConfigLoader.java:414-436,530-546`
+|===
+
+Pointer construction concatenates raw field names (`pointer + "/" + name`) with no `~0`/`~1`
+escaping. A map key containing `/` (possible in `patternProperties`-style maps if ever widened)
+would corrupt the error location and the `declaredScalarType` schema walk (falls back to shape
+inference — benign but silent). No current key class carries `/`.
+
+=== CFG-18 — Third copy of YAML limit constants; pre-pass divergences
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: consistency
+|Location |`config/NeutralTlsConfigSource.java:143-145,237`
+|===
+
+Third copy of the `MAX_YAML_*` limit constants (ADR-0010's Consequences section accounts only
+for the two sites inside `ConfigLoader`); this pre-pass uses full `Yaml.load()` construction
+(safe under SnakeYAML 2.x default TagInspector) with no 512 KiB byte cap (only the 1 MiB
+code-point limit). Bounded and fail-safe, but exactly the drift ADR-0010 warns about.
+
+=== CFG-19 — Asset `HEAD` requests issue a full upstream `GET`; 405s lack `Allow`
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: edge-case
+|Location |`asset/UpstreamAssetSource.java:261`
+|===
+
+A `HEAD` asset request issues a full upstream `GET` (method never propagated), buffering up to
+`maxBytes` to discard it. Correct output, wasteful for an SSRF-guarded fetch seam. Both asset
+sources' 405 responses omit the `Allow` header.
+
+=== CFG-20 — Case-colliding operator `content_types` keys collapse silently
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence LOW — Category: edge-case
+|Location |`config/model/AssetDefaultsConfig.java:55-61`
+|===
+
+Two `content_types` keys differing only by case collapse silently in `lowercaseKeys`
+(LinkedHashMap last-wins) before the add-only validator sees them — the shadowed entry gets no
+diagnostic. Only operator-extension keys can silently collapse (built-in collisions are
+boot-refused).
+
+=== CFG verified positives
+
+* *ADR-0010 genuinely implemented*: the compose-only pre-pass runs over the same byte snapshot
+  the bind consumes (no TOCTOU); the alias cap is armed there and correctly documented as inert
+  on the Jackson path; the 512 KiB byte cap is ordered below the 1 MiB code-point limit so it
+  can actually fire.
+* *PathConfinement + DirectoryAssetSource* is a rigorous fail-closed stack: lexical confinement
+  (cui-http strict pipeline, `UrlSecurityException` → 404), real-path re-check closing the
+  in-root-symlink spelling, `SecureDirectoryStream` descent closing per-component TOCTOU with a
+  warned fallback, `NOFOLLOW` stat+read on one descriptor, FIFO refusal, bounded `maxBytes+1`
+  read with construction-enforced overflow ceiling. Nothing fails open.
+* *UpstreamAssetSource*: fixed boot-resolved target, scheme allowlist, `Redirect.NEVER`,
+  mid-flight-abort capped subscriber, and an explicit `truncated` signal that turns a
+  fetch-cap/serve-cap mismatch into 413 instead of silently serving a prefix.
+* *JwksTrustProfileResolver* refuses unbound profiles, `trust-all` buckets (checked before the
+  anchor-free guard, correctly ordered), and material-free buckets — no fallback-to-default-trust
+  path exists.
+* *Secret hygiene*: bare-`${VAR}` enforcement pre-substitution, no value echo in
+  `MalformedPlaceholderException`, redacting `toString()` on secret-bearing records,
+  `EnvSecretResolver` non-recursive expansion (`quoteReplacement`) closing env-value injection.
+* *ConnectionHeaders* strips `Content-Length` and HTTP/2 pseudo-headers on the response path;
+  the `-`/`_` separator fold closes the CGI-folding class on the request path.
+* *AuthenticationStage* boot refusal and runtime governance resolve through the same shared
+  seams (`effectiveAccessLevel`, `globalProfile`, `normalizePrefix`), so they cannot drift.
+
+== BFF / OIDC (BFF)
+
+=== BFF-1 — RFC 9470 step-up is fully built but never invoked
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: false-security / correctness
+|Location |`bff/refresh/StepUpCoordinator.java` (whole class); wiring `quarkus/BffRuntimeProducer.java:292-296`
+|===
+
+`StepUpCoordinator` is instantiated and exposed via `BffRuntime.stepUpCoordinator()`, and
+`oidc.session.step_up.honor_upstream_challenge` exists in schema and model — but
+`detectChallenge(...)`/`coordinate(...)` are never called anywhere in the edge or dispatch
+path; the `SilentSatisfaction` seam is hardwired to `Optional.empty()`, and
+`stepUpCoordinator()` is referenced only by tests. An upstream `401
+insufficient_user_authentication` on a `require: session` route is relayed to the browser
+unhandled; no step-up re-drive ever happens in production. The class Javadoc's claim that "the
+upstream-challenge edge integration is exercised by the Keycloak integration tests" describes
+edge integration that does not exist in `main/java`.
+
+=== BFF-2 — Catalogued session-lifecycle and CSRF LogRecords are never emitted
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: javadoc / false-security (observability)
+|Location |`bff/BffLogMessages.java`; `bff/csrf/CsrfDefence.java:128`; `bff/logout/BackchannelLogoutReceiver.java:114`
+|===
+
+Only 6 of the catalogue's records are emitted. `INFO.SESSION_CREATED` (10),
+`INFO.SESSION_DESTROYED` (11), `INFO.BACKCHANNEL_LOGOUT` (13), `INFO.RP_LOGOUT_COMPLETED` (14),
+`WARN.CSRF_REJECTED` (110), and `WARN.LOGOUT_TOKEN_REJECTED` (112) have no production emission
+site. `CsrfDefence.rejected` logs at DEBUG; the back-channel receiver logs rejections at DEBUG
+only; session create/destroy/logout-complete are never logged at all. For a security gateway,
+session establishment/destruction, accepted back-channel logouts, and CSRF rejections produce
+no structured WARN/INFO audit line — a SIEM keying on the documented `ApiSheriff-xxx` records
+never fires. (The `CSRF_REJECTED` *metric* counter does fire via the edge `GatewayException`;
+only the log record is dead.)
+
+=== BFF-3 — Back-channel logout "replay guard" is freshness-window-only
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: oidc
+|Location |`bff/logout/LogoutTokenValidator.java:142-149`
+|===
+
+The Javadoc calls the `iat` freshness window "the replay guard (BFF-09)", but a symmetric
+±2-minute window admits unlimited replays of the same logout token; no `jti` tracking exists.
+Impact is bounded (destruction is idempotent), but "replay guard" overstates what a freshness
+window provides.
+
+=== BFF-4 — Logout initiation has no CSRF protection
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: false-security / oidc
+|Location |`bff/reserved/LogoutEndpoint.java:94-125`; gating `edge/GatewayEdgeRoute.java:724-726`
+|===
+
+Reserved paths (including `LOGOUT`) are dispatched by `handleReservedPath` before route
+selection and never pass through the CSRF gate; the logout leg is state-changing and the
+`SameSite=Lax` session cookie is sent on top-level GET navigation, so an attacker page can
+force-log-out a victim via a link/redirect to `oidc.logout.path`. Standard low-severity
+logout-CSRF — annoyance, not data compromise — but unmitigated (unlike the logout *return* leg,
+which is state-cookie-protected).
+
+=== BFF-5 — Cookie-mode cross-replica refresh can trigger token-family revocation
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: concurrency / session
+|Location |`bff/refresh/TokenRefreshCoordinator.java:90,131-149`; `bff/cookie/CookieSessionBinding.java:56-63`
+|===
+
+Single-flight coalescing is per-instance. In cookie mode two near-simultaneous requests with
+the same cookie landing on different replicas both present the same refresh token; an engine
+with RFC 9700 reuse detection treats the second as replay and revokes the token family —
+destroying the session and forcing re-login. `CookieSessionBinding` Javadoc frames this only as
+"a cross-instance duplicate refresh cannot be prevented … documented, accepted trade-off",
+understating that the consequence is family revocation → forced logout.
+
+=== BFF-6 — Session cookie name accepts non-`__Host-` values without validation
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: cookie
+|Location |`quarkus/BffRuntimeProducer.java:194-197`; `config/validation/ConfigValidator.java` (no rule)
+|===
+
+`session.cookie_name` flows into the codecs with only a non-blank check; no validator rule
+requires the `__Host-` prefix. A renamed cookie keeps `Secure; HttpOnly; SameSite=Lax;
+Path=/` but loses the host-locked, `Domain`-less guarantee against subdomain cookie
+injection/fixation. The binding and logout-state cookies are hardcoded `__Host-`; only the
+session cookie is exposed. The default (`__Host-sheriff-session`) is safe.
+
+=== BFF-7 — 1-byte key id gives a 1/256 collision on key change (fail-closed)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: crypto
+|Location |`bff/cookie/CookieKeyMaterial.java:134-143`
+|===
+
+`keyIdOf` uses `SHA-256(label ‖ key)[0]` — one byte. On key change there is a 1/256 chance old
+cookies pass the key-id gate and reach the cipher — where the GCM tag then fails and the value
+unseals to "no session". Fail-closed regardless; only the rejection disposition attribution
+changes. The Javadoc's "unknown key id refused before a Cipher is constructed" holds for
+255/256 of key changes.
+
+=== BFF-8 — `events` claim membership check accepts nested keys
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: oidc
+|Location |`bff/logout/LogoutTokenValidator.java:165-182`
+|===
+
+`hasBackchannelLogoutEventMember` confirms the value is an object then scans for the quoted
+event URI followed by `:`; it rejects value-position occurrences but not a nested-key
+occurrence such as `{"a":{"http://schemas.openid.net/event/backchannel-logout":1}}`.
+Exploitation requires a validly IdP-signed token, so risk is minimal, but the check is looser
+than a real JSON parse.
+
+=== BFF-9 — Pending-authorization FIFO eviction under login flood
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: session / correctness
+|Location |`bff/pending/PendingAuthorizationStore.java:115-121`
+|===
+
+`InMemory.evictOldestBeyondCapacity` drops the oldest record beyond `maxEntries` (default
+10 000). Unauthenticated clients create these records, so an attacker sustaining >10 000 login
+initiations evicts genuine in-flight pending records before their 5-minute TTL; victims'
+callbacks then fail 403. Memory is bounded (the intended guard); login availability is not.
+Self-healing once the flood stops.
+
+=== BFF-10 — `SessionRecord`/`SealedSessionPayload` `toString()` exposes `sub`/`sid` (latent)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: javadoc
+|Location |`bff/session/SessionRecord.java:154-160`; `bff/cookie/SealedSessionPayload.java:184-189`
+|===
+
+Tokens, session id, and nonce are redacted, but `sub`, `sid`, `acr`, `authTime` print.
+`BffLogMessages` class Javadoc asserts these "never appear" in logs. No current BFF logger
+passes either record (verified), so latent — but a future `LOGGER.x("… %s", record)` would leak
+`sub`/`sid`, contradicting the stated no-PII contract.
+
+=== BFF-11 — Logout token `typ` header not validated; ID-token validation seam
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: oidc
+|Location |`bff/logout/LogoutTokenValidator.java:96-128`; `quarkus/BffRuntimeProducer.java:315`
+|===
+
+OIDC back-channel logout §2.4 recommends verifying `typ: logout+jwt`; the validator relies on
+mandatory-`events`/prohibited-`nonce` instead (which does distinguish a logout token from an ID
+token — defense-in-depth only). The signature seam is `idBridge::validateRefreshedIdToken`,
+i.e. the logout token is signature-verified through the ID-token validation path; if that
+engine method imposes ID-token-specific constraints it could reject spec-valid logout tokens.
+Engine behavior, unverifiable from this repo; flagged for awareness.
+
+=== BFF verified positives
+
+* Sealed cookie: AES-256-GCM with a fresh 12-byte `SecureRandom` nonce per `seal()` (never
+  counter/payload-derived); `version ‖ key-id ‖ cookieName` bound into GCM AAD; unsealing
+  deterministically key-id-gated (never try-every-key); every decode/tag/version/key-id/payload
+  failure returns `Optional.empty()` fail-closed; key material must decode to exactly 32 bytes
+  or boot fails.
+* Callback: browser-binding cookie *and* constant-time `state` compare
+  (`MessageDigest.isEqual`); raw-query HPP parse with duplicate rejection; pending store
+  single-use (remove-on-consume under the instance monitor).
+* Open-redirect defense rejects `//`, backslash, and cross-origin targets
+  (`PendingAuthorizationRecord.sameOrigin`).
+* Both session stores capacity-bounded; refresh coordinator single-flight via atomic
+  `putIfAbsent` keyed on stable session id; refresh failure destroys the session.
+* Logout-token validation enforces iss/aud/iat-freshness/`events`-object/`nonce`-absent/
+  `sub`-or-`sid`; cookie-mode back-channel destruction capability-gated to 404 before the body
+  is read.
+* CSRF defence is fixed (no disable knob), checked before mediation, case-insensitive,
+  fail-closed.
+
+== Data plane (DP)
+
+=== DP-1 — Connection-nominated headers are not stripped in either direction
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: headers
+|Location |`forward/ForwardPolicyStage.java:290-307`; `edge/ResponseStage.java:63-72`
+|===
+
+Only the fixed enumerated sets (`ConnectionHeaders.REQUEST_STRIP`/`RESPONSE_STRIP`) are
+stripped; RFC 7230 §6.1 requires a proxy to also remove any header the `Connection` field
+names. Request direction: `Connection: X-Session-Hint` + `X-Session-Hint: v` forwards the
+hop-scoped header upstream as end-to-end (the `Connection` header itself is stripped,
+converting a hop-scoped claim into an end-to-end one). Response direction: an upstream emitting
+`Connection: X-Internal-Debug` + `X-Internal-Debug: <detail>` has `Connection` stripped but the
+nominated header relayed to the client — an internal, deliberately hop-scoped header leaks.
+`FramingGate.rejectFramingHeaderStrip` rejects only `Connection` tokens naming the nine
+`PROTECTED_HEADERS`; every other nominated name passes.
+
+=== DP-2 — Per-upstream resilience/transport configuration is parsed but inert
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: false-security / correctness
+|Location |`edge/GatewayEdgeRoute.java:1518-1541` (guardFor), `:1291-1303` (clientFor); `config/model/UpstreamConfig.java:43-47,87`
+|===
+
+`UpstreamConfig` binds `connect_timeout_ms`, `read_timeout_ms`, `retry.max_attempts`,
+`circuit_breaker.failures`, `circuit_breaker.reset_ms`; nothing consumes them. `guardFor`
+hardcodes `requestVolumeThreshold(20)`, `failureRatio(0.5)`, `delay(5s)`, `withTimeout(30s)`,
+`maxRetries(2)/delay(100ms)`; `clientFor` builds `vertx.createHttpClient()` with no options at
+all (no connect timeout, no idle timeout). Only `retry.enabled` acts
+(`RouteTableBuilder.resolveRetryEnabled`). This directly contradicts ADR-0008 ("Timeouts are
+transport options on the shared Vert.x client (connect/read per upstream tuple)"; "one guard
+per route, assembled at boot from `upstream.retry` / `upstream.circuit_breaker`"). An operator
+declaring `circuit_breaker.failures: 3` believes a tighter breaker is in force; it is not —
+the exact "key that parses is not a key that acts" class CLAUDE.md warns about.
+
+=== DP-3 — `Sec-WebSocket-*` headers leak into the upstream dial; subprotocol never relayed
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence MEDIUM — Category: websocket
+|Location |`edge/WebSocketRelayStage.java:145-154`; `http/ConnectionHeaders.java:157-163`
+|===
+
+Inbound `Sec-WebSocket-Key/-Version/-Extensions/-Protocol` are absent from `REQUEST_STRIP`, so
+under forward-all/negative-list they are copied into the upstream `WebSocketConnectOptions`
+while the Vert.x/Netty dialer performs its own handshake: a leaked `Sec-WebSocket-Extensions:
+permessage-deflate` can negotiate compression the dialer did not configure (RSV-bit protocol
+errors / corrupted frames); a leaked `Sec-WebSocket-Protocol` offer can make the upstream
+select a subprotocol the handshaker did not expect (failed upstream handshake). Independently,
+subprotocol negotiation is never relayed to the client: `ctx.request().toWebSocket()` runs with
+no server-side `webSocketSubProtocols`, so the client's 101 never carries a
+`Sec-WebSocket-Protocol` selection — an RFC 6455 client that offered one must then fail the
+connection. Net: WebSocket routes with subprotocol- or compression-using clients break in ways
+that look like upstream faults.
+
+=== DP-4 — SNI front listener lacks every edge hardening bound
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: tls / dos
+|Location |`tls/SniFrontListener.java:95-103,147-197`; `tls/PassthroughRelay.java`
+|===
+
+The front `NetServer` has no per-connection deadline for completing the ClientHello, no idle
+timeout (`NetServerOptions` default 0 = disabled), and no cap on concurrent pre-decision
+connections; established `PassthroughRelay` sessions are likewise unbounded in count and
+lifetime. A client that connects and sends nothing — or trickles bytes below the 32 KiB parser
+bound — holds a socket indefinitely. The L4 front reintroduces the slow-loris class the HTTP
+listener's `IDLE_TIMEOUT_SECONDS = 60` exists to close, positioned in front of every other
+defence whenever `tls.passthrough_sni` is configured.
+
+=== DP-5 — SNI split makes every terminated peer address loopback
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence MEDIUM — Category: headers / tls
+|Location |`tls/TlsEdgeProducer.java:112`; `edge/GatewayEdgeRoute.java:1153`; `forward/TcpPeerGate.java:60-76`
+|===
+
+With the SNI split active, every terminated connection reaches the Quarkus HTTPS listener
+through the loopback relay (no PROXY protocol), so `peerAddress()` is `127.0.0.1` for all
+external clients. Consequences: (a) the regenerated `X-Forwarded-For` reports loopback — the
+real client IP is unrecoverable by upstreams; (b) if an operator adds a loopback CIDR to
+`forwarded.trusted_proxies` (the natural response), every external client becomes a "trusted
+proxy" and can spoof `X-Forwarded-For`/`Forwarded` freely — the exact attack the ADR-0003 peer
+gate exists to stop. Neither `tls-edge.adoc` nor ADR-0017/0003 mentions this interaction.
+
+=== DP-6 — Fault-tolerance timeout strands the upstream connection
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence MEDIUM — Category: correctness / resource leak
+|Location |`edge/DispatchStage.java:246-266` with `GatewayEdgeRoute.guardFor` (30 s FT timeout)
+|===
+
+On a SmallRye FT timeout the virtual thread is interrupted and a 504 rendered, but the in-flight
+Vert.x dispatch is never cancelled: no `request.reset()`, and a response head arriving later is
+immediately `pause()`d with no consumer ever attached — the pooled connection is stranded
+holding an unread, backpressured body. Default HTTP/1.1 pool is 5 connections per host with no
+client idle timeout configured (DP-2), so a slow upstream (>30 s to headers) leaks a pool slot
+per timeout; five timeouts can wedge every route sharing that upstream tuple into
+queued-then-504 — a small self-inflicted DoS amplifier.
+
+=== DP-7 — Protocol verb semantics exist only in documentation
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: pipeline / javadoc
+|Location |`routing/ProtocolProcessor.java` (+3 impls); `config/RouteTableBuilder.java:477-489`; `edge/GatewayEdgeRoute.java:743-747`
+|===
+
+`supports()`/`standardMethods()` have zero call sites outside the SPI; `effectiveAllowedMethods`
+falls back to all `HttpMethod` values regardless of protocol. So a `protocol: grpc` route with
+no explicit `allowed_methods` passes GET/DELETE/PATCH into `dispatchGrpc`, and a
+`protocol: websocket` route passes POST/PUT into `dispatchWebSocket` — while both processors'
+Javadoc and `protocol-processors.adoc` state POST-only / GET-only verb scope. Concrete
+misbehaviour: a plain (non-upgrade) request reaching `dispatchWebSocket` dials the upstream WS,
+then `ctx.request().toWebSocket()` fails and the failure branch releases admission and closes
+the upstream without ever ending the client's HTTP response — the client hangs until the 60 s
+idle reap, with no status and no metric.
+
+=== DP-8 — Multi-valued request headers collapse to their first value
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: headers / correctness
+|Location |`forward/ForwardPolicyStage.java:245,263`
+|===
+
+All forward modes copy `request.firstHeader(name)` / `values.getFirst()` into a
+`Map<String,String>`; additional values are silently dropped (repeated `Accept`, `X-Trace-*`,
+split HTTP/2 headers). Security-consistency is preserved — route header matchers also use the
+first value and stage-1/3 validation validates all values — but upstreams receive a silently
+truncated header set. (Query parameters, by contrast, correctly forward all values.)
+
+=== DP-9 — Fragmented text frames are decode/re-encode corrupted
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: websocket / correctness
+|Location |`edge/WebSocketRelayStage.java:287-295`
+|===
+
+`dataFrame` relays the first fragment of a fragmented text message via
+`WebSocketFrame.textFrame(frame.textData(), frame.isFinal())`; `textData()` decodes fragment
+bytes as UTF-8, so a fragment boundary splitting a multi-byte codepoint yields U+FFFD
+replacement characters that are re-encoded and relayed — silent payload corruption
+(continuations correctly use `binaryData()`).
+
+=== DP-10 — No rate limiting exists anywhere in the data plane
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: ratelimit / false-security
+|Location |`config/model/RateLimitConfig.java:21-35`
+|===
+
+The per-route `rate_limit` block (`requests_per_second`, `burst`) is accepted and ignored
+(Javadoc: feature deferred). No limiting, no boot warning, no runtime signal. The only
+admission controls are the global concurrency semaphores (2048 / 512 relay), which bound
+concurrency, not rate. README/configuration.adoc do disclose this (see
+link:security-posture.adoc[SEC-5]); a boot WARN when the block is present would close the trap.
+
+=== DP-11 — Proxy-path 413 leaves the connection pinned (asymmetric with reserved path)
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: smuggling / correctness
+|Location |`edge/GatewayEdgeRoute.java` (`handleGatewayRejection` vs `closeAfterOversizedReservedBody:586-595`)
+|===
+
+The reserved-body 413 path deliberately retires the connection (the file's own comment explains
+why); the proxy-path mid-stream 413 (`ByteCappedBodyStream` breach) and stage-3 declared-CL 413
+render `problem+json` without `Connection: close` — the paused, partially-read body pins the
+connection until the 60 s idle timeout. No desync (Netty keeps framing the discarded
+remainder), only per-connection resource pinning — the same half-effectiveness the
+reserved-body comment identifies, unfixed on the higher-volume path.
+
+=== DP-12 — Terminated-listener loopback confinement asserted by docs, not enforced
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: tls
+|Location |`doc/development/tls-edge.adoc:78` vs `api-sheriff/src/main/resources/application.properties:99-109`
+|===
+
+The doc states the internal terminated HTTPS listener (8444) is "bound to `localhost` only",
+but nothing sets `quarkus.http.host` — Quarkus defaults to `0.0.0.0`, so in a passthrough
+deployment the "internal" listener is reachable on all interfaces unless the deployment adds an
+undocumented property. Direct access bypasses no gateway policy (same listener, same pipeline),
+but it exposes an extra externally-reachable port whose confinement the docs assert and the
+code does not enforce.
+
+=== DP-13 — Origin allowlist does not normalize default ports; two origin comparators disagree
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: websocket
+|Location |`pipeline/OriginValidationStage.java:74-80`; `config/RouteTableBuilder.java:498-508`
+|===
+
+Origin matching lowercases and compares whole strings — no default-port normalization. An
+operator listing `https://app.example.com:443` never matches a browser's
+`https://app.example.com` (browsers omit default ports): all legitimate clients are locked out.
+Fail-closed, so not a bypass, but an undetectable misconfiguration — and the BFF's own
+`originOf` (`BffRuntimeProducer.java:410-427`) explicitly normalizes default ports on the CSRF
+side, so the two origin comparators disagree.
+
+=== DP-14 — CORS reflection without `Vary: Origin`; preflight answers before route selection
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence MEDIUM — Category: headers / correctness
+|Location |`pipeline/SecurityHeadersStage.java:93-111`
+|===
+
+The request `Origin` is reflected into `Access-Control-Allow-Origin` (also under the `"*"`
+branch) without ever emitting `Vary: Origin` — a shared cache may serve one origin's ACAO to
+another allowed origin, breaking CORS for it (availability, not a grant). The preflight
+short-circuit (204) also answers before route selection, so any path — including nonexistent
+routes — receives a positive preflight; minor surface-mapping aid, no access granted.
+
+=== DP-15 — 405s metered as `<no-route>`; WebSocket relays unmetered
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: correctness (metrics)
+|Location |`edge/GatewayEdgeRoute.java:716-719`
+|===
+
+`ctx.put(ROUTE_KEY, …)` happens only after the verb gate passes, so a 405 on a matched route is
+metered as `<no-route>`; established WebSocket relays never fire the end handler, so
+`sheriff_requests_total`/duration record nothing for them. Observability gap only.
+
+=== DP-16 — Double-decode defence rests entirely on cui-http
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence LOW — Category: path
+|Location |`pipeline/CanonicalPathGuard.java:53-69`; `pipeline/BasicChecksStage.java:164-170`
+|===
+
+The guard rejects literal `%2f`/`%5c`/`;` on the raw path only; defence against double-encoded
+separators (`%252f`) and dot-segment/unicode tricks rests on the external cui-http
+`urlPathPipeline`. That reliance appears sound — the pipeline is pinned against the OWASP
+attack corpus in `BasicChecksStageTest`, and the TOCTOU property holds structurally (route
+matching, `allowed_paths`, and the forwarded upstream path all consume the same
+`canonicalPath`) — recorded as the one place where a cui-http regression would not be caught by
+gateway-local code.
+
+=== DP verified positives
+
+* Anti-smuggling `FramingGate`: rejects CL+TE, duplicate/comma-listed Content-Length, and
+  body-on-bodyless-method; the GET opt-in is cut exactly to the Content-Length leg per
+  ADR-0029.
+* Single-canonical-path invariant holds structurally: authorization, `allowed_paths`, and the
+  upstream URI all consume the same stage-1 canonical string — no normalization TOCTOU.
+* Route selection is deny-by-default over a longest-prefix-sorted table with segment-boundary
+  prefix matching.
+* Body cap enforced both as pre-read declared-CL 413 and as a streaming counter aborting the
+  in-flight upstream request (ADR-0023), including the framework-floor boot validation.
+* Inbound `X-Forwarded-*`/`Forwarded` (including underscore spellings and vendor IP aliases,
+  closed by separator folding) never propagate — only regeneration behind the boot-parsed CIDR
+  peer gate (trust-all CIDR union refused at boot, split ranges included).
+* Gateway-owned header sets match ADR-0037 exactly, including `TE: trailers` and the
+  Authorization-readmission carve-outs.
+* Auth runs strictly before forwarding; the auth-stage short-circuit gate prevents an
+  unauthenticated session request from falling through to the upstream.
+* WebSocket admission-permit lifecycle is CAS-guarded on every teardown path (ADR-0020); the
+  SNI parser is fail-closed, bounds-checked, and buffer-bounded (ADR-0017).

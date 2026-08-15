@@ -1,0 +1,238 @@
+= Test Quality Report
+:toc: macro
+:toclevels: 2
+
+Review of all three test surfaces — `api-sheriff/src/test/java` (~101 files),
+`integration-tests/src` (~50 files), `benchmarks/src` — against the project's own testing
+doctrine (`doc/development/declared-limit-assertion-coverage.adoc`,
+`doc/development/test-corpus-integrity.adoc`) and the CLAUDE.md testing standard. See
+link:README.adoc[the index] for conventions.
+
+toc::[]
+
+== Verdict
+
+*The tests are overwhelmingly real content tests, not coverage theater.* The matched-control
+discipline — every admission paired with a rejection differing in exactly the dimension under
+test — is applied consistently enough that inverting most security controls would demonstrably
+turn tests red. The project audits itself against its own doctrine, and the doctrine documents'
+claims (18 strengthenings, the inversion audit, the WIRED/GAP matrix) all check out against
+HEAD. The "if the key were deleted, would a test go red" rule is honored for the big controls:
+body caps, header caps, CSRF, WebSocket origin, host-smuggle, mTLS, framing, and path
+confinement are all deletion-detectable. Forbidden frameworks are fully absent; there are no
+disabled tests, no order dependence, and no silent exception swallowing. The one materially
+*unrecorded* weakness is `SecurityHeadersStage` (TST-1). The known-gap list the project keeps
+is accurate rather than optimistic.
+
+== Findings
+
+=== TST-1 — `SecurityHeadersStage`: response-header half untested, CORS negatives missing, inactive in IT topology
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: missing-edge-case / missing-negative
+|Location |`api-sheriff/src/test/java/.../pipeline/SecurityHeadersStageTest.java` vs `pipeline/SecurityHeadersStage.java:75-111`
+|===
+
+The stage's primary documented job — emitting `Strict-Transport-Security`,
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` — has zero assertions anywhere in
+the corpus; the test covers only the CORS half (4 tests). Also untested:
+`allowCredentials=true` emitting `Access-Control-Allow-Credentials`; a disallowed-origin
+preflight *not* short-circuiting; null-config no-op; the `Allow-Methods/Headers` values. The
+CORS origin match is case-sensitive `contains()` (line 122) while `OriginValidationStage` and
+`CsrfDefence` lower-case — no test pins the asymmetry in either direction. The IT topology
+(`integration-tests/src/main/docker/sheriff-config/gateway.yaml`) declares no
+`security_headers` block, so the stage is inactive in every booted IT instance — the nosniff
+assertions in the asset ITs come from the asset envelope, not this stage. By the project's own
+rule ("an opt-in runtime feature needs a deployment-activation test"), this is an unrecorded
+gap. Cross-references: link:security-posture.adoc[SEC-3/SEC-4] (the same stage's `max-age=0`
+hazard and opt-in default).
+
+=== TST-2 — Strict-preset parameter-value and path length caps (1024) unproven at the boundary
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: missing-edge-case (project-acknowledged G6/G7)
+|Location |tests referencing `maxParameterValueLength`/`maxPathLength` (only `GatewayEdgeRouteTest.java:450,480` — config-plumbing equality)
+|===
+
+No test at unit or IT level exercises 1024-admitted/1025-rejected for parameter values or
+paths. By the deletion discriminator, these two Layer-2 caps are enforced (by the cui-http
+validators) but not test-proven at their boundary. Already recorded as G6/G7 in the project's
+own coverage doctrine — independently verified as real.
+
+=== TST-3 — JWKS SSRF egress guard: no runtime refused-egress test
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: missing-negative (project-acknowledged G2 runtime leg)
+|Location |`EgressAllowlistActivationWiringTest` (descriptor-parsing, correctly self-labelled WIRED); `TokenValidatorProducerTest.allowlistSurvivesTheProducerPath`
+|===
+
+The producer-seam behavioural test exists with a matched no-allowlist control, but no test
+anywhere exercises an actual refused JWKS egress through a running gateway. For the flagship
+SSRF control of a security gateway this is the highest-value missing runtime negative; the
+project records it as the standing remainder's rank-2 item.
+
+=== TST-4 — TLS runtime legs: no real below-floor handshake or ALPN assertion
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: missing-negative (project-acknowledged G8/G11)
+|Location |`TlsServerCustomizerTest` (394 lines, options-level, excellent); `MtlsHandshakeIT` (covers mTLS handshake)
+|===
+
+Options-level coverage is thorough incl. fail-closed boot cases ("TLS 1.3-only allowlist under
+a 1.2 floor fails the boot"); missing is only the handshake leg: no test performs a real
+below-floor handshake or asserts negotiated ALPN. The doctrine doc itself recommends the wiring
+shape over an unaffordable handshake matrix.
+
+=== TST-5 — Declared session TTL / refresh leeway values not deletion-detectable
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: missing-edge-case (deployment layer; project-acknowledged G9)
+|Location |`InMemorySessionStoreTest`, `SealedSessionPayloadTest`, `TokenRefreshCoordinatorTest` (mechanisms well covered)
+|===
+
+Unit coverage of the mechanisms is strong and boundary-inclusive with injected clocks
+(inclusive TTL boundary; within/outside leeway; single-flight concurrency with real threads).
+The gap: no descriptor guard asserts the declared values (`ttl_seconds: 3600`,
+`leeway_seconds: 30`) and no IT forces a refresh at the leeway boundary — deleting either key
+would turn nothing red.
+
+=== TST-6 — `allowed_claims` negative leg missing at IT level only
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: missing-negative (IT wiring; project-acknowledged G10)
+|Location |`BffUserInfoIT` (positive projection only); unit negative exists at `ClaimAllowlistFilterTest.java:113`
+|===
+
+The unit level has both the "claim outside allowlist silently dropped" negative and the "empty
+allowlist discloses nothing" secure default; only the IT wiring lacks the negative leg.
+
+=== TST-7 — Generator adoption below the stated standard (no misuse found)
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: generator
+|Location |corpus-wide; `@GeneratorsSource` in 4 of ~101 unit-test files
+|===
+
+Against CLAUDE.md's "@GeneratorsSource preferred", it appears in only 4 files (10 occurrences:
+`RouteTableBuilderTest`, `ConfigValidatorTest`, `ConfigValidatorRouteDisjointnessTest`,
+`JsonWriterTest`). Where used, it is used well: `@EnableGeneratorController` present in all 14
+generator-touching files (seed reproducibility), and `RouteTableBuilderTest:1020-1102` proves
+prefix-ordering/disjointness laws generically over generated segments. Auth tests use the CUI
+`TestTokenGenerators` (real generated tokens over offline JWKS). One deviation:
+`tls/PassthroughRelayTest.java:95` hand-rolls `new Random(42)` — seeded, trivial. Mitigating:
+most fixed values in this corpus are deliberate boundary/attack values (the OWASP attack
+database is used parameterized in `BasicChecksStageTest`/`ThoroughChecksStageTest`), where
+generators would be wrong. Verdict: under-adoption relative to the stated standard; no
+generator misuse.
+
+=== TST-8 — Fixed-sleep timing tests could flake under CI load
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: hygiene
+|Location |`WebSocketRelayStageTest:324,462`; `TokenRefreshCoordinatorTest:281,429`; (bounded polling in `TlsEdgeProducerTest:213`, `GatewayEdgeRouteTest:761-786` is fine)
+|===
+
+Every `Thread.sleep` carries a NOSONAR rationale. The fixed sleeps (400 ms against a 250 ms
+idle timeout; 100 ms for "no observable hook for the follower reaching the in-flight join")
+have margins that could flake on a loaded runner; the coordinator ones paper over a missing
+synchronization seam. No other flakiness vectors exist: no `@TestMethodOrder`, no shared
+mutable static state in ITs, no exception-swallowing catch blocks.
+
+=== TST-9 — Cookie carve-out exact at-cap admission untested at unit level
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: missing-edge-case (compensated at IT level)
+|Location |`BasicChecksStageTest.java:196-217`
+|===
+
+The at-budget test uses 4096 against a 4608 cap and over-cap at 4609 — exact at-cap admission
+(4608) is never asserted at unit level; the Authorization within-cap probe is 2007 chars, not
+8192. Fully compensated by `DeclaredLimitBoundaryIT` (8192/8193 and 1024/1025 exactly, with the
+401-vs-400 discriminator).
+
+=== TST-10 — Vacuous-marker backlog: spot-check confirms low yield
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: coverage-theater (residual, project-counted)
+|Location |`doc/development/test-corpus-integrity.adoc` backlog (43 files / 140 occurrences)
+|===
+
+Independent spot-reads of six backlog files (`RouteSelectionStageTest`, `SheriffMetricsTest`,
+`SessionCookieCodecTest`, `MtlsServerCustomizerTest`, `FramingGateTest`,
+`OriginValidationStageTest`) found every `assertNotNull`/`assertDoesNotThrow` paired with
+substantive assertions or matched controls — consistent with the doc's 0%-yield control
+sample. The doc's 18 claimed strengthenings verified as actually landed in HEAD.
+
+=== TST-11 — Production classes without dedicated tests
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: untested-class
+|Location |`ApiSheriffApplication` (trivial Quarkus main); `quarkus/TokenClientDslJsonReflection` (zero test references; sibling `ConfigModelReflection` has one); `pipeline/PipelineRequest` (no dedicated test; exercised in every pipeline test, but `firstHeader` case handling and `shortCircuit` semantics only implicitly covered)
+|===
+
+Everything else without a dedicated file is an interface, annotation, enum, or record covered
+by contract/catalogue tests (verified per-name).
+
+=== TST-12 — Literal `Origin: null` never named as a case
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: missing-edge-case
+|Location |`OriginValidationStageTest`; `CsrfDefenceTest`
+|===
+
+The literal `Origin: null` a sandboxed browser context sends is untested in both gates. Both
+fail closed on it by construction (exact-match miss), so behaviour is safe but unpinned.
+
+=== TST-13 — Forbidden frameworks: none found (positive)
+
+Zero Mockito/PowerMock/Hamcrest imports across all three modules (grep-verified). Zero
+`@Disabled`. Zero `System.out` (one suppression-annotated `IO.println` boot print in
+`BaseIntegrationTest:45`). Test doubles are hand-rolled fakes; throwing providers are used as
+neutralised fixtures — a technique, not a smell.
+
+== Coverage map
+
+*Well-tested* (boundary values, matched positive/negative controls, attack corpora):
+`pipeline` (OWASP Top-10 attack DB parameterized through both stages; carve-outs tested at both
+baselines with reflection-based "only-the-cap-changes" sweeps), `bff/cookie` + `bff/csrf` +
+`bff/session` + `bff/pending` + `bff/logout` + `bff/refresh` (AES-GCM byte-flip per region, AAD
+binding, key-withdrawal, inclusive TTL boundaries, single-use consumption, no-secret-disclosure,
+real-thread single-flight concurrency), `asset` (traversal/symlink/real-path escapes,
+at-cap/one-over/stat-underreport), `tls` (byte-level ClientHello fixture incl. fragmentation
+and overrun fail-closed; fail-closed boot matrix; port-probed edge producer), `forward`
+(three-mode × two-dimension matrix with spoofed-header and smuggle-through-allowlist
+negatives), `config` (validator: 128 tests; loader; route table with generated-segment law
+tests), `edge` (body ceiling at/over with keep-alive retirement), `auth`,
+`http/ConnectionHeaders`, `events`, `quarkus` producers. `benchmarks` asserts values against
+known-number fixtures with explicit "absent never renders as 0" negatives.
+
+*Weak spots*: `SecurityHeadersStage` (TST-1 — the one genuinely weak security-relevant class);
+`RouteSelectionStage`/`VerbGateStage` (small but two-legged; matcher depth lives in
+`RouteRuntimeTest`).
+
+*Integration tests* are genuinely end-to-end: they assert status *and* bodies/headers (RFC 9457
+`type`/`title` envelope; echoed upstream bodies proving forwarding; header presence/absence on
+the upstream side). Negatives are pervasive: tokenless 401, malformed-token 401, CSRF 403 with
+a 401 control proving gate ordering, foreign/absent-Origin WS 403, smuggled-Host 404 with
+benign-Host 200 control, 413 one-byte-over with one-byte-under control, 405 with `Allow`. The
+`*ActivationWiringTest` family carries anti-vacuity floors (`COMMITTED_DESCRIPTOR_COUNT`,
+doctrine-note parsing that fails loud when markers are missing) — machine-checked note-to-test
+coupling that is genuinely unusual rigor.
+
+== Highest-value next assertions
+
+1. TST-1 — `SecurityHeadersStage` response-header assertions + a deployment-activation IT row.
+2. TST-2 — G6/G7 1024/1025 boundary tests for parameter values and paths.
+3. TST-3 — the runtime refused-JWKS-egress negative through a running gateway.

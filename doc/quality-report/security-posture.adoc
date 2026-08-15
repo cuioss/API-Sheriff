@@ -1,0 +1,344 @@
+= Security Posture Report — Claimed vs. Implemented
+:toc: macro
+:toclevels: 2
+
+Cross-cutting audit verifying that the security posture *claimed* by the documentation
+(threat model, architecture, configuration, ADRs, user docs, FAPI status) matches the
+*implemented* one, end-to-end. A configuration key that parses but never reaches an
+enforcement point counts as not implemented, per the project's own rule. See
+link:README.adoc[the index] for conventions.
+
+toc::[]
+
+== Verdict
+
+*"Fail closed" is real in this codebase, and unusually consistently so.* Every enforcement
+point traced actually throws or refuses rather than defaulting open. No log-and-continue path
+in security-decision code, no permissive `orElse`, no TODO markers in security code; the
+sensitive-data sweep across all 104 production logger calls came back clean (dispositions,
+lengths, and modes only, with `toString()` redaction on secret-bearing records). Several
+threat-model statuses actually *understate* what is implemented (SEC-6). The false-security
+zones are narrow but real and are listed below; the residual risk lives in the doc-admitted
+GAP rows, not in hidden contradictions.
+
+== Claims-verification table
+
+Verdicts: FULLY = fully implemented; PARTIAL = implemented with a described gap;
+CONFIRMED = doc claim of a limitation confirmed accurate.
+
+[cols="4,1,4"]
+|===
+|Claim (source) |Verdict |Evidence / gap
+
+|Deny-by-default routing: no route → 404, never forwarded (architecture, configuration)
+|FULLY
+|`pipeline/RouteSelectionStage.java:60-72` throws `NO_ROUTE_MATCHED`; no fallback route exists
+
+|Auth posture always written out, never inferred; unresolvable auth fails boot (ADR-0007)
+|FULLY
+|`config/RouteTableBuilder.java:243-258`; `ConfigValidator.java:736-747`; no default `Require`
+
+|Anchor auth floor cannot be weakened to `none` (ADR-0007/0013)
+|FULLY
+|`ConfigValidator.java:754-772`
+
+|Fail-closed boot: invalid config never serves; violations aggregated
+|FULLY
+|`ConfigValidator` single-pass collection; `TopologyResolver.java:190-196`; `ConfigProducer.java:236-237`
+
+|GW-01: one canonical path consumed by route/verb/auth/allowed_paths/upstream; `%2f`/`%5c`/`;` rejected (ADR-0026)
+|FULLY (doc says PARTIAL)
+|`pipeline/CanonicalPathGuard.java:53-68` and consumers; threat-model status stale in the conservative direction (SEC-6)
+
+|GW-02: CL+TE, duplicate CL, body-on-bodyless rejected 400; GET-body opt-in Content-Length-leg-only, default false (ADR-0029)
+|FULLY (structure); test corpus a doc-admitted GAP
+|`pipeline/FramingGate.java:93-148`; default false via `SecurityDefaultsConfig`; see SEC-2
+
+|GW-03/ADR-0037: never-forward set under every mode; `Cookie` absolute; `Authorization` positive-list-only; separator folding
+|FULLY
+|`http/ConnectionHeaders.java:157-216`; `forward/ForwardPolicyStage.java:290-307`
+
+|GW-04: TCP-peer gate before forwarding headers honored; regenerate never append; empty trust set trusts no one; trust-all CIDR (incl. split ranges) boot-refused (ADR-0003)
+|FULLY
+|`forward/TcpPeerGate.java:60-76`; `ForwardPolicyStage.java:376-389`; `ConfigValidator.java:1040-1100`
+
+|GW-05: fixed boot-resolved upstream; scheme allowlist; redirects never followed; bounded asset fetch
+|FULLY
+|`TopologyResolver.java:190-206`; `UpstreamAssetSource.java:257` (`Redirect.NEVER`); proxy path has no `setFollowRedirects` anywhere (rests on Vert.x default — 3xx relayed, not followed)
+
+|JWKS `tls_profile`: unbound / anchor-free / trust-all each refuse boot, trust-all first
+|FULLY
+|`auth/JwksTrustProfileResolver.java:120-156` — exact documented order
+
+|`allowed_egress_hosts` absent → secure default (GW-05/BFF-07)
+|FULLY (wiring)
+|`TokenValidatorProducer` per-issuer list; enforcement lives in the token-sheriff dependency (not re-audited here)
+
+|GW-06: missing/malformed SNI fails closed to terminated-strict (ADR-0017)
+|PARTIAL (doc-admitted)
+|`tls/SniFrontListener.java`; `PassthroughHostGuardStage` Host-vs-SNI smuggle 404; behaviour tests unpinned per threat model
+
+|GW-07/ADR-0023: `max_body_bytes` streaming counter; mid-stream breach → 413; declared cap vs transport floor boot-checked
+|FULLY
+|`edge/DispatchStage.java:52-56,253,330`; `ThoroughChecksStage.java:44-46`; `ConfigProducer.java:236`
+
+|GW-07: admission cap + WS relay sub-budget (ADR-0020); YAML bombs rejected pre-bind (ADR-0010)
+|FULLY
+|`EdgeHardeningConfig` (2048/512); `ConfigLoader.java:360-368`
+
+|GW-09/ADR-0015: WS Origin allowlist fail-closed on bearer routes; origin checked before upstream dial
+|FULLY for bearer; session gap real and doc-admitted
+|`OriginValidationStage.java:67-81`; `ConfigValidator.java:1364`; see SEC-1
+
+|GW-10: no admin API, no scripting, no shipped credential; management on separate port
+|FULLY
+|No mutation endpoint exists; `application.properties:15-63`
+
+|GW-11: config paths confined; secrets rule on pre-substitution scalar; asset canonicalize-then-confine
+|FULLY
+|`EnvSecretResolver.java:98-100`; `ConfigLoader.java:152,228-231`; `PathConfinement` shared by both sources
+
+|GW-12: rejections are problem+json category-only; secrets redacted in `toString()`
+|FULLY
+|`GatewayEdgeRoute.java:1102-1116`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500
+
+|Inbound-filter floor non-skippable; omitted profile → `strict`; `minimal` refused on authenticated/BFF routes (ADR-0024)
+|FULLY
+|`BasicChecksStage` pre-route floor; `SecurityProfile.DEFAULT_PROFILE = STRICT`; `ConfigValidator.java:860-902`
+
+|ADR-0019: reserved BFF paths bypass only the url-parameter value pipeline, post-floor
+|FULLY
+|`GatewayEdgeRoute.java:704-715` (reserved dispatch after basicChecks/canonicalGuard/framingGate)
+
+|BFF-02: pending record single-use; `__Host-` binding cookie; constant-time state compare
+|FULLY (server mode)
+|`PendingAuthorizationStore.java:98-106`; `CallbackEndpoint.java:182-198,277-282`; cookie-mode TTL replay window is the documented accepted risk
+
+|BFF-13: callback parses the raw query, duplicates → 400
+|FULLY
+|`CallbackEndpoint.java:164-172`; fed `ctx.request().query()` raw
+
+|BFF-09: logout token iss/aud/iat/`events`-object/`sub|sid`, rejects `nonce`; cookie-mode back-channel → 404
+|FULLY
+|`LogoutTokenValidator.java:96-182`; `BackchannelLogoutEndpoint.java:113-117`
+
+|BFF-10/12: sealed cookie AES-256-GCM, fresh 96-bit nonce, AAD binding, single key, ~4KB budget, tamper → no session never 500
+|FULLY
+|`SealedSessionCookieCodec.java:110-272` — every listed property present
+
+|Session cookies `__Host-` + HttpOnly + Secure + SameSite=Lax; session id regenerated at login
+|FULLY (defaults)
+|`SessionCookieCodec.java:43`; `SealedSessionCookieCodec.java:283-299`; `CallbackEndpoint.java:220`; operator may rename off `__Host-` (code-correctness BFF-6)
+
+|BFF-11: fixed CSRF defence, no disable knob; Origin exact else `Sec-Fetch-Site: same-origin` else 403
+|FULLY
+|`CsrfDefence.java:102-125`; enforced for every `require: session` route; does not cover WS handshakes (SEC-1)
+
+|Session store bounded; full store refuses logins after one sweep; refresh failure destroys session
+|FULLY
+|`InMemorySessionStore.java:76-102`; `TokenRefreshCoordinator.java:172-180`
+
+|Return URL same-origin validated; post-logout state cookie single-use
+|FULLY
+|`LoginFlow.java:99-102`; `LoginInitiationEndpoint.java:112-117`; `RpInitiatedLogout.java:59,142-148`
+
+|`response_mode=query` tradeoff accepted, bounded by PKCE-S256 + binding cookie + state
+|FULLY as documented
+|`QueryResponseModeAuthorizationRequestBuilder`; deliberate, honestly documented risk acceptance
+
+|Secrets never in logs; rejections log dispositions only
+|FULLY
+|Sweep of all 104 `LOGGER.*` calls in main: dispositions/lengths/modes only
+
+|Rate limiting reserved-only, never produces 429 (README, configuration)
+|CONFIRMED
+|No non-model reference to `rateLimit` in runtime code; honest disclosure, still a parse-but-not-act key (SEC-5)
+
+|Management: one port, HTTPS default, no plain listener alongside
+|FULLY
+|`application.properties:36-85`; `Dockerfile.native:34` exposes only 8443/9000
+
+|FAPI 2.0: NOT conformant (PAR, sender-constraining, client auth unmet)
+|CONFIRMED accurate
+|`BffRuntimeProducer` (null senderConstraint, `ClientSecretBasicAuth`); no `ParClient` use
+
+|GW-02 smuggling corpus, GW-08 h2 abuse bounds, GW-06 behaviour tests: GAP/PARTIAL
+|CONFIRMED as claimed
+|Gaps admitted, not hidden; h2c non-forward covered structurally
+
+|Compose-sample credentials are placeholders with warnings
+|CONFIRMED
+|`docker-compose.yml:42-44`; `sample-realm.json:33` (`CHANGE-ME-BEFORE-PRODUCTION`)
+|===
+
+== Findings
+
+=== SEC-1 — Session-WebSocket routes have neither Origin gating nor CSRF coverage
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: claim-gap (doc-admitted)
+|Location |`pipeline/OriginValidationStage.java:71-73`; `ConfigValidator.java:1364`; `bff/csrf/CsrfDefence.java:104-106`
+|===
+
+A `require: session` WebSocket route with no `allowed_origins` gets no origin gating at all:
+the boot rule forcing a non-empty allowlist applies only to `require: bearer` WS routes, and
+the CSRF defence exempts GET — which is what a WS handshake is. A session cookie rides
+ambiently on a cross-site WS upgrade → CSWSH, the exact GW-09 class the threat model cites.
+Scenario: attacker page opens `wss://gateway/ws-route`; the browser attaches
+`__Host-sheriff-session`; the relay is established authenticated as the victim. The threat
+model records this as a GAP, so it is not an overclaim — but it is the largest genuinely open
+hole for a BFF deployment that adds a session WS route. Same finding independently reached by
+the config review (link:code-correctness.adoc[CFG-4]).
+
+=== SEC-2 — `Connection`-strip rejection list narrower than the folded header sets
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: claim-gap
+|Location |`pipeline/FramingGate.java:59-62,140-148`
+|===
+
+The `Connection`-strip rejection list omits `x-forwarded-prefix` and the vendor aliases, and
+does not separator-fold tokens — `Connection: X_Forwarded_For` passes while
+`Connection: X-Forwarded-For` is rejected. Impact bounded: the gateway never honors
+Connection-driven stripping and regenerates forwarding headers into a fresh outbound map; the
+check is defence-in-depth for other hops. Still asymmetric with the folded-equivalence-class
+rigor claimed for ADR-0037. Related: link:code-correctness.adoc[DP-1] (nominated-header
+stripping missing entirely).
+
+=== SEC-3 — `hsts: {}` emits `max-age=0`, actively clearing HSTS
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: insecure-default
+|Location |`pipeline/SecurityHeadersStage.java:78-82`; `schema/gateway.schema.json` (`hsts` has no required `max_age`)
+|===
+
+An operator writing `security_headers: { hsts: {} }` gets `Strict-Transport-Security:
+max-age=0`, which actively clears HSTS state in browsers — worse than omitting the header. A
+boot refusal or a non-zero default would match the project's fail-loud philosophy.
+
+=== SEC-4 — With `security_headers` omitted, no security headers are emitted
+
+[cols="1,4"]
+|===
+|Severity |INFO/LOW — Confidence HIGH — Category: insecure-default (doc wording)
+|Location |`pipeline/SecurityHeadersStage.java:65-68`; `doc/configuration.adoc:1690`
+|===
+
+With the block omitted, no HSTS/nosniff/frame-deny headers are emitted at all, yet
+configuration.adoc opens the section with "applied to every response the gateway returns" and
+only the CORS row states its default — a reader can plausibly assume the headers are on by
+default. Doc wording, not a code bug. Test coverage for this stage is also the weakest in the
+corpus (link:test-quality.adoc[TST-1]).
+
+=== SEC-5 — `rate_limit` parses and is dead (disclosed)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: claim-gap (fully documented)
+|Location |`config/model/RateLimitConfig.java`
+|===
+
+By the project's own CLAUDE.md rule this is the canonical "key that parses but does not act" —
+but README and configuration.adoc state it plainly, so it is disclosure, not overclaim. See
+link:code-correctness.adoc[DP-10] for the boot-WARN recommendation.
+
+=== SEC-6 — Threat-model status lags the code in the conservative direction
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: doc-overclaim (inverse)
+|Location |`doc/security-threat-model.adoc` (GW-01, GW-02 status text)
+|===
+
+GW-01 status says the single-canonical-path invariant is "not stated explicitly anywhere, nor
+is the divergence tested", yet `CanonicalPathGuard` exists and every consumer demonstrably
+consumes `canonicalPath()`. GW-02 is marked GAP while `FramingGate` implements the rejections.
+Stale in the safe direction; worth refreshing so the release-gate matrix stays truthful.
+
+=== SEC-7 — Revocation failure during logout is DEBUG-only
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: fail-open (accepted direction)
+|Location |`bff/logout/RpInitiatedLogout.java:121-124`
+|===
+
+Token-revocation failure during logout logs at DEBUG and proceeds with local logout. The local
+session is destroyed (fail-safe locally), but IdP-side tokens stay live until natural expiry
+and an operator cannot observe systematic revocation failures. Consider WARN + counter.
+
+=== SEC-8 — Cookie mode silently generates an ephemeral boot key (documented)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: insecure-default (documented)
+|Location |`bff/cookie/CookieKeyMaterial.java:91-97`
+|===
+
+Cookie mode with no `encryption_key` generates an ephemeral key (`Mode.GENERATED`,
+INFO-logged). Sessions die on restart and cannot span replicas; a multi-replica operator who
+misses the caveat gets random logouts, not a vulnerability. Documented in
+`doc/user/bff-cookie.adoc`.
+
+=== SEC-9 — Sample credentials (documented with warnings)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: insecure-default (sample)
+|Location |`deployment/compose-sample/docker-compose.yml:43-44`; `sample-realm.json:33`
+|===
+
+Keycloak `admin`/`admin` and client secret `CHANGE-ME-BEFORE-PRODUCTION`, both with explicit
+in-file and in-doc warnings. Acceptable for a sample; listed for completeness. See also
+link:build-and-peripherals.adoc[PER-3/PER-13] for the integration-stack port exposure and the
+`start-dev` IdP.
+
+=== SEC-10 — Upstream response header values are name-filtered, not character-revalidated
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: claim-gap (doc-honest)
+|Location |`edge/ResponseStage.java:68`; `asset/AssetResponseEnvelope.java:223`
+|===
+
+Only name-filtering via `RESPONSE_STRIP`; a compromised configured upstream could attempt
+response splitting toward clients. The threat model states this explicitly ("the honest
+statement of the control's reach"); bounded to inside-trust-boundary sources, as documented.
+
+=== SEC-11 — Only the first value of multi-valued client headers crosses upstream
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: claim-gap (undocumented semantics)
+|Location |`forward/ForwardPolicyStage.java:255-264`
+|===
+
+Fail-safe direction (drops rather than smuggles), but silently changes semantics for
+legitimately repeated headers; nowhere documented. Same code as
+link:code-correctness.adoc[DP-8].
+
+=== SEC-12 — `FramingGate` "re-runnable" claim describes a capability, not a call site
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: claim-gap (javadoc)
+|Location |`pipeline/FramingGate.java` (class Javadoc) vs `edge/GatewayEdgeRoute.java:707`
+|===
+
+Described as "re-runnable after any header mutation" with exactly one call site. Harmless
+today — the outbound header map is built fresh and framing names are in `REQUEST_STRIP`.
+
+== Posture strengths (verified)
+
+* Configuration validator: trust-all CIDR union math (split ranges included), minimal-profile
+  refusal, secrets-on-raw-scalar rule, body-cap-vs-transport-floor check, aggregated boot
+  errors.
+* ADR-0037 header-set machinery with separator folding, both directions.
+* AES-GCM sealed cookie with AAD binding and deterministic key-id gating.
+* Callback flow: raw-query HPP parse, binding cookie plus constant-time state, store-invariant
+  single-use.
+* Documentation honesty: Known Limitations, the FAPI non-conformance verdict, the
+  response-direction caveat, and the accepted-risk entries all match the code.
