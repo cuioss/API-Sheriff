@@ -22,8 +22,13 @@ reading its slice in full:
 7. Peripherals — demo-client, benchmarks, scripts, Docker/compose, CI, POMs (findings `PER-*`)
 
 Every finding was then re-verified end-to-end by an independent adversarial verification pass
-started with no prior context; per-finding verification status is recorded in each report.
-This review changed no production code, tests, or documentation outside `doc/quality-report/`.
+started with no prior context and instructed to refute each claim from the code. Outcome: of
+the 98 numbered findings, *93 were confirmed as written, 5 were confirmed with detail
+adjustments (now corrected in place: CFG-15, BFF-1, TST-1, TST-6, PER-8), and none were
+refuted*. Four counting inaccuracies the verifier found in the "verified positives" sections
+(harden-runner coverage, workflow count, `@since` count, log-record count) are likewise
+corrected in place. This review changed no production code, tests, or documentation outside
+`doc/quality-report/`.
 
 == Reports
 
@@ -73,7 +78,9 @@ The findings that matter most, in priority order:
    forces eager assembly and throws when the block is absent, contradicting the schema, the
    config validator, `AuthenticationStage` Javadoc, and the readiness check — a validated-correct
    public-only or BFF-only gateway cannot start. Fails closed, but a hard functional
-   contradiction between four in-repo contracts.
+   contradiction between four in-repo contracts. Note: `GatewayReadinessCheck.java:164-192`
+   documents the eager-boot coupling as a deliberate fail-closed decision, so the producer side
+   is the recorded intent and the other three contracts are the stale ones.
 2. *Stale self-description in the flagship architecture doc* (DOC-1, HIGH):
    `architecture.adoc`'s "Implementation Deviations" still claims data-plane structured logging
    is unimplemented; it shipped long ago across at least 10 classes.

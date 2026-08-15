@@ -38,7 +38,8 @@ classes (`edge/GatewayEdgeRoute.java:317,796`, `edge/UpstreamFailureMapper.java:
 `edge/WebSocketRelayStage.java`, `pipeline/OriginValidationStage.java`,
 `tls/SniFrontListener.java`, `tls/PassthroughRelay.java`, `asset/DirectoryAssetSource.java`,
 `bff/cookie/*`, `bff/refresh/TokenRefreshCoordinator.java`), and `LogMessages.adoc` catalogues
-all three gateway catalogues (34 gateway records), not only Config. The bullet also
+all three gateway catalogues (33 gateway records: 13 ApiSheriff + 12 Bff + 8 Config), not only
+Config. The bullet also
 misattributes the "auth-weakened / route-load" records to `ApiSheriffLogMessages` (they live in
 `ConfigLogMessages`, IDs 3/101). Drift in the flagship architecture doc that a reader would use
 to judge observability maturity.
@@ -237,7 +238,8 @@ layer's frozen historical statements sit next to living docs with only plan 01 c
 == Javadoc compliance
 
 All 27 packages containing classes have substantive `package-info.java` (21–60+ lines, with
-class-by-class stage maps). `@since` present in 163/163 files. A heuristic scan found 0
+class-by-class stage maps). `@since` present in 161/163 files — all 136 class files carry it;
+`gateway/package-info.java` and `quarkus/package-info.java` do not. A heuristic scan found 0
 undocumented public/protected methods (excluding `@Override`) across 358 method declarations;
 manual reads (ReservedPathRegistry, GatewayConfig, EdgeHardeningConfig, CsrfDefence,
 ConnectionHeaders, AssetResponseEnvelope, RpInitiatedLogout) found Javadoc consistent with

@@ -35,8 +35,12 @@ is accurate rather than optimistic.
 |===
 
 The stage's primary documented job — emitting `Strict-Transport-Security`,
-`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` — has zero assertions anywhere in
-the corpus; the test covers only the CORS half (4 tests). Also untested:
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` — has zero assertions on the
+stage's *emission from configuration* anywhere in the corpus; the test covers only the CORS
+half (4 tests). (The nosniff/frame-deny literals do appear in `WebSocketRelayStageTest:246-249`
+and `GrpcStatusMapperTest:176,183`, but only as fixture-supplied stage-0 header maps proving
+relay paths *carry* them — never as assertions that the stage produces them;
+`Strict-Transport-Security` has zero test hits of any kind.) Also untested:
 `allowCredentials=true` emitting `Access-Control-Allow-Credentials`; a disallowed-origin
 preflight *not* short-circuiting; null-config no-op; the `Allow-Methods/Headers` values. The
 CORS origin match is case-sensitive `contains()` (line 122) while `OriginValidationStage` and
@@ -106,11 +110,15 @@ would turn nothing red.
 [cols="1,4"]
 |===
 |Severity |LOW — Confidence HIGH — Category: missing-negative (IT wiring; project-acknowledged G10)
-|Location |`BffUserInfoIT` (positive projection only); unit negative exists at `ClaimAllowlistFilterTest.java:113`
+|Location |`BffUserInfoIT`; unit negative exists at `ClaimAllowlistFilterTest.java:113`
 |===
 
 The unit level has both the "claim outside allowlist silently dropped" negative and the "empty
-allowlist discloses nothing" secure default; only the IT wiring lacks the negative leg.
+allowlist discloses nothing" secure default. At IT level, `BffUserInfoIT.java:63-64` does
+assert `assertNull(response.path("claims.client_secret"), …)` — but `client_secret` is not a
+claim any IdP puts in an ID token, so the assertion passes even with the allowlist deleted: a
+vacuous negative that cannot detect removal of the filter. The substantive gap (no IT negative
+for a *present-but-disallowed* claim) stands.
 
 === TST-7 — Generator adoption below the stated standard (no misuse found)
 
@@ -122,7 +130,7 @@ allowlist discloses nothing" secure default; only the IT wiring lacks the negati
 
 Against CLAUDE.md's "@GeneratorsSource preferred", it appears in only 4 files (10 occurrences:
 `RouteTableBuilderTest`, `ConfigValidatorTest`, `ConfigValidatorRouteDisjointnessTest`,
-`JsonWriterTest`). Where used, it is used well: `@EnableGeneratorController` present in all 14
+`JsonWriterTest`). Where used, it is used well: `@EnableGeneratorController` present in 13
 generator-touching files (seed reproducibility), and `RouteTableBuilderTest:1020-1102` proves
 prefix-ordering/disjointness laws generically over generated segments. Auth tests use the CUI
 `TestTokenGenerators` (real generated tokens over offline JWKS). One deviation:

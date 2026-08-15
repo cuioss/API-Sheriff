@@ -46,6 +46,13 @@ A public-only or pure session/BFF gateway (which needs `oidc`, not `token_valida
 validated as correct and then aborted by the producer. The failure direction is closed (denial,
 not bypass), but it is a hard functional contradiction between four in-repo contracts.
 
+Adversarial-verification note: `GatewayReadinessCheck.java:164-192` carries a comment
+documenting the `not-applicable` branch as "NOT REACHED IN THE SHIPPED EAGER-BOOT TOPOLOGY, AND
+DELIBERATELY RETAINED … the eager-boot coupling it depends on is a fail-CLOSED security
+property". One side of the contradiction is therefore a recorded decision, not drift: the
+producer's eager-boot behavior is intended, and the schema, `ConfigValidator`, and
+`AuthenticationStage` Javadoc are the stale contracts to reconcile.
+
 === CFG-2 — Duplicate YAML keys silently last-win
 
 [cols="1,4"]
@@ -243,10 +250,12 @@ asset content-type rules, edge hardening).
 |Location |`asset/package-info.java`
 |===
 
-The `asset` package is the only in-scope package without `@NullMarked`, while its code uses
-jspecify annotations (`Flow.@Nullable Subscription` in `UpstreamAssetSource.java:304`) and every
-sibling package (auth, events, config.*) is NullMarked. Nullness defaults silently differ
-across the slice.
+Within the reviewed slice (config/asset/auth/events), `asset` is the only package without
+`@NullMarked`, while its code uses jspecify annotations (`Flow.@Nullable Subscription` in
+`UpstreamAssetSource.java:304`) and every sibling (auth, events, config.*) is NullMarked.
+Repo-wide, `quarkus/package-info.java` and the root `gateway/package-info.java` also lack it
+(24 of 27 package-infos carry the annotation). Nullness defaults silently differ across the
+codebase.
 
 === CFG-16 — `GatewayEventCounter` Javadoc overstates snapshot/reset semantics
 
@@ -353,9 +362,12 @@ boot-refused).
 path; the `SilentSatisfaction` seam is hardwired to `Optional.empty()`, and
 `stepUpCoordinator()` is referenced only by tests. An upstream `401
 insufficient_user_authentication` on a `require: session` route is relayed to the browser
-unhandled; no step-up re-drive ever happens in production. The class Javadoc's claim that "the
-upstream-challenge edge integration is exercised by the Keycloak integration tests" describes
-edge integration that does not exist in `main/java`.
+unhandled; no step-up re-drive ever happens in production. The wiring comment in
+`BffRuntimeProducer.java:286-287` claims "the upstream-challenge edge integration is exercised
+by the Keycloak integration tests" — edge integration that does not exist in `main/java`. (The
+coordinator's own Javadoc, `StepUpCoordinator.java:66-67`, is honest: "It is exercised only
+when `session.step_up.honor_upstream_challenge` is enabled; the enablement gate is the
+runtime's concern.")
 
 === BFF-2 — Catalogued session-lifecycle and CSRF LogRecords are never emitted
 
@@ -775,6 +787,19 @@ attack corpus in `BasicChecksStageTest`, and the TOCTOU property holds structura
 matching, `allowed_paths`, and the forwarded upstream path all consume the same
 `canonicalPath`) — recorded as the one place where a cui-http regression would not be caught by
 gateway-local code.
+
+=== DP-17 — `renderProblem` builds JSON by string concatenation (closed inputs, unpinned)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: correctness (found during adversarial verification)
+|Location |`edge/GatewayEdgeRoute.java:1116`
+|===
+
+The RFC 9457 problem body is assembled by string concatenation from enum-derived
+`type`/`title` values. Safe today because the inputs come from a closed enum, but it is an
+injection-shaped seam with no test pinning that closure — a future dynamic value flowing into
+the template would need JSON escaping that does not exist.
 
 === DP verified positives
 

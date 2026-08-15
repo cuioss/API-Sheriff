@@ -126,8 +126,8 @@ scripts eliminated by derivation.
 |===
 
 The closing banner hardcodes `Keycloak: https://localhost:1443/auth` while the script's own
-header rule derives every probe/banner target from the Compose model — and the Keycloak
-management row *is* derived three lines earlier.
+header rule derives every probe/banner target from the Compose model — and the derived
+Keycloak health row sits a few lines below it (line 375).
 
 === PER-9 — `@claude` workflow tool-allowlist breadth
 
@@ -210,12 +210,15 @@ Keycloak runs `start-dev --import-realm`; an operator copying the stack shape ma
   duplicate/conflicting dependency declarations; the two classifier deps bypassing BOM
   management are explicitly version-pinned with comments; `.env` image pin `0.1.1` matches
   `project.yml current-version`.
-* *CI workflows (PER-16)*: every `uses:` pinned to a full commit SHA with version comment (12
-  workflows); dependabot lanes for actions/maven/docker; least-privilege `permissions:` blocks
-  with commented, scoped escalations; no `${{ github.event.* }}` interpolation inside any
-  `run:` body (env-indirection enforced by comments at each site); `harden-runner` leads every
-  job; the release lane's Trivy gate (HIGH+CRITICAL before `docker login`), digest-addressed
-  push/smoke/sign/verify chain, and cosign identity anchoring are unusually rigorous.
+* *CI workflows (PER-16)*: every `uses:` pinned to a full commit SHA (10 workflow files;
+  comments carry the version, except the claude action's `# beta`); dependabot lanes for
+  actions/maven/docker; least-privilege `permissions:` blocks with commented, scoped
+  escalations; no `${{ github.event.* }}` interpolation inside any `run:` body
+  (env-indirection enforced by comments at each site); `harden-runner` leads the caller-local
+  jobs with one exception — `claude.yml`'s `claude` job runs without it (other jobs lacking it
+  delegate to SHA-pinned org reusable workflows); the release lane's Trivy gate (HIGH+CRITICAL
+  before `docker login`), digest-addressed push/smoke/sign/verify chain, and cosign identity
+  anchoring are unusually rigorous.
 * *application.properties (PER-17)*: no insecure defaults found — HTTP 8080
   `insecure-requests=redirect`; management HTTPS-by-default with loudly-failing plain-HTTP
   opt-out; file logging off by default (former root-path hazard removed and documented); log
