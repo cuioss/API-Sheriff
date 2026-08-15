@@ -23,12 +23,15 @@ reading its slice in full:
 
 Every finding was then re-verified end-to-end by an independent adversarial verification pass
 started with no prior context and instructed to refute each claim from the code. Outcome: of
-the 98 numbered findings, *93 were confirmed as written, 5 were confirmed with detail
+the 98 findings drafted, *93 were confirmed as written, 5 were confirmed with detail
 adjustments (now corrected in place: CFG-15, BFF-1, TST-1, TST-6, PER-8), and none were
 refuted*. Four counting inaccuracies the verifier found in the "verified positives" sections
 (harden-runner coverage, workflow count, `@since` count, log-record count) are likewise
-corrected in place. This review changed no production code, tests, or documentation outside
-`doc/quality-report/`.
+corrected in place, and one additional observation the verifier surfaced was added afterwards
+(DP-17), bringing the published inventory to *99 numbered findings*. Four of those are
+cross-listed duplicates reported independently by two passes (SEC-1 = CFG-4, SEC-5 = DP-10,
+SEC-11 = DP-8, PER-1 = DOC-2), so the deduplicated defect count is 95. This review changed no
+production code, tests, or documentation outside `doc/quality-report/`.
 
 === Currency
 
@@ -75,11 +78,13 @@ review found *no critical finding, no exploitable authentication or routing bypa
 fail-open security path, no crypto misuse, and no secret leakage*. The claimed fail-closed
 posture is real at essentially every enforcement point traced (deny-by-default routing, boot
 refusal on ambiguous auth or trust configuration, bounded stores, tamper-rejecting sealed
-cookies, clean sensitive-data log sweep). Documentation accuracy is exemplary — zero broken
-links across 751 cross-references, `LogMessages.adoc` in perfect two-way sync with the code,
-configuration docs matching the JSON schemas field-for-field — and the test corpus is
-substantive, with matched positive/negative controls and a self-auditing doctrine whose claims
-check out against HEAD.
+cookies, clean sensitive-data log sweep). Documentation splits into two layers with different
+accuracy: the *checkable reference layer* is exemplary — zero broken links across 751
+cross-references, `LogMessages.adoc` in perfect two-way sync with the code, configuration docs
+matching the JSON schemas field-for-field — while the *self-descriptive/status layer* carries
+real staleness defects (DOC-1 HIGH, DOC-2 through DOC-8). The test corpus is substantive, with
+matched positive/negative controls and a self-auditing doctrine whose claims check out against
+HEAD.
 
 The findings that matter most, in priority order:
 
@@ -122,8 +127,10 @@ The findings that matter most, in priority order:
     Keycloak console and unauthenticated Toxiproxy control API published on `0.0.0.0`, where the
     sibling compose-sample deliberately binds the same class of ports to loopback.
 
-The remaining ~45 findings are LOW/INFO: attribution and normalization inconsistencies, stale
-point-in-time comments, ADR status hygiene (20 of 37 still "Proposed" while shipped), Javadoc
-falling short of the project's thread-safety-note/usage-example standard, generator
-under-adoption relative to the stated preference, and a handful of accepted-risk items already
-documented by the project itself.
+Of the 99 numbered findings, 2 are HIGH, 23 MEDIUM, and 74 LOW/INFO (counting the four
+cross-listed duplicates once each: 95 distinct — 2 HIGH, 21 MEDIUM, 72 LOW/INFO). The
+LOW/INFO tail covers attribution and normalization inconsistencies, stale point-in-time
+comments, ADR status hygiene (20 of 37 still "Proposed" while shipped), Javadoc falling short
+of the project's thread-safety-note/usage-example standard, generator under-adoption relative
+to the stated preference, and a handful of accepted-risk items already documented by the
+project itself.

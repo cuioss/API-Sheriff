@@ -13,8 +13,10 @@ toc::[]
 == Summary
 
 No CRITICAL finding. One HIGH finding (CFG-1). No exploitable authentication or routing
-bypass, no fail-open error path, no resource-exhaustion path reachable without configuration
-opt-in, and no crypto misuse were found. The dominant defect classes are: internal contract
+bypass, no fail-open error path, and no crypto misuse were found. One resource-exhaustion
+hazard exists in the default configuration — DP-6, where fault-tolerance timeouts against a
+slow upstream strand pooled connections; the other resource-bound finding (DP-4) requires the
+`tls.passthrough_sni` configuration opt-in. The dominant defect classes are: internal contract
 contradictions (CFG-1, DP-2, DP-7, BFF-1), silent config-parsing hazards (CFG-2, CFG-3), and
 consistency drift between validation-time and runtime semantics (CFG-9, DP-13).
 
