@@ -1,0 +1,231 @@
+= Build and Peripherals Report
+:toc: macro
+:toclevels: 2
+
+Review of the peripheral surface: `demo-client/`, `benchmarks/`, the non-test-Java parts of
+`integration-tests/` (scripts, nginx, compose, Dockerfiles), `deployment/compose-sample/`,
+build and CI (POMs, workflows, Dockerfiles, `application.properties`), and repo hygiene. See
+link:README.adoc[the index] for conventions.
+
+toc::[]
+
+== Verdict
+
+*The peripheral surface is in unusually strong shape.* The CI workflows are a near-model
+implementation of supply-chain hygiene; the compose/docker material applies non-root,
+cap-drop, read-only, tmpfs hardening consistently to every gateway container; the demo client
+is XSS-safe by construction. The most consequential defects are documentation drift (PER-1/2)
+and the integration stack's all-interfaces port exposure (PER-3). All credentials found are
+unambiguous, clearly labeled test/sample fixtures.
+
+== Findings
+
+=== PER-1 — CLAUDE.md/AGENTS.md pin Quarkus 3.37.4; the build runs 3.38.2
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: doc-mismatch
+|Location |`CLAUDE.md:7`, `AGENTS.md:8` vs `pom.xml:59`
+|===
+
+An agent or developer reasoning about BOM alignment, CVE exposure, or upgrade scope from
+CLAUDE.md works against the wrong platform version. Same as
+link:documentation.adoc[DOC-2].
+
+=== PER-2 — Root-POM BOM-ordering comment cites a verification at superseded versions
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: doc-mismatch
+|Location |`pom.xml:89-96`
+|===
+
+The load-bearing comment justifying BOM import ordering says "Verified against the resolved
+dependency graph at token-sheriff 0.9.3 / Quarkus 3.37.4 …"; the properties are now 0.9.4 /
+3.38.2 (lines 59-60). The ordering is probably still correct, but the "verified" claim is
+stale.
+
+=== PER-3 — Integration stack publishes admin surfaces on all host interfaces
+
+[cols="1,4"]
+|===
+|Severity |MEDIUM — Confidence HIGH — Category: docker
+|Location |`integration-tests/docker-compose.yml:26-27,55,125-126,929-930`
+|===
+
+Published on `0.0.0.0`: Keycloak admin console `1443` with bootstrap `admin/admin`,
+Toxiproxy's unauthenticated admin/control API `8474` (create/modify proxies at runtime),
+Prometheus `9090`, go-httpbin `18080`, plus 7 gateway management ports. The repo itself
+articulates why this is dangerous — `deployment/compose-sample/docker-compose.yml:54-66` binds
+the same class of ports to `127.0.0.1` precisely because "publishing it on 0.0.0.0 would hand
+full control of the stack's trust root to anything that can reach the host" — but the IT stack
+does not apply the loopback binding. On a LAN-reachable developer or shared CI host this
+exposes an admin/admin IdP and a remote traffic-manipulation API. Mitigating: ephemeral test
+stack, throwaway realms.
+
+=== PER-4 — Committed test private-key material (deliberate fixture)
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: secret (inventory)
+|Location |`integration-tests/src/main/docker/certificates/` (`localhost.key`, `*-truststore.p12`, `mtls-*.p12`)
+|===
+
+Deliberate, documented test-fixture material (passwords stated non-secrets; CN=localhost,
+valid 2026-03 → 2028-03). The compose-sample explicitly does the opposite (generates and
+gitignores). Residual risk is only copy-paste reuse. The `chmod 600` in the generate script is
+nominal — git does not preserve it, as the sample script itself observes.
+
+=== PER-5 — One checkout missing `persist-credentials: false`
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: ci
+|Location |`.github/workflows/benchmark.yml:104-112`
+|===
+
+The "Fetch Previous History" checkout of `cuioss/cuioss.github.io` omits
+`persist-credentials: false`, unlike every other read-only checkout in the repo (same file
+line 90 even carries the explaining comment). Token is `contents: read` only, so impact is
+small — but it breaks the repo's own stated invariant.
+
+=== PER-6 — Older script generation still on bare `set -e`
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: script
+|Location |`integration-tests/scripts/start-integration-container.sh:4`, `stop-integration-container.sh:4`, `build-native-if-needed.sh:2`, cert-generation scripts, `benchmarks/.../pre-benchmark-health-check.sh:11`
+|===
+
+Newer scripts standardize on `set -euo pipefail`; the older generation uses `set -e` only.
+Concrete exposure: unset-variable typos and mid-pipeline failures
+(`$COMPOSE_CMD config --format json | python3 …`) are not hard failures;
+`stop-integration-container.sh:48` reads `"$1"` unguarded (benign only because `-u` is
+absent). Quoting elsewhere is clean; no unsafe temp files (the IT temp keystore cleans only on
+the success path — same generation gap).
+
+=== PER-7 — Stale port-inventory comment in verify script
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: doc-mismatch
+|Location |`integration-tests/scripts/verify-invalid-config-fails.sh:47-49`
+|===
+
+Comment says "outside the 19000-19005 block … for the six gateway instances"; the compose file
+now publishes 19000-19006 for seven instances. `MGMT_PROBE_PORT=19009` is still
+collision-free — functionally harmless mirrored-list drift of exactly the kind the repo's other
+scripts eliminated by derivation.
+
+=== PER-8 — One hardcoded banner target survived the derivation refactor
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: script
+|Location |`integration-tests/scripts/start-integration-container.sh:369`
+|===
+
+The closing banner hardcodes `Keycloak: https://localhost:1443/auth` while the script's own
+header rule derives every probe/banner target from the Compose model — and the derived
+Keycloak health row sits a few lines below it (line 375).
+
+=== PER-9 — `@claude` workflow tool-allowlist breadth
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence MEDIUM — Category: ci
+|Location |`.github/workflows/claude.yml:58`
+|===
+
+`allowed_tools` grants `Bash(./mvnw*)`, `Bash(git*)`, `Bash(gh*)`, `Bash(find*)`,
+`Bash(java*)` to an LLM job triggerable by any `@claude` comment; the nine itemized `./mvnw`
+entries are redundant under the wildcard. Mitigations are real: SHA-pinned action,
+`persist-credentials: false` with rationale, read-only permissions. Residual: `gh*` is an
+authenticated write-capable CLI surface driven by attacker-authorable comment text.
+
+=== PER-10 — k6 load generators run as root (documented rationale)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: docker
+|Location |`integration-tests/docker-compose.yml:965`; `docker-compose.apisix.yml:141`
+|===
+
+`user: "0:0"` with in-file rationale (bind-mount writability, no published ports, ephemeral).
+All seven gateway instances, by contrast, are exemplary: distroless `USER nonroot`,
+`cap_drop: ALL`, `no-new-privileges`, `read_only` + sized tmpfs, resource limits.
+
+=== PER-11 — Digest-pinning inconsistent in the IT stack
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: docker
+|Location |`integration-tests/docker-compose.yml:53,118,137,928`
+|===
+
+Keycloak is digest-pinned; toxiproxy, go-httpbin, nginx, prometheus are tag-only. Where
+reproducibility is load-bearing the repo does pin by digest with explicit reasoning (benchmark
+fairness backend, apisix, k6, both production Dockerfiles) — drift, not policy absence.
+
+=== PER-12 — Dev/sample credential inventory (all clearly marked)
+
+[cols="1,4"]
+|===
+|Severity |INFO — Confidence HIGH — Category: secret (inventory; no action implied)
+|Location |repo-wide
+|===
+
+`admin/admin` Keycloak bootstrap (IT + sample, the latter with "SAMPLE CREDENTIALS. Change
+both"); `OIDC_CLIENT_SECRET=integration-secret` (IT); fixed AES test key with "never a
+production key" comment; `benchmark-secret`/`benchmark-password`;
+`integration-user`/`integration-password`; `localhost-trust`; sample realm secret literally
+`CHANGE-ME-BEFORE-PRODUCTION`. No real secret found anywhere; CI secrets referenced only via
+`${{ secrets.* }}` with explicitly narrowed mapping (pr-agent.yml refuses `secrets: inherit`
+with rationale).
+
+=== PER-13 — Sample IdP runs `start-dev` without a not-for-production callout
+
+[cols="1,4"]
+|===
+|Severity |LOW — Confidence HIGH — Category: docker
+|Location |`deployment/compose-sample/docker-compose.yml:35-40`
+|===
+
+The gateway side of the "production-shaped" sample genuinely is production-shaped, but
+Keycloak runs `start-dev --import-realm`; an operator copying the stack shape may carry
+`start-dev` forward. The credentials are called out as sample-only; the dev-mode IdP is not.
+
+== Verified positives
+
+* *demo-client (PER-14)*: no XSS sink exists — all rendering via `textContent`
+  (`spa/app.js:54-83`), no `innerHTML` anywhere, zero inline script/style (commented as
+  deliberate), login/logout are top-level navigations with `encodeURIComponent`-ed returnUrl.
+  ESLint runs `eslint-plugin-security` at `--max-warnings 0`; `npm ci` with integrity-pinned
+  committed lockfile; the POM documents why `npx` is banned (registry-fallback RCE). Docs match
+  implementation. TLS-verification bypasses confined to the self-signed test stack with in-file
+  rationale.
+* *Build claims (PER-15)*: CLAUDE.md's `failOnWarning` claim is real (`pom.xml:163-179`
+  reactor-wide); the CI matrix "25 + 26" is real (`.github/project.yml:10`); parent
+  `cui-java-parent:1.5.4` matches; all six POMs at `0.2.0-SNAPSHOT` consistently; no
+  duplicate/conflicting dependency declarations; the two classifier deps bypassing BOM
+  management are explicitly version-pinned with comments; `.env` image pin `0.1.1` matches
+  `project.yml current-version`.
+* *CI workflows (PER-16)*: every `uses:` pinned to a full commit SHA (10 workflow files;
+  comments carry the version, except the claude action's `# beta`); dependabot lanes for
+  actions/maven/docker; least-privilege `permissions:` blocks with commented, scoped
+  escalations; no `${{ github.event.* }}` interpolation inside any `run:` body
+  (env-indirection enforced by comments at each site); `harden-runner` leads the caller-local
+  jobs with one exception — `claude.yml`'s `claude` job runs without it (other jobs lacking it
+  delegate to SHA-pinned org reusable workflows); the release lane's Trivy gate (HIGH+CRITICAL
+  before `docker login`), digest-addressed push/smoke/sign/verify chain, and cosign identity
+  anchoring are unusually rigorous.
+* *application.properties (PER-17)*: no insecure defaults found — HTTP 8080
+  `insecure-requests=redirect`; management HTTPS-by-default with loudly-failing plain-HTTP
+  opt-out; file logging off by default (former root-path hazard removed and documented); log
+  level INFO; SecureRandom forced to runtime init in native. Both Dockerfiles digest-pin their
+  base and run non-root; the supply-chain scan job asserts the digest pin at CI time.
+* *Hygiene (PER-18)*: zero TODO/FIXME/HACK markers in code (the only hits are the instruction
+  files describing the OpenRewrite marker convention); clean working tree; `.gitignore` covers
+  targets/node_modules/.plan (with marshal.json exception); all `curl -k` /
+  `insecureSkipTLSVerify` sites confined to the self-signed test bundle, each with in-file
+  justification — no TLS verification disabled against any real endpoint.
