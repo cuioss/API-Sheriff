@@ -30,6 +30,15 @@ refuted*. Four counting inaccuracies the verifier found in the "verified positiv
 corrected in place. This review changed no production code, tests, or documentation outside
 `doc/quality-report/`.
 
+=== Currency
+
+This report is a *point-in-time snapshot at commit `b54eb12`*, not a living document. Findings
+are not updated as the code moves; a finding may be fixed (or a positive invalidated) by any
+later commit. Re-run the review — or retire this directory — after major architectural or
+security-relevant changes, and treat the finding IDs (`CFG-*`, `SEC-*`, …) as stable handles
+for triaging into tracking issues; where a finding relates to a recorded decision it already
+cites the governing ADR inline.
+
 == Reports
 
 |===
