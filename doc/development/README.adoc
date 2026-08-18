@@ -103,12 +103,6 @@ to *run* the finished gateway).
   realm `frontendUrl` forces, and the standing prohibitions the module carries (the `Accept`-based
   info-endpoint assertion, and why a Compose profile cannot express the trimmed bring-up).
 
-| link:diagram-type-deployment.md[Deployment Diagram Type -- Authoring Standard]
-| How a deployment/topology SVG is drawn -- containment nesting with its depth limit and insets,
-  protocol-and-port edge labels, the trust-boundary visual that stays inside the theme-neutral
-  palette, first-party vs external components, mounted material, and the container-run render
-  check. Written in Markdown, deliberately, so it can graduate upstream unchanged.
-
 | link:compose-sample.adoc[Compose Sample -- Contributor Guide]
 | The `deployment` module's compose sample -- how it relates to the integration-test stack and why
   it is a separate, smaller stack rather than a trimmed bring-up of that one; why the gateway carries
@@ -118,6 +112,14 @@ to *run* the finished gateway).
   and where its retry budget comes from; and the opt-in `skipComposeSample` / `compose-sample` build
   mechanism that keeps the whole thing out of the default lane.
 |===
+
+The authoring standard for this repository's deployment/topology diagrams is deliberately absent
+from the table above: it is not a document in this repository. It lives in the marketplace skill
+`pm-documents:ref-svg-diagrams` -- the standard at
+`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md` and its skeleton at
+`pm-documents:ref-svg-diagrams/templates/deployment-diagram-skeleton.svg`. That is the same place the
+standard for every other diagram under `doc/resources/diagrams/` already lives; all ten of them name
+theirs in the same notation, in a comment at the top of the file.
 
 == Scope of This Layer
 

@@ -21,7 +21,7 @@ exactly this reason. No Kubernetes topology is drawn.
 
 image::../resources/diagrams/integration-test-topology.svg[Integration-test topology: the Docker Compose stack used by the integration-tests module, align=center]
 
-The diagram is drawn to the link:diagram-type-deployment.md[deployment diagram-type standard]. Every
+The diagram is drawn to the deployment diagram-type standard in `pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`. Every
 port, protocol and service name in it traces to a line in `integration-tests/docker-compose.yml` or
 the mounted `integration-tests/src/main/docker/sheriff-config/gateway.yaml` -- nothing is inferred
 and nothing is invented. Those two files are the authoritative sources; when they change, the
@@ -245,8 +245,8 @@ consequences:
 * *When `docker-compose.yml` or the mounted `gateway.yaml` changes, redraw the diagram in the same
   change.* A stale topology diagram is worse than none, because it is believed.
 * *Re-render and read back before committing.* The verification recipe -- including the two ways it
-  is commonly got wrong -- is in the
-  link:diagram-type-deployment.md[deployment diagram-type standard]. Rendered PNGs are verification
+  is commonly got wrong -- is in the deployment diagram-type standard
+  (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`). Rendered PNGs are verification
   artifacts and are never committed.
 
 === Diagram check for the readiness change
@@ -270,6 +270,6 @@ The enclosing group rectangle and the own-bar line extent were grown by two row 
 added rows. The follow-up this section previously deferred therefore no longer exists.
 
 The read-back obligation is unchanged and is *not* discharged by this note: re-render and read the
-diagram back against both themes before committing any further edit to it, per the
-link:diagram-type-deployment.md[deployment diagram-type standard]. Rendered PNGs remain verification
+diagram back against both themes before committing any further edit to it, per the deployment
+diagram-type standard (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`). Rendered PNGs remain verification
 artifacts and are never committed.

@@ -5,7 +5,7 @@
   Every port, protocol and service name traces to integration-tests/docker-compose.yml
   or integration-tests/src/main/docker/sheriff-config/gateway.yaml.
   theme-handling: A (theme-neutral)
-  see  doc/development/diagram-type-deployment.md
+  see  pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900"
      role="img" aria-labelledby="title desc"
