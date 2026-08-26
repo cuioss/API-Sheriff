@@ -470,6 +470,33 @@ check never evaluated and is therefore not a pass.
 > nothing central refuses at all — the dispatch is unconditional — so this is the only check standing
 > between a re-dispatch and a moved release tag.
 
+**(v) Confirm smallrye-config still matches the Quarkus this project pins.**
+
+```bash
+python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resolved
+```
+
+| exit | meaning |
+|------|---------|
+| 0 | aligned — proceed |
+| 1 | **misaligned** — stop, fix, restart |
+| 2 | **could not determine** — also a stop. An unresolvable check is never a pass. |
+
+`version.quarkus` here is a **project-owned pin, not an override**: the parent chain declares no
+Quarkus version at all, and it cannot — Maven does not propagate properties from *imported* BOMs,
+and `quarkus-maven-plugin` needs the value as a build extension. So this project's Quarkus moves
+independently of `cuioss-parent-pom`, and nothing upstream validates it. `--check-resolved` asserts
+every `io.smallrye.config` artifact actually resolves to what **this** project's Quarkus was built
+against.
+
+Why it matters: Quarkus' deployment classes are compiled against one specific smallrye-config
+release, so a newer version — even an internally coherent one — fails augmentation with
+`failed to access io.smallrye.config.ConfigMappingLoader$ConfigMappingImplementation`. That shipped
+twice through `cuioss-parent-pom` and cost five weeks of red builds the first time. The
+`requireSameVersions` enforcer guard cannot catch it: nothing is split, so it stays correctly silent.
+
+Keep the script in sync with `cuioss-parent-pom`'s copy; there is no shared parent to inherit it from.
+
 ### Step 4 — Gate on a green `main`
 
 The release builds from `main`, so the gate must be bound to **a named commit** — the `origin/main`
