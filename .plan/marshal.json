@@ -91,7 +91,7 @@
           "lane": "full"
         },
         "default:architecture-refresh": {
-          "lane": "minimal"
+          "lane": "standard"
         },
         "default:push": {
           "lane": "minimal"
@@ -150,6 +150,9 @@
         "default:finalize-step-print-phase-breakdown": {
           "lane": "minimal"
         },
+        "default:emit-landing": {
+          "lane": "off"
+        },
         "default:archive-plan": {
           "lane": "minimal"
         }
@@ -163,7 +166,8 @@
   },
   "orchestrator": {
     "auto_emit": true,
-    "parallelization_scope": 2
+    "parallelization_scope": 2,
+    "effort": {}
   },
   "build": {
     "queue": {
@@ -174,17 +178,7 @@
     "map": {
       "java": [
         {
-          "glob": "*.css",
-          "role": "config",
-          "build_class": "verify"
-        },
-        {
           "glob": "*.sh",
-          "role": "config",
-          "build_class": "verify"
-        },
-        {
-          "glob": "*.ts",
           "role": "config",
           "build_class": "verify"
         },
@@ -212,21 +206,6 @@
           "glob": "*/src/test/resources/*",
           "role": "test",
           "build_class": "module-tests"
-        },
-        {
-          "glob": ".github/workflows/*",
-          "role": "config",
-          "build_class": "verify"
-        },
-        {
-          "glob": "Dockerfile*",
-          "role": "config",
-          "build_class": "verify"
-        },
-        {
-          "glob": "docker-compose*.yml",
-          "role": "config",
-          "build_class": "verify"
         },
         {
           "glob": "pom.xml",
@@ -349,7 +328,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.1288",
-    "config_seed_fingerprint": "714f8058"
+    "provisioned_version": "0.1.1556",
+    "config_seed_fingerprint": "58fc3cfc"
   }
 }
