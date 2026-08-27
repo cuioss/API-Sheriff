@@ -91,10 +91,12 @@ certificate without that name would fail hostname verification on the token-key 
 ./deployment/compose-sample/scripts/start-sample.sh
 ----
 
-The script preflights the image, brings the three services up, and then blocks on a readiness gate
-until the gateway reports itself ready -- so when it returns, the stack is genuinely usable rather
-than merely started. It exits non-zero if readiness is not reached, printing the container log and
-the full health payload.
+The script preflights the image, brings the three services up, and then gates on the stack being
+genuinely usable rather than merely started. The gate has two layers: it waits on each service's own
+health signal -- for the gateway, the `HEALTHCHECK` baked into its image -- and then asserts
+readiness with a single request to `/q/health/ready`. The second layer is not redundant with the
+first; <<_reading_the_container_health_signal>> explains what each one proves. Either layer failing
+exits non-zero, printing the container log and the full health payload.
 
 Alternatively, run it through the build as an opt-in Maven profile, which brings the stack up, gates
 on readiness, and tears it down again:
@@ -147,6 +149,108 @@ Two other endpoints are published:
 
 This removes the containers, the network and the volumes, so the next bring-up starts from a known
 state and re-imports the realm.
+
+[[_reading_the_container_health_signal]]
+== Reading the container health signal
+
+The gateway image carries its own `HEALTHCHECK`, so the container runtime tracks a health state for
+`api-sheriff` with no host-side tooling involved. That state is what the bring-up script's first gate
+layer blocks on, and it stays visible afterwards through ordinary Docker commands.
+
+=== What `docker compose ps` reports
+
+[source,bash]
+----
+docker compose -f deployment/compose-sample/docker-compose.yml ps
+----
+
+....
+NAME          STATUS
+api-sheriff   Up 45 seconds (healthy)
+demo-api      Up 45 seconds
+keycloak      Up 46 seconds (healthy)
+....
+
+Three things in that column are worth reading deliberately:
+
+* *`(healthy)` on `api-sheriff`* is the image's baked probe reporting success. It is not something
+  this compose file computes.
+* *`(health: starting)`* is what the same container reports for the first 20 seconds. That is the
+  probe's start period, during which a failing check does not count against the retry budget and the
+  container is not yet marked unhealthy. Seeing it briefly after bring-up is normal.
+* *No suffix at all on `demo-api`* means that service declares no health check. It is not a failure
+  and not a degraded state -- there is simply nothing being measured.
+
+An `(unhealthy)` gateway means the probe failed three consecutive times after the start period
+elapsed. Read the probe's own output before anything else -- see <<_inspecting_the_probe_output>>.
+
+=== What `healthy` proves, and what it does not
+
+The baked probe opens a TCP connection to the management port inside the container, closes it again,
+and reports success when the port accepted. Nothing is written to or read from that socket.
+
+*It proves* the process is up and its management interface is bound and accepting -- a *liveness*
+fact.
+
+*It does not prove* readiness. A healthy container has not told you that the gateway's configuration
+document was accepted, that its token validator resolved, that TLS terminates correctly on 8443, or
+that a request will reach the upstream. All of those can be false while the container reports
+healthy.
+
+The probe is deliberately protocol-blind, and that is why it cannot make the larger claim: the
+management interface speaks HTTPS in this sample but plain HTTP in a deployment that opts out, so a
+probe that spoke either one would be wrong against the other. It measures the one thing that is true
+under both.
+
+Readiness has its own answer, and it is one request away:
+
+[source,bash]
+----
+curl -k https://localhost:9000/q/health/ready
+----
+
+That endpoint answers `503` while the gateway is not ready, which is what makes it a readiness signal
+rather than a second liveness one. Use it -- not the health column -- before concluding the stack is
+usable. A monitoring system that treats the container health state as readiness has drawn a
+conclusion the signal does not support.
+
+[[_inspecting_the_probe_output]]
+=== Inspecting the probe output
+
+The full health record, including what the last few probe runs printed, is on the container:
+
+[source,bash]
+----
+docker inspect --format '{{json .State.Health}}' $(docker compose -f deployment/compose-sample/docker-compose.yml ps -q api-sheriff)
+----
+
+The `ps -q` indirection is worth keeping: Compose prefixes container names with the project, so the
+container is not simply called `api-sheriff` on the Docker side.
+
+The JSON carries three things you will actually use:
+
+`Status`:: `starting`, `healthy` or `unhealthy` -- the same state the `ps` column renders.
+
+`FailingStreak`:: How many consecutive checks have failed. It resets to `0` on the first success, so
+a non-zero value on a container that currently reads `healthy` means it recovered, not that something
+is wrong now.
+
+`Log`:: The last few probe runs, each with `Start`, `End`, `ExitCode` and `Output`.
+
+`ExitCode: 1` is the probe reporting that the management port did not accept, and `Output` then
+carries the one line the probe writes for exactly this purpose:
+
+....
+health-probe: 127.0.0.1:9000 not accepting: java.net.ConnectException: Connection refused
+....
+
+That line names the port it tried and the reason it failed, which distinguishes the two cases that
+look identical from outside: the application has not finished starting (connection refused, and the
+next check will likely succeed), versus the application is running but its management interface is
+bound somewhere else (which is a configuration problem -- see
+link:container-image.adoc[Container Image -- Pulling, Running and Verifying] for the port override
+constraint). An empty `Output` with a non-zero `ExitCode` means the probe process itself was killed
+by the runtime's own `--timeout`, which is a different failure again.
 
 [[_what_must_change_before_this_is_real]]
 == What must change before this is real

@@ -101,6 +101,12 @@ that does not exist.
 The image is distroless: it carries no shell and no package manager, and it runs as `nonroot`. It
 ships one ahead-of-time-compiled native executable and nothing else.
 
+That last sentence is load-bearing rather than a size boast. Because the image contains exactly one
+executable and no interpreter of any kind, the only container health-check form available to it is
+the exec form naming that executable -- which is exactly what the baked `HEALTHCHECK` uses, and why a
+shell-form or `curl`-based probe written against this image would fail permanently rather than merely
+being unidiomatic.
+
 [source,bash]
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
@@ -172,11 +178,29 @@ the recipe above only because their correct values are deployment-specific: a re
 filesystem (`--read-only` plus a writable `--tmpfs /tmp`) and explicit memory and CPU limits
 (`--memory`, `--cpus`). Both belong in any production orchestration manifest.
 
+*The container reports its own health.* Both recipes above inherit the image's `HEALTHCHECK` without
+naming it, so `docker ps` shows the gateway as `(health: starting)` for the first twenty seconds and
+then `(healthy)` once its management interface is accepting -- with no `--health-cmd` on the command
+line and no probe tooling in the image beyond the executable itself. That state is a *liveness*
+signal: readiness is `GET /q/health/ready` on 9000, and a healthy container has not told you the
+gateway is ready to serve. What the signal does and does not prove, and how to read the probe's own
+output when a container goes unhealthy, is covered in
+link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
+
+One override interacts with it. The baked probe targets port `9000` as a compiled-in constant --
+deliberately, so that it reads no configuration and can answer before the application has read any.
+Setting `QUARKUS_MANAGEMENT_PORT` to something else therefore moves the management interface without
+moving the probe, and the container will never report healthy however well it is serving. A
+deployment that moves that port must override the image's `HEALTHCHECK` to match.
+
 The full deployment-bound knob set -- which values the deployment owns and which `gateway.yaml`
 owns -- is enumerated in link:environment-variable-overrides.adoc[Environment-variable overrides].
 The management interface's scheme, its single-port constraint and the plain-HTTP opt-out are
 covered in link:tls-edge.adoc[TLS Edge]; supplying the management certificate pair above makes
-port 9000 speak HTTPS, so health probes against it must speak TLS.
+port 9000 speak HTTPS, so any *host-side* probe pointed at it -- a `curl` health check, a load
+balancer, an orchestrator's HTTP probe -- must speak TLS and trust that certificate. The image's own
+baked probe is unaffected, and that is by design: it writes and reads nothing on the socket, which is
+precisely how one probe stays correct under both the HTTPS default and the plain-HTTP opt-out.
 
 == What the SBOM and the scan guarantee -- and what they do not
 
