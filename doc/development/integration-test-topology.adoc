@@ -286,7 +286,7 @@ loop it replaced: there is no live-to-ready interval left for layer 2 to have to
 *The bound is `--wait-timeout 180`, and the image's `--start-period` is 20s -- both retained on that
 evidence.* The headroom is stated as a factor against the worst observed figure: the worst
 time-to-ready was 9.14s measured from the `compose up -d` call, so the start period carries roughly
-2x against it and the wait timeout roughly 13x. Both factors are deliberately generous rather than
+2x against it and the wait timeout roughly 20x. Both factors are deliberately generous rather than
 tight, because neither number is consumed on a healthy run: a large bound costs a healthy run nothing
 and costs a broken one only the time until it gives up. Neither is to be shrunk toward the observed
 figures -- CI runners are slower than the machine measured here, and the measurement bounds the

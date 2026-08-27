@@ -98,7 +98,7 @@ authority.
 The host retains exactly one number, and it is a bound rather than a budget: the
 `--wait-timeout`. It is 180s for the integration stack and 120s for the operator
 sample, both derived from the same measured worst-case time-to-live of 9.14s
-recorded in the integration-test topology document -- roughly a 13x and a 20x
+recorded in the integration-test topology document -- roughly a 20x and a 13x
 headroom. The two differ because the stacks differ: the integration stack brings up
 seven gateway instances concurrently alongside Keycloak and three backends, the
 sample brings up one gateway and two supporting services. Neither is consumed on a
