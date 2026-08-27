@@ -91,12 +91,26 @@ Skip when **every** changed file is one of:
 or a build script. A mixed commit is *not* documentation-only: one Java file in an otherwise-prose
 change makes the whole commit subject to the gate.
 
-This enumeration and the `build.map` contract that `build-decision` reads now cover the same path
-classes, so what the rule declares gate-requiring is what the tooling actually gates. Naming that
-agreement next to the rule is what makes a future divergence visible — if the two ever stop covering
-the same classes, this paragraph is the claim that has become false. The cost is real and intended:
-every workflow, Dockerfile and compose change now pays a full gate instead of passing as
-documentation-only. That is the trade the rule above asks for, not a regression to be tuned away.
+This enumeration is deliberately **broader** than the `build.map` contract that `build-decision`
+reads, and the gap is load-bearing rather than an oversight. `build.map` is tree-derived from the
+build-system extensions' `classify_globs()` vocabulary, so it registers only what those extensions
+claim: for the `java` domain `pom.xml`, `*.sh` and the `*/src/{main,test}/**` classes, and for
+`javascript` `package.json`, `*.js`, `*.spec.js`. It does **not** register `*.ts`, `*.css`,
+`.github/workflows/**`, `Dockerfile*` or `docker-compose*.yml`.
+
+Read the consequence precisely, because it is the opposite of an exemption. A footprint touching
+only those five classes intersects no registered glob, so `build-decision` returns
+`decision: not_necessary`, and that positive verdict is exactly what drops `pre-push-quality-gate`
+from the composed execution manifest. **The tooling will not run the gate for you there.** The rule
+above still requires it — so a workflow-only, Dockerfile-only, compose-only, `*.ts`-only or
+`*.css`-only change is gate-requiring and must have the quality gate and full verify run **by
+hand** before committing. The cost is real and intended: those changes pay a full gate instead of
+passing as documentation-only, and the absence of an automatic trigger is not permission to skip it.
+
+Keeping the two lists named side by side is what makes this divergence auditable. If `build.map`
+later grows the missing classes — because a build-system extension widens its `classify_globs()`
+vocabulary — the manual-run instruction above becomes redundant and this paragraph is the claim to
+revisit.
 
 Doubt resolves toward running it. The cost of an unnecessary build is minutes; the cost of a skipped
 one is a red `main`.
