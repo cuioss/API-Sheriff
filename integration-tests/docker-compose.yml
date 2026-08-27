@@ -327,9 +327,12 @@ services:
           memory: 256M
           cpus: '1.0'
 
-    # Health check: no in-container healthcheck (the distroless image ships neither a shell nor
-    # curl). Readiness is gated host-side by start-integration-container.sh probing the published
-    # management port 19000 over HTTPS with -k.
+    # Health check: inherited from the image, and deliberately not restated here. api-sheriff:distroless
+    # is built from Dockerfile.native, which bakes an exec-form HEALTHCHECK running the executable's own
+    # --health-probe against the management port. That is the only place the probe can live: the image
+    # carries exactly one executable, so the exec form is the only form available, and a Compose
+    # `healthcheck.test` string is rewritten to CMD-SHELL and would resolve a /bin/sh this base does not
+    # ship. A key here would also override the image's declaration rather than merge with it.
 
     # Network isolation (production pattern). The alias is what lets a passthrough client reach
     # this gateway under a tls.passthrough_sni name: the benchmark's ClientHello carries
@@ -433,9 +436,9 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
-    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh probing the published management port 19001,
-    # exactly as the primary instance is gated on 19000.
+    # Health check: inherited from the image, exactly as the primary instance — the exec-form probe
+    # baked into Dockerfile.native. No healthcheck: key here; the image carries exactly one executable,
+    # so only the exec form is available and only the image can carry it.
     networks:
       - api-sheriff
     restart: unless-stopped
@@ -531,9 +534,9 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
-    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh probing the published management port 19002,
-    # exactly as the primary instance is gated on 19000 and the mTLS instance on 19001.
+    # Health check: inherited from the image, exactly as the primary and mTLS instances — the exec-form
+    # probe baked into Dockerfile.native. No healthcheck: key here; the image carries exactly one
+    # executable, so only the exec form is available and only the image can carry it.
     networks:
       - api-sheriff
     restart: unless-stopped
@@ -625,8 +628,9 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
-    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh probing the published management port 19003.
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
     networks:
       - api-sheriff
     restart: unless-stopped
@@ -709,8 +713,9 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
-    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh probing the published management port 19004.
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
     networks:
       - api-sheriff
     restart: unless-stopped
@@ -816,10 +821,12 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
-    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh, in the same Compose-derived loop as every
-    # other api-sheriff* instance — the http:// probe comes from this service's management-scheme
-    # label above, not from a branch on its name.
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it. The baked probe is a bare TCP accept on the management
+    # port, so it is unaffected by this instance's plain-HTTP management scheme; the host-side readiness
+    # assertion still derives its http:// scheme from this service's management-scheme label above,
+    # not from a branch on its name.
     networks:
       - api-sheriff
     restart: unless-stopped
@@ -918,8 +925,9 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
-    # No in-container healthcheck: the distroless image ships neither a shell nor curl. Readiness is
-    # gated host-side by start-integration-container.sh probing the published management port 19006.
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
     networks:
       - api-sheriff
     restart: unless-stopped

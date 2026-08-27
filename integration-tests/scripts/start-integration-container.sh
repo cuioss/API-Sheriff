@@ -260,87 +260,113 @@ if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
     done
 fi
 
-# Wait for every gateway instance to become READY — not merely live.
-#
-# The probe is /q/health/ready, which on this gateway means GatewayReadinessCheck reported UP:
-# the configuration document is bound and, when a token_validation block is configured, the
-# @GatewayValidator-qualified TokenValidator resolved. /q/health/live answers as soon as the
-# process is up, which is strictly earlier than the point at which the suite can drive it — an
-# instance that is live but not ready serves the first IT request against an unbound validator.
-#
-# Every instance must be waited on, not just the primary one: the suites drive the TLS ports
-# directly — MtlsHandshakeIT, the Bff*Cookie*IT suites (BffCookieStatelessnessIT drives BOTH cookie
-# instances in one test), WebSocketProxyIT's relay-exhaustion regression against the low-admission
-# instance — so an unwaited instance is a race that surfaces as a connection refusal in the IT phase
-# rather than as a start-up failure here.
-#
-# READINESS_TARGETS is the api-sheriff*-only subset of the rows discovered before the bring-up.
-#
-# The retry budget is ONE number, declared once and read by all three of the loop bound, the
-# last-attempt comparison and the progress echo. It used to be three literal 30s that could drift
-# apart; a re-size now touches a single line.
-#
-# The value is measured, not chosen by feel. A sub-second prober run against all six instances under
-# CPU contention put the live-to-ready delta at 0.00s on every one of them — which is not luck but
-# what GatewayReadinessCheck means: its `jwks` datum is a BOOT-TIME constructibility fact (ADR-0027),
-# forced into existence by TokenValidatorProducer.onStartup and cached thereafter, so readiness flips
-# at the same moment liveness does and this gate costs no additional wait over the liveness probe it
-# replaced.
-#
-# The per-instance figures and the headroom argument have a single home —
-# doc/development/integration-test-topology.adoc, "Where the retry budget came from". Read the
-# numbers there rather than restating them here, where they would drift.
-#
-# 30 attempts is retained on that evidence, and is consumed only on failure, so the headroom is free.
-# Do not shrink it toward the observed times: CI runners are slower than the machine measured there.
-GATEWAY_READY_ATTEMPTS=30
+# Capture everything a failed bring-up needs to be diagnosed from CI artifacts alone: the container
+# log and the /q/health payload, written under target/failsafe-reports/ so they are uploaded with the
+# Failsafe reports. Both failure paths of the two-layer gate below call this, so the evidence is
+# identical whichever layer caught the problem — a container that never reported healthy and a
+# container that reported healthy but is not READY are diagnosed from the same two files.
+capture_gateway_diagnostics() {
+    local service="$1"
+    local mgmt_url="$2"
+    local diag_dir="target/failsafe-reports"
+    local diag_opts=(-s --connect-timeout 2 --max-time 5)
 
-echo "⏳ Waiting for the discovered gateway instances to be ready..."
+    # -k for the same reason the readiness assertion needs it: an https:// management interface serves
+    # a self-signed localhost bundle, so without it curl fails certificate validation and writes an
+    # empty health payload — destroying the very evidence this function exists to capture.
+    if [[ "$mgmt_url" == https://* ]]; then
+        diag_opts+=(-k)
+    fi
+
+    mkdir -p "$diag_dir"
+    echo "----- $COMPOSE_BASE logs ${service} -----"
+    $COMPOSE_BASE logs --no-color "${service}" </dev/null 2>&1 | tee "$diag_dir/${service}-app.log"
+    echo "----- ${mgmt_url}/q/health -----"
+    curl "${diag_opts[@]}" "${mgmt_url}/q/health" 2>&1 | tee "$diag_dir/${service}-health.json"
+    echo ""
+}
+
+# Gate the suite on every gateway instance being READY — not merely started — in two layers.
+#
+# Layer 1 (waiting) is Compose's own wait on the image's baked-in HEALTHCHECK. api-sheriff:distroless
+# is built from Dockerfile.native, which bakes an exec-form probe, so `up -d --wait` blocks until every
+# named service reports healthy. The polling that used to live here as a hand-rolled retry loop is now
+# the container runtime's job, and the probe cadence has exactly one home — that HEALTHCHECK line. It
+# is deliberately not restated here, and there is no retry budget in this script to drift from it.
+#
+# The wait is scoped to the derived gateway service names, NOT the whole stack. `--wait` with no
+# service arguments waits on every service in the resolved model, which would implicitly health-gate
+# keycloak, go-httpbin, asset-origin and the benchmark overlay's nginx-static. None of those carries a
+# baked probe and each already has its own wait above, so an unscoped `--wait` would gate on something
+# other than "the gateways are healthy". The service names come from the same READINESS_TARGETS rows
+# derived from the Compose model before the bring-up, so adding or renaming an api-sheriff* service
+# needs no edit here.
+#
+# Layer 2 (semantics) is the assertion the baked probe deliberately cannot make. That probe is a bare
+# TCP accept on the management port — it must be, because the management scheme is deployment-bound
+# (ADR-0025) — so it proves the interface is listening, not that GatewayReadinessCheck reported UP:
+# the configuration document bound and, where a token_validation block is configured, the
+# @GatewayValidator-qualified TokenValidator resolved. A single-shot /q/health/ready per instance
+# closes exactly that gap. Every instance is asserted, not just the primary one: the suites drive the
+# TLS ports directly — MtlsHandshakeIT, the Bff*Cookie*IT suites (BffCookieStatelessnessIT drives BOTH
+# cookie instances in one test), WebSocketProxyIT's relay-exhaustion regression against the
+# low-admission instance — so an unasserted instance is a race that surfaces as a connection refusal
+# in the IT phase rather than as a start-up failure here.
+#
+# Single-shot with no retry budget is correct precisely BECAUSE layer 1 already waited: by the time
+# this runs the instance has been reported healthy by the runtime, so a non-UP readiness answer is a
+# real defect, and retrying would only delay reporting it. That is also why the scheme still comes
+# from each service's management-scheme label rather than from its name — the plain-management
+# instance is asserted over http:// with NO -k, and if it ever needs -k the plain-management opt-out
+# has silently stopped working and THAT is the bug, not the probe.
+GATEWAY_SERVICES="$(printf '%s\n' "$READINESS_TARGETS" | awk '{ print $1 }')"
+
+echo "⏳ Waiting for the discovered gateway instances to report healthy..."
 START_TIME=$(date +%s)
+
+# Word-splitting GATEWAY_SERVICES into one argument per service is the point, hence the unquoted
+# expansion. The `if ! ...; then` wrapper is required rather than stylistic: set -e is active, so a
+# bare failing command would abort before the diagnostics below could run.
+# shellcheck disable=SC2086
+if ! (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d --wait --wait-timeout 180 $GATEWAY_SERVICES); then
+    echo "❌ Not every gateway instance reported healthy within 180s"
+    while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+        [[ -z "$GATEWAY_SERVICE" ]] && continue
+        capture_gateway_diagnostics "${GATEWAY_SERVICE}" \
+            "${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
+    done <<< "$READINESS_TARGETS"
+    exit 1
+fi
+echo "✅ Every gateway instance reported healthy — asserting readiness semantics..."
+
 GATEWAY_COUNT=0
 while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
     GATEWAY_COUNT=$((GATEWAY_COUNT + 1))
-
-    GATEWAY_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
-    GATEWAY_DIAG_OPTS=(-s --connect-timeout 2 --max-time 5)
-    if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
-        # -k is load-bearing on the HTTPS instances: their management interface serves a self-signed
-        # localhost bundle, and without it curl fails certificate validation and this wait degrades
-        # into a silent full-budget timeout against a perfectly healthy container.
-        GATEWAY_PROBE_OPTS+=(-k)
-        GATEWAY_DIAG_OPTS+=(-k)
-    fi
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
 
-    echo "⏳ Waiting for ${GATEWAY_SERVICE} (management ${GATEWAY_MGMT_SCHEME} on ${GATEWAY_MGMT_PORT})..."
-    for ((i = 1; i <= GATEWAY_READY_ATTEMPTS; i++)); do
-        if curl "${GATEWAY_PROBE_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
-            echo "✅ ${GATEWAY_SERVICE} gateway instance is ready!"
-            break
-        fi
-        if [ "$i" -eq "$GATEWAY_READY_ATTEMPTS" ]; then
-            echo "❌ ${GATEWAY_SERVICE} gateway instance failed to start within ${GATEWAY_READY_ATTEMPTS} attempts"
-            # Capture the container log + health payload so a startup failure is diagnosable from CI
-            # artifacts (uploaded via the failsafe-reports folder).
-            DIAG_DIR="target/failsafe-reports"
-            mkdir -p "$DIAG_DIR"
-            echo "----- $COMPOSE_BASE logs ${GATEWAY_SERVICE} -----"
-            $COMPOSE_BASE logs --no-color "${GATEWAY_SERVICE}" </dev/null 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-app.log"
-            echo "----- ${GATEWAY_MGMT_URL}/q/health -----"
-            curl "${GATEWAY_DIAG_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health" 2>&1 | tee "$DIAG_DIR/${GATEWAY_SERVICE}-health.json"
-            echo ""
-            exit 1
-        fi
-        echo "⏳ Waiting for ${GATEWAY_SERVICE}... (attempt $i/${GATEWAY_READY_ATTEMPTS})"
-        sleep 1
-    done
+    GATEWAY_READY_OPTS=(-sf --connect-timeout 2 --max-time 5)
+    if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
+        # -k is load-bearing on the HTTPS instances: their management interface serves a self-signed
+        # localhost bundle, and without it curl fails certificate validation and this assertion fails
+        # against a perfectly healthy container. -f is equally load-bearing: /q/health/ready answers
+        # 503 when the check is DOWN, and without -f curl exits 0 on that 503.
+        GATEWAY_READY_OPTS+=(-k)
+    fi
+
+    if ! curl "${GATEWAY_READY_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
+        echo "❌ ${GATEWAY_SERVICE} reported healthy but ${GATEWAY_MGMT_URL}/q/health/ready is not UP"
+        capture_gateway_diagnostics "${GATEWAY_SERVICE}" "${GATEWAY_MGMT_URL}"
+        exit 1
+    fi
+    echo "✅ ${GATEWAY_SERVICE} gateway instance is ready!"
 done <<< "$READINESS_TARGETS"
 
 TOTAL_TIME=$(($(date +%s) - START_TIME))
 echo "✅ All ${GATEWAY_COUNT} gateway instances are ready!"
 # The instances were all started by the same `compose up -d` above and come up concurrently, so this
-# is the wall-clock time until the slowest of them answered, not the sum of their startup times.
+# brackets both layers of the gate: the wall-clock time until the slowest of them reported healthy and
+# then answered ready, not the sum of their startup times.
 echo "📈 Actual startup time: ${TOTAL_TIME}s (container + application, ${GATEWAY_COUNT} instances in parallel)"
 
 # Extract native startup time from logs
