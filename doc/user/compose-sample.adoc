@@ -231,9 +231,12 @@ The JSON carries three things you will actually use:
 
 `Status`:: `starting`, `healthy` or `unhealthy` -- the same state the `ps` column renders.
 
-`FailingStreak`:: How many consecutive checks have failed. It resets to `0` on the first success, so
-a non-zero value on a container that currently reads `healthy` means it recovered, not that something
-is wrong now.
+`FailingStreak`:: How many consecutive checks have failed. A success resets it to `0`, so a non-zero
+value means the most recent checks are failing -- not that the container recovered. It can be
+non-zero while `Status` still reads `healthy`, and that combination is the useful early warning:
+Docker holds the healthy state until the streak reaches `--retries` (3, per the baked probe), so a
+`1` or a `2` is a container that is failing its probe right now but has not yet been declared
+unhealthy.
 
 `Log`:: The last few probe runs, each with `Start`, `End`, `ExitCode` and `Output`.
 

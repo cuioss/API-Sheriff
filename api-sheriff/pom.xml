@@ -15,6 +15,19 @@
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.gateway</maven.jar.plugin.automatic.module.name>
+        <!-- The Quarkus entry point is not coverable, and this states that where Sonar can see it.
+             Every path through ApiSheriffApplication.main either terminates the JVM (System.exit on
+             the health-probe branch) or hands control to Quarkus.run, so no test can execute it; the
+             same is true of run(), which only awaits shutdown. The JaCoCo <excludes> further down
+             this POM already declares that intent for the local report, but a JaCoCo exclusion only
+             withholds coverage DATA — Sonar keeps counting the lines and scores them as uncovered,
+             which is what drove new_coverage to 0.0 on PR #230. Both mechanisms must name the class
+             for the two to agree; keep them in step.
+             This is a scope declaration, not a way to hide untested logic: the class is deliberately
+             a shim carrying no logic of its own. The probe it routes to lives in HealthProbe, which
+             is measured normally and is fully covered. Any logic added here rather than there is a
+             defect in the split, not a reason to widen this exclusion. -->
+        <sonar.coverage.exclusions>**/ApiSheriffApplication.java</sonar.coverage.exclusions>
     </properties>
 
     <dependencies>

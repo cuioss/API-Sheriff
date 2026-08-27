@@ -279,10 +279,18 @@ capture_gateway_diagnostics() {
     fi
 
     mkdir -p "$diag_dir"
+    # Both captures are explicitly non-fatal. This function runs only on a path that has already
+    # decided to fail, and its caller loops over every gateway instance before exiting — so a probe
+    # that refuses the connection (the common case here, and exactly what we are diagnosing) must not
+    # be able to cut the loop short and cost us the diagnostics for the remaining instances. Today
+    # `pipefail` is not set, so each pipeline already reports tee's status rather than curl's and the
+    # `|| true` is belt-and-braces; it is written anyway so that turning `pipefail` on later cannot
+    # silently convert this collector into an early exit. The operator sample's
+    # capture_sample_diagnostics guards the same two commands the same way.
     echo "----- $COMPOSE_BASE logs ${service} -----"
-    $COMPOSE_BASE logs --no-color "${service}" </dev/null 2>&1 | tee "$diag_dir/${service}-app.log"
+    $COMPOSE_BASE logs --no-color "${service}" </dev/null 2>&1 | tee "$diag_dir/${service}-app.log" || true
     echo "----- ${mgmt_url}/q/health -----"
-    curl "${diag_opts[@]}" "${mgmt_url}/q/health" 2>&1 | tee "$diag_dir/${service}-health.json"
+    curl "${diag_opts[@]}" "${mgmt_url}/q/health" 2>&1 | tee "$diag_dir/${service}-health.json" || true
     echo ""
 }
 
