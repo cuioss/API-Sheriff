@@ -37,23 +37,23 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Tests the pre-boot container health probe on {@link ApiSheriffApplication} — the branch the
+ * Tests the pre-boot container health probe on {@link HealthProbe} — the branch the
  * distroless image's {@code HEALTHCHECK} invokes, which has to answer before Quarkus is started.
  * <p>
- * Two contracts are covered. {@link ApiSheriffApplication#probe()} derives liveness purely from
+ * Two contracts are covered. {@link HealthProbe#probe()} derives liveness purely from
  * whether {@code 127.0.0.1:9000} accepts a TCP connection, so it is exercised against a real
  * {@link ServerSocket} and against a genuinely closed port rather than against a double: a stubbed
  * socket would prove nothing about the accept-versus-refuse distinction the exit code encodes. Both
  * port-dependent tests fail loudly when the port is not in the state they need, because a probe test
  * that quietly passes without a real listener asserts nothing at all.
  * <p>
- * {@link ApiSheriffApplication#isProbe(String[])} matches one exact token. The command lines below
+ * {@link HealthProbe#isProbe(String[])} matches one exact token. The command lines below
  * are spelled as literals because the accepted spelling <em>is</em> the contract — the image's
  * {@code HEALTHCHECK} and this flag have to agree character for character, so generated data could
  * not express what is being asserted.
  */
 @EnableGeneratorController
-class ApiSheriffApplicationProbeTest {
+class HealthProbeTest {
 
     /**
      * The management port the probe measures. Restated here rather than read from the production
@@ -71,7 +71,7 @@ class ApiSheriffApplicationProbeTest {
         @DisplayName("Should return 0 when the management port accepts the connection")
         void shouldReturnZeroWhenPortAccepts() throws Exception {
             try (ServerSocket listener = openListenerOrFail()) {
-                int exitCode = ApiSheriffApplication.probe();
+                int exitCode = HealthProbe.probe();
 
                 assertEquals(0, exitCode,
                         "A port that accepted the connection should be reported healthy");
@@ -85,7 +85,7 @@ class ApiSheriffApplicationProbeTest {
         void shouldReturnOneWhenPortRefusesConnection() {
             requirePortFree();
 
-            int exitCode = ApiSheriffApplication.probe();
+            int exitCode = HealthProbe.probe();
 
             assertEquals(1, exitCode,
                     "A port with no listener should be reported unhealthy — this is the matched"
@@ -145,7 +145,7 @@ class ApiSheriffApplicationProbeTest {
         @MethodSource("commandLines")
         @DisplayName("Should recognise a probe request from whole-token equality alone")
         void shouldMatchExactTokenOnly(String label, String[] args, boolean expected) {
-            assertEquals(expected, ApiSheriffApplication.isProbe(args),
+            assertEquals(expected, HealthProbe.isProbe(args),
                     () -> "A command line carrying " + label + " should "
                             + (expected ? "" : "not ") + "be treated as a probe request");
         }
@@ -154,7 +154,7 @@ class ApiSheriffApplicationProbeTest {
         @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 1, maxSize = 20, count = 5)
         @DisplayName("Should never treat an arbitrary letter-only argument as a probe request")
         void shouldRejectArbitraryArgument(String argument) {
-            assertFalse(ApiSheriffApplication.isProbe(new String[]{argument}),
+            assertFalse(HealthProbe.isProbe(new String[]{argument}),
                     () -> "Only the exact flag should match, but '" + argument + "' did");
         }
     }
