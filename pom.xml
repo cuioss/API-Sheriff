@@ -11,6 +11,10 @@
     <artifactId>api-sheriff-parent</artifactId>
     <version>0.2.0-SNAPSHOT</version>
     <packaging>pom</packaging>
+    <!-- Must be declared: <inceptionYear> is inherited, and the license plugin binds
+         the copyright ${year} to it. Without this, this project would report
+         cui-parent-pom's 2022 and restamp every header on each -Ppre-commit run. -->
+    <inceptionYear>2025</inceptionYear>
     <name>API Sheriff Parent</name>
     <description>An API-Gateway focused on Security and a lightweight approach.
         The module provides robust API gateway capabilities with comprehensive security features,
@@ -456,35 +460,6 @@
                                 <recipe>org.openrewrite.staticanalysis.SimplifyBooleanExpression</recipe>
                                 <recipe>org.openrewrite.staticanalysis.UnnecessaryParentheses</recipe>
                             </activeRecipes>
-                        </configuration>
-                    </plugin>
-                    <plugin>
-                        <!--
-                            Pins the license header's copyright year to 2026.
-
-                            DO NOT DELETE when bumping cui-java-parent. The parent's
-                            pre-commit profile carries the comment "No <year> override:
-                            mycila license-maven-plugin defaults to the current year" and
-                            omits <year> on that basis. That comment is FALSE: mycila
-                            resolves ${year} from the project's <inceptionYear>, not from
-                            the system clock, and no <inceptionYear> is declared anywhere
-                            in this project or its parent chain (cui-java-parent ->
-                            cui-java-bom -> cui-parent-pom). With neither a <year> override
-                            nor an <inceptionYear>, the year does not track the current
-                            year; it regresses to the stale 2022 value, which is how
-                            every header in this repository came to read 2022.
-
-                            Only <year> is overridden here; owner (CUI-OpenSource-Software)
-                            and email (info@cuioss.de) continue to be inherited from the
-                            parent, since Maven merges child <properties> into the parent's
-                            plugin configuration rather than replacing the whole block.
-                        -->
-                        <groupId>com.mycila</groupId>
-                        <artifactId>license-maven-plugin</artifactId>
-                        <configuration>
-                            <properties>
-                                <year>2026</year>
-                            </properties>
                         </configuration>
                     </plugin>
                 </plugins>
