@@ -36,16 +36,21 @@ import org.junit.jupiter.api.Test;
  * Pins the {@code build.map.java} entries that make the repository's declared gate-requiring file
  * classes actually reach a build, so erasing one becomes a red build instead of a silent hole.
  * <p>
- * <strong>Why this test exists.</strong> {@code CLAUDE.md} lines 65-66 declare which file classes
- * oblige a full quality gate: {@code *.java}, {@code pom.xml}, {@code *.js}, {@code *.ts},
- * {@code *.css}, {@code src/main/resources/**}, {@code .github/workflows/**}, {@code Dockerfile*}
- * and {@code docker-compose*.yml}. That declaration is prose; the surface that <em>enforces</em> it
- * is {@code .plan/marshal.json}'s {@code build.map}, which the {@code build-decision} verb consults
- * to answer "does this footprint need a build?". The two had drifted: five of the declared classes
- * were mapped by nothing at all, so a change touching only a workflow, a Dockerfile, a compose file,
- * a stylesheet or a TypeScript source returned {@code not_necessary} and shipped without the gate
- * the declaration demands. The gap is invisible from either side — the prose still reads as
- * authoritative, and the map is well-formed — which is exactly the shape a contract test exists for.
+ * <strong>Why this test exists.</strong> {@code CLAUDE.md} declares which file classes oblige a full
+ * quality gate. That declaration is prose; the surface that <em>enforces</em> it is
+ * {@code .plan/marshal.json}'s {@code build.map}, which the {@code build-decision} verb consults to
+ * answer "does this footprint need a build?". The two had drifted: several declared classes were
+ * mapped by nothing at all, so a change touching only a Dockerfile, a compose file, a stylesheet or
+ * a TypeScript source returned {@code not_necessary} and shipped without the gate the declaration
+ * demands. The gap is invisible from either side — the prose still reads as authoritative, and the
+ * map is well-formed — which is exactly the shape a contract test exists for.
+ * <p>
+ * <strong>What this guard does NOT assert.</strong> Membership here requires that a Maven build can
+ * actually observe the file class. "Not documentation-only" and "a quality gate validates it" are
+ * different claims, and only globs satisfying the second belong in the map — registering a class no
+ * profile reads buys a multi-minute build that cannot see the change. {@code .github/workflows/*}
+ * was pinned here on the first claim and has been removed for failing the second; see
+ * {@link #REQUIRED_GLOBS}.
  * <p>
  * <strong>Why the five entries need pinning specifically.</strong> They are <em>hand-added</em>. The
  * build map is otherwise seeded from the applicable domain extensions, and an entry is preserved by
@@ -65,10 +70,10 @@ import org.junit.jupiter.api.Test;
  * {@code build_class} away from {@code verify}, may.
  * <p>
  * <strong>The required globs are hand-written here, not read from {@code CLAUDE.md}.</strong> The
- * map's spellings deliberately differ from the human-readable declaration: the route contract admits
- * single-{@code *} fnmatch globs and bare basenames but never a recursive {@code **}, so
- * {@code .github/workflows/**} is respelled {@code .github/workflows/*} in the map. Deriving one
- * from the other would encode that translation as a second piece of logic to keep correct. This test
+ * map's spellings deliberately differ from the human-readable declaration, and the two lists are not
+ * even the same length — the prose enumerates every class that must not pass as documentation-only,
+ * while this set holds only those a Maven build can observe. Deriving one from the other would
+ * encode both that translation and that filter as a second piece of logic to keep correct. This test
  * pins the <em>map</em> side only; it asserts nothing about what {@code CLAUDE.md} still says.
  * <p>
  * <strong>No vacuous pass.</strong> Both the required-glob set's cardinality and the parsed java
@@ -107,19 +112,36 @@ class BuildGateCoverageContractTest {
     private static final String REQUIRED_BUILD_CLASS = "verify";
 
     /**
-     * The five globs whose absence from {@code build.map.java} is the gap this guard closes, written
-     * in the map's own route-contract spelling rather than derived from {@code CLAUDE.md}. Held as a
+     * The globs whose absence from {@code build.map.java} is the gap this guard closes, written in
+     * the map's own route-contract spelling rather than derived from {@code CLAUDE.md}. Held as a
      * set so a copy-paste duplicate collapses and is caught by the cardinality assertion below.
+     * <p>
+     * {@code .github/workflows/*} was deliberately REMOVED from this set. It was pinned here
+     * originally on the reasoning that a workflow change is not documentation-only and so must not
+     * skip the gate — but that conflates two different claims. {@code build.map} answers the binary
+     * question "does this footprint need a build?", and no Maven profile in this repository reads
+     * {@code .github/workflows/}: a workflow-only change compiles and tests exactly the same code as
+     * before the edit, so the gate it triggered could only ever burn minutes without observing the
+     * changed file. Workflow YAML is validated by CI executing it, which happens regardless of what
+     * this map says. The four globs below are kept because each one CAN break something a Maven
+     * build catches — see {@link #REQUIRED_GLOB_COUNT}.
      */
     private static final Set<String> REQUIRED_GLOBS = new LinkedHashSet<>(List.of(
-            ".github/workflows/*",
             "Dockerfile*",
             "docker-compose*.yml",
             "*.css",
             "*.ts"));
 
-    /** How many distinct globs {@link #REQUIRED_GLOBS} must carry; see that field's rationale. */
-    private static final int REQUIRED_GLOB_COUNT = 5;
+    /**
+     * How many distinct globs {@link #REQUIRED_GLOBS} must carry; see that field's rationale.
+     * <p>
+     * Four, not five: {@code Dockerfile*} and {@code docker-compose*.yml} are exercised by
+     * {@code -Pintegration-tests}, which builds the native image and runs {@code ImageMetadataIT}
+     * against it and starts the stack from those compose files; {@code *.css} and {@code *.ts} are
+     * front-end sources the reactor's npm modules build. {@code .github/workflows/*} had no such
+     * validator at any profile and was removed.
+     */
+    private static final int REQUIRED_GLOB_COUNT = 4;
 
     /**
      * A synthetic {@code build.map.java} block for the detector control: one entry that must be
