@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -179,7 +178,7 @@ final class ContainerHealthInspector {
                 process.destroyForcibly();
                 fail(() -> description + " did not complete within " + INSPECT_TIMEOUT_SECONDS + "s");
             }
-            String output = Files.readString(captured, StandardCharsets.UTF_8).strip();
+            String output = Files.readString(captured).strip();
             assertEquals(0, process.exitValue(), () -> description
                     + " failed — is the stack up and the image built? Output: " + output);
             return output;

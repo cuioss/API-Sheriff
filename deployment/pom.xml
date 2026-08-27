@@ -108,7 +108,7 @@
                                 </configuration>
                             </execution>
                             <!-- The gate itself. start-sample.sh preflights the image and now owns
-                                 BOTH gate layers directly: `compose up --wait`, which blocks on the
+                                 BOTH gate layers directly: a `compose up` wait, which blocks on the
                                  HEALTHCHECK baked into the gateway image, and a single-shot
                                  /q/health/ready assertion behind it. The ADR-0031 readiness
                                  derivation still lives in exactly one place — that script derives
