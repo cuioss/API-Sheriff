@@ -109,10 +109,29 @@ assert_fails_to_boot() {
 
     if [[ -z "${mgmt_probe_port}" ]]; then
         echo "⏳ Waiting up to ${BOOT_TIMEOUT_SECONDS}s for the container to exit..."
-        set +e
-        exit_code="$(timeout "${BOOT_TIMEOUT_SECONDS}" docker wait "${CONTAINER_NAME}")"
-        wait_status=$?
-        set -e
+        # Deadline poll rather than `timeout ${BOOT_TIMEOUT_SECONDS} docker wait`. `timeout` is GNU
+        # coreutils and is NOT present on macOS, where the absent binary made this leg fail with
+        # `timeout: command not found` and then report "the container failed to exit and may be
+        # serving despite the invalid configuration" — the exact opposite of what had happened, on a
+        # run whose container had in fact refused to start and logged ApiSheriff-201 correctly. A
+        # negative control that inverts its verdict on the platform it runs on is worse than no
+        # control, because the false red is indistinguishable from the true one it exists to raise.
+        # The probing branch below already resolves its deadline this way, so both branches now share
+        # one shape and neither depends on a binary outside POSIX.
+        local deadline=$(($(date +%s) + BOOT_TIMEOUT_SECONDS))
+        local running
+        while true; do
+            running="$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null || echo unknown)"
+            if [[ "${running}" == "false" ]]; then
+                exit_code="$(docker inspect -f '{{.State.ExitCode}}' "${CONTAINER_NAME}")"
+                break
+            fi
+            if (($(date +%s) >= deadline)); then
+                wait_status=1
+                break
+            fi
+            sleep 1
+        done
     else
         echo "⏳ Waiting up to ${BOOT_TIMEOUT_SECONDS}s for the container to exit, probing"
         echo "   published management port ${mgmt_probe_port} for the whole window..."
