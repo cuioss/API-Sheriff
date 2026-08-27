@@ -6,14 +6,41 @@
     "pm-documents"
   ],
   "modules": {
-    "api-sheriff": {},
-    "api-sheriff-parent": {},
-    "benchmarks": {},
-    "demo-client-maven": {},
-    "demo-client-npm": {},
-    "deployment": {},
-    "documentation": {},
-    "integration-tests": {}
+    "api-sheriff": {
+      "description": "The deployable Quarkus gateway application. Currently hosts the Plan-01 minimal pass-through proxy (ProxyRoute with hop-by-hop header stripping, forwarding hardening, 404 deny-by-default), CDI producers, and REST scaffolding; grows into the full security pipeline (cui-http filtering, route table, token validation) per doc/plan/02+03. Ships JVM and native (Mandrel) images.",
+      "generation": {}
+    },
+    "api-sheriff-parent": {
+      "description": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-java-parent, pins the Quarkus BOM and shared plugin/dependency management, and defines the coverage profile plus module ordering (api-sheriff, integration-tests, benchmarks).",
+      "generation": {}
+    },
+    "benchmarks": {
+      "description": "WRK-based HTTP load benchmarks for the gateway. Wraps wrk scripts (health, proxied-static route) run against the docker-compose stack via the benchmark profile, and post-processes results with WrkResultPostProcessor (benchmarking-common) for publication to GitHub Pages.",
+      "generation": {}
+    },
+    "demo-client-maven": {
+      "description": "Reactor-visible shell for the demo client: a Java-free pom-packaging module that owns the dependency-free demo SPA sources and the Playwright end-to-end suite, and wires the pinned Node/npm toolchain plus the stack bring-up and teardown scripts behind the opt-in e2e-demo profile. A default reactor build of this module is a deliberate no-op - no Node download, no npm install, no container, no artifact - and nothing here ever reaches the production image or the native build.",
+      "generation": {}
+    },
+    "demo-client-npm": {
+      "description": "npm-side view of the same demo-client directory: owns package.json, the pinned Playwright and ESLint toolchain, the lint:strict script and the browser end-to-end specs that drive the demo SPA against the integration-tests stack in both session modes (server-side and cookie). Installed and executed only from the demo-client-maven e2e-demo profile, never from a default reactor build.",
+      "generation": {}
+    },
+    "deployment": {
+      "description": "Ships the operator-facing Docker Compose deployment sample: a runnable gateway stack (compose-sample/docker-compose.yml) with its bring-up and teardown scripts, self-signed certificate generation, an nginx demo upstream, a Keycloak sample realm, and the mounted sheriff-config gateway.yaml the sample gateway reads. It is reference material an operator copies and adapts, not a library the product depends on.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "cd3ecd06dd9b3ed5502105f6bad16b66e21cc9781858c33f73ec7cd2e0d3527f"
+      }
+    },
+    "documentation": {
+      "description": "Design documentation: architecture, configuration model, deployment variants, ADRs 0001-0004, competitive feature analysis, and the sequenced implementation plans under doc/plan/ that drive development.",
+      "generation": {}
+    },
+    "integration-tests": {
+      "description": "Integration test coordinator: builds the native gateway container and orchestrates the docker-compose stack (gateway, Keycloak, go-httpbin, nginx-static, Prometheus) via the integration-tests profile, running IT suites (proxy pass-through, health) with REST Assured and Awaitility.",
+      "generation": {}
+    }
   },
   "name": "API-Sheriff"
 }

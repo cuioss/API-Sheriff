@@ -100,5 +100,6 @@
     }
   },
   "skills_by_profile_reasoning": "Composed by hand rather than by add-domain because the domain detector keys off build_systems=maven and therefore offers only java, java-cui and general-dev for this module, while every file it owns (SPA app.js, Playwright specs, fixtures, utils, playwright.config.js, eslint.config.js) is JavaScript and it carries no Java at all. general-dev supplies the cross-cutting defaults; the pm-dev-frontend skills supply the surface that actually applies; persona-integration-tester is included under module_testing because the tests here are browser end-to-end specs, not unit tests, so jest-testing does not apply.",
-  "tips": []
+  "tips": [],
+  "type": "module"
 }

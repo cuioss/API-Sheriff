@@ -96,5 +96,6 @@
     }
   },
   "skills_by_profile_reasoning": "Every file this module owns is JavaScript: the Playwright specs, fixtures, utils, playwright.config.js and eslint.config.js. Optionals are included because lint-config (ESLint flat config behind npm run lint:strict) and css (the SPA stylesheet served from this directory) are both live surfaces.; Cross-cutting agent behaviour, code-quality and build-dispatch skills apply to every module.; The SPA renders identity and claim data into the DOM, so the JavaScript security surface (DOM trust boundaries, XSS sinks, sanitization) applies to this module under the security profile.",
-  "tips": []
+  "tips": [],
+  "type": "module"
 }

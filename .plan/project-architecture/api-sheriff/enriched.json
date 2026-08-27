@@ -188,5 +188,6 @@
     "api-sheriff source uses Java unnamed variables ('_' in catch and lambda params, e.g. catch (IOException _), _ -> vertx.createHttpClient()) across edge/forward/asset packages. Unnamed variables (JEP 456) require compiler release >= 22. Keep maven.compiler.release at the project Java level (25); a stale or lowered -source below 22 fails compilation with 'unnamed variables are not supported in -source 21 (use -source 22 or higher)'.",
     "JaCoCo enforces a 0.80 branch-coverage floor on api-sheriff and fails fast, which masks coverage failures in later modules (integration-tests was hidden behind it). When a coverage check fails here, establish provenance first with a baseline check against origin/main before treating it as branch-introduced - the 0.78 breach seen in plan benchmark-health-target was inherited debt from main, not new.",
     "TLS-related config keys fall into three classes per doc/adr/0025-*: POLICY (neutral, gateway.yaml \u2014 min_version, cipher_suites, alpn, management.tls.enabled), DEPLOYMENT-BOUND (ports and trust material, environment-supplied), and BUILD-TIME (fixed at image build). Never add a new POLICY key that also carries a port or key-store path \u2014 that would re-introduce the pre-plan gap where a declared knob had no production consumer, or silently make the management interface inherit HTTPS from the default TLS registry bucket."
-  ]
+  ],
+  "type": "module"
 }
