@@ -5,7 +5,7 @@ Guidelines for AI assistants working in the API-Sheriff repository.
 ## What This Repository Is
 
 A security-focused API Gateway taking a lightweight approach, in pre-1.0 development. Maven,
-Java 25 (compile and runtime; CI matrix 25 and 26), Quarkus 3.37.4, following CUI (CUIoss)
+Java 25 (compile and runtime; CI matrix 25 and 26), Quarkus, following CUI (CUIoss)
 standards.
 
 Modules:

@@ -4,7 +4,7 @@
     <parent>
         <groupId>de.cuioss</groupId>
         <artifactId>cui-java-parent</artifactId>
-        <version>1.5.9</version>
+        <version>1.5.10</version>
         <relativePath />
     </parent>
     <groupId>de.cuioss.sheriff.gateway</groupId>
@@ -52,7 +52,7 @@
 
     <properties>
         <!-- Project-owned pin, not an override: the resolved parent chain
-             (de.cuioss:cui-java-parent:1.5.4 -> de.cuioss:cui-java-bom:1.5.4) declares no
+             (de.cuioss:cui-java-parent:1.5.10 -> de.cuioss:cui-java-bom:1.5.10) declares no
              Quarkus version at all, so this property is the single source of truth for the
              Quarkus platform. It feeds the io.quarkus:quarkus-bom import below and the
              Quarkus build tooling, which is why the value has to be maintained here.
@@ -60,7 +60,7 @@
              quarkus-bom import is deliberately declared first so it wins the smallrye-config
              convergence (see the token-sheriff-bom comment below), and cui-java-bom aligns
              its JUnit Jupiter version to whatever the Quarkus BOM ships. -->
-        <version.quarkus>3.38.3</version.quarkus>
+        <version.quarkus>3.39.1</version.quarkus>
         <version.token-sheriff>0.9.4</version.token-sheriff>
         <version.json-schema-validator>3.0.6</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->
@@ -93,9 +93,9 @@
             <!-- Token Sheriff BOM: supplies token-sheriff-client / -client-quarkus / -validation-quarkus
                  versions. Declared after quarkus-bom on purpose: quarkus-bom is imported first, so it wins
                  every artifact the two BOMs both manage. Verified against the resolved dependency graph at
-                 token-sheriff 0.9.3 / Quarkus 3.37.4: token-sheriff-bom declares its Quarkus artifacts
+                 token-sheriff 0.9.4 / Quarkus 3.39.1: token-sheriff-bom declares its Quarkus artifacts
                  (quarkus-config-yaml, quarkus-hibernate-validator) at 3.38.0 and the quarkus-bom import pins
-                 them back to 3.37.4, after which io.smallrye.config converges on a single 3.17.2 across the
+                 them to 3.39.1, after which io.smallrye.config converges on a single 3.17.2 across the
                  whole reactor at compile scope. Reordering these two imports would pull a second Quarkus line
                  into the build and split smallrye-config, which breaks Quarkus config-mapping augmentation. -->
             <dependency>
