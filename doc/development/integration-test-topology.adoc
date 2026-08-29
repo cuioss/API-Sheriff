@@ -289,8 +289,11 @@ time-to-ready was 9.14s measured from the `compose up -d` call, so the start per
 2x against it and the wait timeout roughly 20x. Both factors are deliberately generous rather than
 tight, because neither number is consumed on a healthy run: a large bound costs a healthy run nothing
 and costs a broken one only the time until it gives up. Neither is to be shrunk toward the observed
-figures -- CI runners are slower than the machine measured here, and the measurement bounds the
-live-to-ready delta, not the absolute container start.
+figures -- CI runners are slower than the machine measured here. Note what the 9.14s bounds: it is
+measured from the `compose up -d` call, so it covers absolute container start through ready, which is
+what `--wait-timeout` must also cover because `compose up --wait` counts from that same call. It is
+not a live-to-ready figure -- that delta is 0.00s (see above) and would justify almost no bound at
+all.
 
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
 `--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than seven,

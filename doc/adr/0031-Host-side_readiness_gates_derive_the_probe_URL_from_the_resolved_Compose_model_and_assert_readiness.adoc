@@ -165,9 +165,8 @@ original form.
 
 === Risks
 
-* The recorded measurement ages. It bounds the live-to-ready delta on the machine
-  measured, not absolute container start on slower hosts, so the bound must carry
-  headroom rather than track the observed figures.
+* The recorded measurement ages. It was taken on one machine, and CI runners are
+  slower, so the bound must carry headroom rather than track the observed figures.
 * Where two bring-up scripts derive from the same model independently, both the
   derivation logic and the timeout constant are duplicated. Duplicated derivation is
   materially safer than a duplicated literal -- both stay correct when the model
