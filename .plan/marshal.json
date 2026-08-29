@@ -178,7 +178,17 @@
     "map": {
       "java": [
         {
+          "glob": "*.css",
+          "role": "config",
+          "build_class": "verify"
+        },
+        {
           "glob": "*.sh",
+          "role": "config",
+          "build_class": "verify"
+        },
+        {
+          "glob": "*.ts",
           "role": "config",
           "build_class": "verify"
         },
@@ -206,6 +216,16 @@
           "glob": "*/src/test/resources/*",
           "role": "test",
           "build_class": "module-tests"
+        },
+        {
+          "glob": "Dockerfile*",
+          "role": "config",
+          "build_class": "verify"
+        },
+        {
+          "glob": "docker-compose*.yml",
+          "role": "config",
+          "build_class": "verify"
         },
         {
           "glob": "pom.xml",

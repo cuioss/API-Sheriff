@@ -1,15 +1,69 @@
 {
   "best_practices": [],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "cd3ecd06dd9b3ed5502105f6bad16b66e21cc9781858c33f73ec7cd2e0d3527f"
+  },
   "insights": [],
   "internal_dependencies": [],
   "key_dependencies": [],
   "key_dependencies_reasoning": "",
   "key_packages": {},
-  "purpose": "",
-  "purpose_reasoning": "",
-  "responsibility": "",
-  "responsibility_reasoning": "",
-  "skills_by_profile": {},
-  "skills_by_profile_reasoning": "",
-  "tips": []
+  "purpose": "deployment",
+  "purpose_reasoning": "Contains no Java source; the pom.xml exists solely to bind the -Pcompose-sample lifecycle, which is why build_systems=maven misleads domain suggestion into proposing java/java-cui for a module whose artifacts are compose YAML, shell scripts and container config.",
+  "responsibility": "Ships the operator-facing Docker Compose deployment sample: a runnable gateway stack (compose-sample/docker-compose.yml) with its bring-up and teardown scripts, self-signed certificate generation, an nginx demo upstream, a Keycloak sample realm, and the mounted sheriff-config gateway.yaml the sample gateway reads. It is reference material an operator copies and adapts, not a library the product depends on.",
+  "responsibility_reasoning": "Contains no Java source; the pom.xml exists solely to bind the -Pcompose-sample lifecycle, which is why build_systems=maven misleads domain suggestion into proposing java/java-cui for a module whose artifacts are compose YAML, shell scripts and container config.",
+  "skills_by_profile": {
+    "implementation": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 build-dispatch routes builds through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
+      ]
+    },
+    "module_testing": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality principles (SRP, CQS, complexity, error handling)",
+          "skill": "plan-marshall:ref-code-quality"
+        },
+        {
+          "description": "Language-agnostic testing methodology (AAA, coverage, reliability, determinism)",
+          "skill": "plan-marshall:persona-module-tester"
+        },
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 test-run dispatch routes through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
+      ]
+    },
+    "quality": {
+      "defaults": [
+        {
+          "description": "Foundational agent behavior rules (user interaction, tool usage, research, dependency management)",
+          "skill": "plan-marshall:persona-plan-marshall-agent"
+        },
+        {
+          "description": "Language-agnostic code quality, refactoring, and documentation principles",
+          "skill": "plan-marshall:ref-code-quality"
+        }
+      ]
+    }
+  },
+  "skills_by_profile_reasoning": "Cross-cutting baseline: foundational agent-behaviour rules and language-agnostic code-quality principles apply to every module regardless of content.; The module's entire content is container deployment material: compose-sample/docker-compose.yml, the start-sample.sh and stop-sample.sh bring-up scripts, nginx and Keycloak container config, and the mounted sheriff-config gateway.yaml. It carries NO Java source at all - the pom.xml exists only to bind the -Pcompose-sample lifecycle - so the java and java-cui domains that suggest-domains proposes from build_systems=maven do not describe this module and are deliberately not added. oci-containers is the domain that actually matches the artifacts an implementor edits here.",
+  "tips": [],
+  "type": "module"
 }

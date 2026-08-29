@@ -6,6 +6,23 @@
 # deployment supplies QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES / _KEY_FILES (ADR-0025), with plain
 # HTTP reachable only through the named opt-out
 # quarkus.management.tls-configuration-name=plain-management.
+#
+# The image reports its own health. The HEALTHCHECK below runs /app/application --health-probe, which
+# opens a TCP connection to 127.0.0.1:9000 — the same port the management interface serves — and
+# exits 0 when the port accepts. The probe is deliberately a bare TCP accept rather than an HTTP
+# request: the management scheme is deployment-bound (ADR-0025), so a probe that spoke HTTP would
+# have to know which scheme the deployment configured and would fail against the other one.
+#
+# That HEALTHCHECK line is the SINGLE SOURCE OF TRUTH for the probe cadence
+# (--interval=10s --timeout=3s --start-period=20s --retries=3), which is restated nowhere else, for
+# three reasons:
+#   1. the probe is an image-level artifact — the integration stack and the operator sample both
+#      consume it through the same published image;
+#   2. a Compose `healthcheck:` key OVERRIDES the image's declaration rather than merging with it, so
+#      a second copy would not extend this one, it would silently replace it;
+#   3. --start-period is sized from a measured boot time — worst-case time-to-live 9.14s, recorded in
+#      doc/development/integration-test-topology.adoc, so roughly 2x headroom — which is a property
+#      of the built executable rather than of any one stack.
 FROM quay.io/quarkus/quarkus-distroless-image:2.0@sha256:3884778f6240b1a7cd4551b988e8d244dc202f33b1f39878a37f5f9d23d069a5
 
 # Both supplied by the build (docker compose build.args.APP_VERSION / build.args.APP_REVISION). The
@@ -32,6 +49,13 @@ WORKDIR /app
 COPY --chmod=0755 target/*-runner /app/application
 
 EXPOSE 8443 9000
+
+# Exec (JSON) form is required, not a style preference: this base carries no executable other than
+# /app/application, so the shell form — and every Compose `healthcheck.test` string form, which
+# Docker rewrites to CMD-SHELL — would resolve /bin/sh and fail permanently.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["/app/application", "--health-probe"]
+
 USER nonroot
 
 ENTRYPOINT ["/app/application", "-Dquarkus.http.host=0.0.0.0"]

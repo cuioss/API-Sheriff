@@ -62,5 +62,6 @@
     }
   },
   "skills_by_profile_reasoning": "documentation: AsciiDoc design docs under doc/ incl. 4 ADRs (manage-adr optional applies)",
-  "tips": []
+  "tips": [],
+  "type": "module"
 }

@@ -122,24 +122,58 @@ whole mechanism by which they differ.
 == The Readiness Contract
 
 Bringing the stack up is not the same as being able to drive it. This section records what the
-bring-up script waits for, what that wait actually proves, and where its retry budget came from.
+bring-up gate waits for, what that wait actually proves, and where its one remaining number came
+from.
+
+=== Two layers, and the different question each answers
+
+`integration-tests/scripts/start-integration-container.sh` gates the suite in two layers, and they
+are not redundant: each answers a question the other cannot.
+
+*Layer 1 -- waiting.* `compose up -d --wait --wait-timeout 180`, scoped to the derived gateway
+service names, blocks until the container runtime reports each of those services healthy. The signal
+it blocks on is the `HEALTHCHECK` baked into `api-sheriff/src/main/docker/Dockerfile.native`, so the
+polling that used to be a hand-rolled retry loop in this script is now the runtime's job and the
+probe cadence has exactly one home. The question this layer answers is *is the management port
+accepting?*
+
+The wait is scoped deliberately. `--wait` with no service arguments waits on every service in the
+resolved model, which would implicitly health-gate Keycloak, go-httpbin, asset-origin and the
+benchmark overlay's `nginx-static` -- none of which carries a baked probe, and each of which already
+has its own wait earlier in the script. The service names handed to `--wait` are the service-name
+column of the same Compose-model-derived rows layer 2 probes, so the set waited on and the set
+asserted are one set from one source.
+
+*Layer 2 -- semantics.* One single-shot `GET /q/health/ready` per discovered instance. The question
+this layer answers is *did `GatewayReadinessCheck` report `UP`?* -- which layer 1 structurally cannot
+answer, for the reason <<baked-container-check>> gives.
+
+Single-shot, with no retry budget, is correct precisely *because* layer 1 already waited. A retry
+budget exists to absorb the interval between asking too early and being ready; by the time this
+assertion runs the runtime has already reported the instance healthy, so a non-`UP` answer is a
+defect rather than an early ask, and retrying would only delay reporting it.
+
+Both layers cover all seven instances from one derivation: the service set, each instance's published
+management port, and the scheme its management interface speaks are read from the resolved Compose
+model, so adding, removing or renumbering an instance needs no edit to the script. Every instance is
+asserted, not only the primary one -- the suites drive the TLS ports directly, so an unasserted
+instance is a race that surfaces as a connection refusal in the IT phase rather than as a bring-up
+failure here.
 
 === The gate asserts readiness, not liveness
 
-`integration-tests/scripts/start-integration-container.sh` waits on `/q/health/ready` for every
-discovered gateway instance, in the single Compose-model-derived wait loop. It is one loop for all
-seven instances: the service set, each instance's published management port, and the scheme its
-management interface speaks are read from the resolved Compose model, so adding, removing or
-renumbering an instance needs no edit to the script.
+`/q/health/live` is deliberately *not* what layer 2 asserts. Liveness answers as soon as the process
+is up, which is strictly earlier than the point at which the suite may drive the instance -- an
+instance that is live but not ready would serve the suite's first request against a validator that is
+not yet bound.
 
-`/q/health/live` is deliberately *not* the gate. Liveness answers as soon as the process is up,
-which is strictly earlier than the point at which the suite may drive the instance -- an instance
-that is live but not ready would serve the suite's first request against a validator that is not
-yet bound.
+Layer 1 *is* a liveness signal, which is the whole reason layer 2 is not redundant with it. Read the
+two together: the gate waits on liveness and passes on readiness.
 
 The Keycloak wait is derived the same way, from the `keycloak` service's own
 `de.cuioss.sheriff.management-scheme` label and its published management port, so no host and no
-port number is restated in the script.
+port number is restated in the script. It remains a host-side retry loop, run before the gateways are
+started at all, and is untouched by the gateway-scoped `--wait` above.
 
 === What `GatewayReadinessCheck` attests -- and what it does not
 
@@ -169,13 +203,58 @@ rather than configured into a green state, because they observe an issuer namesp
 never populates. The live per-issuer loader signal they would have carried is an open gap in the
 gateway's own probe, not something the exclusion removed.
 
-=== Where the retry budget came from
+[#baked-container-check]
+=== The baked container check: what it proves, and what it deliberately does not
 
-The gateway wait budget is `GATEWAY_READY_ATTEMPTS`, declared once in the script and read by the
-loop bound, the last-attempt comparison and the progress echo -- one number rather than three
-literals that can drift apart.
+Layer 1's health signal comes from the image rather than from this stack.
+`api-sheriff/src/main/docker/Dockerfile.native` bakes:
 
-Its value was measured, not chosen. A sub-second prober (100 ms polling, started *before*
+[source,dockerfile]
+----
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["/app/application", "--health-probe"]
+----
+
+`--health-probe` is answered by the application's own `main` *before* Quarkus is started: it opens a
+TCP connection to `127.0.0.1:9000`, closes it again, and exits `0` when the port accepted and `1`
+when it did not. Both properties are load-bearing. The exec form naming `/app/application` is the
+only probe form the image can carry, because the distroless base ships exactly that one executable
+and no shell; and the branch has to sit ahead of `Quarkus.run(...)`, because a check reached only
+once the listeners are bound could never answer during the window a container health check exists to
+cover.
+
+*What it proves:* `127.0.0.1:9000` accepted a TCP connection. That is a liveness fact about the
+management interface, and nothing beyond it.
+
+*What it deliberately does not prove:* readiness. Nothing is written to or read from the socket, so
+the probe cannot observe `GatewayReadinessCheck` -- neither the configuration document being bound,
+nor the `@GatewayValidator`-qualified `TokenValidator` resolving.
+
+That blindness is a design constraint, not an omission. The management interface's scheme is
+deployment-bound under
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]:
+HTTPS once the deployment supplies management certificate material, plain HTTP through the named
+`quarkus.management.tls-configuration-name=plain-management` opt-out. A probe that spoke HTTP would
+have to know which scheme the deployment configured and would fail against the other one, so a bare
+TCP accept is the largest claim a protocol-blind probe can make. That is precisely why layer 2 is
+not optional.
+
+The consequence reaches past this stack. Everything that consumes the container's health state --
+`compose up --wait`, `depends_on: condition: service_healthy`, an orchestrator's liveness probe, the
+`STATUS` column of `docker compose ps` -- is reading liveness, however the word "healthy" reads. A
+reader who takes a healthy container for a ready one has drawn a conclusion the signal does not
+support.
+
+=== Where the bound came from
+
+There is no host-side retry budget left to derive. Layer 1 does the waiting, and the only number this
+script still owns is a *bound* rather than a budget: `--wait-timeout 180`. The cadence behind that
+bound -- `--interval=10s --timeout=3s --start-period=20s --retries=3` -- is declared once, in
+`Dockerfile.native`, and is an image-level artifact every consumer of the image inherits rather than
+a host-side value each consumer re-derives.
+
+Both the bound and the `--start-period` behind it are sized from measurement, not chosen. A
+sub-second prober (100 ms polling, started *before*
 `docker compose up -d` so that it observes the live-to-ready transition rather than inferring it
 from a loop that only begins once both are already true) ran against the six gateway instances that
 existed when it was taken, brought up concurrently with Keycloak, under CPU contention -- 24 busy
@@ -200,25 +279,39 @@ The headroom argument below therefore stands on the six instances actually measu
 
 The live-to-ready delta is *0.00s on every instance* -- below the prober's own 100 ms resolution.
 That is not luck; it is what the previous section describes. Because the `jwks` datum is settled at
-boot and cached, readiness flips at the same moment liveness does. Switching the gate from liveness
-to readiness therefore costs no additional wait, and the budget needed no increase to absorb it.
+boot and cached, readiness flips at the same moment liveness does. That is also why delegating the
+waiting to a liveness-shaped container check costs no additional delay over the host-side readiness
+loop it replaced: there is no live-to-ready interval left for layer 2 to have to sit through.
 
-*The budget is 30 attempts at 1 s, retained on that evidence.* The headroom is stated as a factor
-against the worst observed figure: the worst time-to-ready was 9.14s measured from the
-`compose up -d` call, and the wait loop's own clock starts strictly later than that -- after compose
-returns and after the go-httpbin wait -- so 30 attempts carry better than 3x headroom against that
-stricter clock and roughly 30x against the loop's own. The factor is deliberately generous rather
-than tight, because the budget is consumed only on failure: a large budget costs a healthy run
-nothing and costs a broken run only the time until it gives up. It is *not* to be shrunk toward the
-observed figures -- CI runners are slower than the machine measured here, and the measurement bounds
-the live-to-ready delta, not the absolute container start.
+*The bound is `--wait-timeout 180`, and the image's `--start-period` is 20s -- both retained on that
+evidence.* The headroom is stated as a factor against the worst observed figure: the worst
+time-to-ready was 9.14s measured from the `compose up -d` call, so the start period carries roughly
+2x against it and the wait timeout roughly 20x. Both factors are deliberately generous rather than
+tight, because neither number is consumed on a healthy run: a large bound costs a healthy run nothing
+and costs a broken one only the time until it gives up. Neither is to be shrunk toward the observed
+figures -- CI runners are slower than the machine measured here. Note what the 9.14s bounds: it is
+measured from the `compose up -d` call, so it covers absolute container start through ready, which is
+what `--wait-timeout` must also cover because `compose up --wait` counts from that same call. It is
+not a live-to-ready figure -- that delta is 0.00s (see above) and would justify almost no bound at
+all.
 
-=== The demo bring-up gates the same way
+The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
+`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than seven,
+which is why the two differ. That leaves one bound duplicated per script instead of a whole retry
+budget per script, and ADR-0031 records the residual duplication rather than claiming it away.
+
+=== The demo bring-up does *not* gate this way
 
 Everything above describes `integration-tests/scripts/start-integration-container.sh`. The parallel
-developer bring-up, `demo-client/scripts/start-dev-environment.sh`, gates its gateway wait on
-`/q/health/ready` against the same single-number retry budget, so the two scripts agree on the
-readiness contract and the measured evidence above justifies both.
+developer bring-up, `demo-client/scripts/start-dev-environment.sh`, is deliberately unchanged: it
+still runs a single-layer host-side `/q/health/ready` loop against a measured single-number retry
+budget, because not every service it starts runs an image carrying a baked health check, so it has
+nothing to delegate the waiting to.
+
+The two scripts therefore agree on *what is finally asserted* -- `/q/health/ready`, failing closed on
+a non-2xx answer -- and differ on *where the waiting happens*. The measured evidence above justifies
+both. ADR-0031 records that split in its scope note, which is why its `affects: demo-client` metadata
+remains correct.
 
 === `-plain-mgmt` serves plain HTTP by design
 
@@ -229,9 +322,13 @@ selected by pointing the instance at a TLS bucket that carries no key material. 
 to fix.*
 
 It is handled structurally rather than as a special case: each service declares the scheme its
-management interface speaks in a `de.cuioss.sheriff.management-scheme` label, and the wait loop adds
-`-k` only when that label says `https`. The scheme difference is therefore data, not a branch on a
-service name -- which is what lets one loop cover all seven instances.
+management interface speaks in a `de.cuioss.sheriff.management-scheme` label, and the layer-2
+readiness assertion adds `-k` only when that label says `https`. The scheme difference is therefore
+data, not a branch on a service name -- which is what lets one loop cover all seven instances.
+
+Layer 1 is unaffected either way. A bare TCP accept has no scheme to get wrong, so this instance's
+baked container probe is identical to every other instance's; the plain-HTTP downgrade is visible
+only to the assertion behind it.
 
 The corollary is a standing assertion: this instance must be probed over `http://` with *no* `-k`.
 If it ever needs `-k`, the plain-HTTP opt-out has silently stopped working, and that is the bug --

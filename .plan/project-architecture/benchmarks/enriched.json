@@ -101,5 +101,6 @@
     }
   },
   "skills_by_profile_reasoning": "general-dev: cross-cutting; java: Maven module with Java post-processor and JUnit tests; java-cui: cui-java-tools/CuiLogger used in WrkResultPostProcessor",
-  "tips": []
+  "tips": [],
+  "type": "module"
 }

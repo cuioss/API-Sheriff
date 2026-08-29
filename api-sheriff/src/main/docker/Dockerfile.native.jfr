@@ -1,5 +1,6 @@
 # JFR-enabled Dockerfile for API Sheriff native executable
-# UBI micro base (has shell, needed for HEALTHCHECK and JFR output)
+# UBI micro base (has a shell, needed by the RUN step below that creates the JFR output directory —
+# a RUN cannot execute on a shell-less distroless base)
 # No baked-in certificates — mount TLS certs at runtime via volumes or secrets
 FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:2ce42d7f3fb525ffac3b9b8b4ade275b646c0ab27e704d937462411a7b3a3653
 
@@ -29,9 +30,14 @@ RUN mkdir -p /tmp/jfr-output && chmod 777 /tmp/jfr-output
 
 EXPOSE 8443 9000
 
-# Port probe health check using bash /dev/tcp (available in UBI micro)
-HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
-    CMD echo -n '' > /dev/tcp/127.0.0.1/8443 2>/dev/null || exit 1
+# A copy of Dockerfile.native's declaration, which stays the authority for both the mechanism and the
+# four cadence values; keep the two in step when either changes.
+#
+# The probe it replaces measured /dev/tcp/127.0.0.1/8443, which was the wrong binding: 8443 on this
+# image is the SNI front listener, while the JFR overlay moves the terminated listener to 8444. The
+# management port is the same 9000 on both images, so the probe below is correct on either.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["/app/application", "--health-probe"]
 
 USER 1001
 

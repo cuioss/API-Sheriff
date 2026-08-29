@@ -4,8 +4,8 @@
 :sectnums:
 
 // adr-metadata
-// summary: A host-side bring-up gate restates neither scheme nor published port -- it derives both from the resolved Compose model via the service's management-scheme label -- and it waits on the readiness probe rather than the liveness probe, with a retry budget traceable to a worst-case ready time measured under contention.
-// tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, retry-budget
+// summary: A host-side bring-up gate restates neither scheme nor published port -- it derives both from the resolved Compose model via the service's management-scheme label -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a single-shot readiness assertion behind it, which needs no retry budget because the waiting already happened.
+// tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, container-health
 // affects: integration-tests, demo-client
 // supersedes:
 // end-adr-metadata
@@ -48,6 +48,12 @@ probe must fail closed: the HTTP client is configured to treat a non-2xx respons
 as failure, so a service answering "not ready" while starting does not clear the
 gate at port-accept time.
 
+This rule survived the amendment below unchanged, and is in fact the reason the
+amendment is safe. The single-shot readiness assertion both bring-up scripts now
+run *is* this rule: it hits the readiness endpoint, with the client configured to
+fail closed on a non-2xx answer. What changed is only where the *waiting* happens,
+never what is finally asserted.
+
 **Derive the whole probe target from the resolved Compose model.** The script
 resolves the service set, each service's published management port, and the scheme
 its management interface speaks, from the model -- the scheme via an explicit
@@ -64,23 +70,63 @@ instance whose management interface serves plain HTTP by design is probed over
 plain HTTP because its label says so, not because the probe carries a branch on
 its service name. The exception costs one label, not one special case.
 
-**Derive the retry budget from measurement, and record the measurement.** The
-budget is traceable to an observed worst-case time-to-ready, measured with all
-instances brought up concurrently on a machine under load, plus a stated headroom
-factor. The measured figures and the factor are recorded in developer documentation
-alongside the gate, so a later reader can re-evaluate the budget rather than guess
-at it. Within a script, the retry budget is a single constant read by every site
-that needs it -- the loop bound, the last-attempt comparison, the progress
-message -- so the number cannot drift between spellings. The constant is
-per-script: two bring-up scripts that gate independently each declare their own,
-and that duplication is stated as a consequence below rather than claimed away.
+This rule also survived unchanged, and it now carries one more consumer. The
+`compose up --wait` layer described below is *scoped* from the same derivation:
+the integration stack passes it exactly the service-name column of the derived
+rows, so the set of services the wait gates on and the set the assertion probes
+are the same set, from the same source. Scoping matters because an unscoped
+`--wait` gates on every service in the model, including the IdP and the upstream
+backends, which have their own waits and no baked probe. The operator sample waits
+unscoped on purpose -- each of its three services is either health-checked or
+correctly satisfied by "running" -- and that is a property of that stack, not a
+different rule.
+
+**Delegate the waiting to the image's container health check; the host keeps only a
+bound.** *(Amends the original "Derive the retry budget from measurement, and record
+the measurement". The rule below replaces it for the two stacks named in the scope
+note; see that note for where the original still governs.)*
+
+There is no host-side retry budget. The waiting is performed by
+`compose up --wait`, which blocks on the `HEALTHCHECK` baked into the gateway
+image, so the cadence that used to live as a host-side loop -- `--interval`,
+`--retries`, `--start-period` -- is declared once, in the Dockerfile, and is an
+image-level artifact every consumer of that image inherits. Restating it in a
+Compose `healthcheck:` key does not extend the image's declaration; it *overrides*
+it, which is why a copy is a mirror to be kept in step rather than a second
+authority.
+
+The host retains exactly one number, and it is a bound rather than a budget: the
+`--wait-timeout`. It is 180s for the integration stack and 120s for the operator
+sample, both derived from the same measured worst-case time-to-live of 9.14s
+recorded in the integration-test topology document -- roughly a 20x and a 13x
+headroom. The two differ because the stacks differ: the integration stack brings up
+seven gateway instances concurrently alongside Keycloak and three backends, the
+sample brings up one gateway and two supporting services. Neither is consumed on a
+healthy run, so the headroom costs nothing; both must survive a loaded CI runner,
+which is why they are sized against a measured figure rather than an observed one.
+
+The readiness assertion behind that wait needs no budget at all, and this is the
+substantive simplification. A retry budget exists to absorb the interval between
+"asked too early" and "ready". By the time the assertion runs, the runtime has
+already reported the instance healthy -- so a non-UP readiness answer is not an
+early ask, it is a defect, and retrying would only delay reporting it. Single-shot
+is therefore not a shortcut; it is what the layering makes correct.
 
 One nuance belongs to the rationale rather than the rule. When a readiness check
 reports a *boot-time constructibility* fact read from a cached instance, the
-network cost sits in boot, ahead of readiness, not inside the probe. The reason to
-re-derive the budget is therefore that readiness lands later than liveness, not
-that the probe became network-dependent. Stating the rationale correctly matters:
-the wrong rationale over-predicts probe cost and invites an inflated budget.
+network cost sits in boot, ahead of readiness, not inside the probe. That is why
+readiness lands at effectively the same moment liveness does on this gateway, and
+why delegating the wait to a liveness-shaped container check costs no additional
+delay over the host-side readiness loop it replaced.
+
+**Scope note.** These amendments describe the integration stack's
+`start-integration-container.sh` and the operator sample's `start-sample.sh`.
+`demo-client/scripts/start-dev-environment.sh` is **unchanged** and still
+implements the original three-rule shape, retry budget included -- its services do
+not all run an image carrying a baked health check, so it has nothing to delegate
+the waiting to. The `affects: demo-client` metadata above therefore remains
+correct, and the measured-and-recorded retry-budget rule still governs there in its
+original form.
 
 == Consequences
 
@@ -93,26 +139,47 @@ the wrong rationale over-predicts probe cost and invites an inflated budget.
   authority.
 * A deliberate per-instance exception is expressed as data on the service rather
   than as a branch in the probe, so one loop covers every instance.
-* The budget is auditable: its origin is a recorded measurement, not a convention.
+* The bound is auditable: its origin is a recorded measurement, not a convention.
+* The probe cadence is an image-level artifact, so every consumer of the image --
+  the integration stack, the operator sample, an orchestrator -- inherits one
+  declaration instead of re-deriving a host-side budget of its own.
 
 === Negative
 
 * The gate now depends on the model being resolvable at bring-up time, and on each
   service carrying its scheme label. A service that omits the label is not probed
   correctly, so the discovery step must fail loudly rather than degrade.
-* Re-deriving the budget requires an instrumented run under contention, which is
+* Re-deriving the bound requires an instrumented run under contention, which is
   more work than adopting a neighbouring value.
+* **The container health check is a bare TCP accept, so the health state it feeds is
+  a liveness signal, not a readiness one.** It must be: the management interface's
+  scheme is deployment-bound (ADR-0025), so a probe that spoke HTTP would have to
+  know which scheme the deployment configured and would fail against the other. The
+  consequence is that everything consuming the container's health state --
+  `compose up --wait`, `depends_on: condition: service_healthy`, an orchestrator's
+  liveness probe, a `docker ps` health column -- is reading liveness however
+  "healthy" reads. Readiness remains asserted in exactly two places: the host-side
+  single shot against `/q/health/ready`, and `GatewayReadinessCheck` itself. A reader
+  who takes a healthy container as a ready one has drawn a conclusion the signal does
+  not support.
 
 === Risks
 
-* The recorded measurement ages. It bounds the live-to-ready delta on the machine
-  measured, not absolute container start on slower hosts, so the budget must carry
-  headroom rather than track the observed figures.
+* The recorded measurement ages. It was taken on one machine, and CI runners are
+  slower, so the bound must carry headroom rather than track the observed figures.
 * Where two bring-up scripts derive from the same model independently, both the
-  derivation logic and the retry-budget constant are duplicated. Duplicated
-  derivation is materially safer than a duplicated literal -- both stay correct
-  when the model changes -- but the budget constant is a genuine duplicate: the
-  two can be re-tuned apart, and only a shared library would make them one.
+  derivation logic and the timeout constant are duplicated. Duplicated derivation is
+  materially safer than a duplicated literal -- both stay correct when the model
+  changes -- but the `--wait-timeout` value is a genuine duplicate: the two can be
+  re-tuned apart, and only a shared library would make them one. The amendment
+  shrinks this rather than removing it -- one bound per script instead of a whole
+  retry budget per script -- and the third script, demo-client's, still carries the
+  original budget.
+* The image's health-check cadence and any Compose `healthcheck:` block mirroring it
+  are two spellings of one contract, and Compose resolves the conflict by *replacing*
+  rather than merging. A drifted mirror is therefore not a documentation defect but a
+  silent substitution of the real probe, which is why the operator sample's copy
+  names the Dockerfile as its authority in-line.
 
 == Alternatives Considered
 

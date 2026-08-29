@@ -152,6 +152,13 @@ turning TLS off takes health *and* metrics to plain HTTP together, and every con
 port over HTTPS -- readiness gates, scrapers, load-balancer health checks -- breaks at the same
 moment. Plan the change accordingly; there is no partial posture and no gradual cutover.
 
+Exactly one consumer survives the downgrade untouched, and naming it does not soften the sentence
+above. The image's baked container `HEALTHCHECK` is a bare TCP accept on the management port: it
+writes nothing to the socket and reads nothing back, so it has no scheme to be wrong about and
+reports the same result under either posture. That is also precisely why it cannot stand in for the
+consumers that do break -- it never observed the scheme, and it never observed readiness either.
+Everything that speaks HTTP to that port still breaks at the same moment.
+
 === Turning it off, when you must
 
 Running operations endpoints in the clear behind a trusted network boundary is a legitimate
@@ -219,3 +226,9 @@ overridable per deployment with `QUARKUS_MANAGEMENT_PORT`. Writing `management.p
 own it. The refusal is deliberate: a port declared in `gateway.yaml` would outrank the deployment's
 own environment variable, which is precisely the surprise the configuration model exists to prevent.
 See link:environment-variable-overrides.adoc[Environment-variable overrides] for the full split.
+
+One constraint travels with that override: the image's baked `HEALTHCHECK` targets `9000` as a
+compiled-in constant and does not follow `QUARKUS_MANAGEMENT_PORT`, so a deployment that moves the
+port must override the image's `HEALTHCHECK` to match or the container will never report healthy --
+see
+link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].

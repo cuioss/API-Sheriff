@@ -91,26 +91,50 @@ Skip when **every** changed file is one of:
 or a build script. A mixed commit is *not* documentation-only: one Java file in an otherwise-prose
 change makes the whole commit subject to the gate.
 
-This enumeration is deliberately **broader** than the `build.map` contract that `build-decision`
-reads, and the gap is load-bearing rather than an oversight. `build.map` is tree-derived from the
-build-system extensions' `classify_globs()` vocabulary, so it registers only what those extensions
-claim: for the `java` domain `pom.xml`, `*.sh` and the `*/src/{main,test}/**` classes, and for
-`javascript` `package.json`, `*.js`, `*.spec.js`. It does **not** register `*.ts`, `*.css`,
-`.github/workflows/**`, `Dockerfile*` or `docker-compose*.yml`.
+This enumeration is matched by the `build.map` contract that `build-decision` reads, so the gate
+above fires automatically for every class it names. That alignment is **maintained by hand, not
+derived**, and the distinction is the whole point of this section.
 
-Read the consequence precisely, because it is the opposite of an exemption. A footprint touching
-only those five classes intersects no registered glob, so `build-decision` returns
-`decision: not_necessary`, and that positive verdict is exactly what drops `pre-push-quality-gate`
-from the composed execution manifest. **The tooling will not run the gate for you there.** The rule
-above still requires it — so a workflow-only, Dockerfile-only, compose-only, `*.ts`-only or
-`*.css`-only change is gate-requiring and must have the quality gate and full verify run **by
-hand** before committing. The cost is real and intended: those changes pay a full gate instead of
-passing as documentation-only, and the absence of an automatic trigger is not permission to skip it.
+`build.map` is seeded from the build-system extensions' `classify_globs()` vocabulary, which for the
+`java` domain derives only `pom.xml`, `*.sh` and the `*/src/{main,test}/**` classes, and for
+`javascript` `package.json`, `*.js`, `*.spec.js`. Four of the declared gate-requiring classes are
+derived by no extension at all and are therefore **hand-added** entries in `build.map.java`, carried
+with `role: config` / `build_class: verify`: `Dockerfile*`, `docker-compose*.yml`, `*.css` and
+`*.ts`.
 
-Keeping the two lists named side by side is what makes this divergence auditable. If `build.map`
-later grows the missing classes — because a build-system extension widens its `classify_globs()`
-vocabulary — the manual-run instruction above becomes redundant and this paragraph is the claim to
-revisit.
+**`.github/workflows/**` is declared above but deliberately NOT in the map, and that is not an
+oversight.** The two lists answer different questions. The enumeration above asks "may this change
+pass as documentation-only?" — a workflow edit may not, so it is listed there. `build.map` asks "does
+this footprint need a *build*?", and for workflow YAML the answer is no: no Maven profile in this
+repository reads `.github/workflows/`, so a workflow-only change compiles and tests exactly the same
+code as before the edit. Registering it would buy a multi-minute gate that cannot observe the file it
+was triggered by. Workflow YAML is validated by CI executing it, which happens whatever this map
+says. The four entries above are kept precisely because each one *can* break something a Maven build
+catches — `Dockerfile*` and `docker-compose*.yml` are exercised by `-Pintegration-tests`, which
+builds the native image, runs `ImageMetadataIT` against it and starts the stack from those compose
+files; `*.css` and `*.ts` are front-end sources the reactor's npm modules build.
+
+Read the consequence precisely, because it cuts the opposite way from an exemption. **Being
+hand-added means being erasable.** Because no `classify_globs()` derives them, the four are
+re-derivable from nothing and are removed by any re-seed — `manage-config build-map seed --force`,
+and a `marshall-steward` reconcile driving that same seeding path. `manage-config build-map drift`
+reports them as removed rather than restoring them. An erasure leaves no local symptom: the map
+still parses and every surviving entry is still correct. The only consequence is that a footprint
+made solely of those classes then intersects no registered glob, `build-decision` returns
+`decision: not_necessary`, and that positive verdict drops `pre-push-quality-gate` from the composed
+execution manifest — so the change ships ungated.
+
+`BuildGateCoverageContractTest` is the guard that converts that silence into a failing build. Do not
+delete it to get green: re-add the missing entry to `.plan/marshal.json` instead. It has already
+fired once for real — commit `cea163c` regenerated `build.map` from the derivation, dropped every
+hand-added entry, and reached `main` because the commit's own footprint (`.plan/marshal.json` +
+`CLAUDE.md`) is not a build-triggering path, so CI skipped the build job and never ran the test that
+would have caught it.
+
+That last point is the standing gap, and it is a CI-side one rather than a map-side one: a change to
+`.plan/marshal.json` does not trigger a build, so this contract is currently guarded only by local
+gate runs. Until that changes, treat any commit touching `build.map` as gate-requiring by hand,
+whatever `build-decision` says about it.
 
 Doubt resolves toward running it. The cost of an unnecessary build is minutes; the cost of a skipped
 one is a red `main`.

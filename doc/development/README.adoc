@@ -105,12 +105,15 @@ to *run* the finished gateway).
 
 | link:compose-sample.adoc[Compose Sample -- Contributor Guide]
 | The `deployment` module's compose sample -- how it relates to the integration-test stack and why
-  it is a separate, smaller stack rather than a trimmed bring-up of that one; why the gateway carries
-  no `healthcheck:` key and Keycloak's probe is TCP-accept-level only; how `wait-for-ready.sh`
-  derives its entire probe target from the resolved Compose model under
+  it is a separate, smaller stack rather than a trimmed bring-up of that one; why the gateway's
+  `healthcheck:` key is a mirror of the image's baked declaration rather than a second authority, why
+  the exec form is the only one a distroless image can carry, and why Keycloak's probe is
+  TCP-accept-level only; how `start-sample.sh` gates in two layers -- `compose up --wait` on the baked
+  container health check, then a single-shot `/q/health/ready` assertion -- deriving its entire probe
+  target from the resolved Compose model under
   link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031],
-  and where its retry budget comes from; and the opt-in `skipComposeSample` / `compose-sample` build
-  mechanism that keeps the whole thing out of the default lane.
+  and where its one remaining bound comes from; and the opt-in `skipComposeSample` / `compose-sample`
+  build mechanism that keeps the whole thing out of the default lane.
 |===
 
 The authoring standard for this repository's deployment/topology diagrams is deliberately absent

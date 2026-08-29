@@ -206,9 +206,24 @@ services:
     networks:
       - api-sheriff
     restart: unless-stopped
-    # NO healthcheck: key. The distroless image ships neither a shell nor curl, so every in-container
-    # probe form is unavailable by construction — a healthcheck here could only ever fail. Readiness
-    # is gated HOST-side by scripts/wait-for-ready.sh against the published management port.
+    # A VISIBLE MIRROR of the HEALTHCHECK baked into api-sheriff/src/main/docker/Dockerfile.native,
+    # which remains the authority for both the mechanism and the four values below. The image already
+    # carries this declaration, so the block is not what makes the container report health — it is
+    # here so an operator reading this file sees the contract their own deployment inherits, and can
+    # copy it. Keep the two in step: a Compose healthcheck: key OVERRIDES the image's declaration
+    # rather than merging with it, so a drifted copy here silently replaces the real probe.
+    #
+    # `test` must be the exec list form. Docker rewrites the string form to CMD-SHELL, which resolves
+    # /bin/sh — an executable this distroless base does not ship — so a string here would fail
+    # permanently. `--health-probe` is answered by the application itself before Quarkus starts: it
+    # opens a TCP connection to the management port and exits 0 when it accepts, which is why no shell
+    # and no curl are needed.
+    healthcheck:
+      test: ["CMD", "/app/application", "--health-probe"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     cap_drop:

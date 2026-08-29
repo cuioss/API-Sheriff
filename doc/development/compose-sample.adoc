@@ -88,9 +88,25 @@ actually sees. Do not "restore" the 600 here by analogy with that script.
 
 The stack contains three readiness-shaped mechanisms, and they are not interchangeable.
 
-The gateway carries *no* `healthcheck:` key. Its image is distroless -- no shell, no curl, no wget --
-so every in-container probe form is unavailable by construction, and a healthcheck declared here
-could only ever fail. Readiness is asserted host-side instead.
+The gateway carries a `healthcheck:` key, and it is a deliberate *mirror* of the `HEALTHCHECK` baked
+into `api-sheriff/src/main/docker/Dockerfile.native`, which remains the authority for both the
+mechanism and the four cadence values. The image already carries that declaration, so the block in
+this compose file is not what makes the container report health -- it is here so an operator reading
+the sample sees the contract their own deployment inherits, and can copy it. Keep the two in step: a
+Compose `healthcheck:` key *overrides* the image's declaration rather than merging with it, so a
+drifted copy does not extend the real probe, it silently replaces it.
+
+Its form is forced, and for a sharper reason than Keycloak's below. The distroless image ships
+exactly one executable and no interpreter at all, so every probe form that needs one -- a shell
+command, `curl`, `wget`, even Keycloak's `/dev/tcp` trick -- is unavailable by construction. That
+leaves exactly one available form: the exec list naming that single executable,
+`["CMD", "/app/application", "--health-probe"]`. The string form is not an alternative spelling of
+it -- Docker rewrites a `test` string to `CMD-SHELL`, which resolves a `/bin/sh` this base does not
+ship, so a string here would fail permanently.
+
+What the probe measures is a bare TCP accept on the management port, answered by the application's
+own `main` before Quarkus starts. It is therefore a *liveness* signal, which is why the host-side
+gate below still asserts readiness on top of it.
 
 Keycloak carries a TCP-accept probe, `bash -c 'echo -n > /dev/tcp/127.0.0.1/9000'`, and the form is
 forced: the Keycloak image ships neither curl nor wget, so a probe naming either would fail
@@ -100,9 +116,25 @@ management listener is bound, not that the realm finished importing. That is suf
 job, which is ordering the gateway's start behind the identity provider's; the gateway's own eager
 key-set load at boot is what makes that ordering load-bearing rather than cosmetic.
 
-`scripts/wait-for-ready.sh` is the actual readiness gate, and it is bound by
+`scripts/start-sample.sh` is the actual readiness gate, and it is bound by
 link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031].
-It derives its whole probe target from `docker compose config --format json`:
+It gates in two layers, and they are not redundant -- each answers a question the other cannot.
+
+*Layer 1 -- waiting.* `docker compose up -d --wait --wait-timeout 120` blocks until every service is
+healthy, or running where it declares no health check: the gateway's baked probe, Keycloak's declared
+one, and plain "running" for the demo upstream, which declares none. Unscoped is the correct meaning
+here, because that is the right condition for each of this sample's three services. (The integration
+stack scopes its own `--wait` to the gateway service names, because its model also carries backends
+for which "healthy" would mean something else.)
+
+*Layer 2 -- semantics.* One single-shot `GET /q/health/ready` per derived target. Layer 1's signal is
+a bare TCP accept -- it must be, because the management scheme is deployment-bound under
+link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] --
+so it proves the interface is listening, not that the gateway reported `READY`. This assertion closes
+exactly that gap, and needs no retry budget precisely because layer 1 already blocked on health: a
+non-`UP` answer here is a real defect, and retrying would only delay reporting it.
+
+Layer 2 derives its whole probe target from `docker compose config --format json`:
 
 * *which services to probe* -- those carrying the `de.cuioss.sheriff.management-scheme` label;
 * *which scheme to speak* -- that label's value;
@@ -120,12 +152,15 @@ ADR-0031's negative list is binding here, and each item is a real failure mode:
 * *No liveness probe standing in for readiness.* `/q/health/live` answers as soon as the process is
   up, which is strictly earlier than the point at which the gateway can serve a request. Gating on
   it would clear the wait before the stack is usable -- the exact race the gate exists to remove.
-  `curl -sf` is equally load-bearing: without `-f`, curl exits 0 on the 503 the readiness endpoint
-  returns while starting, and the wait would clear as soon as the port *accepted*.
-* *One retry-budget constant, with a recorded origin.* `READY_ATTEMPTS=60` is read by the loop bound,
-  the last-attempt comparison and the progress message; three literals would drift apart. Sixty
-  attempts at one second is roughly 5x headroom over the measured worst case on a loaded machine.
-  Re-measure before shrinking it -- a budget that is too small turns a slow machine into a spurious
+  Layer 1's baked container probe is liveness-shaped for the same structural reason, which is why
+  layer 2 is not redundant with it. `curl -sf` is equally load-bearing in that assertion: without
+  `-f`, curl exits 0 on the 503 the readiness endpoint returns while starting, so the gate would pass
+  as soon as the port *accepted*.
+* *One bound, with a recorded origin -- and no retry budget behind it.* The script owns exactly one
+  number, `--wait-timeout 120`, roughly 13x headroom over the worst measured time-to-ready of 9.14s
+  recorded in link:integration-test-topology.adoc[the integration-test topology document]. The
+  readiness assertion behind that wait has no budget at all, because layer 1 already did the waiting.
+  Re-measure before shrinking the bound -- one that is too small turns a slow machine into a spurious
   failure, which is worse than waiting.
 * *An empty target set is a hard failure.* Discovering no labelled service exits non-zero rather
   than passing, because a gate that probes nothing and reports success is a vacuous green.

@@ -601,6 +601,19 @@ deployment variable a working route. The operator guidance -- when the downgrade
 why `quarkus.management.enabled=false` is *not* the way to get a plain probe endpoint -- lives in
 the link:user/tls-edge.adoc[operator TLS-edge topic].
 
+*The container-level health signal is not a `gateway.yaml` key.* The image bakes its own
+`HEALTHCHECK` -- what `docker ps` renders as `(healthy)` -- and that is a property of the *artifact*,
+not of the configuration document. There is no `health_check` block, no cadence key and no enable
+toggle for it anywhere in this file; the whole declaration lives in
+`api-sheriff/src/main/docker/Dockerfile.native`. It is also not the same signal as the
+`/q/health/ready` endpoint the port above serves, and the two are routinely conflated: the baked
+probe is a protocol-blind TCP accept and therefore reports *liveness*, whereas readiness is
+`GatewayReadinessCheck`'s answer over the management interface. One constraint follows from the
+probe being configuration-free: it targets `9000` as a compiled-in constant and does not follow
+`QUARKUS_MANAGEMENT_PORT`, so a deployment that moves the management port must override the image's
+`HEALTHCHECK` to match. What that state does and does not prove for an operator is covered in
+link:user/compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
+
 [[_server_tls_key_verdicts]]
 === Server-TLS key verdicts
 

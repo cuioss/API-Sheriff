@@ -155,6 +155,52 @@ Two instances of this repository's own history are the evidence for the single r
 separate rules: a production-only change that looked green and yielded *142 compilation errors*
 under `clean test-compile`, and a signature change that yielded *26*.
 
+== The reactor builds serially, and restoring `-T1C` reintroduces a 100% flake rate
+
+`.mvn/maven.config` carries `-T1`. It is not a leftover, and the parallel form it replaced bought
+nothing measurable.
+
+The reactor has six modules and *one* dependency edge (`api-sheriff -> integration-tests`), so five
+of the six sit in layer 0 and `-T1C` ran essentially all of them concurrently. `api-sheriff` is the
+critical path at ~1886 tests; the other four finish well inside its shadow either way. The measured
+wall-clock is the same to within noise -- 333-369s parallel against 359-373s serial -- so the
+parallelism was not shortening the build, only loading the machine while `api-sheriff`'s
+live-Vert.x-server tests were asserting over real sockets.
+
+What it cost was determinism. Under `-T1C` the gate failed *five runs out of five*, and never twice
+on the same test -- six distinct tests across those runs, all of them in
+`de.cuioss.sheriff.gateway.edge`, the only package that drives live servers:
+
+* `WebSocketRelayStageTest.mapsUnreachableUpstreamTo502` -- `TimeoutException`
+* `WebSocketRelayStageTest.releasesOnceOnEstablishedRelayTeardown`
+* `GatewayEdgePipelineTest.rejectsUnmodelledVerb` -- `TimeoutException` on a 15s *localhost* call
+* `GatewayEdgePipelineTest.minimalRouteIsStillGovernedByThePreRouteFloor` -- `InvalidLineSeparatorException`
+* `GatewayEdgePipelineTest.forwardsPostBody` -- `expected: <200> but was: <400>`
+* `GrpcStatusMapperTest.appliesStageHeadersGatewayWins` -- `expected: <DENY> but was: <null>` in 34ms
+
+Every one of them passes in isolation. The same gate on an untouched `main` fails the same way, so
+this is a property of the build, not of any branch.
+
+The symptom *shape* is what rules out the obvious readings. Timeouts alone would suggest CPU
+starvation, but a malformed line separator, a spurious 400 and a response missing a header it was
+handed are wire-level corruption -- bytes arriving that the client never expected -- which slowness
+does not produce. Two tempting explanations were checked against the source and discarded rather
+than left standing: the fixtures do *not* leak servers (`@AfterEach` closes server, client and the
+`Vertx` instance, each awaited), and `Map.of()`'s randomised iteration order does not reach the one
+functional failure, because `renderRejection` applies every stage header and only then overrides
+`content-type`, which is order-independent.
+
+*State the limit of the finding precisely.* What is measured is the causal link -- parallel fails,
+serial passes, n=7. The mechanism is inferred: ephemeral port reuse inside the 30s TIME_WAIT window
+(this platform offers 16384 ephemeral ports) fits all six symptom classes, but it was not
+instrumented, and CPU or file-descriptor pressure are not formally excluded. The fix does not depend
+on which of those it is; a re-opening of the question does.
+
+Per the rule below, the serial greens were checked for vacuity before being believed: both runs
+show `Tests run: 1886, Failures: 0` for `api-sheriff` in the reactor log, not merely a zero exit.
+The executor's `tests_run` field reports only the *last* module's surefire summary (202, from
+`benchmarks`), so it cannot answer this question -- read the reactor log.
+
 == Two rules about reading a check's output
 
 === An ERROR from a guard is a statement about the guard, not about its subject
