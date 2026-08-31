@@ -33,7 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -49,6 +49,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
@@ -273,7 +274,7 @@ class TokenRefreshCoordinatorTest {
             ExecutorService pool = Executors.newFixedThreadPool(2);
             try {
                 Future<RefreshOutcome> leader = pool.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
-                assertTrue(entered.await(2, TimeUnit.SECONDS), "the leader entered the engine refresh");
+                Awaits.connect(entered, "the leader entered the engine refresh");
                 Future<RefreshOutcome> follower = pool.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
                 // Let the follower reach the in-flight join before the leader is released. There is no
                 // observable hook for a thread reaching CompletableFuture#join, so this best-effort
@@ -281,8 +282,9 @@ class TokenRefreshCoordinatorTest {
                 Thread.sleep(100); // NOSONAR java:S2925 - no observable hook for the follower reaching the in-flight join
                 proceed.countDown();
 
-                RefreshOutcome leaderOutcome = leader.get(2, TimeUnit.SECONDS);
-                RefreshOutcome followerOutcome = follower.get(2, TimeUnit.SECONDS);
+                RefreshOutcome leaderOutcome = Awaits.connect(leader, "the leader refresh to complete");
+                RefreshOutcome followerOutcome = Awaits.connect(follower,
+                        "the coalesced follower refresh to complete");
 
                 assertEquals(1, calls.get(), "concurrent requests on one session share a single engine refresh");
                 assertFalse(leaderOutcome.isFailure());
@@ -295,9 +297,13 @@ class TokenRefreshCoordinatorTest {
 
         private static void awaitUninterruptibly(CountDownLatch latch) {
             try {
-                latch.await(2, TimeUnit.SECONDS);
+                Awaits.connect(latch, "the release latch to reach zero");
             } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
+            } catch (TimeoutException e) {
+                // Previously the boolean return was discarded, so an expiry let the test continue
+                // silently. The ceiling reaching zero now fails the test instead.
+                throw new AssertionError("the release latch never reached zero", e);
             }
         }
     }
@@ -421,7 +427,7 @@ class TokenRefreshCoordinatorTest {
             try {
                 Future<RefreshOutcome> leader =
                         pool.submit(() -> coordinator.refresh(cookieSession, sealedCookieHeader, NOW));
-                assertTrue(entered.await(2, TimeUnit.SECONDS), "the leader entered the engine refresh");
+                Awaits.connect(entered, "the leader entered the engine refresh");
                 Future<RefreshOutcome> follower =
                         pool.submit(() -> coordinator.refresh(cookieSession, sealedCookieHeader, NOW));
                 // Best-effort ordering: there is no observable hook for a thread reaching
@@ -429,8 +435,9 @@ class TokenRefreshCoordinatorTest {
                 Thread.sleep(100); // NOSONAR java:S2925 - no observable hook for the follower reaching the in-flight join
                 proceed.countDown();
 
-                RefreshOutcome leaderOutcome = leader.get(2, TimeUnit.SECONDS);
-                RefreshOutcome followerOutcome = follower.get(2, TimeUnit.SECONDS);
+                RefreshOutcome leaderOutcome = Awaits.connect(leader, "the leader refresh to complete");
+                RefreshOutcome followerOutcome = Awaits.connect(follower,
+                        "the coalesced follower refresh to complete");
 
                 assertEquals(1, calls.get(),
                         "two threads on the same cookie produce exactly one engine exchange — single-flight is "
@@ -458,9 +465,13 @@ class TokenRefreshCoordinatorTest {
 
         private static void awaitUninterruptibly(CountDownLatch latch) {
             try {
-                latch.await(2, TimeUnit.SECONDS);
+                Awaits.connect(latch, "the release latch to reach zero");
             } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
+            } catch (TimeoutException e) {
+                // Previously the boolean return was discarded, so an expiry let the test continue
+                // silently. The ceiling reaching zero now fails the test instead.
+                throw new AssertionError("the release latch never reached zero", e);
             }
         }
     }
