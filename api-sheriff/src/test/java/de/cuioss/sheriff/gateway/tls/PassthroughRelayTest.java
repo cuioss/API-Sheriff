@@ -21,14 +21,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import java.nio.charset.StandardCharsets;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 
-import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
@@ -48,7 +47,6 @@ import org.junit.jupiter.api.Test;
 @DisplayName("PassthroughRelay")
 class PassthroughRelayTest {
 
-    private static final long TIMEOUT_SECONDS = 10;
     private static final String HOST = "localhost";
 
     private Vertx vertx;
@@ -62,8 +60,8 @@ class PassthroughRelayTest {
 
     @AfterEach
     void tearDown() throws Exception {
-        await(dialClient.close());
-        await(vertx.close());
+        Awaits.teardown(dialClient.close(), "the dial client to close");
+        Awaits.teardown(vertx.close(), "Vert.x to close");
     }
 
     @Test
@@ -76,12 +74,13 @@ class PassthroughRelayTest {
         CompletableFuture<Buffer> echoed = new CompletableFuture<>();
 
         // Act
-        NetSocket client = await(dialClient.connect(frontPort, HOST));
+        NetSocket client = Awaits.connect(dialClient.connect(frontPort, HOST),
+                "the client leg to connect to the relay front");
         accumulateUntil(client, expected.length, echoed);
-        await(client.write(Buffer.buffer("DATA")));
+        Awaits.connect(client.write(Buffer.buffer("DATA")), "the live bytes to be written");
 
         // Assert
-        assertEquals(Buffer.buffer(expected), echoed.get(TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        assertEquals(Buffer.buffer(expected), Awaits.connect(echoed, "the relayed bytes to arrive"),
                 "the buffered prefix is replayed before the live bytes, byte-for-byte");
     }
 
@@ -96,12 +95,13 @@ class PassthroughRelayTest {
         CompletableFuture<Buffer> echoed = new CompletableFuture<>();
 
         // Act
-        NetSocket client = await(dialClient.connect(frontPort, HOST));
+        NetSocket client = Awaits.connect(dialClient.connect(frontPort, HOST),
+                "the client leg to connect to the relay front");
         accumulateUntil(client, payload.length, echoed);
-        await(client.write(Buffer.buffer(payload)));
+        Awaits.connect(client.write(Buffer.buffer(payload)), "the 1 MiB payload to be written");
 
         // Assert
-        assertEquals(Buffer.buffer(payload), echoed.get(TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        assertEquals(Buffer.buffer(payload), Awaits.connect(echoed, "the relayed bytes to arrive"),
                 "1 MiB round-trips intact, so pause/resume backpressure preserves every byte");
     }
 
@@ -114,11 +114,12 @@ class PassthroughRelayTest {
         int frontPort = startRelayHarness(backend, Buffer.buffer());
 
         // Act
-        NetSocket client = await(dialClient.connect(frontPort, HOST));
-        await(client.end());
+        NetSocket client = Awaits.connect(dialClient.connect(frontPort, HOST),
+                "the client leg to connect to the relay front");
+        Awaits.connect(client.end(), "the client FIN to be written");
 
         // Assert
-        assertNull(backendEnded.get(TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        assertNull(Awaits.connect(backendEnded, "the half-close to reach the backend"),
                 "the client FIN is propagated as a half-close to the backend");
     }
 
@@ -131,12 +132,13 @@ class PassthroughRelayTest {
         int frontPort = startRelayHarness(backend, Buffer.buffer());
 
         // Act
-        NetSocket client = await(dialClient.connect(frontPort, HOST));
-        await(client.write(Buffer.buffer("x")));
-        await(client.close());
+        NetSocket client = Awaits.connect(dialClient.connect(frontPort, HOST),
+                "the client leg to connect to the relay front");
+        Awaits.connect(client.write(Buffer.buffer("x")), "the probe byte to be written");
+        Awaits.teardown(client.close(), "the client leg to close");
 
         // Assert
-        assertNull(backendClosed.get(TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        assertNull(Awaits.connect(backendClosed, "the abort to reach the backend"),
                 "closing the client leg aborts the backend leg");
     }
 
@@ -151,20 +153,20 @@ class PassthroughRelayTest {
             accepted.pause();
             relay.relay(accepted, prefix, backend, RelayKind.TERMINATED, "");
         });
-        return await(harness.listen(0)).actualPort();
+        return Awaits.connect(harness.listen(0), "the relay harness front to start listening").actualPort();
     }
 
     private RelayTarget startEchoBackend() throws Exception {
         NetServer server = vertx.createNetServer();
         server.connectHandler(socket -> socket.handler(socket::write));
-        int port = await(server.listen(0)).actualPort();
+        int port = Awaits.connect(server.listen(0), "the backend server to start listening").actualPort();
         return new RelayTarget(HOST, port);
     }
 
     private RelayTarget startSignalBackend(Consumer<NetSocket> wiring) throws Exception {
         NetServer server = vertx.createNetServer();
         server.connectHandler(wiring::accept);
-        int port = await(server.listen(0)).actualPort();
+        int port = Awaits.connect(server.listen(0), "the backend server to start listening").actualPort();
         return new RelayTarget(HOST, port);
     }
 
@@ -176,9 +178,5 @@ class PassthroughRelayTest {
                 done.complete(accumulator.copy());
             }
         });
-    }
-
-    private static <T> T await(Future<T> future) throws Exception {
-        return future.toCompletionStage().toCompletableFuture().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 }

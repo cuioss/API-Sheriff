@@ -19,13 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.tls.ClientHelloSniParserTest.ClientHelloFixture;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 
-import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
@@ -45,7 +44,6 @@ import org.junit.jupiter.api.Test;
 @DisplayName("SniFrontListener")
 class SniFrontListenerTest {
 
-    private static final long TIMEOUT_SECONDS = 5;
     private static final String HOST = "localhost";
     private static final String MAPPED_SNI = "api.example.com";
 
@@ -60,8 +58,8 @@ class SniFrontListenerTest {
 
     @AfterEach
     void tearDown() throws Exception {
-        await(dialClient.close());
-        await(vertx.close());
+        Awaits.teardown(dialClient.close(), "the dial client to close");
+        Awaits.teardown(vertx.close(), "Vert.x to close");
     }
 
     @Test
@@ -77,9 +75,10 @@ class SniFrontListenerTest {
         sendToFront(front, hello);
 
         // Assert
-        Buffer received = passthrough.firstBytes.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        Buffer received = Awaits.connect(passthrough.firstBytes,
+                "the passthrough backend to receive the relayed bytes");
         assertEquals(Buffer.buffer(hello), received, "the passthrough backend receives the exact ClientHello");
-        await(front.stop());
+        Awaits.teardown(front.stop(), "the SNI front listener to stop");
     }
 
     @Test
@@ -92,9 +91,10 @@ class SniFrontListenerTest {
 
         sendToFront(front, hello);
 
-        Buffer received = terminated.firstBytes.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        Buffer received = Awaits.connect(terminated.firstBytes,
+                "the terminated backend to receive the relayed bytes");
         assertEquals(Buffer.buffer(hello), received, "a non-matching SNI is handed to the terminated listener");
-        await(front.stop());
+        Awaits.teardown(front.stop(), "the SNI front listener to stop");
     }
 
     @Test
@@ -107,9 +107,10 @@ class SniFrontListenerTest {
 
         sendToFront(front, hello);
 
-        Buffer received = terminated.firstBytes.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        Buffer received = Awaits.connect(terminated.firstBytes,
+                "the terminated backend to receive the relayed bytes");
         assertEquals(Buffer.buffer(hello), received, "a missing SNI fails closed to the terminated path (GW-06)");
-        await(front.stop());
+        Awaits.teardown(front.stop(), "the SNI front listener to stop");
     }
 
     @Test
@@ -132,22 +133,24 @@ class SniFrontListenerTest {
 
         sendToFront(front, hello);
 
-        Buffer received = terminated.firstBytes.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        Buffer received = Awaits.connect(terminated.firstBytes,
+                "the terminated backend to receive the relayed bytes");
         assertEquals(Buffer.buffer(hello), received, "an empty passthrough map relays everything terminated");
-        await(front.stop());
+        Awaits.teardown(front.stop(), "the SNI front listener to stop");
     }
 
     private SniFrontListener startFront(Map<String, RelayTarget> targets, RelayTarget terminatedTarget)
             throws Exception {
         PassthroughRelay relay = new PassthroughRelay(vertx.createNetClient());
         SniFrontListener front = new SniFrontListener(vertx, relay, targets, terminatedTarget, 0);
-        await(front.start());
+        Awaits.connect(front.start(), "the SNI front listener to start");
         return front;
     }
 
     private void sendToFront(SniFrontListener front, byte[] payload) throws Exception {
-        NetSocket client = await(dialClient.connect(front.actualPort(), HOST));
-        await(client.write(Buffer.buffer(payload)));
+        NetSocket client = Awaits.connect(dialClient.connect(front.actualPort(), HOST),
+                "the client leg to connect to the SNI front");
+        Awaits.connect(client.write(Buffer.buffer(payload)), "the ClientHello bytes to be written");
     }
 
     private Backend startBackend(int expectedBytes) throws Exception {
@@ -160,12 +163,8 @@ class SniFrontListenerTest {
                 firstBytes.complete(accumulator.copy());
             }
         }));
-        int port = await(server.listen(0)).actualPort();
+        int port = Awaits.connect(server.listen(0), "the capturing backend to start listening").actualPort();
         return new Backend(new RelayTarget(HOST, port), firstBytes);
-    }
-
-    private static <T> T await(Future<T> future) throws Exception {
-        return future.toCompletionStage().toCompletableFuture().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /** A capturing backend server: its endpoint plus the future completed with its first bytes. */

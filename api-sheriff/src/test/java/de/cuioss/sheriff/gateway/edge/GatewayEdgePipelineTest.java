@@ -29,7 +29,6 @@ import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -46,6 +45,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -93,14 +93,14 @@ class GatewayEdgePipelineTest {
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
         // Stub upstream: echoes the received method, URI, and body so the forward path is observable.
-        upstreamServer = vertx.createHttpServer().requestHandler(request ->
+        upstreamServer = Awaits.connect(vertx.createHttpServer().requestHandler(request ->
                 request.body().onComplete(body -> {
                     String payload = body.succeeded() && body.result() != null ? body.result().toString() : "";
                     request.response()
                             .putHeader("X-Upstream-Echo", "hit")
                             .end(request.method().name() + " " + request.uri() + " body=" + payload);
                 }))
-                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                .listen(0), "the stub upstream server to start listening");
         int upstreamPort = upstreamServer.actualPort();
 
         TokenValidator tokenValidator = TokenValidator.builder()
@@ -122,8 +122,8 @@ class GatewayEdgePipelineTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = vertx.createHttpServer().requestHandler(router)
-                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                "the edge front server to start listening");
         frontPort = frontServer.actualPort();
 
         client = vertx.createHttpClient();
@@ -131,11 +131,11 @@ class GatewayEdgePipelineTest {
 
     @AfterEach
     void tearDown() throws Exception {
-        client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        frontServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        upstreamServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(client.close(), "the HTTP client to close");
+        Awaits.teardown(frontServer.close(), "the edge front server to close");
+        Awaits.teardown(upstreamServer.close(), "the stub upstream server to close");
         virtualThreadExecutor.close();
-        vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(vertx.close(), "Vert.x to close");
     }
 
     @Test
@@ -339,7 +339,7 @@ class GatewayEdgePipelineTest {
                             buffer == null ? "" : buffer.toString()));
                 })
                 .toCompletionStage().toCompletableFuture();
-        return future.get(15, TimeUnit.SECONDS);
+        return Awaits.connect(future, "the edge response to " + method + " " + uri);
     }
 
     private static SecurityHeadersConfig corsHeaders() {

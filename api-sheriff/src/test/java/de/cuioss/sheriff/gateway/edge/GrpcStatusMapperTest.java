@@ -19,10 +19,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 
 import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -146,10 +146,10 @@ class GrpcStatusMapperTest {
         @AfterEach
         void tearDown() throws Exception {
             if (server != null) {
-                server.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(server.close(), "the rendering server to close");
             }
-            client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
         }
 
         @Test
@@ -202,13 +202,12 @@ class GrpcStatusMapperTest {
         }
 
         private HttpClientResponse render(EventType eventType, Map<String, String> stageHeaders) throws Exception {
-            server = vertx.createHttpServer()
+            server = Awaits.connect(vertx.createHttpServer()
                     .requestHandler(req -> mapper.renderRejection(req.response(), eventType, stageHeaders))
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                    .listen(0), "the rendering server to start listening");
             int port = server.actualPort();
-            return client.request(HttpMethod.POST, port, "localhost", "/svc.Service/Method")
-                    .compose(req -> req.send())
-                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            return Awaits.connect(client.request(HttpMethod.POST, port, "localhost", "/svc.Service/Method")
+                    .compose(req -> req.send()), "the rendered gRPC rejection response");
         }
     }
 

@@ -36,8 +36,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -59,6 +60,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -82,7 +84,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.opentest4j.AssertionFailedError;
 
 /**
  * Boot-time and lifecycle contract of the public data-plane edge. The per-request serving behaviour
@@ -237,11 +238,12 @@ class GatewayEdgeRouteTest {
                         .compose(HttpClientRequest::send);
 
                 // Assert
-                assertInstanceOf(AtomicBoolean.class, stashed.get(15, TimeUnit.SECONDS),
+                assertInstanceOf(AtomicBoolean.class,
+                        Awaits.connect(stashed, "the admission guard to be stashed"),
                         "handle() stashes the admission-release CAS guard under its context key");
             } finally {
-                client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
             }
         }
 
@@ -249,30 +251,31 @@ class GatewayEdgeRouteTest {
         @DisplayName("the WebSocket branch reads the guard back and releases at relay teardown")
         void webSocketBranchReleasesThroughTheStashedGuard() throws Exception {
             // Arrange — a real upgrade against a stub upstream, so the HTTP response never ends
-            HttpServer upstream = vertx.createHttpServer()
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
                     .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                    .listen(0), "the stub upstream WebSocket server to start listening");
             CompletableFuture<Object> stashed = new CompletableFuture<>();
             HttpServer front = startFront(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), stashed);
             WebSocketClient client = vertx.createWebSocketClient();
             try {
                 WebSocket socket = connectWs(client, front.actualPort());
-                AtomicBoolean guard = assertInstanceOf(AtomicBoolean.class, stashed.get(15, TimeUnit.SECONDS),
+                AtomicBoolean guard = assertInstanceOf(AtomicBoolean.class,
+                        Awaits.connect(stashed, "the admission guard to be stashed"),
                         "the WebSocket request stashes the same release guard");
                 assertFalse(guard.get(),
                         "an established relay still holds its admission permit — release at upgrade "
                                 + "completion would under-count concurrent relays");
 
                 // Act
-                socket.close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                Awaits.teardown(socket.close(), "the relayed WebSocket to close");
 
                 // Assert — nothing ever ended the HTTP response, so only the relay's teardown callback
                 // can have flipped the guard
                 awaitReleased(guard, "the WebSocket relay releases the admission permit at teardown");
             } finally {
-                client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                upstream.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(client.close(), "the WebSocket client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+                Awaits.teardown(upstream.close(), "the stub upstream server to close");
             }
         }
 
@@ -281,16 +284,16 @@ class GatewayEdgeRouteTest {
         void boundsConcurrentRelaysByTheSubBudget() throws Exception {
             // Arrange — admission_cap 2 with a websocket_relay_cap of 1, so a single established relay
             // exhausts the sub-budget while leaving one general permit for ordinary traffic
-            HttpServer upstream = vertx.createHttpServer()
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
                     .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                    .listen(0), "the stub upstream WebSocket server to start listening");
             Router router = Router.router(vertx);
             new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
-            HttpServer front = vertx.createHttpServer().requestHandler(router)
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            HttpServer front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                    "the edge front server to start listening");
             WebSocketClient wsClient = vertx.createWebSocketClient();
             HttpClient httpClient = vertx.createHttpClient();
             try {
@@ -311,16 +314,16 @@ class GatewayEdgeRouteTest {
                         "a refused upgrade releases the general admission permit it was holding");
 
                 // Act — tearing the relay down must return the sub-permit too
-                held.close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                Awaits.teardown(held.close(), "the held WebSocket relay to close");
 
                 // Assert
-                connectWhenAdmitted(wsClient, front.actualPort())
-                        .close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                Awaits.teardown(connectWhenAdmitted(wsClient, front.actualPort()).close(),
+                        "the readmitted WebSocket to close");
             } finally {
-                httpClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                wsClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                upstream.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(httpClient.close(), "the HTTP client to close");
+                Awaits.teardown(wsClient.close(), "the WebSocket client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+                Awaits.teardown(upstream.close(), "the stub upstream server to close");
             }
         }
 
@@ -333,8 +336,8 @@ class GatewayEdgeRouteTest {
                 stashed.complete(ctx.get(ADMISSION_GUARD_KEY));
             });
             newEdge(table).registerRoutes(router);
-            return vertx.createHttpServer().requestHandler(router)
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                    "the edge front server to start listening");
         }
     }
 
@@ -748,9 +751,9 @@ class GatewayEdgeRouteTest {
     }
 
     private WebSocket connectWs(WebSocketClient client, int port) throws Exception {
-        return client.connect(new WebSocketConnectOptions()
-                .setHost("localhost").setPort(port).setURI("/w/room"))
-                .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        return Awaits.connect(client.connect(new WebSocketConnectOptions()
+                .setHost("localhost").setPort(port).setURI("/w/room")),
+                "the WebSocket upgrade to complete");
     }
 
     /**
@@ -758,33 +761,29 @@ class GatewayEdgeRouteTest {
      * lands on the Vert.x event loop after the socket close round-trips, so the first attempt can
      * legitimately still see the exhausted budget.
      */
-    // NOSONAR java:S2925 - Thread.sleep is load-bearing: see awaitReleased.
-    @SuppressWarnings("java:S2925")
     private WebSocket connectWhenAdmitted(WebSocketClient client, int port) throws Exception {
-        for (int attempt = 0; attempt < 200; attempt++) {
+        AtomicReference<WebSocket> admitted = new AtomicReference<>();
+        Awaits.until(() -> {
             try {
-                return connectWs(client, port);
+                admitted.set(connectWs(client, port));
+                return true;
             } catch (ExecutionException _) {
-                Thread.sleep(25);
+                return false;
             }
-        }
-        throw new AssertionFailedError(
-                "no upgrade was admitted after teardown — the relay sub-permit was never returned");
+        }, "an upgrade to be admitted after the relay sub-permit was returned at teardown",
+                Awaits.CONNECT_CEILING_SECONDS);
+        return admitted.get();
     }
 
     private static int statusOf(HttpClient client, int port) throws Exception {
-        return client.request(io.vertx.core.http.HttpMethod.GET, port, "localhost", "/unmatched")
-                .compose(HttpClientRequest::send)
-                .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS).statusCode();
+        return Awaits.connect(
+                client.request(io.vertx.core.http.HttpMethod.GET, port, "localhost", "/unmatched")
+                        .compose(HttpClientRequest::send),
+                "the edge response to GET /unmatched").statusCode();
     }
 
-    // NOSONAR java:S2925 - Thread.sleep is load-bearing: relay teardown is a real socket round-trip on
-    // a live Vert.x event loop with no virtual clock to advance, so the guard is polled until it flips.
-    @SuppressWarnings("java:S2925")
-    private static void awaitReleased(AtomicBoolean guard, String message) throws InterruptedException {
-        for (int attempt = 0; attempt < 200 && !guard.get(); attempt++) {
-            Thread.sleep(25);
-        }
+    private static void awaitReleased(AtomicBoolean guard, String message) throws TimeoutException {
+        Awaits.until(guard::get, message, Awaits.TEARDOWN_CEILING_SECONDS);
         assertTrue(guard.get(), message);
     }
 
