@@ -11,6 +11,10 @@
 .DS_Store
 .asciidoctorconfig.adoc
 
+# Python bytecode
+**/__pycache__/
+*.py[cod]
+
 # Benchmark data directories - these contain sample/test data
 benchmarking/doc/data/
 benchmarking/doc/templates/data/
