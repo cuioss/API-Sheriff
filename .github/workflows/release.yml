@@ -38,6 +38,20 @@ on:
 permissions:
   contents: read
 
+# THE MANAGEMENT CONTEXT PATH THE SMOKE PROBE ADDRESSES, declared once rather than spelled into the
+# probe URL. The path is a BUILD-TIME property of the image: quarkus.management.root-path is fixed at
+# augmentation, so no environment variable can move it on an already-built container, and a probe URL
+# carrying a literal would be a second copy of a value the image decided at build time.
+#
+# It MUST match the value the image below was built with. The "Run the integration-test suite" step
+# drives a plain `./mvnw verify -Pintegration-tests` and passes no -Dsheriff.management-context-path,
+# so api-sheriff/pom.xml's management-context-path profile stays inactive, the shipped
+# application.properties declaration is the acting source, and that value is /q. A build that starts
+# driving the seam property must change this value in the SAME commit — otherwise the probe 404s
+# against a perfectly healthy image and the smoke fails for a reason that reads like a broken build.
+env:
+  MANAGEMENT_CONTEXT_PATH: /q
+
 jobs:
   release:
     # TWO OPERANDS DOING TWO DIFFERENT JOBS. Both are ANDed with the central version-changed guard
@@ -348,10 +362,13 @@ jobs:
       # supplied, so the probe speaks TLS. The mounted material is the workspace fixture the
       # integration-test run above already used — no new fixture is introduced.
       #
-      # The probe is /q/health/live, not /q/health: the aggregate readiness endpoint includes JWKS
-      # readiness against the IT Keycloak, which is not running in this single-container smoke.
-      # Liveness is what this step can honestly assert — the published artifact boots and serves its
-      # management interface over TLS.
+      # The probe is the management interface's /health/live, not its aggregate /health, and it is
+      # composed beneath MANAGEMENT_CONTEXT_PATH (declared at the top of this workflow) so the
+      # reasoning below survives an image built at a non-root management path rather than being tied
+      # to the default spelling. The aggregate readiness endpoint includes JWKS readiness against the
+      # IT Keycloak, which is not running in this single-container smoke. Liveness is what this step
+      # can honestly assert — the published artifact boots and serves its management interface over
+      # TLS.
       - name: Smoke the published image by digest
         env:
           IMAGE_ID: ${{ steps.image.outputs.id }}
@@ -403,7 +420,7 @@ jobs:
             "$REF"
 
           for _ in $(seq 1 60); do
-            if curl -fsSk https://127.0.0.1:19000/q/health/live > /dev/null; then
+            if curl -fsSk "https://127.0.0.1:19000${MANAGEMENT_CONTEXT_PATH}/health/live" > /dev/null; then
               echo "Published image is live."
               exit 0
             fi
