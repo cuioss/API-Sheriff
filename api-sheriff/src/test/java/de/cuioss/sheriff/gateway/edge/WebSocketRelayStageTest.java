@@ -379,7 +379,7 @@ class WebSocketRelayStageTest {
             try {
                 // Act — deliberately not awaited: the branch under test ends no response, so the
                 // send future never completes; the release callback is the observable outcome.
-                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(), "localhost",
+                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(), "127.0.0.1",
                         "/relay").compose(HttpClientRequest::send);
 
                 // Assert
@@ -415,7 +415,7 @@ class WebSocketRelayStageTest {
 
         private WebSocket connectTo(int port) throws Exception {
             return Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
-                    .setHost("localhost").setPort(port).setURI("/relay")),
+                    .setHost("127.0.0.1").setPort(port).setURI("/relay")),
                     "the WebSocket upgrade against the relay-only server");
         }
     }
@@ -429,7 +429,7 @@ class WebSocketRelayStageTest {
         RouteRuntime route = RouteRuntime.builder()
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamTargetPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamTargetPort, ""))
                 .effectiveWebSocketIdleTimeoutSeconds(300)
                 .build();
         WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
@@ -464,14 +464,14 @@ class WebSocketRelayStageTest {
 
     private WebSocket connect(String uri, String origin) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("localhost").setPort(frontPort).setURI(uri).addHeader("Origin", origin);
+                .setHost("127.0.0.1").setPort(frontPort).setURI(uri).addHeader("Origin", origin);
         return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
 
     /** Opens a handshake carrying the {@code X-Custom} header the forward-policy assertions key on. */
     private WebSocket connectWithCustomHeader(String uri) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("localhost").setPort(frontPort).setURI(uri)
+                .setHost("127.0.0.1").setPort(frontPort).setURI(uri)
                 .addHeader("Origin", ALLOWED_ORIGIN).addHeader("X-Custom", "leak");
         return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
@@ -499,7 +499,7 @@ class WebSocketRelayStageTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
                 .effectiveForward(forward)

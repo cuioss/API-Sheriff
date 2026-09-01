@@ -248,7 +248,7 @@ class GrpcDispatchStageTest {
             // path does (ResponseStage#relayWithTrailers).
             ResponseStage responseStage = new ResponseStage();
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
-                    .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, "localhost", "/svc.Service/Method")
+                    .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, "127.0.0.1", "/svc.Service/Method")
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
                             .relayWithTrailers(upResp, clientReq.response(), false, Map.of())
@@ -274,7 +274,7 @@ class GrpcDispatchStageTest {
 
             // Act — POST the front server and read the full response including its trailers
             MultiMap trailers = Awaits.connect(client
-                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, "localhost", "/svc.Service/Method")
+                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, "127.0.0.1", "/svc.Service/Method")
                     .compose(req -> req.send())
                     .compose(resp -> resp.body().map(buffer -> {
                         body.set(buffer);

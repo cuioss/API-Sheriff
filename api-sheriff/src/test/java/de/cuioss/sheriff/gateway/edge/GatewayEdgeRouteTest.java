@@ -234,7 +234,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient();
             try {
                 // Act
-                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), "localhost", "/nothing")
+                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), "127.0.0.1", "/nothing")
                         .compose(HttpClientRequest::send);
 
                 // Assert
@@ -752,7 +752,7 @@ class GatewayEdgeRouteTest {
 
     private WebSocket connectWs(WebSocketClient client, int port) throws Exception {
         return Awaits.connect(client.connect(new WebSocketConnectOptions()
-                .setHost("localhost").setPort(port).setURI("/w/room")),
+                .setHost("127.0.0.1").setPort(port).setURI("/w/room")),
                 "the WebSocket upgrade to complete");
     }
 
@@ -777,7 +777,7 @@ class GatewayEdgeRouteTest {
 
     private static int statusOf(HttpClient client, int port) throws Exception {
         return Awaits.connect(
-                client.request(io.vertx.core.http.HttpMethod.GET, port, "localhost", "/unmatched")
+                client.request(io.vertx.core.http.HttpMethod.GET, port, "127.0.0.1", "/unmatched")
                         .compose(HttpClientRequest::send),
                 "the edge response to GET /unmatched").statusCode();
     }
@@ -794,7 +794,7 @@ class GatewayEdgeRouteTest {
                 .match(MatchConfig.builder().pathPrefix("/w").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
                 .build();
     }
 

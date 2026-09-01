@@ -267,7 +267,7 @@ class TlsEdgeProducerTest {
      */
     private static boolean isListening(int port) {
         try (Socket probe = new Socket()) {
-            probe.connect(new InetSocketAddress("localhost", port), CONNECT_TIMEOUT_MILLIS);
+            probe.connect(new InetSocketAddress("127.0.0.1", port), CONNECT_TIMEOUT_MILLIS);
             return true;
         } catch (IOException _) {
             // A refused connection IS the answer: nothing is listening on the probed port.

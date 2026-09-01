@@ -49,6 +49,7 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -303,7 +304,7 @@ class ReservedBodyCeilingTest {
      */
     private CompletableFuture<String> sendRawAwaitingClose(String rawRequest) {
         CompletableFuture<String> closed = new CompletableFuture<>();
-        netClient.connect(frontPort, "localhost")
+        netClient.connect(frontPort, "127.0.0.1")
                 .onFailure(closed::completeExceptionally)
                 .onSuccess(socket -> {
                     Buffer received = Buffer.buffer();
@@ -334,9 +335,18 @@ class ReservedBodyCeilingTest {
         return prefix + "a".repeat((int) length - prefix.length());
     }
 
-    /** POSTs {@code body} to {@code path} over a real HTTP client and returns the response status. */
+    /**
+     * POSTs {@code body} to {@code path} over a real HTTP client and returns the response status.
+     * <p>
+     * The connection is dialled at the loopback literal, but the request authority stays the
+     * {@code localhost} NAME: {@code oidc.redirect_uri} declares the OIDC host as {@code localhost},
+     * and {@code ReservedPathRegistry.match} only resolves a reserved endpoint when the request host
+     * equals that OIDC host. Turning the authority into a literal would silently stop every path here
+     * from being reserved at all, which is precisely what these assertions distinguish.
+     */
     private int post(String path, String body) throws Exception {
         RequestOptions options = new RequestOptions()
+                .setServer(SocketAddress.inetSocketAddress(frontPort, "127.0.0.1"))
                 .setHost("localhost").setPort(frontPort).setMethod(HttpMethod.POST).setURI(path);
         return Awaits.connect(client.request(options)
                 .compose(request -> request.send(Buffer.buffer(body)))
@@ -354,7 +364,7 @@ class ReservedBodyCeilingTest {
      */
     private CompletableFuture<String> sendRaw(String rawRequest) {
         CompletableFuture<String> statusLine = new CompletableFuture<>();
-        netClient.connect(frontPort, "localhost")
+        netClient.connect(frontPort, "127.0.0.1")
                 .onFailure(statusLine::completeExceptionally)
                 .onSuccess(socket -> {
                     readStatusLine(socket, statusLine);

@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("SniFrontListener")
 class SniFrontListenerTest {
 
-    private static final String HOST = "localhost";
+    private static final String HOST = "127.0.0.1";
     private static final String MAPPED_SNI = "api.example.com";
 
     private Vertx vertx;

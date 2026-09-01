@@ -206,7 +206,7 @@ class GrpcStatusMapperTest {
                     .requestHandler(req -> mapper.renderRejection(req.response(), eventType, stageHeaders))
                     .listen(0), "the rendering server to start listening");
             int port = server.actualPort();
-            return Awaits.connect(client.request(HttpMethod.POST, port, "localhost", "/svc.Service/Method")
+            return Awaits.connect(client.request(HttpMethod.POST, port, "127.0.0.1", "/svc.Service/Method")
                     .compose(req -> req.send()), "the rendered gRPC rejection response");
         }
     }

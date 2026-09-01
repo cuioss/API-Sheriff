@@ -325,7 +325,7 @@ class GatewayEdgePipelineTest {
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
             String body) throws Exception {
         RequestOptions options = new RequestOptions()
-                .setHost("localhost").setPort(frontPort).setMethod(method).setURI(uri);
+                .setHost("127.0.0.1").setPort(frontPort).setMethod(method).setURI(uri);
         CompletableFuture<Response> future = client.request(options)
                 .compose(request -> {
                     requestHeaders.forEach(request::putHeader);
@@ -370,7 +370,7 @@ class GatewayEdgePipelineTest {
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
                 .build();
     }
 
@@ -382,7 +382,7 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(methods))
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
                 .build();
     }
 

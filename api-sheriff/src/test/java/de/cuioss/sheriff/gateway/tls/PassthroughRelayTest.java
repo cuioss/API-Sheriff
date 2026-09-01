@@ -47,7 +47,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("PassthroughRelay")
 class PassthroughRelayTest {
 
-    private static final String HOST = "localhost";
+    private static final String HOST = "127.0.0.1";
 
     private Vertx vertx;
     private NetClient dialClient;

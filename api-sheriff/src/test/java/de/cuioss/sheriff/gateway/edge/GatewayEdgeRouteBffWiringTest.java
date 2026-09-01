@@ -267,7 +267,7 @@ class GatewayEdgeRouteBffWiringTest {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "localhost"))
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "127.0.0.1"))
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
             return Awaits.connect(client.request(options).compose(HttpClientRequest::send),
@@ -283,7 +283,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .effectiveAllowedMethods(List.of(HttpMethod.GET))
                     .effectiveSecurityFilter(SecurityFilterConfig.builder()
                             .allowedPaths(List.of("/auth/never-matches")).build())
-                    .upstream(new ResolvedUpstream("http", "localhost", 1, ""))
+                    .upstream(new ResolvedUpstream("http", "127.0.0.1", 1, ""))
                     .build();
         }
     }
@@ -386,7 +386,7 @@ class GatewayEdgeRouteBffWiringTest {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "localhost"))
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "127.0.0.1"))
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGIN_PATH + query);
             return Awaits.connect(client.request(options)
