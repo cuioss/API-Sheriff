@@ -117,6 +117,18 @@ class TokenRefreshCoordinatorTest {
         return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true);
     }
 
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        try {
+            Awaits.connect(latch, "the release latch to reach zero");
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        } catch (TimeoutException e) {
+            // Previously the boolean return was discarded, so an expiry let the test continue
+            // silently. The ceiling reaching zero now fails the test instead.
+            throw new AssertionError("the release latch never reached zero", e);
+        }
+    }
+
     private TokenRefreshCoordinator coordinator(Instant accessExpiry, RefreshExchange exchange) {
         return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding);
     }
@@ -293,18 +305,6 @@ class TokenRefreshCoordinatorTest {
                 pool.shutdownNow();
             }
         }
-
-        private static void awaitUninterruptibly(CountDownLatch latch) {
-            try {
-                Awaits.connect(latch, "the release latch to reach zero");
-            } catch (InterruptedException _) {
-                Thread.currentThread().interrupt();
-            } catch (TimeoutException e) {
-                // Previously the boolean return was discarded, so an expiry let the test continue
-                // silently. The ceiling reaching zero now fails the test instead.
-                throw new AssertionError("the release latch never reached zero", e);
-            }
-        }
     }
 
     @Nested
@@ -460,18 +460,6 @@ class TokenRefreshCoordinatorTest {
             assertTrue(outcome.isFailure(),
                     "reuse-as-failure is identical in cookie mode — the stage clears the cookie and re-negotiates");
             assertTrue(outcome.setCookieHeaders().isEmpty(), "a failed refresh emits no re-seal");
-        }
-
-        private static void awaitUninterruptibly(CountDownLatch latch) {
-            try {
-                Awaits.connect(latch, "the release latch to reach zero");
-            } catch (InterruptedException _) {
-                Thread.currentThread().interrupt();
-            } catch (TimeoutException e) {
-                // Previously the boolean return was discarded, so an expiry let the test continue
-                // silently. The ceiling reaching zero now fails the test instead.
-                throw new AssertionError("the release latch never reached zero", e);
-            }
         }
     }
 
