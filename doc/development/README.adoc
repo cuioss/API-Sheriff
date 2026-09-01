@@ -109,7 +109,8 @@ to *run* the finished gateway).
   `healthcheck:` key is a mirror of the image's baked declaration rather than a second authority, why
   the exec form is the only one a distroless image can carry, and why Keycloak's probe is
   TCP-accept-level only; how `start-sample.sh` gates in two layers -- `compose up --wait` on the baked
-  container health check, then a single-shot `/q/health/ready` assertion -- deriving its entire probe
+  container health check, then a single-shot readiness assertion beneath the derived management
+  context path (link:../user/context-path.adoc[The Context Path]) -- deriving its entire probe
   target from the resolved Compose model under
   link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031],
   and where its one remaining bound comes from; and the opt-in `skipComposeSample` / `compose-sample`

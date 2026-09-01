@@ -286,7 +286,27 @@ answer is a different mechanism, not a different variable.
 | Build-time fixed *and* a trap: setting it `false` does not give you a plain probe endpoint, it
   moves health and metrics onto the main TLS-terminated router. Use the `plain-management` bucket
   instead -- see link:tls-edge.adoc[TLS Edge].
+
+| `quarkus.http.root-path` +
+  `quarkus.management.root-path` +
+  `quarkus.http.non-application-root-path`
+| The *context paths* -- where the data plane serves, and where health and metrics serve. All three
+  sit on Quarkus `*BuildTimeConfig` interfaces, so all three are fixed at augmentation. Moving one is
+  a *rebuild*, through `api-sheriff/pom.xml`'s `-Dsheriff.context-path` /
+  `-Dsheriff.management-context-path` seam -- see link:context-path.adoc[The Context Path].
 |===
+
+*The matching environment variables are inert, and silently so.* `QUARKUS_HTTP_ROOT_PATH`,
+`QUARKUS_MANAGEMENT_ROOT_PATH` and `QUARKUS_HTTP_NON_APPLICATION_ROOT_PATH` set on a container
+started from a published artifact do nothing at all -- no error, no warning, no effect. That is the
+ordinary build-time behaviour above, called out because a path looks like the most deployment-shaped
+value in the whole surface and is not one.
+
+The ADR-0025 consequence follows without an exception: because a context path is *build-time*, it is
+not part of `gateway.yaml`'s neutral vocabulary, and that absence is structural rather than
+stylistic. `gateway.yaml` is a *runtime* source read at startup, so a key already fixed at
+augmentation cannot be projected from it -- a `context_path` written there could never take effect.
+The path therefore never enters that document, for the same reason `quarkus.ssl.native` does not.
 
 == Audit: secure defaults and their override routes elsewhere
 
@@ -397,7 +417,9 @@ surface in *any* profile. The question this note once left open -- what the exte
 check reports when nothing configures it -- no longer arises: every extension bean that reads that
 surface is removed from the bean set by `quarkus.arc.exclude-types`. That is both probes
 (`JwksEndpointHealthCheck` and `TokenValidatorHealthCheck`), which therefore contribute nothing to
-`/q/health/ready`, and the `JwtMetricsCollector`, whose ten-second schedule otherwise failed on every
+the readiness endpoint beneath the configured management context path
+(link:context-path.adoc[The Context Path]), and the `JwtMetricsCollector`, whose ten-second schedule
+otherwise failed on every
 tick and wrote a stack trace to the log each time. Excluding them costs no observability: the probes
 iterated the extension's own issuer list -- empty here -- and so never reached this gateway's JWKS
 loaders, and the collector failed before publishing a single meter. JWKS readiness is reported by the
@@ -407,7 +429,7 @@ Read that `jwks` datum for what it is: a *boot-time* constructibility fact, not 
 validator is forced into existence at startup and cached, so the probe reports `ready` for the
 process lifetime -- an IdP whose JWKS endpoint later goes unreachable, a stalled key rotation, or an
 expired signing key do *not* take readiness DOWN. Monitor those from the IdP side; do not infer them
-from a green `/q/health/ready`. The comment block above `quarkus.arc.exclude-types` in
+from a green readiness probe. The comment block above `quarkus.arc.exclude-types` in
 `application.properties` carries the full reasoning, including why the extension *dependency* itself
 stays.
 ====
@@ -517,4 +539,8 @@ above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
 
 | Native-image SSL support
 | No -- build-time. It is set in the Maven `native` profile.
+
+| The context path (application or management)
+| No -- build-time, and the variable is *silently* inert rather than refused. It takes a rebuild
+  through the Maven seam; see link:context-path.adoc[The Context Path].
 |===

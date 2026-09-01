@@ -807,8 +807,11 @@ The manifest requires *paths, errors, and average timing*. These map to:
 OpenTelemetry tracing is a planned (post-MVP) hook per the manifest and is not part of the
 initial metrics surface.
 
-*Health.* SmallRye Health serves the aggregate check (`/q/health`) and liveness/readiness
-(`/q/health/live`, `/q/health/ready`) on the same management port, and therefore shares whatever
+*Health.* SmallRye Health serves the aggregate check (`/health`) and liveness/readiness
+(`/health/live`, `/health/ready`) beneath the *management context path* on the management port. Those
+suffixes are Quarkus' own and are fixed; the prefix they hang from is
+`quarkus.management.root-path`, a build-time key whose shipped default is `/q` and which the Maven
+seam moves -- see link:user/context-path.adoc[The Context Path]. All three therefore share whatever
 posture that single port has -- HTTPS by default, plain HTTP if the opt-out above is taken. That
 sharing is the point: health cannot be downgraded separately from metrics, because they are the
 same listener. Readiness reflects the loaded-and-validated configuration and the boot-time

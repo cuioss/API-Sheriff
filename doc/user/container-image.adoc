@@ -182,10 +182,18 @@ filesystem (`--read-only` plus a writable `--tmpfs /tmp`) and explicit memory an
 naming it, so `docker ps` shows the gateway as `(health: starting)` for the first twenty seconds and
 then `(healthy)` once its management interface is accepting -- with no `--health-cmd` on the command
 line and no probe tooling in the image beyond the executable itself. That state is a *liveness*
-signal: readiness is `GET /q/health/ready` on 9000, and a healthy container has not told you the
-gateway is ready to serve. What the signal does and does not prove, and how to read the probe's own
+signal: readiness is a `GET` against the readiness endpoint on 9000, beneath the management context
+path the image was built with, and a healthy container has not told you the gateway is ready to
+serve. What the signal does and does not prove, and how to read the probe's own
 output when a container goes unhealthy, is covered in
 link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
+
+*The context paths are properties of the image, not of the run.* Both the data-plane prefix and the
+management prefix are fixed at build time -- the published image ships the defaults, and the
+matching `QUARKUS_*_ROOT_PATH` environment variables are silently inert against it. A deployment that
+needs a different prefix builds its own image through the Maven seam, or inherits the published build
+parent; link:context-path.adoc[The Context Path] documents both routes and the reason there is no
+runtime one.
 
 One override interacts with it. The baked probe targets port `9000` as a compiled-in constant --
 deliberately, so that it reads no configuration and can answer before the application has read any.

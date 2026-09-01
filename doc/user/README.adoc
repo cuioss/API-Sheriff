@@ -112,6 +112,14 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   request that proves the stack works, and -- explicitly -- every sample-only value that must change
   before the stack is reachable by anything you care about. Links to the Container Image guide for
   pulling and verifying, and to Environment-Variable Overrides for the deployment-owned knobs.
+
+| link:context-path.adoc[The Context Path]
+| Where the data plane serves, where health and metrics serve, and why moving either is a *rebuild*
+  rather than an environment variable: the three keys and their defaults, the build-time constraint
+  and the `gateway.yaml` consequence that follows from it, the Maven seam and the carrier-key
+  indirection that makes it act, why the management interface does not move with the application
+  one, the host-side Compose label and the one literal that deliberately survives, and the
+  off-context `404` a non-root path produces.
 |===
 
 == Scope of This Layer
