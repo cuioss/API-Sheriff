@@ -21,15 +21,21 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
 import java.lang.annotation.Annotation;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -90,6 +96,15 @@ class WebSocketRelayStageTest {
 
     private static final String ALLOWED_ORIGIN = "https://app.example";
     private static final String FOREIGN_ORIGIN = "https://evil.example";
+
+    /**
+     * Absolute paths probed for {@code lsof}, in order. Absolute rather than {@code PATH}-resolved so
+     * the diagnostic cannot be redirected by the environment it is diagnosing.
+     */
+    private static final List<String> LSOF_BINARIES = List.of("/usr/sbin/lsof", "/usr/bin/lsof");
+
+    /** Bound on the diagnostic subprocess: a report that has not arrived by now is not worth waiting for. */
+    private static final long LSOF_TIMEOUT_SECONDS = 2;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -188,7 +203,7 @@ class WebSocketRelayStageTest {
 
         // Assert — the upgrade is refused 403 and the upstream is never contacted
         UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(403, rejected.getStatus());
+        assertEquals(403, rejected.getStatus(), () -> rejectionReport(failure));
         assertEquals(0, upstreamConnects.get(), "a rejected Origin never reaches the upstream");
     }
 
@@ -216,7 +231,7 @@ class WebSocketRelayStageTest {
 
         // Assert — authentication (stage 4) rejects the handshake before the WebSocket dispatch runs
         UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(401, rejected.getStatus());
+        assertEquals(401, rejected.getStatus(), () -> rejectionReport(failure));
         assertEquals(0, upstreamConnects.get(), "an unauthenticated handshake never reaches the upstream");
     }
 
@@ -229,7 +244,7 @@ class WebSocketRelayStageTest {
 
         // Assert
         UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(502, rejected.getStatus());
+        assertEquals(502, rejected.getStatus(), () -> rejectionReport(failure));
     }
 
     @Test
@@ -242,7 +257,7 @@ class WebSocketRelayStageTest {
         // Assert — the failed-handshake response still carries the gateway (stage-0) security headers,
         // mirroring the HTTP (ResponseStage.relay) and gRPC (GrpcStatusMapper.renderRejection) contract
         UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(502, rejected.getStatus());
+        assertEquals(502, rejected.getStatus(), () -> rejectionReport(failure));
         MultiMap headers = rejected.getHeaders();
         assertEquals("nosniff", headers.get("X-Content-Type-Options"),
                 "a failed WebSocket handshake carries the stage-0 X-Content-Type-Options header");
@@ -459,6 +474,78 @@ class WebSocketRelayStageTest {
             throws InterruptedException {
         Thread.sleep(250);
         assertEquals(1, releases.get(), message);
+    }
+
+    /**
+     * The failure message for an unexpected upgrade status: what the rejection said, plus who was
+     * actually listening on each port this fixture bound.
+     * <p>
+     * These two halves answer the two halves of the question. {@code Awaits} enriches the
+     * {@link ExecutionException} message with the rejected status, the response headers and the body,
+     * and header <em>presence</em> discriminates the two mechanisms: {@code WebSocketRelayStage}
+     * applies the gateway's stage-0 security headers before writing the head on every rejection path
+     * it renders (see {@code onUpstreamFailure}), so a rejection carrying them was written by this
+     * gateway relaying an upstream's verbatim status, while a bare rejection never reached the
+     * gateway at all. The LISTEN report then names the responder in either case.
+     * <p>
+     * Supplied lazily to {@code assertEquals}, so a green run pays for none of it.
+     *
+     * @param failure the wrapper the awaited upgrade failed with
+     * @return the rendered report, never {@code null}
+     */
+    private String rejectionReport(ExecutionException failure) {
+        return failure.getMessage() + listenOwners(frontPort, upstreamPort, deadPort);
+    }
+
+    /**
+     * Renders the LISTEN owner of each named port, one line per port.
+     * <p>
+     * This is a diagnostic, never a gate: it must not throw and must not fail a test, so every
+     * failure mode — a missing binary, an I/O error, an overrun of the two-second bound — degrades to
+     * a stated note in the report rather than propagating.
+     *
+     * @param ports the ports to report on
+     * @return the rendered report, never {@code null}
+     */
+    private static String listenOwners(int... ports) {
+        StringBuilder report = new StringBuilder(256)
+                .append(System.lineSeparator()).append("LISTEN owners:");
+        for (int port : ports) {
+            report.append(System.lineSeparator()).append("  ").append(port).append(": ")
+                    .append(listenOwner(port));
+        }
+        return report.toString();
+    }
+
+    /**
+     * Runs {@code lsof -nP -iTCP:<port> -sTCP:LISTEN} against an absolute binary path.
+     *
+     * @param port the port to report on
+     * @return the single-line rendering, or a stated degradation note
+     */
+    private static String listenOwner(int port) {
+        Optional<String> binary = LSOF_BINARIES.stream()
+                .filter(candidate -> Files.isExecutable(Path.of(candidate)))
+                .findFirst();
+        if (binary.isEmpty()) {
+            return "lsof unavailable (no executable at " + String.join(" or ", LSOF_BINARIES) + ")";
+        }
+        try {
+            Process process = new ProcessBuilder(binary.get(), "-nP", "-iTCP:" + port, "-sTCP:LISTEN")
+                    .redirectErrorStream(true)
+                    .start();
+            if (!process.waitFor(LSOF_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return "lsof unavailable (no answer within " + LSOF_TIMEOUT_SECONDS + "s)";
+            }
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+            return output.isEmpty() ? "no LISTEN owner" : output.replace("\n", " | ");
+        } catch (InterruptedException cause) {
+            Thread.currentThread().interrupt();
+            return "lsof unavailable (interrupted: " + cause + ")";
+        } catch (IOException | RuntimeException cause) {
+            return "lsof unavailable (" + cause + ")";
+        }
     }
 
     private WebSocket connect(String uri, String origin) throws Exception {

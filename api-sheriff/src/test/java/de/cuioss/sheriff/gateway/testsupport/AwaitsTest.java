@@ -18,12 +18,14 @@ package de.cuioss.sheriff.gateway.testsupport;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,6 +34,9 @@ import java.util.regex.Pattern;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.vertx.core.Future;
+import io.vertx.core.MultiMap;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.UpgradeRejectedException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +53,13 @@ import org.junit.jupiter.api.Test;
  * <p>The assertions are deliberately falsifiable: drop the elapsed measurement, or drop the thread
  * dump, and the tests below go red rather than continuing to pass on a message that no longer
  * explains anything.
+ *
+ * <p>The rejected-upgrade enrichment carries a fourth, independent red-on-drop property: drop it and
+ * exactly {@link #reportsStatusAndHeadersOnARejectedUpgrade()} goes red. It joins neither existing
+ * set, because it asserts on nothing but the thrown type, the cause identity and the rejection
+ * detail — never on the dump, never on the elapsed time. Keeping the three probes disjoint is what
+ * lets a single red method name which mechanism was lost, so a new assertion here must not reach for
+ * the dump or the measurement either.
  */
 @EnableGeneratorController
 @DisplayName("Awaits")
@@ -113,6 +125,40 @@ class AwaitsTest {
                 CompletableFuture.completedFuture(expected), CONTROL_LABEL, CONTROL_CEILING));
 
         assertEquals(expected, actual, "the awaited value is returned unchanged");
+    }
+
+    /**
+     * The matched control for the rejected-upgrade enrichment. It asserts on the thrown type, the
+     * cause identity and the rejection detail only — deliberately not on the thread dump or the
+     * elapsed measurement, so it stays disjoint from the three timeout probes above.
+     */
+    @Test
+    @DisplayName("a rejected upgrade keeps its wrapper and its cause, and gains a message naming the status and headers")
+    void reportsStatusAndHeadersOnARejectedUpgrade() {
+        int status = Generators.integers(400, 599).next();
+        String headerName = "X-" + Generators.letterStrings(4, 10).next();
+        // The rejection's own message deliberately carries no digits: were it to restate the status,
+        // the wrapper's default toString rendering would satisfy the status assertion below even with
+        // the enrichment dropped, and this probe would stop being falsifiable.
+        UpgradeRejectedException rejected = new UpgradeRejectedException(
+                Generators.letterStrings(8, 16).next(), status,
+                MultiMap.caseInsensitiveMultiMap().add(headerName, Generators.letterStrings(4, 10).next()),
+                Buffer.buffer(Generators.letterStrings(4, 10).next()));
+        CompletableFuture<String> refused = new CompletableFuture<>();
+        refused.completeExceptionally(rejected);
+
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> Awaits.await(refused, CONTROL_LABEL, CONTROL_CEILING));
+
+        String message = failure.getMessage();
+        assertAll("rejected-upgrade diagnostics",
+                () -> assertSame(rejected, failure.getCause(),
+                        "the cause is the identical instance received — the downstream assertInstanceOf "
+                                + "sites key on exactly that"),
+                () -> assertTrue(message.contains(String.valueOf(status)),
+                        "the failure names the rejected status"),
+                () -> assertTrue(message.contains(headerName),
+                        "the failure names the rejection's headers, whose presence is the discriminator"));
     }
 
     @Test
