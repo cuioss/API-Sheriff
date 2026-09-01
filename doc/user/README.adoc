@@ -120,6 +120,14 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   indirection that makes it act, why the management interface does not move with the application
   one, the host-side Compose label and the one literal that deliberately survives, and the
   off-context `404` a non-root path produces.
+
+| link:downstream-parent.adoc[Rebuilding Under Your Own Context Path]
+| The supported way to move the context path without cloning this repository: inherit the published
+  build parent `de.cuioss.sheriff.gateway:api-sheriff-build-parent`, set one property, build. Covers
+  what the parent declares versus what you supply, the worked example reproduced verbatim and the two
+  lines your own POM changes, the parent-version bump as the adoption mechanism, how it composes with
+  `cui-java-parent`'s inherited tooling and how to re-enable any of it, and the two boundaries it
+  deliberately does not cross -- container images and host-side probe wiring.
 |===
 
 == Scope of This Layer

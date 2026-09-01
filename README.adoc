@@ -134,6 +134,11 @@ built*, so the matching `QUARKUS_*_ROOT_PATH` environment variables are silently
 published image. Moving either takes a rebuild through the Maven seam; see
 link:doc/user/context-path.adoc[The Context Path].
 
+* Rebuilding under your own context path without cloning this repository is the supported
+  customisation path: inherit the published build parent
+  `de.cuioss.sheriff.gateway:api-sheriff-build-parent`, set one property, and build — see
+  link:doc/user/downstream-parent.adoc[Rebuilding Under Your Own Context Path]
+
 [[_known_limitations]]
 == Known Limitations
 

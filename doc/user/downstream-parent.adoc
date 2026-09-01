@@ -1,0 +1,376 @@
+= API Sheriff -- Rebuilding Under Your Own Context Path
+:toc:
+:toclevels: 3
+:sectnums:
+
+A deployer who needs API Sheriff to serve somewhere other than `/` has to rebuild it. This page is
+the supported way to do that without cloning this repository: inherit the published build parent
+`de.cuioss.sheriff.gateway:api-sheriff-build-parent`, set one property, and run your own build.
+
+Why the rebuild is unavoidable, and what the property actually reaches, is in
+link:context-path.adoc[The Context Path]. Read that first if you are still hoping for an environment
+variable.
+
+== Why a rebuild, and not configuration
+
+All three context-path keys -- `quarkus.http.root-path`, `quarkus.management.root-path` and
+`quarkus.http.non-application-root-path` -- sit on Quarkus `*BuildTimeConfig` interfaces, so their
+values are fixed at *augmentation*: when the artifact is built, not when it starts.
+
+The consequences are absolute rather than a matter of degree:
+
+* `QUARKUS_HTTP_ROOT_PATH` and its siblings are *inert* against a published image. They produce no
+  error and no warning; they simply do nothing.
+* The keys are not in `gateway.yaml` either, and cannot be. That document is a *runtime* source read
+  at startup, so a key already fixed at augmentation could never take effect from it -- a structural
+  impossibility, not an omission (ADR-0025).
+
+So the question is never "which setting moves the path" but "how cheap can the rebuild be made". This
+parent's answer: one property, and a `<parent><version>` bump to adopt a new release.
+
+== What the parent declares, and what you supply
+
+[cols="1,1", options="header"]
+|===
+| The parent declares | You supply
+
+a| *The knob.* `sheriff.context-path` (default `/`) and `sheriff.management-context-path` (default
+`/q`), mapped onto the carrier keys augmentation actually reads.
+a| *A value for the knob* -- one line in your own `<properties>`, or none at all if you want the
+stock paths.
+
+a| *The application.* `de.cuioss.sheriff.gateway:api-sheriff` as a real `<dependency>`, at the
+version of the parent you inherit.
+a| *Nothing.* Inheriting the parent is what puts the gateway on your classpath; you declare no
+dependency.
+
+a| *The platform.* The Quarkus BOM import and `version.quarkus` as a concrete property, because
+Maven does not propagate properties out of an imported BOM and `quarkus-maven-plugin` needs the
+value as a build extension.
+a| *Nothing.* Do not declare `version.quarkus` yourself -- see <<_composing_with_cui_java_parent>>.
+
+a| *The build binding.* `quarkus-maven-plugin` bound with `build`, `generate-code` and
+`generate-code-tests`, and `quarkus.package.main-class` pinned to the gateway's entry point.
+a| *Nothing.* Your `mvn package` augments without you declaring a plugin.
+
+a| *The native profile.* `-Pnative` by inheritance, mirroring this repository's own profile.
+a| *A GraalVM/Mandrel route.* The profile sets `quarkus.native.container-build=true`, so a container
+runtime is what you supply.
+
+a| *Neutralised hygiene tooling.* Checkstyle, SpotBugs, PMD/CPD, enforcer, JaCoCo, license stamping,
+OpenRewrite and dependency-check are switched off as inherited defaults.
+a| *Your own quality toolchain*, if you want one -- see <<_composing_with_cui_java_parent>>.
+
+a| *A valid automatic module name.* Pinned, because the inherited default derives it from
+`${project.groupId}.${project.artifactId}` and a hyphenated artifactId yields an invalid Java module
+name.
+a| *Nothing* -- unless you care about the manifest value, in which case override the property.
+
+a| *Nothing about containers.* No Dockerfile, no image build, no base image.
+a| *The image*, if you deploy one -- see <<_the_container_image_boundary>>.
+
+a| *Nothing about host-side probe wiring.*
+a| *Your own labels and scrape config* -- see <<_the_host_side_limitation>>.
+|===
+
+== The worked example
+
+`build-parent/example/pom.xml` in this repository is a real, buildable consumer POM rather than a
+fenced block in prose, and it is reproduced here *verbatim*, comments included, so what you read is
+what is built:
+
+[source,xml]
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The worked consumer example for api-sheriff-build-parent.
+
+    It is a REAL, BUILDABLE pom.xml rather than a fenced block inside prose, so it cannot rot: the
+    contract test (BuildParentContractTest) reads this file, and doc/user/downstream-parent.adoc's
+    runbook builds it. If the parent ever stops delivering the one-property promise, this file has to
+    grow a <build> block to compensate — and that growth is exactly what the contract test fails on.
+
+    It is deliberately NOT a reactor module. A native build must never enter the default lane, and this
+    example exists to be built BY HAND from the deliverable-10 runbook:
+
+        mvn -f build-parent/example/pom.xml package          # JVM-mode runner
+        mvn -f build-parent/example/pom.xml package -Pnative # native executable, inherited
+
+    A PUBLISHED consumer would differ from this file in exactly two lines: it would carry an empty
+    <relativePath/> (resolving api-sheriff-build-parent from the repository rather than from the
+    sibling directory) and a RELEASED parent version instead of this repository's -SNAPSHOT. Nothing
+    else changes — that is the point of the example.
+
+    It declares NO <build>, NO <dependencies>, NO <profiles> and NO <version.quarkus>. The last one is
+    not a stylistic choice: .claude/skills/release/check-quarkus-alignment.py rglobs every pom.xml under
+    the repository and reports a property declared at two different values as a blocking release veto,
+    so a <version.quarkus> here would let this example hold a release hostage.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-build-parent</artifactId>
+        <version>0.2.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>my-gateway</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <properties>
+        <!-- The entire consumer-side configuration: one property. The parent maps it onto the
+             quarkus.sheriff-context-path carrier key, which api-sheriff's own
+             application.properties reads through an expression default, and the resulting image
+             serves the gateway under /gw. The indirection is deliberate and is explained in the
+             parent — it is what makes the mapping able to override an ordinal-250 declaration at
+             all. Nothing about it is visible or actionable here: a consumer sets this one line. -->
+        <sheriff.context-path>/gw</sheriff.context-path>
+    </properties>
+</project>
+----
+
+*Your POM differs in exactly two lines.* Everything else is identical:
+
+[cols="1,2,2", options="header"]
+|===
+| Line | In the example | In your POM
+
+| `<relativePath>`
+| `<relativePath>../pom.xml</relativePath>` -- resolves the parent from the sibling directory,
+  because the example lives next to it.
+| `<relativePath/>` (empty) -- resolves the parent from your Maven repository.
+
+| `<parent><version>`
+| `0.2.0-SNAPSHOT` -- this repository's development version.
+| A *released* version.
+|===
+
+Add `<sheriff.management-context-path>` alongside the one property if you also want the health and
+metrics endpoints moved; leave it out and they stay at `/q`, wherever the application path goes.
+
+== The versioning story
+
+*A `<parent><version>` bump is the adoption mechanism, and it is the whole of it.* The parent
+declares the `api-sheriff` dependency at `${project.parent.version}`, which -- interpolated against
+*your* effective model -- resolves to the version of the parent you inherit. Bump the parent and the
+application version moves with it. There is no second coordinate to keep in step.
+
+[WARNING]
+====
+*Read the release notes on every bump.* API Sheriff is pre-1.0 and makes breaking changes freely --
+`gateway.yaml` keys can be renamed, refused, or given different defaults between releases, and this
+project explicitly does not run a deprecation cycle before 1.0. A parent-version bump is therefore a
+*review*, not a routine dependency update.
+====
+
+One boundary is worth knowing before you hit it: if you interpose your *own* aggregator parent
+between your module and this one, `project.parent` no longer refers to the build parent, and the
+`api-sheriff` version stops resolving to the one you expect. Such a consumer declares the version
+explicitly, exactly as for any other managed dependency.
+
+[[_composing_with_cui_java_parent]]
+== How this composes with `cui-java-parent`
+
+Inheriting this parent transitively inherits `api-sheriff-parent` and, through it,
+`de.cuioss:cui-java-parent` -- which binds license-header stamping, OpenRewrite, Checkstyle,
+SpotBugs, PMD/CPD, enforcer, JaCoCo and dependency-check.
+
+That is *this project's* internal hygiene, not yours. A deployer rebuilding a gateway image has not
+opted into CUI's code-quality toolchain and should not be handed failing builds over conventions they
+never adopted, so the build parent switches every one of them off as an inherited default:
+
+`maven.javadoc.skip`, `checkstyle.skip`, `spotbugs.skip`, `pmd.skip`, `cpd.skip`, `enforcer.skip`,
+`jacoco.skip`, `license.skip`, `dependency-check.skip`, `skip.openrewrite`.
+
+*Re-enable any of them by setting the same property to `false` in your own `<properties>`.* Child
+properties win over parent ones, so this is a one-line reversal per tool.
+
+Five switches are deliberately *left alone*, and each for a reason you may care about:
+
+[cols="1,3", options="header"]
+|===
+| Property | Why it is untouched
+
+| `maven.compiler.skip`
+| You compile your own sources.
+
+| `skipTests`
+| You run your own tests.
+
+| `maven.install.skip`
+| Your `mvn install` must put *your* artifact in your local repository. This is a lifecycle switch,
+  not part of the hygiene toolchain.
+
+| `maven.deploy.skip` +
+  `skipPublishing`
+| Both left unset so the parent itself reaches Maven Central. Note for anyone reading this repository:
+  under `cui-java-parent` the *effective* publish switch is `skipPublishing`, not `maven.deploy.skip`.
+|===
+
+Two further things you do *not* declare: `version.quarkus` (the parent declares it, and a second
+declaration at a different value is a blocking release veto in this repository's own alignment
+check), and any `quarkus-maven-plugin` entry.
+
+[[_the_container_image_boundary]]
+== The container-image boundary -- a decision, not a gap
+
+*The parent's scope ends at the native executable. It ships no Dockerfile, no base image and no image
+build, and that is deliberate.*
+
+The reasoning is that a container image is a deployment artifact with deployment-owned choices --
+base image and its patch cadence, registry, user and filesystem posture, capability drops, scanning
+and signing policy, health-check wiring. A parent POM that shipped one would be making those choices
+on your behalf, and the first thing most deployers do is override them. A parent that ships nothing
+is honest about which side of the line the decision sits on.
+
+What you get is the executable. What you do with it is yours. If you want a starting point, this
+repository's `api-sheriff/src/main/docker/Dockerfile.native` is a distroless build over
+`target/*-runner` with a baked `HEALTHCHECK`; copy it into your own project and own it from there.
+The verification run below did exactly that, and it worked unchanged against the consumer's
+executable -- but *copying* it is the supported route, not depending on it.
+
+[[_the_host_side_limitation]]
+== The host-side limitation
+
+Two artefacts in this repository publish the management context path to the *host* side, and neither
+is something a consumer inherits:
+
+* the `de.cuioss.sheriff.management-root-path` Compose label, which this repository's bring-up gates
+  read so that a probe URL is derived rather than restated (ADR-0031); and
+* `integration-tests/prometheus.yml`'s `metrics_path`, which is the one deliberate literal in that
+  tree -- Prometheus interpolates no environment variables into a scrape config, so nothing can
+  derive it.
+
+Both are *this repository's own* wiring. If you move the management context path, your Compose files,
+your orchestrator manifests and your scrape configs must be updated by you; the build parent has no
+reach into them. There is no mechanism by which an image reports its own context path to a host-side
+consumer -- the label is a declaration by the deployment, not something derived from the artifact.
+
+== The re-augmentation question, and the branch that was taken
+
+There was one genuine unknown when this parent was designed: *does a consumer's augmentation read
+`api-sheriff`'s own `application.properties` out of the dependency JAR?* If it did not, every
+consumer would have needed a `META-INF/microprofile-config.properties` copy of the gateway's runtime
+declarations, and the one-property promise would have been false.
+
+*It does, and the branch requiring a copy was not taken.* The evidence is the worked example itself:
+it declares no properties file of any kind, yet its build records `quarkus.http.root-path=/gw` and
+`quarkus.management.enabled=true` in the generated build-time configuration. Both values come from
+the dependency JAR -- the first resolved through the carrier the parent supplies, the second
+inherited outright.
+
+That is also why the example is kept buildable rather than illustrative: it is the standing proof of
+this branch, and `BuildParentContractTest` fails if the example ever has to grow a `<build>` block to
+compensate.
+
+== The procedure, and what it produced
+
+Executed once, end to end, against commit `9ccda16`. The responses below were observed.
+
+=== 1. JVM mode
+
+[source,bash]
+----
+mvn -f build-parent/example/pom.xml package
+----
+
+`BUILD SUCCESS`. Inspecting `target/quarkus-app/quarkus/generated-bytecode.jar`, the class
+`io/quarkus/runtime/generated/BuildTimeRunTimeFixedConfigSourceBuilder` records
+`quarkus.http.root-path` as `/gw` and `quarkus.management.root-path` as the untouched `/q` -- the
+example sets only the application knob.
+
+Running the result (`java -jar target/quarkus-app/quarkus-run.jar`) with a minimal configuration
+directory:
+
+[cols="2,3", options="header"]
+|===
+| Request | Observed
+
+| `GET /gw/api`
+| `502`, `application/problem+json`,
+  `{"type":"urn:api-sheriff:problem:upstream","title":"Upstream","status":502}` -- the route matched
+  and the gateway forwarded to a deliberately unreachable upstream.
+
+| `GET /gw/no-such-route`
+| `404`, `application/problem+json` -- in context, so the gateway answered in its own envelope.
+
+| `GET /no-such-route`
+| `404`, `text/html`, `<html><body><h1>Resource not found</h1></body></html>` -- off context, so
+  Quarkus' main router answered and the gateway never saw it.
+
+| `GET :{management-port}/q/health`, `/q/health/live`, `/q/health/ready`, `/q/metrics`
+| `200` each -- *behaving identically to a reactor-built gateway*, and unmoved by the application
+  path change.
+
+| `GET :{management-port}/gw/q/health`
+| `404` -- confirming the management path did not follow the application one.
+|===
+
+The boot line reads `api-sheriff 1.0.0-SNAPSHOT on JVM ... started in 1.863s`: the *name* comes from
+the dependency's `quarkus.application.name`, the *version* from your own POM. That mixture is
+expected, and it is another instance of the dependency JAR's properties being honoured.
+
+[IMPORTANT]
+====
+*Route `path_prefix` values are matched against the raw inbound path, prefix included.* With
+`path_prefix: /api` in `gateway.yaml`, `GET /gw/api` is a deny-by-default miss on a `/gw` build. The
+configuration above uses `path_prefix: /gw/api`, which is what makes the route match.
+
+Moving your context path therefore means updating your anchor and route prefixes to match. The two
+are configured independently and the gateway does not reconcile them for you. Full characterisation:
+link:../development/context-path-verification.adoc#_the_route_table_is_matched_against_the_raw_path_prefix_included[the
+verification runbook].
+====
+
+=== 2. Native mode
+
+[source,bash]
+----
+mvn -f build-parent/example/pom.xml package -Pnative
+----
+
+`BUILD SUCCESS` in 148s, producing `target/my-gateway-1.0.0-SNAPSHOT-runner` -- so `-Pnative` reaches
+the consumer purely by profile inheritance, with no `<profiles>` block in the example.
+
+Because the profile sets `quarkus.native.container-build=true`, the executable is built inside the
+Mandrel builder container and is a *Linux* binary. On a macOS host it does not run directly
+(`cannot execute binary file`) -- it runs in a container, which is where the
+<<_the_container_image_boundary,image boundary>> becomes concrete rather than theoretical. This
+repository's distroless Dockerfile was copied over the example's `target/` as build context, and the
+resulting image behaved identically to the JVM run:
+
+[cols="2,2", options="header"]
+|===
+| Request | Observed
+
+| `GET /gw/api` | `502`, `application/problem+json`
+| `GET /gw/no-such-route` | `404`, `application/problem+json`
+| `GET /no-such-route` | `404`, `text/html`
+| `GET :9000/q/health` | `200`, `application/json`
+| `GET :9000/q/metrics` | `200`, `application/openmetrics-text; version=1.0.0`
+| baked `HEALTHCHECK` | `healthy`, `FailingStreak: 0`
+|===
+
+Boot line: `api-sheriff 1.0.0-SNAPSHOT native (powered by Quarkus 3.39.1) started in 0.059s`.
+
+== See also
+
+[cols="2,3", options="header"]
+|===
+| Document | What it adds
+
+| link:context-path.adoc[The Context Path]
+| The mechanism: the three keys, the build-time constraint, the Maven seam and the carrier-key
+  indirection that makes it act.
+
+| link:../development/context-path-verification.adoc[Context Path -- Verification Runbook]
+| The six-case procedure that proves the seam in this repository, with observed responses.
+
+| link:container-image.adoc[Container Image]
+| This project's published image -- what it requires at runtime, and how its health signal reads.
+
+| link:environment-variable-overrides.adoc[Environment-Variable Overrides]
+| Which knobs the deployment owns, and why the context path is not one of them.
+|===

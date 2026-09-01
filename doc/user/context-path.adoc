@@ -149,7 +149,8 @@ decided.
 That is why a *downstream* build cannot use these properties as POM properties to configure its own
 context path, and why the published build parent
 (`de.cuioss.sheriff.gateway:api-sheriff-build-parent`) uses an unconditional property mapping instead
-of a profile. Consumers inheriting that parent are covered in `doc/user/downstream-parent.adoc`.
+of a profile. Consumers inheriting that parent are covered in
+link:downstream-parent.adoc[Rebuilding Under Your Own Context Path].
 ====
 
 == Why the seam works through a carrier key
@@ -201,16 +202,33 @@ observe the difference from inside a default build, because a default build prod
 either way -- which is precisely what makes the regression quiet.
 ====
 
-=== The accepted cost: two unrecognized configuration keys at boot
+=== The accepted cost: two keys on a namespace that does not own them
 
 `quarkus.sheriff-context-path` and `quarkus.sheriff-mgmt-path` are *our* key names on Quarkus'
-namespace. Quarkus owns no such keys, so it logs them as unrecognized configuration on every boot.
+namespace. Quarkus owns no such keys, so they are not a real configuration surface: no validation, no
+documentation, no tooling completion, and no framework guarantee that a typo in either will be
+reported rather than silently ignored.
 
-That warning is *deliberate and accepted*, not an oversight to be tidied away. It is the visible
-price of the only shape in which the seam acts, and it is cheaper than the alternative: a
-`@ConfigMapping` (or any other construct) added solely to silence it would claim these keys as a real
-configuration surface when they are pure carriers -- a documented configuration key nobody should
-ever set. The warning is honest about what they are.
+That cost is *deliberate and accepted*, not an oversight to be tidied away. It is the price of the
+only shape in which the seam acts, and it is cheaper than the alternative: a `@ConfigMapping` (or any
+other construct) added solely to make them look official would claim these keys as a configuration
+surface when they are pure carriers -- a documented key nobody should ever set.
+
+[NOTE]
+====
+The cost is *structural rather than visible*. It was expected to surface as an unrecognized-key
+warning on every boot, and it does not: no such warning was emitted by the seam-active JVM
+augmentation, the seam-active native augmentation, or the resulting container at boot. The likely
+reason is that at runtime the carrier is only ever *referenced* by an expression, never *provided* by
+a config source, and an unset expression key produces no report. Recorded with the rest of the
+measurements in
+link:../development/context-path-verification.adoc#_case_3_rebuild_through_the_seam[the verification
+runbook].
+
+Read that as a reason to be *more* careful with these two names, not less: there is no warning to
+catch a rename or a typo, which is exactly what `BuildParentContractTest`'s carrier-coupling assertion
+exists to catch instead.
+====
 
 `quarkus.http.non-application-root-path` takes no expression: it is not part of the seam (see
 <<_when_the_third_key_acts>>), so it stays a literal.
@@ -360,13 +378,28 @@ gateway does not occupy, on the assumption that nothing else is ever mounted the
 is exactly the one a context path exists to avoid making. A deployment that wants a uniform error
 shape at the edge owns that at its ingress, where it already owns the prefix.
 
-Both shapes are recorded as executed probes in the verification runbook under
-`doc/development/context-path-verification.adoc`.
+Both shapes are recorded as executed probes in
+link:../development/context-path-verification.adoc[the verification runbook].
+
+=== One more thing a non-root path changes: your route prefixes
+
+Route selection consumes the *raw* inbound path, prefix and all -- `GatewayEdgeRoute` builds its
+pipeline request from `HttpServerRequest.uri()`, and the route table is matched against that. It is
+never handed a root-path-relative path.
+
+So a build carrying `-Dsheriff.context-path=/gw` does *not* make `path_prefix: /api` answer at
+`/gw/api`; that request reaches the gateway and then fails deny-by-default route selection. The
+anchor and route `path_prefix` values in `gateway.yaml` must carry the new prefix too --
+`path_prefix: /gw/api`. The context path and the route table are configured independently and the
+gateway does not reconcile them for you. Both halves of that were measured; see
+link:../development/context-path-verification.adoc#_the_route_table_is_matched_against_the_raw_path_prefix_included[the
+verification runbook].
 
 == Worked example: serving at `/gw`
 
 The full end-to-end runbook, with every command and its observed response, is
-`doc/development/context-path-verification.adoc`. The condensed form:
+link:../development/context-path-verification.adoc[Context Path -- Verification Runbook]. The
+condensed form:
 
 .1. Build the native artifact through the seam
 [source,bash]
@@ -404,13 +437,23 @@ run -- inherits the published build parent
 `de.cuioss.sheriff.gateway:api-sheriff-build-parent` and sets its context path as an ordinary POM
 property. The parent maps that property unconditionally rather than through a profile, for the
 activation reason recorded above. That path, its versioning story, and what the parent does and does
-not cover are documented in `doc/user/downstream-parent.adoc`.
+not cover -- notably that its scope ends at the native executable, and that the host-side probe
+wiring below stays the consumer's own -- are documented in
+link:downstream-parent.adoc[Rebuilding Under Your Own Context Path].
 
 == Where the rest of this lives
 
 [cols="2,3", options="header"]
 |===
 | Document | What it adds
+
+| link:downstream-parent.adoc[Rebuilding Under Your Own Context Path]
+| The published build parent -- inheriting it, the one property, the versioning story, and the two
+  boundaries it deliberately does not cross (container images and host-side probe wiring).
+
+| link:../development/context-path-verification.adoc[Context Path -- Verification Runbook]
+| The six-case procedure that proves the seam, with the responses that were observed rather than
+  predicted.
 
 | link:environment-variable-overrides.adoc[Environment-Variable Overrides]
 | The full policy / deployment-bound / build-time classification, and every knob the deployment owns.
