@@ -22,8 +22,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Verifies the Prometheus metrics surface is exposed on the management port ({@code /q/metrics},
- * plain HTTP, off the public data-plane port) per {@code architecture.adoc} § Metrics.
+ * Verifies the Prometheus metrics surface is exposed on the management port — at {@code metrics}
+ * beneath the configured {@code quarkus.management.root-path}, off the public data-plane port — per
+ * {@code architecture.adoc} § Metrics.
  * <p>
  * Traffic is driven through the {@code /proxy} route first so the registry has request activity to
  * report, then the management endpoint is scraped and asserted to return the Prometheus exposition
@@ -53,7 +54,7 @@ class MetricsIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("the sheriff_* meters appear and move on /q/metrics after proxy traffic")
+    @DisplayName("the sheriff_* meters appear and move on the metrics endpoint after proxy traffic")
     void sheriffMetersAppearAndMoveAfterProxyTraffic() {
         // Arrange + Act — drive a successful proxied GET so the edge records its request, duration,
         // and upstream-duration meters. A 200 means the request traversed the full pipeline and the
@@ -85,7 +86,7 @@ class MetricsIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("sheriff_security_events_total appears and moves on /q/metrics after a security-filter rejection")
+    @DisplayName("sheriff_security_events_total appears and moves on the metrics endpoint after a security-filter rejection")
     void securityEventsMeterAppearsAndMovesAfterRejection() {
         // Arrange — the boot-shared cui-http SecurityEventCounter is bound to Micrometer, so the meter
         // is exposed from boot for the fixed UrlSecurityFailureType enum; capture its pre-rejection sum.
@@ -114,7 +115,7 @@ class MetricsIT extends BaseIntegrationTest {
         assertTrue(after.contains("sheriff_security_events_total"),
                 "sheriff_security_events_total must remain exposed after the rejection");
         assertTrue(securityEventsTotal(after) > baseline,
-                "a security-filter rejection must move sheriff_security_events_total on /q/metrics");
+                "a security-filter rejection must move sheriff_security_events_total on the metrics endpoint");
     }
 
     /**
@@ -137,10 +138,9 @@ class MetricsIT extends BaseIntegrationTest {
     }
 
     private static String scrapeMetrics() {
-        return given()
-                .baseUri(managementBaseUri())
+        return givenManagement()
                 .when()
-                .get("/q/metrics")
+                .get("/metrics")
                 .then()
                 .statusCode(200)
                 .extract()

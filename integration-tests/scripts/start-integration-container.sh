@@ -117,8 +117,16 @@ fi
 # That instance is probed over http:// with NO -k: if it ever needs -k, the plain-management opt-out
 # has silently stopped working and THAT is the bug, not the probe.
 #
-# Keycloak carries the same label for the same reason, so its wait derives its whole probe URL here
-# too rather than restating a scheme and a port the model already owns.
+# The management ROOT PATH comes from each service's de.cuioss.sheriff.management-root-path label for
+# the same reason the scheme does: it is a build-time-fixed property of the image that a deployment
+# can move, so a probe path spelled out here would be a second copy to keep in lockstep with the
+# gateway's own configuration. Deriving it means moving the gateway's management context path needs
+# no edit in this script. Both labels are REQUIRED, never defaulted — see the discovery block.
+#
+# Keycloak carries the same labels for the same reason, so its wait derives its scheme and port here
+# too rather than restating either. Its management ROOT PATH is the one thing not derived: Keycloak
+# serves health at /health/ready under no prefix at all, so its root-path column is deliberately
+# discarded below and its own literal is kept.
 #
 # The block runs BEFORE the first `compose up` on purpose: a model this script cannot read is a
 # failure worth having in two seconds rather than after Keycloak has booted.
@@ -128,6 +136,7 @@ import json
 import sys
 
 SCHEME_LABEL = "de.cuioss.sheriff.management-scheme"
+ROOT_PATH_LABEL = "de.cuioss.sheriff.management-root-path"
 MANAGEMENT_CONTAINER_PORT = "9000"
 IDP_SERVICE = "keycloak"
 GATEWAY_PREFIX = "api-sheriff"
@@ -152,19 +161,28 @@ rows = []
 problems = []
 for name in sorted(selected):
     spec = selected[name]
-    scheme = (spec.get("labels") or {}).get(SCHEME_LABEL)
+    labels = spec.get("labels") or {}
+    scheme = labels.get(SCHEME_LABEL)
+    root_path = labels.get(ROOT_PATH_LABEL)
     published = [port.get("published") for port in (spec.get("ports") or [])
                  if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
     usable = True
     if scheme not in ("http", "https"):
         problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
         usable = False
+    # An absolute root path is required rather than defaulted. Defaulting to "/q" here would let a
+    # service that lost its label keep passing against the shipped default, which is exactly the
+    # drift this label exists to make impossible.
+    if not root_path or not root_path.startswith("/"):
+        problems.append("%s: missing or non-absolute %s label (got %r)"
+                        % (name, ROOT_PATH_LABEL, root_path))
+        usable = False
     if len(published) != 1:
         problems.append("%s: expected exactly one host port published against container port %s, "
                         "found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
         usable = False
     if usable:
-        rows.append("%s %s %s" % (name, scheme, published[0]))
+        rows.append("%s %s %s %s" % (name, scheme, published[0], root_path.rstrip("/")))
 
 if problems:
     sys.exit("probe-target discovery failed:\n  " + "\n  ".join(problems))
@@ -180,7 +198,10 @@ fi
 # entry; the api-sheriff* rows drive the gateway readiness loop and the Application URLs banner.
 KEYCLOAK_TARGET="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep "^keycloak ")"
 READINESS_TARGETS="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep -v "^keycloak ")"
-read -r _ KC_MGMT_SCHEME KC_MGMT_PORT <<< "$KEYCLOAK_TARGET"
+# The trailing _ discards Keycloak's management-root-path column deliberately: Keycloak serves
+# /health/ready directly on the management port under no root-path prefix, so the gateway root path
+# its label carries for label-set uniformity must NOT be spliced in here.
+read -r _ KC_MGMT_SCHEME KC_MGMT_PORT _ <<< "$KEYCLOAK_TARGET"
 KEYCLOAK_HEALTH_URL="${KC_MGMT_SCHEME}://localhost:${KC_MGMT_PORT}/health/ready"
 
 # -f matters here exactly as it does on the gateway probe below: /health/ready answers 503 while
@@ -261,13 +282,17 @@ if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
 fi
 
 # Capture everything a failed bring-up needs to be diagnosed from CI artifacts alone: the container
-# log and the /q/health payload, written under target/failsafe-reports/ so they are uploaded with the
-# Failsafe reports. Both failure paths of the two-layer gate below call this, so the evidence is
-# identical whichever layer caught the problem — a container that never reported healthy and a
+# log and the aggregate health payload, written under target/failsafe-reports/ so they are uploaded
+# with the Failsafe reports. Both failure paths of the two-layer gate below call this, so the evidence
+# is identical whichever layer caught the problem — a container that never reported healthy and a
 # container that reported healthy but is not READY are diagnosed from the same two files.
+#
+# The health path is passed in as the service's derived management root path rather than spelled out,
+# so this collector keeps working against a gateway whose management context path was moved.
 capture_gateway_diagnostics() {
     local service="$1"
     local mgmt_url="$2"
+    local mgmt_root="$3"
     local diag_dir="target/failsafe-reports"
     local diag_opts=(-s --connect-timeout 2 --max-time 5)
 
@@ -289,8 +314,8 @@ capture_gateway_diagnostics() {
     # capture_sample_diagnostics guards the same two commands the same way.
     echo "----- $COMPOSE_BASE logs ${service} -----"
     $COMPOSE_BASE logs --no-color "${service}" </dev/null 2>&1 | tee "$diag_dir/${service}-app.log" || true
-    echo "----- ${mgmt_url}/q/health -----"
-    curl "${diag_opts[@]}" "${mgmt_url}/q/health" 2>&1 | tee "$diag_dir/${service}-health.json" || true
+    echo "----- ${mgmt_url}${mgmt_root}/health -----"
+    curl "${diag_opts[@]}" "${mgmt_url}${mgmt_root}/health" 2>&1 | tee "$diag_dir/${service}-health.json" || true
     echo ""
 }
 
@@ -314,8 +339,9 @@ capture_gateway_diagnostics() {
 # TCP accept on the management port — it must be, because the management scheme is deployment-bound
 # (ADR-0025) — so it proves the interface is listening, not that GatewayReadinessCheck reported UP:
 # the configuration document bound and, where a token_validation block is configured, the
-# @GatewayValidator-qualified TokenValidator resolved. A single-shot /q/health/ready per instance
-# closes exactly that gap. Every instance is asserted, not just the primary one: the suites drive the
+# @GatewayValidator-qualified TokenValidator resolved. A single-shot readiness probe per instance,
+# addressed beneath that instance's derived management root path, closes exactly that gap. Every
+# instance is asserted, not just the primary one: the suites drive the
 # TLS ports directly — MtlsHandshakeIT, the Bff*Cookie*IT suites (BffCookieStatelessnessIT drives BOTH
 # cookie instances in one test), WebSocketProxyIT's relay-exhaustion regression against the
 # low-admission instance — so an unasserted instance is a race that surfaces as a connection refusal
@@ -338,33 +364,34 @@ START_TIME=$(date +%s)
 # shellcheck disable=SC2086
 if ! (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d --wait --wait-timeout 180 $GATEWAY_SERVICES); then
     echo "❌ Not every gateway instance reported healthy within 180s"
-    while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+    while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
         [[ -z "$GATEWAY_SERVICE" ]] && continue
         capture_gateway_diagnostics "${GATEWAY_SERVICE}" \
-            "${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
+            "${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}" "${GATEWAY_MGMT_ROOT}"
     done <<< "$READINESS_TARGETS"
     exit 1
 fi
 echo "✅ Every gateway instance reported healthy — asserting readiness semantics..."
 
 GATEWAY_COUNT=0
-while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
     GATEWAY_COUNT=$((GATEWAY_COUNT + 1))
     GATEWAY_MGMT_URL="${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}"
+    GATEWAY_READY_URL="${GATEWAY_MGMT_URL}${GATEWAY_MGMT_ROOT}/health/ready"
 
     GATEWAY_READY_OPTS=(-sf --connect-timeout 2 --max-time 5)
     if [[ "$GATEWAY_MGMT_SCHEME" == "https" ]]; then
         # -k is load-bearing on the HTTPS instances: their management interface serves a self-signed
         # localhost bundle, and without it curl fails certificate validation and this assertion fails
-        # against a perfectly healthy container. -f is equally load-bearing: /q/health/ready answers
-        # 503 when the check is DOWN, and without -f curl exits 0 on that 503.
+        # against a perfectly healthy container. -f is equally load-bearing: the readiness endpoint
+        # answers 503 when the check is DOWN, and without -f curl exits 0 on that 503.
         GATEWAY_READY_OPTS+=(-k)
     fi
 
-    if ! curl "${GATEWAY_READY_OPTS[@]}" "${GATEWAY_MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
-        echo "❌ ${GATEWAY_SERVICE} reported healthy but ${GATEWAY_MGMT_URL}/q/health/ready is not UP"
-        capture_gateway_diagnostics "${GATEWAY_SERVICE}" "${GATEWAY_MGMT_URL}"
+    if ! curl "${GATEWAY_READY_OPTS[@]}" "${GATEWAY_READY_URL}" > /dev/null 2>&1; then
+        echo "❌ ${GATEWAY_SERVICE} reported healthy but ${GATEWAY_READY_URL} is not UP"
+        capture_gateway_diagnostics "${GATEWAY_SERVICE}" "${GATEWAY_MGMT_URL}" "${GATEWAY_MGMT_ROOT}"
         exit 1
     fi
     echo "✅ ${GATEWAY_SERVICE} gateway instance is ready!"
@@ -396,9 +423,9 @@ echo "📱 Application URLs:"
 # Listed from the SAME discovered targets the readiness loop probed, so this stays correct when an
 # instance is added, removed or renumbered — and so it cannot claim management is HTTPS-only, which
 # the plain-management instance makes false.
-while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT; do
+while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
-    echo "  🔍 ${GATEWAY_SERVICE} management: ${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}/q/health (metrics at /q/metrics)"
+    echo "  🔍 ${GATEWAY_SERVICE} management: ${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}${GATEWAY_MGMT_ROOT}/health (metrics at ${GATEWAY_MGMT_ROOT}/metrics)"
 done <<< "$READINESS_TARGETS"
 echo "  🔑 Keycloak:       https://localhost:1443/auth"
 echo ""

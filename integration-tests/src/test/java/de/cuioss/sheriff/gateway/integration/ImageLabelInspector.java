@@ -63,7 +63,50 @@ final class ImageLabelInspector {
     }
 
     /**
-     * Reads one label off a built image.
+     * Reads one label off a built IMAGE.
+     *
+     * @param image the image reference to inspect
+     * @param label the OCI label key
+     * @return the label value, stripped; empty when the image does not carry the label
+     */
+    static String inspectLabel(String image, String label) {
+        return readLabel(
+                new ProcessBuilder("docker", "image", "inspect", "--format", labelTemplate(label), image),
+                "docker image inspect on " + image,
+                "is the image built?");
+    }
+
+    /**
+     * Reads one label off a RUNNING CONTAINER.
+     * <p>
+     * The container scope is required rather than stylistic, and it is why this method exists beside
+     * {@link #inspectLabel(String, String)}: a Compose <em>service</em> label such as
+     * {@code de.cuioss.sheriff.management-root-path} is declared in {@code docker-compose.yml} and
+     * stamped onto the CONTAINER Compose creates. It is not baked into the image — the gateway
+     * services all share one {@code api-sheriff:distroless} image while carrying different label
+     * values — so {@code docker image inspect} would report it absent for every one of them.
+     * <p>
+     * The command is {@code docker inspect}, not {@code docker image inspect}; both read
+     * {@code .Config.Labels}, so only the scope differs.
+     *
+     * @param container the container name or id to inspect
+     * @param label     the label key
+     * @return the label value, stripped; empty when the container does not carry the label
+     */
+    static String inspectContainerLabel(String container, String label) {
+        return readLabel(
+                new ProcessBuilder("docker", "inspect", "--format", labelTemplate(label), container),
+                "docker inspect on container " + container,
+                "is the stack up?");
+    }
+
+    /** The Go template both scopes use — {@code .Config.Labels} indexed by the label key. */
+    private static String labelTemplate(String label) {
+        return "{{index .Config.Labels \"" + label + "\"}}";
+    }
+
+    /**
+     * Runs an inspect subprocess and returns its single-value output, stripped.
      * <p>
      * The process is waited on <em>before</em> its output is read, and that order is load-bearing.
      * Reading first would make the timeout unreachable: {@code readAllBytes()} blocks until EOF, and
@@ -73,35 +116,31 @@ final class ImageLabelInspector {
      * of magnitude below the pipe buffer that would otherwise deadlock a read-after-wait; that bound
      * is also why no reader thread is warranted.
      *
-     * @param image the image reference to inspect
-     * @param label the OCI label key
-     * @return the label value, stripped; empty when the image does not carry the label
+     * @param builder     the configured inspect command
+     * @param description how to name this read in a failure message
+     * @param hint        the actionable suggestion appended to a non-zero-exit failure
+     * @return the command's output, stripped
      */
-    static String inspectLabel(String image, String label) {
-        ProcessBuilder builder = new ProcessBuilder(
-                "docker", "image", "inspect",
-                "--format", "{{index .Config.Labels \"" + label + "\"}}",
-                image);
+    private static String readLabel(ProcessBuilder builder, String description, String hint) {
         builder.redirectErrorStream(true);
         try {
             Process process = builder.start();
             if (!process.waitFor(Duration.ofSeconds(INSPECT_TIMEOUT_SECONDS))) {
                 process.destroyForcibly();
-                fail(() -> "docker image inspect on " + image + " did not complete within "
-                        + INSPECT_TIMEOUT_SECONDS + "s");
+                fail(() -> description + " did not complete within " + INSPECT_TIMEOUT_SECONDS + "s");
             }
             String output;
             try (InputStream in = process.getInputStream()) {
                 output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
-            assertEquals(0, process.exitValue(), () -> "docker image inspect on " + image
-                    + " failed — is the image built? Output: " + output.strip());
+            assertEquals(0, process.exitValue(),
+                    () -> description + " failed — " + hint + " Output: " + output.strip());
             return output.strip();
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot run docker image inspect on " + image, e);
+            throw new UncheckedIOException("cannot run " + description, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted while inspecting " + image, e);
+            throw new IllegalStateException("interrupted during " + description, e);
         }
     }
 }

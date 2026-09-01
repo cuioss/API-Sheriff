@@ -36,10 +36,9 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void quarkusHealthEndpoint() {
-        given()
-                .baseUri(managementBaseUri())
+        givenManagement()
                 .when()
-                .get("/q/health")
+                .get("/health")
                 .then()
                 .statusCode(200)
                 .contentType("application/json");
@@ -49,8 +48,9 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      * Pins the target of the {@code gatewayHealth} k6 benchmark.
      * <p>
      * Consumer: {@code benchmarks/src/main/resources/k6-scripts/gateway_health.js}, whose
-     * {@code TARGET_URL} default is {@code https://api-sheriff:9000/q/health} — the same scheme and
-     * path this test drives, on the same management port.
+     * {@code TARGET_URL} resolves to the aggregate health endpoint beneath the gateway's configured
+     * management context path on {@code api-sheriff:9000} — the same scheme and path this test
+     * drives, on the same management port.
      * <p>
      * <strong>Contract being pinned:</strong> moving this endpoint, or reverting the management
      * interface to plain HTTP, breaks the {@code gatewayHealth} benchmark. This guard lives here
@@ -62,10 +62,9 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void benchmarkGatewayHealthTargetServesOverHttps() {
-        given()
-                .baseUri(managementBaseUri())
+        givenManagement()
                 .when()
-                .get("/q/health")
+                .get("/health")
                 .then()
                 .statusCode(200);
     }
@@ -75,10 +74,9 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void metricsEndpoint() {
-        given()
-                .baseUri(managementBaseUri())
+        givenManagement()
                 .when()
-                .get("/q/metrics")
+                .get("/metrics")
                 .then()
                 .statusCode(200);
     }
