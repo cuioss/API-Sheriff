@@ -152,23 +152,14 @@ public final class Awaits {
     }
 
     /**
-     * Awaits a {@code close()} / {@code shutdown()} future on the teardown tier.
-     *
-     * @param future the future to await, must not be {@code null}
-     * @param what   what is being awaited, surfaced verbatim in the timeout diagnostics
-     * @param <T>    the future's value type
-     * @return the future's value
-     * @throws TimeoutException     enriched with the label, ceiling, elapsed time and a thread dump
-     * @throws InterruptedException if the waiting thread is interrupted
-     * @throws ExecutionException   if the future completed exceptionally
-     */
-    public static <T> T teardown(Future<T> future, String what)
-            throws InterruptedException, ExecutionException, TimeoutException {
-        return await(future, what, TEARDOWN_CEILING);
-    }
-
-    /**
      * Awaits a Vert.x {@code close()} / {@code shutdown()} future on the teardown tier.
+     *
+     * <p>There is deliberately no {@link Future java.util.concurrent.Future} counterpart here,
+     * unlike {@link #connect}: every teardown site in this module awaits a Vert.x future
+     * ({@code close()}, {@code stop()}), so the {@code java.util.concurrent} arm had no caller and
+     * was removed under the pre-1.0 remove-unused-methods rule. The asymmetry with {@code connect}
+     * is intentional — do not restore the overload for symmetry alone; add it back only when a real
+     * caller needs it.
      *
      * @param future the future to await, must not be {@code null}
      * @param what   what is being awaited, surfaced verbatim in the timeout diagnostics
