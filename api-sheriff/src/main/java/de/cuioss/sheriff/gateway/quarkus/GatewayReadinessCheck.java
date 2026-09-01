@@ -34,8 +34,13 @@ import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
 import org.eclipse.microprofile.health.Readiness;
 
 /**
- * SmallRye {@code @Readiness} probe served on the management port ({@code /q/health/ready}),
- * reporting whether the gateway is ready to serve traffic.
+ * SmallRye {@code @Readiness} probe served on the management port, reporting whether the gateway is
+ * ready to serve traffic.
+ * <p>
+ * The probe's path is not fixed here: readiness is served beneath the configured management root
+ * path, {@code quarkus.management.root-path} (default {@code /q}), at {@code health/ready} under it.
+ * That key is build-time fixed, so a deployment that moves the management context path rebuilds the
+ * image rather than setting an environment variable — see {@code doc/user/context-path.adoc}.
  * <p>
  * Readiness reflects two facts, per {@code architecture.adoc} § Metrics (Health):
  * <ul>

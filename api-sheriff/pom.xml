@@ -326,5 +326,55 @@
                 <quarkus.ssl.native>true</quarkus.ssl.native>
             </properties>
         </profile>
+
+        <!-- Context-path build seam.
+
+             The three context-path keys declared in src/main/resources/application.properties are
+             BUILD-TIME keys, fixed at augmentation, so the matching environment variables are inert
+             against an already-built image. These two profiles are the operator-facing seam that
+             changes them, consumed at build time:
+
+               ./mvnw verify -Dsheriff.context-path=/gw
+               ./mvnw verify -Dsheriff.management-context-path=/admin
+
+             Each profile maps its user property onto the corresponding quarkus.* build property as a
+             plain Maven property. That shape is not speculative — the `native` profile above already
+             binds quarkus.native.enabled and quarkus.ssl.native the same way, which is this repo's
+             own proof that quarkus-maven-plugin honours a Maven property as build-time config.
+
+             Both profiles are INACTIVE by default, and that is load-bearing rather than incidental:
+             at default the application.properties declaration is the ACTING source, so the build
+             does not ship a declared key that some higher-ordinal source silently overrides.
+
+             MAVEN ACTIVATES A PROFILE BY PROPERTY FROM USER PROPERTIES ONLY — `-D` on the command
+             line, or an <activeProfiles>/<properties> entry in settings.xml. It NEVER activates one
+             from a POM <properties> entry, because POM properties are resolved after profile
+             activation has already been decided. This is exactly why the downstream build parent
+             (de.cuioss.sheriff.gateway:api-sheriff-build-parent) uses an UNCONDITIONAL property
+             mapping rather than a profile: an inheriting POM sets its context path as a POM
+             property, which could never activate a profile here. The two shapes differ for that
+             reason and are not an inconsistency. -->
+        <profile>
+            <id>context-path</id>
+            <activation>
+                <property>
+                    <name>sheriff.context-path</name>
+                </property>
+            </activation>
+            <properties>
+                <quarkus.http.root-path>${sheriff.context-path}</quarkus.http.root-path>
+            </properties>
+        </profile>
+        <profile>
+            <id>management-context-path</id>
+            <activation>
+                <property>
+                    <name>sheriff.management-context-path</name>
+                </property>
+            </activation>
+            <properties>
+                <quarkus.management.root-path>${sheriff.management-context-path}</quarkus.management.root-path>
+            </properties>
+        </profile>
     </profiles>
 </project>
