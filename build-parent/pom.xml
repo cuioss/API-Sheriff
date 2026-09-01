@@ -81,8 +81,10 @@
              source supplies it: this mapping at ordinal 100, or the inline default when a consumer
              overrides nothing. So do NOT "correct" the two target names below to the stock Quarkus
              keys; that reads more obvious, keeps every build green, and silently stops the parent
-             working. The carrier keys are logged as unrecognized configuration at boot, since
-             Quarkus owns no such keys — an accepted, deliberate cost. -->
+             working. Quarkus owns no such keys, so the accepted cost of this shape was that it
+             would log them as unrecognized configuration at boot; that warning was not in fact
+             observed at JVM or native augmentation or at container boot — measured, not
+             guaranteed. -->
         <sheriff.context-path>/</sheriff.context-path>
         <sheriff.management-context-path>/q</sheriff.management-context-path>
         <quarkus.sheriff-context-path>${sheriff.context-path}</quarkus.sheriff-context-path>

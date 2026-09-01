@@ -188,9 +188,11 @@ ships the stock paths.
 [NOTE]
 ====
 *One documented cost was not reproduced by this run, and the record says so.*
-`api-sheriff/src/main/resources/application.properties` and `api-sheriff/pom.xml` both state that the
-two carrier keys are logged as unrecognized configuration on every boot, because they are ours on
-Quarkus' namespace.
+When the carrier-key indirection was chosen, the cost accepted with it was that the two keys would be
+logged as unrecognized configuration on every boot, because they are ours on Quarkus' namespace. That
+expectation is what this run tested. The declaration sites in
+`api-sheriff/src/main/resources/application.properties`, `api-sheriff/pom.xml` and
+`build-parent/pom.xml` have since been corrected to match the finding below.
 
 No such warning was emitted by the seam-active JVM augmentation, by the seam-active native
 augmentation, or by the resulting container at boot -- three places it was looked for. The likely

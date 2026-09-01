@@ -358,9 +358,10 @@
 
              Do NOT "simplify" these two profiles back to setting quarkus.http.root-path /
              quarkus.management.root-path directly. It reads more obvious, every build stays green,
-             and the seam silently stops acting. The carrier keys are logged as unrecognized
-             configuration at boot — Quarkus owns no such keys — and that cost is accepted
-             deliberately; see the (e) block in application.properties.
+             and the seam silently stops acting. Quarkus owns no such keys, so the accepted cost of
+             this shape was that it would log them as unrecognized configuration; that warning was
+             not in fact observed at JVM or native augmentation or at container boot — measured,
+             not guaranteed. See the (e) block in application.properties.
 
              That a plain Maven property reaches augmentation at all is not speculative: the
              `native` profile above already binds quarkus.native.enabled and quarkus.ssl.native the
