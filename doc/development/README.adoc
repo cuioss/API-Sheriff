@@ -79,6 +79,16 @@ to *run* the finished gateway).
   certificate and configuration material, and the two trust boundaries -- drawn from
   `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
 
+| link:context-path-verification.adoc[Context Path -- Verification Runbook]
+| The six-case procedure that proves the context-path seam, with the responses observed rather than
+  predicted: the default application and management interfaces in both management schemes, the
+  native rebuild through `-Dsheriff.context-path` / `-Dsheriff.management-context-path` and the two
+  artifact inspections that show the seam acted, the two error shapes a non-root path produces
+  (in-context `problem+json` versus off-context plain Vert.x `404`), the management interface staying
+  put when the application path moves, and the baked `HEALTHCHECK` remaining indifferent to both.
+  Also records the route-table consequence -- `path_prefix` values are matched against the raw
+  inbound path, so a moved application context path must be reflected in `gateway.yaml`.
+
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
 | Which declared gateway limit has a boundary assertion and which does not -- the thirteen-file
   descriptor surface, the strict preset's resolved caps that appear in no yaml, one row per limit
