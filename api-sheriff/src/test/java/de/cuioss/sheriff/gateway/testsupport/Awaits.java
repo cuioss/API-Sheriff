@@ -15,17 +15,24 @@
  */
 package de.cuioss.sheriff.gateway.testsupport;
 
+import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 
 import de.cuioss.tools.logging.CuiLogger;
 
+import com.sun.management.HotSpotDiagnosticMXBean;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 
@@ -50,10 +57,22 @@ import org.awaitility.core.ConditionTimeoutException;
  * <h2>A timeout here explains itself</h2>
  * A bare {@code TimeoutException} from {@code Future.get} says only that time ran out — the most
  * expensive failure to diagnose from CI logs alone. Every entry point below instead captures the
- * elapsed time and a full JDK-only thread dump ({@link Thread#getAllStackTraces()}; no JMX and no
- * additional dependency) and rethrows a {@link TimeoutException} whose message carries the label,
- * the ceiling, the elapsed time and the dump. The dump names the thread that was stuck and what it
- * was stuck on.
+ * elapsed time and a full thread dump, then rethrows a {@link TimeoutException} whose message
+ * carries the label, the ceiling, the elapsed time and the dump. The dump names the thread that was
+ * stuck and what it was stuck on.
+ *
+ * <h2>The dump has to see virtual threads</h2>
+ * The gateway hands every request to a virtual-thread executor, so the request pipeline — the very
+ * thing a hang needs explaining — runs on virtual threads. {@link Thread#getAllStackTraces()} has
+ * enumerated <em>platform threads only</em> since JDK 21 and would silently omit exactly those
+ * frames, producing a dump that proves the event loops were idle while saying nothing about the
+ * thread that actually hung. The capture therefore goes through
+ * {@link HotSpotDiagnosticMXBean#dumpThreads(String, HotSpotDiagnosticMXBean.ThreadDumpFormat)} —
+ * the in-process equivalent of {@code jcmd <pid> Thread.dump_to_file}, present in the
+ * {@code jdk.management} module of every standard JDK since 21, so still no additional dependency.
+ * Producing a {@code TimeoutException} always wins over producing a perfect one: if that capture
+ * fails for any reason the dump degrades to the {@link Thread#getAllStackTraces()} rendering rather
+ * than propagating, and the timeout is still reported.
  *
  * <h2>Structure</h2>
  * The public surface is tier-named and takes no duration. Each entry point delegates to a
@@ -89,6 +108,12 @@ public final class Awaits {
      * no slower than the {@code Thread.sleep} poll it replaced.
      */
     private static final Duration POLL_INTERVAL = Duration.ofMillis(25);
+
+    /**
+     * Distinguishes successive capture files within one JVM. The MXBean refuses an existing path, so
+     * every capture needs a name of its own.
+     */
+    private static final AtomicLong DUMP_SEQUENCE = new AtomicLong();
 
     private Awaits() {
         // utility class
@@ -292,15 +317,76 @@ public final class Awaits {
     }
 
     /**
-     * Renders every live thread's stack, JDK-only. This is the payload that turns "it timed out"
-     * into "this thread was blocked here".
+     * Renders every live thread's stack. This is the payload that turns "it timed out" into "this
+     * thread was blocked here".
+     *
+     * <p>Prefers the virtual-thread-aware capture and falls back to the platform-only rendering, so
+     * a capture failure costs detail rather than the whole diagnostic.
      *
      * @return the rendered dump, never {@code null}
      */
     private static String threadDump() {
+        return virtualThreadAwareDump().orElseGet(Awaits::platformThreadDump);
+    }
+
+    /**
+     * Captures a dump that includes virtual threads, via the {@code jdk.management} MXBean that
+     * backs {@code jcmd Thread.dump_to_file}.
+     *
+     * <p>Two sharp edges are handled here. The bean refuses to write to a path that already exists,
+     * so the destination is a freshly named file that is deliberately never pre-created; and it
+     * reports failure by exception, which must never escape and rob the caller of its
+     * {@link TimeoutException}. Every failure mode therefore degrades to {@link Optional#empty()}.
+     *
+     * @return the captured dump, or empty when the capture was not possible
+     */
+    private static Optional<String> virtualThreadAwareDump() {
+        HotSpotDiagnosticMXBean bean =
+                ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class);
+        if (null == bean) {
+            return Optional.empty();
+        }
+        Path file = Path.of(System.getProperty("java.io.tmpdir"))
+                .toAbsolutePath()
+                .resolve("awaits-thread-dump-%d-%d.txt".formatted(
+                        ProcessHandle.current().pid(), DUMP_SEQUENCE.incrementAndGet()));
+        try {
+            bean.dumpThreads(file.toString(), HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+            return Optional.of("thread dump (virtual threads included):"
+                    + System.lineSeparator() + Files.readString(file));
+        } catch (IOException | UnsupportedOperationException | IllegalArgumentException cause) {
+            LOGGER.debug(cause,
+                    "Virtual-thread-aware dump unavailable, degrading to the platform-only rendering");
+            return Optional.empty();
+        } finally {
+            deleteQuietly(file);
+        }
+    }
+
+    /**
+     * Removes the capture file, swallowing failure: a leftover temp file is not worth losing the
+     * timeout report over.
+     *
+     * @param file the file to remove
+     */
+    private static void deleteQuietly(Path file) {
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException cause) {
+            LOGGER.debug(cause, "Could not delete thread-dump capture %s", file);
+        }
+    }
+
+    /**
+     * The platform-threads-only rendering, kept as the degraded path. It cannot see virtual threads,
+     * which is why it is the fallback rather than the primary capture.
+     *
+     * @return the rendered dump, never {@code null}
+     */
+    private static String platformThreadDump() {
         Map<Thread, StackTraceElement[]> traces = Thread.getAllStackTraces();
         StringBuilder rendered = new StringBuilder(1024)
-                .append("thread dump (").append(traces.size()).append(" threads):");
+                .append("thread dump (").append(traces.size()).append(" platform threads):");
         traces.forEach((thread, frames) -> {
             rendered.append(System.lineSeparator())
                     .append('"').append(thread.getName()).append("\" state=").append(thread.getState());

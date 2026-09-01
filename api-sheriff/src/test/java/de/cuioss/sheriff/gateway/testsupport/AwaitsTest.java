@@ -60,15 +60,34 @@ class AwaitsTest {
     private static final Duration CONTROL_CEILING = Duration.ofMillis(50);
 
     private static final Pattern ELAPSED_NANOS = Pattern.compile("elapsed=(\\d+) ns");
-    private static final Pattern STACK_FRAME = Pattern.compile("\\tat \\S+\\.\\S+\\(");
+
+    /**
+     * Matches an indented rendered {@code StackTraceElement}. Deliberately tolerant of the frame
+     * prefix, because the two renderings {@code Awaits} can produce — the virtual-thread-aware
+     * capture and the platform-only degraded path — indent frames differently. What both guarantee,
+     * and all this pins, is that frames are present at all.
+     */
+    private static final Pattern STACK_FRAME =
+            Pattern.compile("^\\s+(?:at )?\\S+\\.\\S+\\(", Pattern.MULTILINE);
 
     @Test
-    @DisplayName("a future that never completes fails with the label, a measured elapsed time and a thread dump")
-    void reportsLabelElapsedAndThreadDumpOnTimeout() {
+    @DisplayName("a future that never completes fails with the label, a measured elapsed time and a dump carrying both the stuck thread and a parked virtual thread")
+    void reportsLabelElapsedAndThreadDumpOnTimeout() throws InterruptedException {
+        CountDownLatch parked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Thread probe = Thread.ofVirtual().name("awaits-virtual-probe")
+                .start(() -> ParkedVirtualProbe.parkUntilReleased(parked, release));
+        parked.await();
         CompletableFuture<String> neverCompletes = new CompletableFuture<>();
 
-        TimeoutException failure = assertThrows(TimeoutException.class,
-                () -> Awaits.await(neverCompletes, CONTROL_LABEL, CONTROL_CEILING));
+        TimeoutException failure;
+        try {
+            failure = assertThrows(TimeoutException.class,
+                    () -> Awaits.await(neverCompletes, CONTROL_LABEL, CONTROL_CEILING));
+        } finally {
+            release.countDown();
+        }
+        probe.join();
 
         String message = failure.getMessage();
         assertAll("timeout diagnostics",
@@ -78,8 +97,11 @@ class AwaitsTest {
                         "the failure carries a measured, non-zero elapsed time"),
                 () -> assertTrue(STACK_FRAME.matcher(message).find(),
                         "the failure carries at least one stack frame from the thread dump"),
-                () -> assertTrue(message.contains(AwaitsTest.class.getSimpleName()),
-                        "the dump captures the stuck thread, whose stack runs through this test"));
+                () -> assertTrue(message.contains("reportsLabelElapsedAndThreadDumpOnTimeout"),
+                        "the dump captures the stuck thread, whose stack runs through this method"),
+                () -> assertTrue(message.contains(ParkedVirtualProbe.class.getSimpleName()),
+                        "the dump captures the parked virtual thread — the platform-only rendering "
+                                + "cannot see it, so this is what proves the capture is virtual-thread aware"));
     }
 
     @Test
@@ -178,5 +200,27 @@ class AwaitsTest {
     private static long elapsedNanosIn(String message) {
         Matcher matcher = ELAPSED_NANOS.matcher(message);
         return matcher.find() ? Long.parseLong(matcher.group(1)) : -1L;
+    }
+
+    /**
+     * Parks a virtual thread on a frame whose class name appears nowhere else, so finding that name
+     * in a dump is unambiguous evidence that the dump enumerated virtual threads. The thread stays
+     * inside {@link #parkUntilReleased} for the whole window between {@code parked} counting down
+     * and {@code release} being counted down, which is what makes the observation race-free.
+     */
+    private static final class ParkedVirtualProbe {
+
+        private ParkedVirtualProbe() {
+            // frame holder
+        }
+
+        private static void parkUntilReleased(CountDownLatch parked, CountDownLatch release) {
+            parked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 }
