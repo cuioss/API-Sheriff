@@ -31,7 +31,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
@@ -71,6 +70,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
@@ -82,7 +82,6 @@ import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -226,17 +225,17 @@ class GatewayEdgeRouteBffWiringTest {
                     activeRuntime(serverBinding(new InMemorySessionStore(16))));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
-            front = vertx.createHttpServer().requestHandler(router)
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                    "the edge front server to start listening");
             client = vertx.createHttpClient();
         }
 
         @AfterEach
         void tearDown() throws Exception {
-            client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
             virtualThreadExecutor.close();
-            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Awaits.teardown(vertx.close(), "Vert.x to close");
         }
 
         @Test
@@ -267,12 +266,11 @@ class GatewayEdgeRouteBffWiringTest {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "localhost"))
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "127.0.0.1"))
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
-            return client.request(options)
-                    .compose(HttpClientRequest::send)
-                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS).statusCode();
+            return Awaits.connect(client.request(options).compose(HttpClientRequest::send),
+                    "the edge response to GET " + uri).statusCode();
         }
 
         private static ResolvedRoute rejectEverythingRoute() {
@@ -284,7 +282,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .effectiveAllowedMethods(List.of(HttpMethod.GET))
                     .effectiveSecurityFilter(SecurityFilterConfig.builder()
                             .allowedPaths(List.of("/auth/never-matches")).build())
-                    .upstream(new ResolvedUpstream("http", "localhost", 1, ""))
+                    .upstream(new ResolvedUpstream("http", "127.0.0.1", 1, ""))
                     .build();
         }
     }
@@ -341,17 +339,17 @@ class GatewayEdgeRouteBffWiringTest {
                     activeRuntime(serverBinding(store)));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
-            front = vertx.createHttpServer().requestHandler(router)
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                    "the edge front server to start listening");
             client = vertx.createHttpClient();
         }
 
         @AfterEach
         void tearDown() throws Exception {
-            client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
             virtualThreadExecutor.close();
-            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Awaits.teardown(vertx.close(), "Vert.x to close");
         }
 
         @Test
@@ -387,12 +385,12 @@ class GatewayEdgeRouteBffWiringTest {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "localhost"))
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "127.0.0.1"))
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGIN_PATH + query);
-            return client.request(options)
-                    .compose(request -> request.putHeader("Cookie", sessionCookie).send())
-                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            return Awaits.connect(client.request(options)
+                            .compose(request -> request.putHeader("Cookie", sessionCookie).send()),
+                    "the login response for " + query);
         }
     }
 

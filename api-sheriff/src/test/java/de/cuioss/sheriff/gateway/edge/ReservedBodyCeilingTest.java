@@ -34,11 +34,11 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -48,6 +48,7 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -125,8 +126,8 @@ class ReservedBodyCeilingTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = vertx.createHttpServer().requestHandler(router)
-                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                "the edge front server to start listening");
         frontPort = frontServer.actualPort();
 
         client = vertx.createHttpClient();
@@ -135,11 +136,11 @@ class ReservedBodyCeilingTest {
 
     @AfterEach
     void tearDown() throws Exception {
-        netClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        frontServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(netClient.close(), "the raw TCP client to close");
+        Awaits.teardown(client.close(), "the HTTP client to close");
+        Awaits.teardown(frontServer.close(), "the edge front server to close");
         virtualThreadExecutor.close();
-        vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(vertx.close(), "Vert.x to close");
     }
 
     @Test
@@ -239,7 +240,8 @@ class ReservedBodyCeilingTest {
         }
         raw.append('0').append(CRLF).append(CRLF);
 
-        String statusLine = sendRaw(raw.toString()).get(15, TimeUnit.SECONDS);
+        String statusLine = Awaits.connect(sendRaw(raw.toString()),
+                "the status line for the over-ceiling chunked body");
 
         assertTrue(chunks * chunkSize > ceiling,
                 "The arranged chunked body must exceed the ceiling for this to pin the streaming counter");
@@ -284,7 +286,8 @@ class ReservedBodyCeilingTest {
         }
         raw.append('0').append(CRLF).append(CRLF);
 
-        String response = assertDoesNotThrow(() -> sendRawAwaitingClose(raw.toString()).get(15, TimeUnit.SECONDS),
+        String response = assertDoesNotThrow(() -> Awaits.connect(sendRawAwaitingClose(raw.toString()),
+                        "the 413 response and connection close after the aborted read"),
                 "the gateway must close the connection itself after aborting the read");
 
         assertTrue(response.startsWith("HTTP/1.1 413"), response);
@@ -300,7 +303,7 @@ class ReservedBodyCeilingTest {
      */
     private CompletableFuture<String> sendRawAwaitingClose(String rawRequest) {
         CompletableFuture<String> closed = new CompletableFuture<>();
-        netClient.connect(frontPort, "localhost")
+        netClient.connect(frontPort, "127.0.0.1")
                 .onFailure(closed::completeExceptionally)
                 .onSuccess(socket -> {
                     Buffer received = Buffer.buffer();
@@ -331,18 +334,26 @@ class ReservedBodyCeilingTest {
         return prefix + "a".repeat((int) length - prefix.length());
     }
 
-    /** POSTs {@code body} to {@code path} over a real HTTP client and returns the response status. */
+    /**
+     * POSTs {@code body} to {@code path} over a real HTTP client and returns the response status.
+     * <p>
+     * The connection is dialled at the loopback literal, but the request authority stays the
+     * {@code localhost} NAME: {@code oidc.redirect_uri} declares the OIDC host as {@code localhost},
+     * and {@code ReservedPathRegistry.match} only resolves a reserved endpoint when the request host
+     * equals that OIDC host. Turning the authority into a literal would silently stop every path here
+     * from being reserved at all, which is precisely what these assertions distinguish.
+     */
     private int post(String path, String body) throws Exception {
         RequestOptions options = new RequestOptions()
+                .setServer(SocketAddress.inetSocketAddress(frontPort, "127.0.0.1"))
                 .setHost("localhost").setPort(frontPort).setMethod(HttpMethod.POST).setURI(path);
-        return client.request(options)
+        return Awaits.connect(client.request(options)
                 .compose(request -> request.send(Buffer.buffer(body)))
                 .map(response -> {
                     int status = response.statusCode();
                     response.body();
                     return status;
-                })
-                .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                }), "the response status for POST " + path);
     }
 
     /**
@@ -352,7 +363,7 @@ class ReservedBodyCeilingTest {
      */
     private CompletableFuture<String> sendRaw(String rawRequest) {
         CompletableFuture<String> statusLine = new CompletableFuture<>();
-        netClient.connect(frontPort, "localhost")
+        netClient.connect(frontPort, "127.0.0.1")
                 .onFailure(statusLine::completeExceptionally)
                 .onSuccess(socket -> {
                     readStatusLine(socket, statusLine);

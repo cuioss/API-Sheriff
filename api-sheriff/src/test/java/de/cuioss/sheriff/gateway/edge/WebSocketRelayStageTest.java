@@ -30,7 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -50,10 +50,10 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
@@ -109,19 +109,20 @@ class WebSocketRelayStageTest {
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
         // Stub upstream WebSocket echo server: records each accepted handshake and echoes text frames.
-        upstreamServer = vertx.createHttpServer().webSocketHandler(ws -> {
+        upstreamServer = Awaits.connect(vertx.createHttpServer().webSocketHandler(ws -> {
             upstreamConnects.incrementAndGet();
             upstreamCustomHeader.set(ws.headers().get("X-Custom"));
             ws.textMessageHandler(ws::writeTextMessage);
-        }).listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        }).listen(0), "the stub upstream WebSocket server to start listening");
         upstreamPort = upstreamServer.actualPort();
         relayUpstreamClient = vertx.createWebSocketClient();
 
         // A definitely-closed port for the unreachable-upstream case.
-        HttpServer throwaway = vertx.createHttpServer().requestHandler(req -> req.response().end())
-                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        HttpServer throwaway = Awaits.connect(
+                vertx.createHttpServer().requestHandler(req -> req.response().end()).listen(0),
+                "the throwaway server to start listening");
         deadPort = throwaway.actualPort();
-        throwaway.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(throwaway.close(), "the throwaway server to close");
 
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
@@ -146,8 +147,8 @@ class WebSocketRelayStageTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = vertx.createHttpServer().requestHandler(router)
-                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                "the edge front server to start listening");
         frontPort = frontServer.actualPort();
 
         wsClient = vertx.createWebSocketClient();
@@ -155,12 +156,12 @@ class WebSocketRelayStageTest {
 
     @AfterEach
     void tearDown() throws Exception {
-        wsClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        relayUpstreamClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        frontServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-        upstreamServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(wsClient.close(), "the WebSocket client to close");
+        Awaits.teardown(relayUpstreamClient.close(), "the relay upstream client to close");
+        Awaits.teardown(frontServer.close(), "the edge front server to close");
+        Awaits.teardown(upstreamServer.close(), "the stub upstream server to close");
         virtualThreadExecutor.close();
-        vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+        Awaits.teardown(vertx.close(), "Vert.x to close");
     }
 
     @Test
@@ -175,7 +176,7 @@ class WebSocketRelayStageTest {
         socket.writeTextMessage("hello-relay");
 
         // Assert — the frame crosses to the upstream, is echoed, and relays back to the client
-        assertEquals("hello-relay", echoed.get(15, TimeUnit.SECONDS));
+        assertEquals("hello-relay", Awaits.connect(echoed, "the echoed frame to return through the relay"));
     }
 
     @Test
@@ -203,7 +204,7 @@ class WebSocketRelayStageTest {
         socket.writeTextMessage("allowed");
 
         // Assert
-        assertEquals("allowed", echoed.get(15, TimeUnit.SECONDS));
+        assertEquals("allowed", Awaits.connect(echoed, "the echoed frame to return through the relay"));
     }
 
     @Test
@@ -259,7 +260,7 @@ class WebSocketRelayStageTest {
 
         // Act
         socket.writeTextMessage("go");
-        echoed.get(15, TimeUnit.SECONDS);
+        Awaits.connect(echoed, "the echoed frame to return through the relay");
 
         // Assert — the upstream handshake never saw the unlisted header
         assertNull(upstreamCustomHeader.get(),
@@ -283,7 +284,7 @@ class WebSocketRelayStageTest {
 
         // Act
         socket.writeTextMessage("go");
-        echoed.get(15, TimeUnit.SECONDS);
+        Awaits.connect(echoed, "the echoed frame to return through the relay");
 
         // Assert
         assertEquals("leak", upstreamCustomHeader.get(),
@@ -299,7 +300,7 @@ class WebSocketRelayStageTest {
         socket.closeHandler(v -> closeCode.complete(socket.closeStatusCode()));
 
         // Act + Assert — with no frame in either direction the relay is reclaimed and closed 1001
-        assertEquals((short) 1001, closeCode.get(10, TimeUnit.SECONDS),
+        assertEquals((short) 1001, Awaits.connect(closeCode, "the idle relay to be reclaimed and closed"),
                 "an idle relay is closed with WebSocket code 1001 (Going Away)");
     }
 
@@ -320,7 +321,7 @@ class WebSocketRelayStageTest {
             CompletableFuture<String> echoed = new CompletableFuture<>();
             socket.textMessageHandler(echoed::complete);
             socket.writeTextMessage("beat-" + i);
-            echoed.get(5, TimeUnit.SECONDS);
+            Awaits.connect(echoed, "the heartbeat frame to be echoed");
             Thread.sleep(400);
         }
 
@@ -350,18 +351,18 @@ class WebSocketRelayStageTest {
                 CompletableFuture<String> echoed = new CompletableFuture<>();
                 socket.textMessageHandler(echoed::complete);
                 socket.writeTextMessage("live");
-                echoed.get(15, TimeUnit.SECONDS);
+                Awaits.connect(echoed, "the echoed frame to return through the relay");
                 assertEquals(0, releases.get(), "an established relay keeps holding its admission permit");
 
                 // Act
-                socket.close().toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                Awaits.teardown(socket.close(), "the relayed WebSocket to close");
 
                 // Assert — closeBoth is re-entered from the upstream leg's close handler once the first
                 // pass closed it, so the latch is what keeps the release at exactly one
                 awaitReleases(releases, "a graceful close releases the admission permit");
                 assertNoFurtherRelease(releases, "the closeBoth latch makes a repeated teardown a no-op");
             } finally {
-                relayServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
             }
         }
 
@@ -377,15 +378,15 @@ class WebSocketRelayStageTest {
             try {
                 // Act — deliberately not awaited: the branch under test ends no response, so the
                 // send future never completes; the release callback is the observable outcome.
-                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(), "localhost",
+                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(), "127.0.0.1",
                         "/relay").compose(HttpClientRequest::send);
 
                 // Assert
                 awaitReleases(releases, "the client-upgrade-failure branch releases the admission permit");
                 assertNoFurtherRelease(releases, "the upgrade-failure branch releases exactly once");
             } finally {
-                plainClient.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                relayServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(plainClient.close(), "the plain HTTP client to close");
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
             }
         }
 
@@ -407,14 +408,14 @@ class WebSocketRelayStageTest {
                 assertEquals(0, releases.get(),
                         "the dial-failure path leaves the release to the edge's end handler");
             } finally {
-                relayServer.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
             }
         }
 
         private WebSocket connectTo(int port) throws Exception {
-            return wsClient.connect(new WebSocketConnectOptions()
-                    .setHost("localhost").setPort(port).setURI("/relay"))
-                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            return Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
+                            .setHost("127.0.0.1").setPort(port).setURI("/relay")),
+                    "the WebSocket upgrade against the relay-only server");
         }
     }
 
@@ -427,7 +428,7 @@ class WebSocketRelayStageTest {
         RouteRuntime route = RouteRuntime.builder()
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamTargetPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamTargetPort, ""))
                 .effectiveWebSocketIdleTimeoutSeconds(300)
                 .build();
         WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
@@ -439,23 +440,20 @@ class WebSocketRelayStageTest {
             ctx.request().pause();
             stage.relay(ctx, route, Map.of(), Map.of(), "/", releaseAdmission);
         });
-        return vertx.createHttpServer().requestHandler(router)
-                .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                "the relay-only server to start listening");
     }
 
-    // NOSONAR java:S2925 - Thread.sleep is load-bearing: relay teardown is a real socket round-trip on
-    // a live Vert.x event loop and no virtual clock can advance it, so the callback count is polled
-    // until it settles rather than assumed to have landed.
-    @SuppressWarnings("java:S2925")
-    private static void awaitReleases(AtomicInteger releases, String message) throws InterruptedException {
-        for (int attempt = 0; attempt < 200 && releases.get() < 1; attempt++) {
-            Thread.sleep(25);
-        }
+    private static void awaitReleases(AtomicInteger releases, String message) throws TimeoutException {
+        Awaits.until(() -> releases.get() >= 1, message, Awaits.TEARDOWN_CEILING_SECONDS);
         assertEquals(1, releases.get(), message);
     }
 
-    // NOSONAR java:S2925 - see awaitReleases: a bounded settle window is the only way to observe that
-    // no *further* release lands after the first one on a live event loop.
+    // NOSONAR java:S2925 - Thread.sleep is load-bearing and deliberately NOT an Awaits tier: a bounded
+    // settle window is the only way to observe that no *further* release lands after the first one on
+    // a live event loop. Absence of an event is not pollable — polling would return as soon as the
+    // count is 1, which is exactly the state that holds both when nothing further lands and when a
+    // second release is still in flight.
     @SuppressWarnings("java:S2925")
     private static void assertNoFurtherRelease(AtomicInteger releases, String message)
             throws InterruptedException {
@@ -465,16 +463,16 @@ class WebSocketRelayStageTest {
 
     private WebSocket connect(String uri, String origin) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("localhost").setPort(frontPort).setURI(uri).addHeader("Origin", origin);
-        return wsClient.connect(options).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                .setHost("127.0.0.1").setPort(frontPort).setURI(uri).addHeader("Origin", origin);
+        return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
 
     /** Opens a handshake carrying the {@code X-Custom} header the forward-policy assertions key on. */
     private WebSocket connectWithCustomHeader(String uri) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("localhost").setPort(frontPort).setURI(uri)
+                .setHost("127.0.0.1").setPort(frontPort).setURI(uri)
                 .addHeader("Origin", ALLOWED_ORIGIN).addHeader("X-Custom", "leak");
-        return wsClient.connect(options).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
 
     private static SecurityHeadersConfig securityHeaders() {
@@ -500,7 +498,7 @@ class WebSocketRelayStageTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(new ResolvedUpstream("http", "localhost", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
                 .effectiveForward(forward)

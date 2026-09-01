@@ -15,7 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.tls;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -23,13 +25,14 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
-
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
@@ -45,17 +48,33 @@ import org.junit.jupiter.api.Test;
  * when at least one passthrough SNI resolves, and shutdown is a clean no-op when nothing was started.
  * An unresolved passthrough alias is defensively skipped rather than aborting boot (ADR-0009).
  * <p>
- * Every case is asserted against the <em>public port itself</em> rather than against the absence of an
- * exception: each test allocates a currently-free port, hands it to the producer, and probes whether
- * anything accepts a connection on it. A quiet {@code onStartup} is not evidence that a front listener
- * started, and is equally not evidence that one was deliberately skipped — the port is. The port is
- * allocated per test rather than fixed, so the suite never contends for a well-known public port.
+ * The positive case is asserted against the <em>public port itself</em>: it allocates a free port,
+ * hands it to the producer, and probes whether anything accepts a connection there. A quiet
+ * {@code onStartup} would not say this — a startup that silently skipped the front completes just as
+ * quietly.
+ * <p>
+ * The two negative cases use the opposite discriminator, because "the port never became listening" is
+ * unfalsifiable evidence for them: a port that was never bound looks exactly like a port some other
+ * process happens not to be using. They instead <em>hold</em> a {@link ServerSocket} open on the port
+ * for the whole test and assert that {@code onStartup} does not throw. The question they answer is
+ * therefore "did {@code onStartup} refuse to bind a held port?", not "did the port become listening?".
+ * Because {@code SniFrontListener.start()} binds through a bare {@code vertx.createNetServer()} with no
+ * {@code setReusePort}, a producer that attempted the bind would fail and
+ * {@code TlsEdgeProducer.onStartup} would surface that as an {@link IllegalStateException} — so a quiet
+ * return proves no bind was attempted.
+ * <p>
+ * {@link PassthroughConfigured#failsWhenThePublicPortIsHeld()} is the matched control that keeps this
+ * honest. It points a <em>resolvable</em> configuration at an equally-held port and asserts the
+ * {@link IllegalStateException} does arrive, proving the negative cases' silence is a real observation
+ * about the producer rather than a tautology about held sockets. If {@code SniFrontListener} ever set
+ * {@code setReusePort}, that control fails and the negative cases lose their discriminator together.
  */
 @DisplayName("TlsEdgeProducer — accept-time front listener boot wiring")
 class TlsEdgeProducerTest {
 
     private static final int INTERNAL_HTTPS_PORT = 8444;
     private static final int CONNECT_TIMEOUT_MILLIS = 2000;
+    private static final int FREE_PORT_ATTEMPTS = 20;
     private static final String RESOLVED_ALIAS = "backend-alias";
     private static final String UNRESOLVED_ALIAS = "missing-alias";
 
@@ -111,6 +130,45 @@ class TlsEdgeProducerTest {
             // Assert
             awaitNotListening(port, "shutdown stops the started listener and releases the public port");
         }
+
+        /**
+         * The matched control for both negative cases. They read "onStartup returned quietly" as
+         * "no bind was attempted"; that inference is only sound if a bind attempt against a held
+         * port would in fact have been noisy. This pins that it is.
+         */
+        @Test
+        @DisplayName("refuses to boot when the public port is already held by another socket")
+        void failsWhenThePublicPortIsHeld() throws Exception {
+            // Arrange — a resolvable passthrough SNI, so the front listener genuinely attempts a bind,
+            // aimed at a port this test holds open for the duration
+            try (ServerSocket held = new ServerSocket(0)) {
+                int port = held.getLocalPort();
+                TlsConfig tls = TlsConfig.builder()
+                        .passthroughSni(Map.of("sni.resolved.example", RESOLVED_ALIAS))
+                        .build();
+                GatewayConfig config = GatewayConfig.builder().version(1)
+                        .tls(tls).build();
+                ResolvedTopology topology = new ResolvedTopology(Map.of(
+                        RESOLVED_ALIAS, new ResolvedUpstream("https", "backend.local", 9443, "")));
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
+                        INTERNAL_HTTPS_PORT);
+
+                // Act + Assert — the bind cannot succeed against a held port, and the producer refuses
+                // to boot rather than continuing without its front listener
+                StartupEvent startup = new StartupEvent();
+                IllegalStateException refused = assertThrows(IllegalStateException.class,
+                        () -> producer.onStartup(startup),
+                        "a bind against a held public port must fail the boot, which is what makes the "
+                                + "negative cases' quiet onStartup meaningful");
+
+                // Assert — and specifically down the bind-failure branch. Accepting any
+                // IllegalStateException would let the interrupted-while-binding branch, or an
+                // unrelated wiring failure, masquerade as the bind refusal this control depends on.
+                assertTrue(refused.getMessage().contains("bind failed"),
+                        "the refusal must be the bind-failure branch, not merely some IllegalStateException: "
+                                + refused.getMessage());
+            }
+        }
     }
 
     @Nested
@@ -120,26 +178,24 @@ class TlsEdgeProducerTest {
         @Test
         @DisplayName("never starts the front listener when passthrough_sni is empty")
         void noFrontListenerWhenPassthroughEmpty() throws Exception {
-            // Arrange — no tls block at all, so the relay map is empty.
-            int port = freePort();
-            GatewayConfig config = GatewayConfig.builder().version(1).build();
-            ResolvedTopology topology = new ResolvedTopology(Map.of());
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
-                    INTERNAL_HTTPS_PORT);
+            // Arrange — no tls block at all, so the relay map is empty. The port is HELD open for the
+            // whole test: a producer that tried to start the front here would be refused the bind and
+            // would fail the boot, so a quiet onStartup is positive evidence that it never tried.
+            try (ServerSocket held = new ServerSocket(0)) {
+                int port = held.getLocalPort();
+                GatewayConfig config = GatewayConfig.builder().version(1).build();
+                ResolvedTopology topology = new ResolvedTopology(Map.of());
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
+                        INTERNAL_HTTPS_PORT);
 
-            // Act
-            producer.onStartup(new StartupEvent());
+                // Act + Assert
+                assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
+                        "an empty passthrough map short-circuits before any bind is attempted");
 
-            // Assert — the public port is left untouched. The matched control for this negative claim
-            // is startsAndStopsFrontListener above, which binds the same kind of port from a resolvable
-            // configuration: without it, "no exception" could not distinguish a deliberate short-circuit
-            // from a front that started perfectly well.
-            assertFalse(isListening(port),
-                    "an empty passthrough map never starts the front listener");
-
-            // Act + Assert — shutdown is a clean no-op because nothing was ever created
-            producer.onShutdown(new ShutdownEvent());
-            assertFalse(isListening(port), "shutdown leaves the unbound port unbound");
+                // Act + Assert — shutdown is a clean no-op because nothing was ever created
+                assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
+                        "shutdown is a no-op when no front listener was started");
+            }
         }
 
         @Test
@@ -148,43 +204,58 @@ class TlsEdgeProducerTest {
             // Arrange — the only passthrough SNI maps to an alias absent from the resolved topology, so
             // the defensive skip leaves the relay map empty and no front listener is started. This
             // differs from noFrontListenerWhenPassthroughEmpty in the arrange that matters: a
-            // passthrough entry IS declared here, and only the alias lookup empties the map.
-            int port = freePort();
-            TlsConfig tls = TlsConfig.builder()
-                    .passthroughSni(Map.of("sni.unresolved.example", UNRESOLVED_ALIAS))
-                    .build();
-            GatewayConfig config = GatewayConfig.builder().version(1)
-                    .tls(tls).build();
-            ResolvedTopology topology = new ResolvedTopology(Map.of());
-            TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
-                    INTERNAL_HTTPS_PORT);
+            // passthrough entry IS declared here, and only the alias lookup empties the map. As there,
+            // the port is held open so that an attempted bind would be refused and surface loudly.
+            try (ServerSocket held = new ServerSocket(0)) {
+                int port = held.getLocalPort();
+                TlsConfig tls = TlsConfig.builder()
+                        .passthroughSni(Map.of("sni.unresolved.example", UNRESOLVED_ALIAS))
+                        .build();
+                GatewayConfig config = GatewayConfig.builder().version(1)
+                        .tls(tls).build();
+                ResolvedTopology topology = new ResolvedTopology(Map.of());
+                TlsEdgeProducer producer = new TlsEdgeProducer(vertx, config, topology, port,
+                        INTERNAL_HTTPS_PORT);
 
-            // Act
-            producer.onStartup(new StartupEvent());
+                // Act + Assert — the declared-but-unresolvable entry contributed no relay target, so
+                // the map stayed empty and no bind was ever attempted
+                assertDoesNotThrow(() -> producer.onStartup(new StartupEvent()),
+                        "an unresolved alias is skipped, so no bind is attempted");
 
-            // Assert — the declared-but-unresolvable entry contributed no relay target, so the map
-            // stayed empty and the front was never started
-            assertFalse(isListening(port),
-                    "an unresolved alias is skipped, so no front listener is started");
-
-            // Act + Assert
-            producer.onShutdown(new ShutdownEvent());
-            assertFalse(isListening(port), "shutdown is a no-op when the only alias was skipped");
+                // Act + Assert
+                assertDoesNotThrow(() -> producer.onShutdown(new ShutdownEvent()),
+                        "shutdown is a no-op when the only alias was skipped");
+            }
         }
     }
 
     /**
      * A port no process owns at the moment of the call. The socket is closed before the port is
      * handed back, which is what makes the pre-startup {@code assertFalse(isListening(port))} control
-     * meaningful.
+     * meaningful — and is also what makes this inherently a check-then-act: another process may take
+     * the released port before the producer binds it.
+     * <p>
+     * That window cannot be closed for the positive case, which needs a port that is genuinely
+     * <em>free</em> so the front listener can really bind it; holding the socket, as the negative
+     * cases do, would defeat the very bind being asserted. It is instead narrowed by re-probing the
+     * released port and retrying a bounded number of times, so a port that was taken inside the
+     * window is discarded rather than handed out.
      *
      * @return a currently-free localhost port
-     * @throws IOException when no ephemeral port can be allocated
+     * @throws IOException when no free ephemeral port can be allocated within the retry budget
      */
     private static int freePort() throws IOException {
-        try (ServerSocket socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
+        for (int attempt = 0; attempt < FREE_PORT_ATTEMPTS; attempt++) {
+            int candidate;
+            try (ServerSocket socket = new ServerSocket(0)) {
+                candidate = socket.getLocalPort();
+            }
+            if (!isListening(candidate)) {
+                return candidate;
+            }
         }
+        throw new IOException(
+                "no free localhost port after " + FREE_PORT_ATTEMPTS + " attempts");
     }
 
     /**
@@ -196,7 +267,7 @@ class TlsEdgeProducerTest {
      */
     private static boolean isListening(int port) {
         try (Socket probe = new Socket()) {
-            probe.connect(new InetSocketAddress("localhost", port), CONNECT_TIMEOUT_MILLIS);
+            probe.connect(new InetSocketAddress("127.0.0.1", port), CONNECT_TIMEOUT_MILLIS);
             return true;
         } catch (IOException _) {
             // A refused connection IS the answer: nothing is listening on the probed port.
@@ -204,18 +275,16 @@ class TlsEdgeProducerTest {
         }
     }
 
-    // Thread.sleep is load-bearing: SniFrontListener.stop() completes on the Vert.x event loop, so the
-    // unbind is a real asynchronous release with no virtual clock to advance.
-    @SuppressWarnings("java:S2925")
-    private static void awaitNotListening(int port, String message) {
-        for (int attempt = 0; attempt < 100 && isListening(port); attempt++) {
-            try {
-                Thread.sleep(20);
-            } catch (InterruptedException _) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
+    /**
+     * Waits for the public port to stop accepting connections. {@code SniFrontListener.stop()}
+     * completes on the Vert.x event loop, so the unbind is a real asynchronous release.
+     *
+     * @param port    the localhost port that must fall silent
+     * @param message asserted as the post-condition once the wait settles
+     * @throws TimeoutException when the port is still listening at the teardown ceiling
+     */
+    private static void awaitNotListening(int port, String message) throws TimeoutException {
+        Awaits.until(() -> !isListening(port), message, Awaits.TEARDOWN_CEILING_SECONDS);
         assertFalse(isListening(port), message);
     }
 }

@@ -30,7 +30,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -52,7 +51,7 @@ import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
-
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
@@ -234,35 +233,35 @@ class GrpcDispatchStageTest {
             client = vertx.createHttpClient();
 
             // Stub upstream: a chunked opaque gRPC frame followed by grpc-status / grpc-message trailers.
-            upstream = vertx.createHttpServer().requestHandler(req -> {
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(req -> {
                 HttpServerResponse response = req.response();
                 response.setChunked(true);
                 response.write(Buffer.buffer("opaque-grpc-frame"));
                 response.putTrailer("grpc-status", "0");
                 response.putTrailer("grpc-message", "ok");
                 response.end();
-            }).listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            }).listen(0), "the stub gRPC upstream to start listening");
             int upstreamPort = upstream.actualPort();
 
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
             // path does (ResponseStage#relayWithTrailers).
             ResponseStage responseStage = new ResponseStage();
-            front = vertx.createHttpServer().requestHandler(clientReq -> client
-                    .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, "localhost", "/svc.Service/Method")
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
+                    .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, "127.0.0.1", "/svc.Service/Method")
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
                             .relayWithTrailers(upResp, clientReq.response(), false, Map.of())
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
-                    .listen(0).toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                    .listen(0), "the relaying front server to start listening");
         }
 
         @AfterEach
         void tearDown() throws Exception {
-            front.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            upstream.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            client.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Awaits.teardown(front.close(), "the relaying front server to close");
+            Awaits.teardown(upstream.close(), "the stub gRPC upstream to close");
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
         }
 
         @Test
@@ -273,14 +272,13 @@ class GrpcDispatchStageTest {
             AtomicReference<Buffer> body = new AtomicReference<>();
 
             // Act — POST the front server and read the full response including its trailers
-            MultiMap trailers = client
-                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, "localhost", "/svc.Service/Method")
+            MultiMap trailers = Awaits.connect(client
+                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, "127.0.0.1", "/svc.Service/Method")
                     .compose(req -> req.send())
                     .compose(resp -> resp.body().map(buffer -> {
                         body.set(buffer);
                         return resp.trailers();
-                    }))
-                    .toCompletionStage().toCompletableFuture().get(15, TimeUnit.SECONDS);
+                    })), "the relayed gRPC response and its trailers");
 
             // Assert — the opaque frame is streamed through and the gRPC status trailers reach the client
             assertEquals("opaque-grpc-frame", body.get().toString(),

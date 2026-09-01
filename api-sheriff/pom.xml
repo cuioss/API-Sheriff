@@ -120,6 +120,21 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Awaitility: tiered, instrumented polling ceilings for the live-server edge/tls tests,
+             replacing fixed wall-clock sleeps. Version-less on purpose: the artifact is BOM-managed
+             for this reactor, exactly as benchmarks/pom.xml already declares it.
+             HAMCREST CONSTRAINT, deliberate and load-bearing: Awaitility drags org.hamcrest in
+             transitively and it is NOT excluded, because Awaitility's own ConditionFactory API
+             references org.hamcrest.Matcher and excluding it yields NoClassDefFoundError at runtime.
+             CLAUDE.md forbids Hamcrest in authored test code, so the constraint is honoured by
+             import discipline rather than by exclusion: never import org.hamcrest.* anywhere in
+             this module's tests. Use only untilAsserted(...) and until(Callable<Boolean>), both of
+             which take JUnit assertions / plain Java predicates and touch no Hamcrest type. -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-junit</artifactId>

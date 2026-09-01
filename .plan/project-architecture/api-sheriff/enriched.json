@@ -5,8 +5,12 @@
     "Verify review-bot claims that a Vert.x API does not exist against the green build before acting: gemini-code-assist repeatedly asserted compilation errors for real Vert.x methods (e.g. HttpServerResponse.ended()) on edge-relay code, and the project consistently accepts these as false positives when the whole-tree build and native ITs are green.",
     "Class-coupling findings (Sonar java:S6539) on the config builder/validator surface are accepted rather than fixed during behaviour-preserving refactors: a class split is an architectural change that exceeds a no-behaviour-change mandate. Reduce the underlying complexity by extracting named private helpers within the class instead, which addresses the readability concern the finding points at without moving the type boundary."
   ],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "517b17dfb40606c055f70164b7e42f14c9ec9cd2b00ada7943fe2fa2c7cf2813"
+  },
   "insights": [
-    "NeutralTlsConfigSource runs at a single ordinal above 300 so its projected quarkus.* TLS policy keys reliably outrank application.properties defaults, but it never emits quarkus.tls.key-store.* \u2014 key material stays deployment-bound. TlsServerCustomizer then binds min_version/cipher_suites/alpn onto the terminated HTTPS listener and fails closed at boot on an unsupported value; ManagementPlainHttpAudit (StartupEvent, WARN ApiSheriff-115) is the runtime tripwire for the one legitimate plain-HTTP management path, naming both downgrade routes."
+    "NeutralTlsConfigSource runs at ordinal 350, above the environment-variable source's 300, so what it projects reliably outranks application.properties defaults. It projects exactly one key \u2014 quarkus.management.tls-configuration-name, and only when management.tls.enabled is false \u2014 not general quarkus.* TLS policy; it never emits quarkus.tls.key-store.* \u2014 key material stays deployment-bound. TlsServerCustomizer then binds min_version/cipher_suites/alpn onto the terminated HTTPS listener and fails closed at boot on an unsupported value; ManagementPlainHttpAudit (StartupEvent, WARN ApiSheriff-115) is the runtime tripwire for the one legitimate plain-HTTP management path, naming both downgrade routes."
   ],
   "internal_dependencies": [],
   "key_dependencies": [

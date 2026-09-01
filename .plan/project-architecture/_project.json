@@ -8,7 +8,10 @@
   "modules": {
     "api-sheriff": {
       "description": "The deployable Quarkus gateway application. Currently hosts the Plan-01 minimal pass-through proxy (ProxyRoute with hop-by-hop header stripping, forwarding hardening, 404 deny-by-default), CDI producers, and REST scaffolding; grows into the full security pipeline (cui-http filtering, route table, token validation) per doc/plan/02+03. Ships JVM and native (Mandrel) images.",
-      "generation": {}
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "517b17dfb40606c055f70164b7e42f14c9ec9cd2b00ada7943fe2fa2c7cf2813"
+      }
     },
     "api-sheriff-parent": {
       "description": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-java-parent, pins the Quarkus BOM and shared plugin/dependency management, and defines the coverage profile plus module ordering (api-sheriff, integration-tests, benchmarks).",
