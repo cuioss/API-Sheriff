@@ -30,9 +30,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
-import de.cuioss.tools.logging.CuiLogger;
 
 import com.sun.management.HotSpotDiagnosticMXBean;
+import de.cuioss.tools.logging.CuiLogger;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 
@@ -42,7 +42,7 @@ import org.awaitility.core.ConditionTimeoutException;
  *
  * <h2>Tiers, not values</h2>
  * A call site picks a ceiling by naming <em>what it is waiting for</em>, never by naming a number.
- * Two tiers exist and they are the only ceiling values in the codebase:
+ * Two tiers exist:
  * <ul>
  *   <li>{@link #CONNECT_CEILING_SECONDS} — everything that waits on progress from a real server:
  *       listen, connect, request, response, relay. Generous, because a loaded CI machine is slow,

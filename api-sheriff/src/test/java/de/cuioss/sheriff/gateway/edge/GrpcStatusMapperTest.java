@@ -23,7 +23,6 @@ import java.util.Map;
 
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientResponse;

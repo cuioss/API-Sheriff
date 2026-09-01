@@ -54,7 +54,6 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
@@ -415,7 +414,7 @@ class WebSocketRelayStageTest {
 
         private WebSocket connectTo(int port) throws Exception {
             return Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
-                    .setHost("127.0.0.1").setPort(port).setURI("/relay")),
+                            .setHost("127.0.0.1").setPort(port).setURI("/relay")),
                     "the WebSocket upgrade against the relay-only server");
         }
     }

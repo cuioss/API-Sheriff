@@ -52,7 +52,6 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;

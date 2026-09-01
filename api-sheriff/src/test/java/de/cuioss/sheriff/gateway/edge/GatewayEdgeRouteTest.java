@@ -64,7 +64,6 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
@@ -752,7 +751,7 @@ class GatewayEdgeRouteTest {
 
     private WebSocket connectWs(WebSocketClient client, int port) throws Exception {
         return Awaits.connect(client.connect(new WebSocketConnectOptions()
-                .setHost("127.0.0.1").setPort(port).setURI("/w/room")),
+                        .setHost("127.0.0.1").setPort(port).setURI("/w/room")),
                 "the WebSocket upgrade to complete");
     }
 
@@ -764,13 +763,13 @@ class GatewayEdgeRouteTest {
     private WebSocket connectWhenAdmitted(WebSocketClient client, int port) throws Exception {
         AtomicReference<WebSocket> admitted = new AtomicReference<>();
         Awaits.until(() -> {
-            try {
-                admitted.set(connectWs(client, port));
-                return true;
-            } catch (ExecutionException _) {
-                return false;
-            }
-        }, "an upgrade to be admitted after the relay sub-permit was returned at teardown",
+                    try {
+                        admitted.set(connectWs(client, port));
+                        return true;
+                    } catch (ExecutionException _) {
+                        return false;
+                    }
+                }, "an upgrade to be admitted after the relay sub-permit was returned at teardown",
                 Awaits.CONNECT_CEILING_SECONDS);
         return admitted.get();
     }

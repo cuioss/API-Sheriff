@@ -24,7 +24,6 @@ import java.util.concurrent.CompletableFuture;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.tls.ClientHelloSniParserTest.ClientHelloFixture;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
-
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;

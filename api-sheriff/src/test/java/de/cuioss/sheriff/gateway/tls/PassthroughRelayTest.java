@@ -27,7 +27,6 @@ import java.util.function.Consumer;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
-
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;

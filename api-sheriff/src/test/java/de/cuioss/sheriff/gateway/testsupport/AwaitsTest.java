@@ -28,9 +28,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import io.vertx.core.Future;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -72,7 +72,7 @@ class AwaitsTest {
 
     @Test
     @DisplayName("a future that never completes fails with the label, a measured elapsed time and a dump carrying both the stuck thread and a parked virtual thread")
-    void reportsLabelElapsedAndThreadDumpOnTimeout() throws InterruptedException {
+    void reportsLabelElapsedAndThreadDumpOnTimeout() throws Exception {
         CountDownLatch parked = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         Thread probe = Thread.ofVirtual().name("awaits-virtual-probe")
