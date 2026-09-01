@@ -15,6 +15,24 @@ MANAGEMENT_URL="${MANAGEMENT_URL:?MANAGEMENT_URL must be set}"
 PROMETHEUS_URL="${PROMETHEUS_URL:?PROMETHEUS_URL must be set}"
 KEYCLOAK_URL="${KEYCLOAK_URL:?KEYCLOAK_URL must be set}"
 
+# The gateway's MANAGEMENT context path (quarkus.management.root-path). Unlike the URLs above it is
+# optional, defaulting to the shipped value, because this gate probes the same instance the k6
+# health benchmarks drive and must stay runnable with no extra plumbing.
+#
+# It is normalized exactly as lib/target.js's rootPathSegment normalizes it, in the same three
+# steps, because this gate and the k6 health benchmarks read the SAME variable and must resolve it
+# to the same endpoint: unset or empty falls back to the shipped default; a missing leading slash is
+# added, so "q" composes as "/q" here exactly as it does there rather than yielding "…:9000q/…";
+# a trailing slash is dropped, so the root context path "/" composes to nothing rather than to a
+# doubled slash. The `case` form is deliberate under `set -e` -- a `[ … ] && …` guard whose test is
+# false returns non-zero and would abort the script.
+MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH:-/q}"
+case "${MANAGEMENT_ROOT_PATH}" in
+    /*) ;;
+    *) MANAGEMENT_ROOT_PATH="/${MANAGEMENT_ROOT_PATH}" ;;
+esac
+MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH%/}"
+
 MAX_RETRIES=30
 RETRY_INTERVAL=2
 
@@ -42,8 +60,10 @@ check_service() {
 echo "=== Pre-Benchmark Target Check ==="
 
 # Management floor first: establish that the instance is alive before asking it to route.
-check_service "Quarkus management (health/live)" "${MANAGEMENT_URL}/q/health/live"
+check_service "Quarkus management (health/live)" "${MANAGEMENT_URL}${MANAGEMENT_ROOT_PATH}/health/live"
 check_service "Prometheus" "${PROMETHEUS_URL}/-/ready"
+# Keycloak's readiness path is its OWN, not the gateway's: it serves /health/ready under no prefix,
+# so MANAGEMENT_ROOT_PATH is deliberately not applied to this row.
 check_service "Keycloak" "${KEYCLOAK_URL}/health/ready"
 # Data-plane target. Until this probe existed INTEGRATION_SERVICE_URL was required but never used,
 # so a deleted or misrouted data-plane route sailed through pre-flight and surfaced only as a k6
