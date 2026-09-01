@@ -783,7 +783,6 @@ class GatewayEdgeRouteTest {
 
     private static void awaitReleased(AtomicBoolean guard, String message) throws TimeoutException {
         Awaits.until(guard::get, message, Awaits.TEARDOWN_CEILING_SECONDS);
-        assertTrue(guard.get(), message);
     }
 
     private static ResolvedRoute webSocketRoute(int upstreamPort) {

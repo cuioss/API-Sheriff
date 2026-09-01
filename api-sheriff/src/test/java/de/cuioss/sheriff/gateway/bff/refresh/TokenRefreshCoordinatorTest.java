@@ -117,11 +117,12 @@ class TokenRefreshCoordinatorTest {
         return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true);
     }
 
-    private static void awaitUninterruptibly(CountDownLatch latch) {
+    private static void awaitRelease(CountDownLatch latch) {
         try {
             Awaits.connect(latch, "the release latch to reach zero");
         } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while waiting for the release latch");
         } catch (TimeoutException e) {
             // Previously the boolean return was discarded, so an expiry let the test continue
             // silently. The ceiling reaching zero now fails the test instead.
@@ -278,7 +279,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = coordinator(NEAR, rt -> {
                 calls.incrementAndGet();
                 entered.countDown();
-                awaitUninterruptibly(proceed);
+                awaitRelease(proceed);
                 return rotation();
             });
 
@@ -418,7 +419,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = cookieCoordinator(rt -> {
                 calls.incrementAndGet();
                 entered.countDown();
-                awaitUninterruptibly(proceed);
+                awaitRelease(proceed);
                 return rotation();
             });
 

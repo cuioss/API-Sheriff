@@ -155,8 +155,9 @@ class TlsEdgeProducerTest {
 
                 // Act + Assert — the bind cannot succeed against a held port, and the producer refuses
                 // to boot rather than continuing without its front listener
+                StartupEvent startup = new StartupEvent();
                 IllegalStateException refused = assertThrows(IllegalStateException.class,
-                        () -> producer.onStartup(new StartupEvent()),
+                        () -> producer.onStartup(startup),
                         "a bind against a held public port must fail the boot, which is what makes the "
                                 + "negative cases' quiet onStartup meaningful");
 

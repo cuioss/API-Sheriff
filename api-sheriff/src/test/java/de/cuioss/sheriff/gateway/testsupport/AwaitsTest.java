@@ -68,7 +68,7 @@ class AwaitsTest {
      * and all this pins, is that frames are present at all.
      */
     private static final Pattern STACK_FRAME =
-            Pattern.compile("^\\s+(?:at )?\\S+\\.\\S+\\(", Pattern.MULTILINE);
+            Pattern.compile("^\\s+(?:at )?\\S+\\.[^\\s.(]+\\(", Pattern.MULTILINE);
 
     @Test
     @DisplayName("a future that never completes fails with the label, a measured elapsed time and a dump carrying both the stuck thread and a parked virtual thread")
@@ -215,7 +215,7 @@ class AwaitsTest {
             parked.countDown();
             try {
                 release.await();
-            } catch (InterruptedException interrupted) {
+            } catch (InterruptedException _) {
                 Thread.currentThread().interrupt();
             }
         }

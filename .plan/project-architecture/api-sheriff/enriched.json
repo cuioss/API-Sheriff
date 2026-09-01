@@ -10,8 +10,7 @@
     "tree_sha": "517b17dfb40606c055f70164b7e42f14c9ec9cd2b00ada7943fe2fa2c7cf2813"
   },
   "insights": [
-    "NeutralTlsConfigSource runs at a single ordinal above 300 so its projected quarkus.* TLS policy keys reliably outrank application.properties defaults, but it never emits quarkus.tls.key-store.* \u2014 key material stays deployment-bound. TlsServerCustomizer then binds min_version/cipher_suites/alpn onto the terminated HTTPS listener and fails closed at boot on an unsupported value; ManagementPlainHttpAudit (StartupEvent, WARN ApiSheriff-115) is the runtime tripwire for the one legitimate plain-HTTP management path, naming both downgrade routes.",
-    "Suite-timing infra: 'test -pl api-sheriff -am' has no learned duration in the maven executor, so it falls back to a 300s ceiling against a ~316s suite and is reported as status: timeout with one run lost. 'verify' is learned at 522s and is unaffected. A timeout is NOT a failing build and must never be triaged as one - it reports no verdict at all. Prefer 'verify -pl api-sheriff -am' for full-suite runs until the module-test duration is learned."
+    "NeutralTlsConfigSource runs at a single ordinal above 300 so its projected quarkus.* TLS policy keys reliably outrank application.properties defaults, but it never emits quarkus.tls.key-store.* \u2014 key material stays deployment-bound. TlsServerCustomizer then binds min_version/cipher_suites/alpn onto the terminated HTTPS listener and fails closed at boot on an unsupported value; ManagementPlainHttpAudit (StartupEvent, WARN ApiSheriff-115) is the runtime tripwire for the one legitimate plain-HTTP management path, naming both downgrade routes."
   ],
   "internal_dependencies": [],
   "key_dependencies": [
