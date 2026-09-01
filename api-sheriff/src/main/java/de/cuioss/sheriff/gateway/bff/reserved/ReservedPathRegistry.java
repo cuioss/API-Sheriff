@@ -22,7 +22,6 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-
 import org.jspecify.annotations.Nullable;
 
 /**

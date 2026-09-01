@@ -22,7 +22,6 @@ import java.util.Optional;
 
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;

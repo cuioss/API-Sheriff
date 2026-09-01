@@ -25,7 +25,6 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
-
 import org.jspecify.annotations.Nullable;
 
 /**

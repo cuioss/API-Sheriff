@@ -29,7 +29,6 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
-
 import org.jspecify.annotations.Nullable;
 
 /**

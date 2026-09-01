@@ -45,7 +45,6 @@ import de.cuioss.sheriff.gateway.config.topology.TopologyResolver;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.runtime.configuration.MemorySize;
 import jakarta.enterprise.context.ApplicationScoped;

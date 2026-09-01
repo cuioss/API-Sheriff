@@ -19,6 +19,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.Serial;
 import java.nio.charset.StandardCharsets;
 
+
 import org.jspecify.annotations.Nullable;
 
 /**

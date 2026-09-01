@@ -23,7 +23,6 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Cors;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig.Hsts;
-
 import org.jspecify.annotations.Nullable;
 
 /**

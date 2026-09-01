@@ -33,7 +33,6 @@ import java.util.stream.Stream;
 
 
 import de.cuioss.tools.logging.LogRecord;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

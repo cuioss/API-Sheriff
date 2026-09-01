@@ -22,7 +22,6 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
-
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.http.HttpClientResponse;

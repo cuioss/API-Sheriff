@@ -53,7 +53,6 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
-
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.util.TypeLiteral;

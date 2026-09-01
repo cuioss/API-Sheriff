@@ -40,7 +40,6 @@ import java.util.concurrent.Flow;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-
 import org.jspecify.annotations.Nullable;
 
 /**

@@ -32,7 +32,6 @@ import de.cuioss.http.forwarded.ResolvedForwarding;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-
 import org.jspecify.annotations.Nullable;
 
 /**

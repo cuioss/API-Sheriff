@@ -20,7 +20,6 @@ import java.util.Objects;
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;

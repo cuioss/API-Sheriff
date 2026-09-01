@@ -28,7 +28,6 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
-
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
 import lombok.Builder;

@@ -26,7 +26,6 @@ import java.nio.file.Path;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
-
 import io.quarkus.runtime.configuration.MemorySize;
 import org.junit.jupiter.api.Test;
 

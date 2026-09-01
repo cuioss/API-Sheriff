@@ -37,7 +37,6 @@ import de.cuioss.sheriff.gateway.edge.EdgeHardeningOptions;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
-
 import io.quarkus.runtime.configuration.MemorySize;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

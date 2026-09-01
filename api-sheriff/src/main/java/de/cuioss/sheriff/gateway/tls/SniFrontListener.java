@@ -24,7 +24,6 @@ import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
