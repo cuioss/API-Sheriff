@@ -543,7 +543,7 @@ class WebSocketRelayStageTest {
         } catch (InterruptedException cause) {
             Thread.currentThread().interrupt();
             return "lsof unavailable (interrupted: " + cause + ")";
-        } catch (IOException | RuntimeException cause) {
+        } catch (IOException cause) {
             return "lsof unavailable (" + cause + ")";
         }
     }
