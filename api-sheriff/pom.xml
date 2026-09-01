@@ -337,14 +337,38 @@
                ./mvnw verify -Dsheriff.context-path=/gw
                ./mvnw verify -Dsheriff.management-context-path=/admin
 
-             Each profile maps its user property onto the corresponding quarkus.* build property as a
-             plain Maven property. That shape is not speculative — the `native` profile above already
-             binds quarkus.native.enabled and quarkus.ssl.native the same way, which is this repo's
-             own proof that quarkus-maven-plugin honours a Maven property as build-time config.
+             Each profile maps its user property onto a quarkus.*-prefixed CARRIER key, which
+             application.properties then reads through an expression default. Both halves of that
+             sentence are load-bearing and were established by measurement:
+
+               (i)  THE PREFIX. quarkus-maven-plugin forwards properties into augmentation through
+                    getBuildSystemProperties(quarkusOnly), which keeps ONLY `quarkus.`-prefixed
+                    names. A profile that set `sheriff.context-path` as the build property would be
+                    filtered out entirely and never reach the config.
+               (ii) THE CARRIER, rather than quarkus.http.root-path directly. Forwarded build-system
+                    properties land at ordinal 100; src/main/resources/application.properties is
+                    ordinal 250 and therefore WINS for every key it declares. Setting
+                    quarkus.http.root-path here would consequently be overridden by the declaration
+                    it is trying to change — measured, not inferred: with the direct mapping,
+                    `package -Dsheriff.context-path=/gw` produced ZERO occurrences of `/gw` in
+                    generated-bytecode.jar. application.properties instead declares
+                    `quarkus.http.root-path=${quarkus.sheriff-context-path:/}`, so the 250-ordinal
+                    declaration still wins but resolves the carrier from whatever source supplies
+                    it — this profile at ordinal 100, or its own inline default when nothing does.
+
+             Do NOT "simplify" these two profiles back to setting quarkus.http.root-path /
+             quarkus.management.root-path directly. It reads more obvious, every build stays green,
+             and the seam silently stops acting. The carrier keys are logged as unrecognized
+             configuration at boot — Quarkus owns no such keys — and that cost is accepted
+             deliberately; see the (e) block in application.properties.
+
+             That a plain Maven property reaches augmentation at all is not speculative: the
+             `native` profile above already binds quarkus.native.enabled and quarkus.ssl.native the
+             same way, which is this repo's own proof of the forwarding path.
 
              Both profiles are INACTIVE by default, and that is load-bearing rather than incidental:
-             at default the application.properties declaration is the ACTING source, so the build
-             does not ship a declared key that some higher-ordinal source silently overrides.
+             at default no carrier is supplied, so the expression's own default is the acting value
+             and the build ships the stock `/` and `/q`.
 
              MAVEN ACTIVATES A PROFILE BY PROPERTY FROM USER PROPERTIES ONLY — `-D` on the command
              line, or an <activeProfiles>/<properties> entry in settings.xml. It NEVER activates one
@@ -362,7 +386,7 @@
                 </property>
             </activation>
             <properties>
-                <quarkus.http.root-path>${sheriff.context-path}</quarkus.http.root-path>
+                <quarkus.sheriff-context-path>${sheriff.context-path}</quarkus.sheriff-context-path>
             </properties>
         </profile>
         <profile>
@@ -373,7 +397,7 @@
                 </property>
             </activation>
             <properties>
-                <quarkus.management.root-path>${sheriff.management-context-path}</quarkus.management.root-path>
+                <quarkus.sheriff-mgmt-path>${sheriff.management-context-path}</quarkus.sheriff-mgmt-path>
             </properties>
         </profile>
     </profiles>

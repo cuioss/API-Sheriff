@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-parent</artifactId>
+        <version>0.2.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>api-sheriff-build-parent</artifactId>
+    <packaging>pom</packaging>
+    <name>API Sheriff Build Parent</name>
+    <description>Published build parent for downstream deployers. A third party inherits from this POM, sets one
+        property, and their build produces an API Sheriff image carrying a custom context path. Adopting a new API
+        Sheriff release is a &lt;parent&gt;&lt;version&gt; bump and nothing else.
+    </description>
+
+    <!-- WHY THIS MODULE EXISTS.
+
+         The three context-path keys (quarkus.http.root-path, quarkus.http.non-application-root-path,
+         quarkus.management.root-path) are Quarkus BUILD-TIME keys, fixed at augmentation. The matching
+         environment variables are inert against an already-built image, so a custom context path ALWAYS
+         costs a rebuild — see api-sheriff/src/main/resources/application.properties and
+         doc/user/context-path.adoc. This module does not pretend otherwise; it makes the mandatory
+         rebuild a ONE-PROPERTY operation for someone who never clones this repository.
+
+         This module carries NO Java and builds NO artifact. It exists to be PUBLISHED rather than built:
+         the reactor walks through it as a near no-op (quarkus-maven-plugin's build and generate-code
+         goals both short-circuit on pom packaging with "Type of the artifact is POM, skipping build
+         goal"), and the value is delivered entirely by inheritance on a consumer's side.
+
+         It declares exactly four things a consumer needs, and nothing else:
+           (1) the consumer-facing context-path knob and its mapping onto the stock Quarkus keys,
+           (2) the api-sheriff dependency plus the Quarkus platform BOM,
+           (3) the quarkus-maven-plugin binding, with the main class pinned,
+           (4) the native profile.
+         Plus one defensive concern: neutralising this project's own hygiene toolchain, which a consumer
+         would otherwise inherit transitively through cui-java-parent. -->
+
+    <properties>
+        <!-- ==== (1) The consumer-facing knob ============================================== -->
+        <!-- A consumer overrides sheriff.context-path (and optionally sheriff.management-context-path)
+             in its OWN <properties>. Maven merges child properties over parent ones and interpolates
+             the effective model, so the child's value reaches augmentation through the mapping below.
+             Defaults are the same '/' and '/q' that api-sheriff's application.properties declares, so
+             an inheriting build that overrides nothing produces the stock image.
+
+             THIS MAPPING IS UNCONDITIONAL, DELIBERATELY, and it is NOT an inconsistency with the
+             -D-activated `context-path` / `management-context-path` profiles in api-sheriff/pom.xml.
+             MAVEN ACTIVATES A PROFILE BY PROPERTY FROM USER PROPERTIES ONLY — `-D` on the command line
+             or a settings.xml entry. It NEVER activates one from a POM <properties> entry, because POM
+             properties are resolved only after profile activation has already been decided. A consumer
+             sets a POM property, so a profile here would silently never fire and the override would be
+             lost with no error. Do NOT "simplify" this into an <activation><property> profile: that is
+             the single most likely edit a later reader will attempt, and it breaks the whole module
+             while leaving every build green.
+
+             quarkus-maven-plugin honours a plain Maven property as build-time Quarkus configuration.
+             That is not speculative: api-sheriff/pom.xml's `native` profile already binds
+             quarkus.native.enabled and quarkus.ssl.native exactly this way.
+
+             THE TARGET OF THE MAPPING IS A CARRIER KEY, NOT quarkus.http.root-path ITSELF, and that
+             is measured rather than stylistic. Two facts compose:
+
+               (i)  quarkus-maven-plugin forwards properties through
+                    getBuildSystemProperties(quarkusOnly), which keeps ONLY `quarkus.`-prefixed
+                    names. `sheriff.context-path` is filtered out and never reaches augmentation —
+                    which is why this mapping exists at all rather than the consumer's property
+                    being read directly.
+               (ii) The survivors land at ordinal 100, while api-sheriff's own packaged
+                    application.properties is ordinal 250 and wins for every key it declares. A
+                    mapping onto quarkus.http.root-path would therefore be overridden by the very
+                    declaration it means to change: with that shape, a build carrying
+                    sheriff.context-path=/gw produced ZERO occurrences of `/gw` in
+                    generated-bytecode.jar.
+
+             api-sheriff's application.properties instead declares
+             `quarkus.http.root-path=${quarkus.sheriff-context-path:/}` — an expression over the
+             carrier. The 250-ordinal declaration still wins, but resolves the carrier from whatever
+             source supplies it: this mapping at ordinal 100, or the inline default when a consumer
+             overrides nothing. So do NOT "correct" the two target names below to the stock Quarkus
+             keys; that reads more obvious, keeps every build green, and silently stops the parent
+             working. The carrier keys are logged as unrecognized configuration at boot, since
+             Quarkus owns no such keys — an accepted, deliberate cost. -->
+        <sheriff.context-path>/</sheriff.context-path>
+        <sheriff.management-context-path>/q</sheriff.management-context-path>
+        <quarkus.sheriff-context-path>${sheriff.context-path}</quarkus.sheriff-context-path>
+        <quarkus.sheriff-mgmt-path>${sheriff.management-context-path}</quarkus.sheriff-mgmt-path>
+
+        <!-- ==== (3a) The pinned application entry point ==================================== -->
+        <!-- Pinned rather than left to @QuarkusMain discovery, so a consumer's augmentation does not
+             depend on the annotation being found through a dependency's Jandex index.
+
+             The key spelling was VERIFIED against the pinned Quarkus 3.39.1, not assumed:
+             io.quarkus.deployment.pkg.PackageConfig is annotated @ConfigMapping(prefix = "quarkus.package")
+             and declares `Optional<String> mainClass()` at the root of that mapping — so the key is
+             quarkus.package.main-class. It is NOT quarkus.package.jar.main-class; the 3.x restructuring
+             moved `type`, `compress` and friends under `jar`, but left `main-class` where it was.
+             Re-verify against PackageConfig on any Quarkus platform bump. -->
+        <quarkus.package.main-class>de.cuioss.sheriff.gateway.ApiSheriffApplication</quarkus.package.main-class>
+
+        <!-- ==== (2a) The Quarkus platform version ========================================== -->
+        <!-- Declared as a real property, on purpose, even though this POM also inherits it from
+             api-sheriff-parent. Maven does not propagate properties out of an IMPORTED BOM, and
+             quarkus-maven-plugin needs the value as a build extension — which is why every Quarkus
+             consumer normally has to declare it locally. Solving that once, here, on the consumer's
+             behalf is part of what this parent is for.
+
+             The duplication is guarded rather than merely tolerated:
+             .claude/skills/release/check-quarkus-alignment.py rglobs every reactor pom.xml and reports
+             a property declared at two different values as "declared inconsistently", exiting 2 — which
+             the release gate treats as blocking. So this value drifting from the reactor root's cannot
+             reach a release, and no new drift mechanism was added for it. Keep it equal to the
+             <version.quarkus> in ../pom.xml. -->
+        <version.quarkus>3.39.1</version.quarkus>
+
+        <!-- ==== Consumer hygiene is the consumer's business ================================ -->
+        <!-- A consumer inheriting this parent transitively inherits api-sheriff-parent and thereby
+             de.cuioss:cui-java-parent, which binds license-header stamping, OpenRewrite, checkstyle,
+             spotbugs, pmd/cpd, enforcer, jacoco and dependency-check. Those are THIS project's internal
+             hygiene, not a third party's: a deployer who inherits this POM to rebuild a gateway image
+             has not opted into CUI's code-quality toolchain and would be handed failing builds over
+             conventions they never adopted. Every entry below is therefore switched off as an INHERITED
+             DEFAULT — a consumer that does want one re-enables it in its own <properties>.
+
+             The enumeration is not invented here. It is the list deployment/pom.xml:32-45 already
+             established for a packaging:pom module that should build nothing; the property NAMES are
+             taken from there rather than re-derived.
+
+             Four of that list are deliberately LEFT ALONE, so the consumer's own build still works and
+             this module still ships:
+               - maven.compiler.skip — the consumer compiles its own sources.
+               - skipTests           — the consumer runs its own tests.
+               - maven.deploy.skip   — this module must reach Maven Central. Note that the EFFECTIVE
+                                       publish switch under cui-java-parent is skipPublishing, not this
+                                       one (deployment/pom.xml:47-52 records why).
+               - skipPublishing      — likewise: unset, so this module publishes.
+             A fifth, maven.install.skip, is also left alone, and that is a considered departure from
+             deployment/pom.xml rather than an omission. deployment sets it because that module must
+             never be consumable at all; this one is the opposite — a PUBLISHED parent whose whole
+             purpose is to be resolved by someone else. Setting it would stop `mvn install` putting this
+             POM in the local repository, and would silently stop every inheriting consumer installing
+             their own artifact. It is a lifecycle switch, not part of the hygiene toolchain named
+             above. -->
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <checkstyle.skip>true</checkstyle.skip>
+        <spotbugs.skip>true</spotbugs.skip>
+        <pmd.skip>true</pmd.skip>
+        <cpd.skip>true</cpd.skip>
+        <enforcer.skip>true</enforcer.skip>
+        <jacoco.skip>true</jacoco.skip>
+        <license.skip>true</license.skip>
+        <dependency-check.skip>true</dependency-check.skip>
+        <skip.openrewrite>true</skip.openrewrite>
+
+        <!-- ==== A valid automatic module name for the consumer's jar ======================= -->
+        <!-- Not a stylistic default: without it the parent's one-property promise is false for most
+             real consumers, and this was found by BUILDING build-parent/example rather than by
+             reading POMs. cui-java-parent writes an <Automatic-Module-Name> manifest entry from
+             ${project.groupId}.${project.artifactId}, and a Java module name may not contain a
+             hyphen — so `com.example:my-gateway` yields `com.example.my-gateway` and
+             maven-jar-plugin aborts the build with
+
+                 Error assembling JAR: Invalid automatic module name: 'com.example.my-gateway'
+
+             Since most artifactIds are hyphenated, the inherited default fails a consumer on their
+             very first `mvn package` for a reason that has nothing to do with API Sheriff. A neutral,
+             valid literal is supplied instead. It is a manifest attribute on the consumer's own
+             application jar, which Quarkus repackages into quarkus-app/app/ and never loads as a
+             JPMS module, so the value is inert; a consumer who does care overrides this property
+             exactly as api-sheriff/pom.xml already does for itself. -->
+        <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.gateway.consumer</maven.jar.plugin.automatic.module.name>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- ==== (2b) The Quarkus platform ============================================== -->
+            <!-- Imported here as well as in api-sheriff-parent so this POM states the platform it
+                 binds a consumer to, rather than leaving it to be discovered up the parent chain. -->
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bom</artifactId>
+                <version>${version.quarkus}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ==== (2c) The application ==================================================== -->
+        <!-- Declared as a real <dependency> rather than only managed, so a consumer declares NO
+             dependency at all: inheriting this parent is what puts the gateway on the classpath.
+
+             THE VERSION IS ${project.parent.version}, NOT ${project.version}, AND THAT IS MEASURED
+             RATHER THAN STYLISTIC. An inherited <dependencies> entry is interpolated against the
+             CHILD's effective model, not against the model of the POM that authored it. With
+             ${project.version} the example resolved
+             `de.cuioss.sheriff.gateway:api-sheriff:jar:1.0.0-SNAPSHOT` — the CONSUMER's own version —
+             and the build failed with "Could not find artifact". ${project.parent.version} resolves,
+             in the consumer's model, to the version of the parent it inherits: this POM's. That is
+             precisely the promise being made — bump <parent><version> and the application version
+             moves with it — expressed in the one form that actually holds under inheritance.
+
+             Known boundary: a consumer that interposes its OWN aggregator parent between its module
+             and this POM shifts what `project.parent` refers to. Such a consumer sets the version
+             explicitly, exactly as it would for any other managed dependency. -->
+        <dependency>
+            <groupId>de.cuioss.sheriff.gateway</groupId>
+            <artifactId>api-sheriff</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- ==== (3b) The Quarkus build binding ========================================= -->
+            <!-- BOUND, not merely managed: a consumer's `mvn package` must augment without the
+                 consumer declaring a plugin. The version and the three goals are stated explicitly
+                 rather than left to the inherited pluginManagement entry, so this binding is legible
+                 in the one file a consumer reads.
+
+                 Running on this module itself is harmless: both mojos short-circuit on pom packaging
+                 ("Type of the artifact is POM, skipping build goal"), so the reactor leg costs nothing. -->
+            <plugin>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <version>${version.quarkus}</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                            <goal>generate-code</goal>
+                            <goal>generate-code-tests</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- ==== (4) The native profile ==================================================== -->
+        <!-- Mirrors api-sheriff/pom.xml's `native` profile property-for-property, so `-Pnative` works
+             for a consumer BY INHERITANCE (profiles are inherited by child POMs) rather than by
+             copy-paste into every downstream POM.
+
+             The two sets must not drift into producing differently-configured native images:
+             BuildParentContractTest asserts parity between this profile and api-sheriff/pom.xml's.
+             Every other native knob — the initialize-at-run-time entries, the builder image, the
+             resource includes — is NOT restated here; it is authored once in
+             api-sheriff/src/main/resources/application.properties and reaches the consumer's
+             augmentation from the dependency JAR. -->
+        <profile>
+            <id>native</id>
+            <properties>
+                <quarkus.native.container-build>true</quarkus.native.container-build>
+                <quarkus.native.enabled>true</quarkus.native.enabled>
+                <!-- Build-time GraalVM knob enabling SSL support in the native image. Fixed when the
+                     image is built, so it is deliberately outside the neutral runtime configuration
+                     surface — gateway.yaml is read at startup and could never make it take effect.
+                     See ADR-0025 for the boundary rule. -->
+                <quarkus.ssl.native>true</quarkus.ssl.native>
+            </properties>
+        </profile>
+    </profiles>
+</project>

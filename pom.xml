@@ -34,6 +34,15 @@
         <!-- Production-shaped docker-compose sample. Carries no Java and contributes nothing to the
              default lane: every inherited Java plugin is switched off, so this leg builds no artifact. -->
         <module>deployment</module>
+        <!-- Published build parent for downstream deployers. Carries NO Java and builds NO artifact:
+             it exists to be PUBLISHED rather than built, and its value is delivered entirely by
+             inheritance on a consumer's side. It is listed here so the reactor keeps it releasable
+             and version-consistent with everything else, not because there is work to do — the
+             quarkus-maven-plugin goals it binds short-circuit on pom packaging. Its worked example
+             under build-parent/example is deliberately NOT a module: it is built by hand from the
+             runbook in doc/user/downstream-parent.adoc, so a native consumer build never enters the
+             default lane. Placed last so the existing module ordering is untouched. -->
+        <module>build-parent</module>
     </modules>
     <scm>
         <url>https://github.com/cuioss/api-sheriff/</url>

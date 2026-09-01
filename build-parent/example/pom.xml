@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The worked consumer example for api-sheriff-build-parent.
+
+    It is a REAL, BUILDABLE pom.xml rather than a fenced block inside prose, so it cannot rot: the
+    contract test (BuildParentContractTest) reads this file, and doc/user/downstream-parent.adoc's
+    runbook builds it. If the parent ever stops delivering the one-property promise, this file has to
+    grow a <build> block to compensate — and that growth is exactly what the contract test fails on.
+
+    It is deliberately NOT a reactor module. A native build must never enter the default lane, and this
+    example exists to be built BY HAND from the deliverable-10 runbook:
+
+        mvn -f build-parent/example/pom.xml package          # JVM-mode runner
+        mvn -f build-parent/example/pom.xml package -Pnative # native executable, inherited
+
+    A PUBLISHED consumer would differ from this file in exactly two lines: it would carry an empty
+    <relativePath/> (resolving api-sheriff-build-parent from the repository rather than from the
+    sibling directory) and a RELEASED parent version instead of this repository's -SNAPSHOT. Nothing
+    else changes — that is the point of the example.
+
+    It declares NO <build>, NO <dependencies>, NO <profiles> and NO <version.quarkus>. The last one is
+    not a stylistic choice: .claude/skills/release/check-quarkus-alignment.py rglobs every pom.xml under
+    the repository and reports a property declared at two different values as a blocking release veto,
+    so a <version.quarkus> here would let this example hold a release hostage.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-build-parent</artifactId>
+        <version>0.2.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>my-gateway</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <properties>
+        <!-- The entire consumer-side configuration: one property. The parent maps it onto the
+             quarkus.sheriff-context-path carrier key, which api-sheriff's own
+             application.properties reads through an expression default, and the resulting image
+             serves the gateway under /gw. The indirection is deliberate and is explained in the
+             parent — it is what makes the mapping able to override an ordinal-250 declaration at
+             all. Nothing about it is visible or actionable here: a consumer sets this one line. -->
+        <sheriff.context-path>/gw</sheriff.context-path>
+    </properties>
+</project>
