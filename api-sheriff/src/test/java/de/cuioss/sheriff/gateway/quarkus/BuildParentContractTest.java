@@ -24,7 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.Reader;
-import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -35,7 +34,6 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -272,7 +270,7 @@ class BuildParentContractTest {
                         () -> "every hygiene switch must be set to 'true' as an inherited default, so a deployer "
                                 + "is not handed failing builds over conventions they never adopted. Declared "
                                 + "values: " + REQUIRED_HYGIENE_SKIPS.stream()
-                                        .map(key -> key + "=" + rendered(properties.get(key))).toList()),
+                                .map(key -> key + "=" + rendered(properties.get(key))).toList()),
                 () -> assertEquals(List.of(),
                         MUST_NOT_BE_SET.stream().filter(properties::containsKey).toList(),
                         () -> "none of " + MUST_NOT_BE_SET + " may be set here. skipPublishing and "
@@ -541,7 +539,7 @@ class BuildParentContractTest {
 
     /** @return the document element of an inline XML sample, for the {@link Controls} */
     private static Element parse(String xml) throws IOException, SAXException, ParserConfigurationException {
-        try (Reader reader = new StringReader(xml)) {
+        try (Reader reader = Reader.of(xml)) {
             return documentBuilder().parse(new InputSource(reader)).getDocumentElement();
         }
     }

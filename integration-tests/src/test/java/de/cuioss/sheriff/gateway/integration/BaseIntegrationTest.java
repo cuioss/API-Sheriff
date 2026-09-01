@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import io.restassured.RestAssured;
+import io.restassured.specification.RequestSpecification;
 
 import org.junit.jupiter.api.BeforeAll;
 
@@ -128,7 +129,7 @@ public abstract class BaseIntegrationTest {
      *
      * @return a request specification bound to the management base URI with no application base path
      */
-    static io.restassured.specification.RequestSpecification givenManagement() {
+    static RequestSpecification givenManagement() {
         return RestAssured.given().baseUri(managementBaseUri()).basePath("");
     }
 

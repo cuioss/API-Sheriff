@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.Reader;
-import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
@@ -139,7 +138,7 @@ class ContextPathDefaultsTest {
     })
     @DisplayName("Each context-path key is declared in the packaged artifact AND effective at runtime")
     void shouldDeclareContextPathInPackagedArtifactAndResolveItAtRuntime(String key, String declaredValue,
-            String effectiveValue) throws IOException {
+            String effectiveValue) throws Exception {
         assertTrue(Files.isRegularFile(PACKAGED_APPLICATION_PROPERTIES),
                 () -> "expected the packaged properties file at "
                         + PACKAGED_APPLICATION_PROPERTIES.toAbsolutePath()
@@ -185,12 +184,12 @@ class ContextPathDefaultsTest {
      */
     @Test
     @DisplayName("Control: the declaration lookup finds a declared key and reports an absent one as absent")
-    void shouldDistinguishDeclaredKeyFromAbsentKey() throws IOException {
+    void shouldDistinguishDeclaredKeyFromAbsentKey() throws Exception {
         Properties probe = new Properties();
-        try (Reader reader = new StringReader("""
-                # a comment naming quarkus.management.root-path
-                quarkus.http.root-path=/
-                """)) {
+        try (Reader reader = Reader.of("""
+                     # a comment naming quarkus.management.root-path
+                     quarkus.http.root-path=/
+                     """)) {
             probe.load(reader);
         }
 
