@@ -386,10 +386,23 @@
 
                 Maven merges an inherited <activeRecipes> list by APPEND, so a single
                 recipe cannot be removed in isolation. This re-declares the full list
-                with combine.children="override" — identical to cui-java-parent's list,
-                except UpgradeToJava21 is replaced by UpgradeToJava25 so the modernization
-                migrations still run while the compiler release is pinned to the correct
-                25 baseline. Keep this list in sync if the parent's recipe set changes.
+                with combine.children="override".
+
+                The list is cui-java-parent's, MINUS the whole
+                org.openrewrite.java.migrate.* upgrade composite. An earlier revision of
+                this block instead swapped UpgradeToJava21 for UpgradeToJava25 and claimed
+                the list was otherwise identical to the parent's. Both halves of that claim
+                were wrong: UpgradeToJava25 CONTAINS UpgradeToJava21 (so the swap removed
+                nothing), and the list had also re-enabled JavaUtilAPIs, which the parent
+                deliberately excludes as broken. See the per-recipe comments below for the
+                measured failure each exclusion prevents.
+
+                Consequence accepted deliberately: the one-time modernization migrations
+                (UseTextBlocks, InstanceOfPatternMatch, SwitchExpressions,
+                SequencedCollection, …) no longer run. On a codebase authored at Java 25
+                they are near-no-ops, and they are not worth a formatter that can emit
+                source which does not parse. Keep this list in sync if the parent's recipe
+                set changes.
             -->
             <id>pre-commit</id>
             <build>
@@ -446,10 +459,39 @@
                                 <recipe>de.cuioss.rewrite.logging.CuiLoggerStandardsRecipe</recipe>
                                 <recipe>de.cuioss.rewrite.logging.CuiLogRecordPatternRecipe</recipe>
                                 <recipe>de.cuioss.rewrite.logging.InvalidExceptionUsageRecipe</recipe>
-                                <!-- Replaces the parent's UpgradeToJava21 (which downgrades the release to 21) -->
-                                <recipe>org.openrewrite.java.migrate.UpgradeToJava25</recipe>
+                                <!--
+                                    UpgradeToJava25 intentionally excluded (was: replacing the parent's
+                                    UpgradeToJava21). Two measured reasons:
+
+                                    1. It does NOT avoid UpgradeToJava21 — it CONTAINS it. The chain is
+                                       UpgradeToJava25 -> UpgradeToJava21 -> UpgradeToJava17 -> Java8toJava11,
+                                       verified in rewrite-migrate-java's java-version-{25,21,17,11}.yml. So the
+                                       swap this entry used to perform never removed the Java-21 build-config
+                                       migration it was written to remove; both ran.
+                                    2. That chain reaches org.openrewrite.java.migrate.lang.RenameUnderscoreIdentifier,
+                                       whose own metadata reads "Renames single-underscore identifiers to
+                                       double-underscore in Java source files with source compatibility of Java 8 or
+                                       below. In Java 9+, `_` is a reserved keyword". Since Java 22 `_` is legal again
+                                       as an UNNAMED VARIABLE, which this codebase uses widely. Running the gate
+                                       rewrote `catch (UrlSecurityException _)` to `catch (UrlSecurityException )`
+                                       across ~180 files, i.e. into source that does not parse, and the build then
+                                       failed with a wall of "<ID> expected". See lesson 2026-09-01-19-001.
+
+                                    A Java-8-to-25 migration composite has nothing legitimate to do on a codebase
+                                    already written at Java 25 (ADR-0001); it can only damage it. OpenRewrite offers
+                                    no per-sub-recipe exclusion, so — following the precedent the parent set for
+                                    JavaUtilAPIs below — the whole composite is dropped rather than patched.
+                                -->
                                 <recipe>org.openrewrite.java.migrate.RemoveSecurityManager</recipe>
-                                <recipe>org.openrewrite.java.migrate.util.JavaUtilAPIs</recipe>
+                                <!--
+                                    JavaUtilAPIs intentionally excluded, restoring the parent's own exclusion.
+                                    cui-java-parent 1.5.10 comments this recipe out because its transitive UseMapOf
+                                    produces "broken, non-compiling output" (see TokenSheriff PR #577). The override
+                                    block below silently re-enabled it while its header claimed the list was
+                                    "identical to cui-java-parent's list, except UpgradeToJava21 is replaced by
+                                    UpgradeToJava25" — it was not. Re-enabling a recipe the parent had deliberately
+                                    removed as broken was never an intended part of that swap.
+                                -->
                                 <recipe>org.openrewrite.java.OrderImports</recipe>
                                 <recipe>org.openrewrite.java.RemoveUnusedImports</recipe>
                                 <recipe>org.openrewrite.java.ShortenFullyQualifiedTypeReferences</recipe>
