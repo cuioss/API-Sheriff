@@ -174,10 +174,24 @@ Two instances of this repository's own history are the evidence for the single r
 separate rules: a production-only change that looked green and yielded *142 compilation errors*
 under `clean test-compile`, and a signature change that yielded *26*.
 
-== The reactor builds serially, and restoring `-T1C` reintroduces a 100% flake rate
+== `-T1` reduces the flake rate; it does not cure the condition
 
 `.mvn/maven.config` carries `-T1`. It is not a leftover, and the parallel form it replaced bought
-nothing measurable.
+nothing measurable. But the pin is a *measured rate reduction, not a cure*. The condition it was
+introduced against is still live, and has since been measured to survive the pin twice. This section
+was first written when the pin looked like the fix; that reading is corrected below rather than
+quietly restated.
+
+=== Provenance of the figures in this section
+
+The `-T1C` measurements, the 2026-08-31 recurrence and the 2026-09-01 acceptance soak are all
+*MEASURED-but-second-hand*. They were measured by earlier investigations whose evidence artifacts no
+longer exist -- the `stabilize-edge-suite-awaits` plan directory was deleted -- so nothing here can
+re-verify them, and they are reported as recorded rather than as re-checkable. The figures under
+*The condition is macOS-local* are *first-hand* to the 2026-09-01 investigation and are labelled
+MEASURED or INFERRED individually.
+
+=== What the parallel form cost (MEASURED-but-second-hand)
 
 The reactor has six modules and *one* dependency edge (`api-sheriff -> integration-tests`), so five
 of the six sit in layer 0 and `-T1C` ran essentially all of them concurrently. `api-sheriff` is the
@@ -209,11 +223,100 @@ than left standing: the fixtures do *not* leak servers (`@AfterEach` closes serv
 functional failure, because `renderRejection` applies every stage header and only then overrides
 `content-type`, which is order-independent.
 
-*State the limit of the finding precisely.* What is measured is the causal link -- parallel fails,
-serial passes, n=7. The mechanism is inferred: ephemeral port reuse inside the 30s TIME_WAIT window
-(this platform offers 16384 ephemeral ports) fits all six symptom classes, but it was not
-instrumented, and CPU or file-descriptor pressure are not formally excluded. The fix does not depend
-on which of those it is; a re-opening of the question does.
+=== The pin was measured insufficient, twice (MEASURED-but-second-hand)
+
+*2026-08-31 recurrence.* The condition reproduced with `-T1` *verified in effect* -- the pin was
+re-read from `.mvn/maven.config` before the runs, not assumed -- at *three runs out of three red*,
+on pristine `main`. That is the measurement that retired the "the pin fixed it" reading: a fix that
+is in effect and still red three times running is not a fix.
+
+*2026-09-01 acceptance soak.* An `N=10` soak with the pin still in place returned *five RED and five
+GREEN* -- a 50% per-run failure rate. Note the sample size travels with the rate: at `N=10` the 50%
+figure is a coarse estimate, and it is quoted here with its `N` for exactly that reason.
+
+The two together are why a small green streak must never be read as an all-clear on this condition.
+A `4/4` green run under `-T1` was once read that way, and the 2026-08-31 recurrence is what that
+reading cost.
+
+=== The condition is macOS-local, and the stall is a lost loopback readiness event
+
+The 2026-09-01 investigation ran a pre-registered, non-extensible budget of *31 runs* (26 with only
+`WebSocketRelayStageTest` selected, 5 whole-module), with `-T1` re-read and confirmed before the
+first run. Everything in this subsection is *first-hand* unless marked otherwise.
+
+*MEASURED.* A 30-second stall reproduced in *8 of the 31 runs* (25.8%) -- 5 of 26 on the
+single-class arm, 3 of 5 on the whole-module arm. It struck *ten distinct test methods across five
+classes* (`WebSocketRelayStageTest`, `GatewayEdgePipelineTest`, `GatewayEdgeRouteBffWiringTest`,
+`GatewayEdgeRouteTest`, `PassthroughRelayTest`), always by hitting the fixtures' 30000 ms `Awaits`
+ceiling essentially exactly -- 30004 to 30010 ms elapsed, i.e. no progress at all rather than slow
+progress.
+
+*MEASURED -- what this rules out.* Three readings are excluded by the data, not merely unsupported:
+
+* *Not reactor parallelism.* `-T1` was in effect for every one of the 31 runs.
+* *Not cross-class co-tenancy or machine load.* Five of the stalls occurred on the arm that selected
+  a *single* test class in a *single* Surefire fork, with no other test class in the reactor.
+* *Not connection establishment alone.* `PassthroughRelayTest.propagatesHalfCloseToBackend` stalled
+  awaiting a half-close on an *already-established* connection, and the stall also strikes plain HTTP
+  request/response exchanges (`timed out awaiting the edge response to GET /nowhere`), not just
+  WebSocket upgrades.
+
+*MEASURED -- the thread dumps.* On two independent occurrences, in two different fixtures, the
+captured dump shows the awaiting thread parked in `Awaits` while the Vert.x acceptor thread *and all
+three event-loop threads* sit simultaneously at `sun.nio.ch.KQueue.poll` via
+`KQueueSelectorImpl.doSelect`. Every Vert.x thread is idle with nothing to do.
+
+*INFERRED.* All-threads-idle is what rules out saturation, deadlock and a blocked handler: the work
+never arrived rather than arriving late. The reading that fits is a *loopback readiness event that
+the macOS kqueue selector never delivered*. `KQueue` is the macOS-only selector implementation, which
+is what makes this platform-local; the Linux CI lane has not reproduced it.
+
+*MEASURED -- what the 2026-09-01 budget did not find.* Zero reproductions, in 31 runs, of the
+separate *unexpected-upgrade-status* symptom the budget was actually sized against. That arm is
+therefore *inconclusive with stated power*, never an all-clear -- see the power caveat below.
+
+*Supersedes the earlier inferred mechanism.* The TIME_WAIT / ephemeral-port-reuse reading recorded
+in the previous revision of this section is *contradicted* by the 2026-09-01 data, not merely
+unconfirmed: the stall reproduced in fixtures that bind their ports with `listen(0)` and *hold* them
+for the whole fixture lifetime, so there is no released port and no re-bind window to race.
+
+=== State the limit of the finding precisely
+
+What was measured in the original investigation is the causal link -- parallel fails, serial passes,
+`n=7`. The mechanism was inferred, and the inference has since been *revised*: TIME_WAIT ephemeral
+port reuse is now contradicted (above), and the current inference is an undelivered macOS kqueue
+readiness notification. CPU and file-descriptor pressure were never formally excluded by the
+original work; the all-threads-idle dumps now argue against both.
+
+*The re-opening that the previous revision said the fix did not depend on has happened.* That
+sentence read "the fix does not depend on which of those it is; a re-opening of the question does",
+and it was written on the premise that the pin was a fix. The 2026-08-31 recurrence retired that
+premise, so the question is open and the mechanism now matters.
+
+Two power caveats travel with any green result here, and both are load-bearing:
+
+* The `p = 0.50` rate behind the 2026-09-01 soak is *second-hand and possibly contaminated*. An
+  unknown share of that historical `5 RED / 10` tally may have been this 30-second stall rather than
+  the unexpected-status symptom, and the destroyed artifacts can no longer separate the two. Every
+  power figure derived from it inherits that contamination.
+* A zero-reproduction result is reported as *inconclusive with stated power*, carrying its `N`.
+  It is never reported as an all-clear.
+
+=== What a contributor does about it
+
+The 2026-09-01 investigation changed no production or test code: the evidence named a host-level
+loopback condition, not a defect in any fixture or in the gateway, and fixing a mechanism the
+evidence excludes would have been a third unmeasured fix. Until that changes:
+
+* *A single red edge-suite run on macOS is not evidence of a branch defect.* Establish provenance
+  before acting on it -- roughly a quarter of local runs of this suite carry the stall.
+* *Establish that provenance against CI, not against a local re-run.* The Linux lane is the
+  authority for whether a change broke the edge suite.
+* *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.*
+  The 30-second ceiling is what makes the condition visible and measurable; raising it would hide
+  the phenomenon rather than address it.
+* *Do not change `-T1`.* It is a measured rate reduction and is still worth having; it is simply not
+  a cure.
 
 Per the rule below, the serial greens were checked for vacuity before being believed: both runs
 show `Tests run: 1886, Failures: 0` for `api-sheriff` in the reactor log, not merely a zero exit.
