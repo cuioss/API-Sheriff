@@ -43,10 +43,11 @@ public abstract class BaseIntegrationTest {
     /**
      * The gateway's MANAGEMENT context path ({@code quarkus.management.root-path}) at its shipped
      * default. It is one of three hand-maintained spellings under {@code integration-tests/} --
-     * {@code prometheus.yml} and {@code verify-invalid-config-fails.sh} carry the others, and only
-     * the former is asserted against the Compose label. It is an INDEPENDENT ABSOLUTE key: it does
-     * not move when {@code quarkus.http.root-path} moves, which is why the two are separate
-     * properties here rather than one composed value.
+     * {@code prometheus.yml} and {@code verify-invalid-config-fails.sh} carry the others -- and all
+     * three are now asserted against the Compose label by {@link ManagementRootPathLabelIT}, so a
+     * value that drifts from the label fails the build rather than silently probing the wrong path.
+     * It is an INDEPENDENT ABSOLUTE key: it does not move when {@code quarkus.http.root-path} moves,
+     * which is why the two are separate properties here rather than one composed value.
      */
     private static final String DEFAULT_MANAGEMENT_ROOT_PATH = "/q";
 
@@ -139,11 +140,17 @@ public abstract class BaseIntegrationTest {
      * Normalises a context path for concatenation: a trailing slash is removed, so appending
      * {@code "/health"} never yields a double slash, and the root value {@code "/"} collapses to the
      * empty string rather than leaving one behind.
+     * <p>
+     * Package-private rather than private so a test comparing an INDEPENDENTLY obtained path against
+     * this class's configured one applies the identical rule to both sides.
+     * {@link ManagementRootPathLabelIT} needs exactly that: it compares the Compose label against
+     * {@link #managementRootPath()}, and normalising only one side would report a {@code "/"} label
+     * and the empty effective path as a divergence when they denote the same path.
      *
      * @param path the configured context path
      * @return the path with any trailing slash removed
      */
-    private static String normalisePath(String path) {
+    static String normalisePath(String path) {
         return path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
     }
 }

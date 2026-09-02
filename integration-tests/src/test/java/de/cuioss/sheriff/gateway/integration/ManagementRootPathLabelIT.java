@@ -35,12 +35,16 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Proves the {@value #ROOT_PATH_LABEL} Compose label is <strong>honest</strong>: the management
- * context path it advertises is the path the running gateway actually serves, and the path
- * {@code prometheus.yml}'s hand-maintained {@code metrics_path} literal names.
+ * context path it advertises is the path the running gateway actually serves, and the path every
+ * hand-maintained literal under {@code integration-tests/} names.
  * <p>
- * {@code prometheus.yml} is the only hand-maintained management path this IT guards, not the only
- * one that exists: {@code verify-invalid-config-fails.sh} and {@code BaseIntegrationTest} also
- * spell it, and nothing asserts either against the label.
+ * There are three such literals, and this IT now guards all of them: {@code prometheus.yml}'s
+ * {@code metrics_path}, {@code verify-invalid-config-fails.sh}'s {@code MANAGEMENT_ROOT_PATH}
+ * assignment, and {@link BaseIntegrationTest}'s management-root-path default. None of the three can
+ * be DERIVED — {@code prometheus.yml} is bind-mounted verbatim and Prometheus interpolates nothing
+ * into a scrape config, and the script deliberately drives a bare {@code docker run} against the
+ * image rather than bringing the stack up, so it has no resolved Compose model to read the label
+ * from — but each of them can be ASSERTED, which is what the corresponding leg below does.
  * <p>
  * <strong>Why this IT exists.</strong> The label is the single source of truth every host-side
  * consumer derives its probe path from — {@code start-integration-container.sh}'s readiness gate and
@@ -87,6 +91,10 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
 
     private static final String COMPOSE_FILE = "docker-compose.yml";
     private static final Path PROMETHEUS_CONFIG = Path.of("prometheus.yml");
+    private static final Path INVALID_CONFIG_SCRIPT = Path.of("scripts", "verify-invalid-config-fails.sh");
+
+    /** The shell variable {@link #INVALID_CONFIG_SCRIPT} mirrors the label into. */
+    private static final String SCRIPT_ROOT_PATH_VAR = "MANAGEMENT_ROOT_PATH";
 
     /**
      * A path segment no management interface serves. Fixed rather than generated: the control is only
@@ -155,9 +163,43 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
                         + "Prometheus interpolates nothing into a scrape config, so its metrics_path "
                         + "CANNOT be derived and must be edited by hand — this assertion is what stops "
                         + "the two drifting apart silently. Update prometheus.yml, not this assertion. "
-                        + "Note it is not the only hand-maintained management path under "
-                        + "integration-tests/: verify-invalid-config-fails.sh and BaseIntegrationTest "
-                        + "also spell it, and neither is asserted against the label");
+                        + "It is one of three hand-maintained management paths under integration-tests/; "
+                        + "verify-invalid-config-fails.sh and BaseIntegrationTest carry the others and "
+                        + "are asserted by the two legs below");
+    }
+
+    @Test
+    @DisplayName("verify-invalid-config-fails.sh's hand-maintained root path agrees with the advertised label")
+    void invalidConfigScriptRootPathAgreesWithLabel() {
+        String rootPath = assertedRootPathLabel();
+        String scriptRootPath = invalidConfigScriptRootPath();
+
+        assertEquals(rootPath, scriptRootPath,
+                () -> INVALID_CONFIG_SCRIPT + " sets " + SCRIPT_ROOT_PATH_VAR + "='" + scriptRootPath
+                        + "' but the " + ROOT_PATH_LABEL + " label advertises '" + rootPath
+                        + "'. That script drives a bare `docker run` against the image instead of "
+                        + "bringing the stack up, so it has no resolved Compose model to read the label "
+                        + "from and CANNOT derive this value — it mirrors the label by hand. Left "
+                        + "unasserted a divergence surfaces only as a confusing case-7 failure that "
+                        + "reads as a gateway fault. Update the script, not this assertion");
+    }
+
+    @Test
+    @DisplayName("BaseIntegrationTest's management-root-path default agrees with the advertised label")
+    void baseIntegrationTestDefaultAgreesWithLabel() {
+        String rootPath = normalisePath(assertedRootPathLabel());
+        String configuredRootPath = managementRootPath();
+
+        assertEquals(rootPath, configuredRootPath,
+                () -> "BaseIntegrationTest resolves the management context path to '" + configuredRootPath
+                        + "' but the " + ROOT_PATH_LABEL + " label advertises '" + rootPath
+                        + "'. This suite probes every management endpoint beneath that value, so a run "
+                        + "against a relocated image without -Dtest.management.root-path set probes the "
+                        + "wrong path and fails in a way that reads as a gateway fault rather than as a "
+                        + "stale default. Update BaseIntegrationTest's DEFAULT_MANAGEMENT_ROOT_PATH (or "
+                        + "pass -Dtest.management.root-path), not this assertion. Both sides are compared "
+                        + "after the same trailing-slash normalisation, so a '/' label and the empty "
+                        + "effective path are not reported as a divergence — they denote the same path");
     }
 
     /**
@@ -212,21 +254,63 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
      * @return the declared scrape path, unquoted
      */
     private static String prometheusMetricsPath() {
-        List<String> lines;
-        try {
-            lines = Files.readAllLines(PROMETHEUS_CONFIG);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot read " + PROMETHEUS_CONFIG.toAbsolutePath(), e);
-        }
-
-        return lines.stream()
+        return readLines(PROMETHEUS_CONFIG).stream()
                 .map(String::strip)
                 .filter(line -> line.startsWith("metrics_path:"))
                 .map(line -> line.substring("metrics_path:".length()).strip())
-                .map(value -> value.replace("'", "").replace("\"", ""))
+                .map(ManagementRootPathLabelIT::unquote)
                 .findFirst()
                 .orElseGet(() -> fail("no metrics_path key in " + PROMETHEUS_CONFIG.toAbsolutePath()
                         + " — this IT asserts that literal agrees with the " + ROOT_PATH_LABEL
                         + " label, and it cannot do so if the key has been renamed or removed"));
+    }
+
+    /**
+     * The management root path {@link #INVALID_CONFIG_SCRIPT} mirrors the label into, read as text: it
+     * is a plain shell assignment in a script this module never sources, so parsing the one line is
+     * both sufficient and cheaper than invoking a shell to evaluate it.
+     * <p>
+     * A missing assignment FAILS rather than returning a default. Returning one would turn a rename of
+     * the variable into a vacuous pass, which is the exact drift this leg exists to catch.
+     *
+     * @return the assigned root path, unquoted
+     */
+    private static String invalidConfigScriptRootPath() {
+        String prefix = SCRIPT_ROOT_PATH_VAR + "=";
+        return readLines(INVALID_CONFIG_SCRIPT).stream()
+                .map(String::strip)
+                .filter(line -> line.startsWith(prefix))
+                .map(line -> line.substring(prefix.length()).strip())
+                .map(ManagementRootPathLabelIT::unquote)
+                .findFirst()
+                .orElseGet(() -> fail("no " + SCRIPT_ROOT_PATH_VAR + " assignment in "
+                        + INVALID_CONFIG_SCRIPT.toAbsolutePath() + " — this IT asserts that literal "
+                        + "agrees with the " + ROOT_PATH_LABEL + " label, and it cannot do so if the "
+                        + "variable has been renamed or removed. Restore the assignment, or update "
+                        + SCRIPT_ROOT_PATH_VAR + " here to follow the rename"));
+    }
+
+    /**
+     * Reads a hand-maintained config file this IT asserts against the label.
+     *
+     * @param path the file to read, relative to the module directory
+     * @return the file's lines
+     */
+    private static List<String> readLines(Path path) {
+        try {
+            return Files.readAllLines(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + path.toAbsolutePath(), e);
+        }
+    }
+
+    /**
+     * Strips the surrounding quotes a scalar may carry in either source format.
+     *
+     * @param value the raw scalar
+     * @return the value without quote characters
+     */
+    private static String unquote(String value) {
+        return value.replace("'", "").replace("\"", "");
     }
 }
