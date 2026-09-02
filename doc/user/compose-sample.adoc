@@ -215,11 +215,24 @@ the readiness gate does:
 
 [source,bash]
 ----
-MGMT_ROOT=$(docker compose -f deployment/compose-sample/docker-compose.yml config --format json \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["api-sheriff"]["labels"]["de.cuioss.sheriff.management-root-path"])')
+# Read the label off the RUNNING gateway container. Docker's own --format is used rather than a
+# JSON parser so this step needs nothing beyond the Compose v2 the guide already asks for.
+MGMT_ROOT=$(docker inspect \
+  --format '{{ index .Config.Labels "de.cuioss.sheriff.management-root-path" }}' \
+  "$(docker compose -f deployment/compose-sample/docker-compose.yml ps -q api-sheriff)")
+
+# Drop any trailing separator before composing. The suffix below already begins with `/`, so a label
+# of `/` would compose `//health/ready` and a label of `/ops/` would compose `/ops//health/ready` --
+# neither is served. The shipped label is `/q`, where this line is a no-op; it matters exactly when
+# you follow the instruction above and READ the label rather than assuming it.
+MGMT_ROOT="${MGMT_ROOT%"${MGMT_ROOT##*[!/]}"}"
 
 curl -k "https://localhost:9000${MGMT_ROOT}/health/ready"
 ----
+
+That normalisation is the same rule the rest of the project applies to this label --
+`BaseIntegrationTest.normalisePath`, `integration-tests/scripts/start-integration-container.sh` and
+the k6 resolver all collapse the whole trailing run before composing.
 
 The endpoint names beneath that path (`/health`, `/health/ready`, `/health/live`, `/metrics`) are
 Quarkus' own fixed suffixes, so those alone stay spelled out. What the path itself can be, and why

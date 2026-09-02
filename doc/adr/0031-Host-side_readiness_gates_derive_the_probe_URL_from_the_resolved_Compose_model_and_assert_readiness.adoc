@@ -162,7 +162,10 @@ original form.
   `compose up --wait`, `depends_on: condition: service_healthy`, an orchestrator's
   liveness probe, a `docker ps` health column -- is reading liveness however
   "healthy" reads. Readiness remains asserted in exactly two places: the host-side
-  single shot against `/q/health/ready`, and `GatewayReadinessCheck` itself. A reader
+  single shot against `health/ready` beneath the deployment's configured management
+  root path -- `/q/health/ready` on a stock image, but derived from the
+  `de.cuioss.sheriff.management-root-path` label rather than assumed, per the decision
+  above -- and `GatewayReadinessCheck` itself. A reader
   who takes a healthy container as a ready one has drawn a conclusion the signal does
   not support.
 
