@@ -18,12 +18,14 @@ package de.cuioss.sheriff.gateway.testsupport;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,6 +34,9 @@ import java.util.regex.Pattern;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.vertx.core.Future;
+import io.vertx.core.MultiMap;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.UpgradeRejectedException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +53,14 @@ import org.junit.jupiter.api.Test;
  * <p>The assertions are deliberately falsifiable: drop the elapsed measurement, or drop the thread
  * dump, and the tests below go red rather than continuing to pass on a message that no longer
  * explains anything.
+ *
+ * <p>The rejected-upgrade enrichment carries a fourth, independent red-on-drop property, narrowed by
+ * two probes: drop the enrichment and both {@link #reportsStatusAndHeadersOnARejectedUpgrade()} and
+ * {@link #statesTheAbsenceOfAZeroLengthRejectionBody()} go red, while dropping only the empty-body
+ * rendering reddens exactly the latter. Neither joins an existing set, because both assert on nothing
+ * but the thrown type, the cause identity and the rejection detail — never on the dump, never on the
+ * elapsed time. Keeping the probes disjoint is what lets a single red method name which mechanism was
+ * lost, so a new assertion here must not reach for the dump or the measurement either.
  */
 @EnableGeneratorController
 @DisplayName("Awaits")
@@ -113,6 +126,75 @@ class AwaitsTest {
                 CompletableFuture.completedFuture(expected), CONTROL_LABEL, CONTROL_CEILING));
 
         assertEquals(expected, actual, "the awaited value is returned unchanged");
+    }
+
+    /**
+     * The matched control for the rejected-upgrade enrichment. It asserts on the thrown type, the
+     * cause identity and the rejection detail only — deliberately not on the thread dump or the
+     * elapsed measurement, so it stays disjoint from the three timeout probes above.
+     */
+    @Test
+    @DisplayName("a rejected upgrade keeps its wrapper and its cause, and gains a message naming the status and headers")
+    void reportsStatusAndHeadersOnARejectedUpgrade() {
+        int status = Generators.integers(400, 599).next();
+        String headerName = "X-" + Generators.letterStrings(4, 10).next();
+        // The rejection's own message deliberately carries no digits: were it to restate the status,
+        // the wrapper's default toString rendering would satisfy the status assertion below even with
+        // the enrichment dropped, and this probe would stop being falsifiable.
+        String bodyContent = Generators.letterStrings(4, 10).next();
+        UpgradeRejectedException rejected = new UpgradeRejectedException(
+                Generators.letterStrings(8, 16).next(), status,
+                MultiMap.caseInsensitiveMultiMap().add(headerName, Generators.letterStrings(4, 10).next()),
+                Buffer.buffer(bodyContent));
+        CompletableFuture<String> refused = new CompletableFuture<>();
+        refused.completeExceptionally(rejected);
+
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> Awaits.await(refused, CONTROL_LABEL, CONTROL_CEILING));
+
+        String message = failure.getMessage();
+        assertAll("rejected-upgrade diagnostics",
+                () -> assertSame(rejected, failure.getCause(),
+                        "the cause is the identical instance received — the downstream assertInstanceOf "
+                                + "sites key on exactly that"),
+                () -> assertTrue(message.contains(String.valueOf(status)),
+                        "the failure names the rejected status"),
+                () -> assertTrue(message.contains(headerName),
+                        "the failure names the rejection's headers, whose presence is the discriminator"),
+                () -> assertTrue(message.contains(bodyContent),
+                        "the failure names the rejection's body content — without this the pair is "
+                                + "blind to a regression that stops rendering a non-empty body, since "
+                                + "the companion test only pins the empty case"));
+    }
+
+    /**
+     * The empty-body companion to {@link #reportsStatusAndHeadersOnARejectedUpgrade()}. A rejection
+     * whose body is a zero-length {@link Buffer} must state that absence, rather than render nothing
+     * after {@code body=} — the same treatment an empty header map already gets. It stays inside the
+     * same disjoint set: thrown type, cause identity and rejection detail only, never the dump and
+     * never the elapsed measurement.
+     */
+    @Test
+    @DisplayName("a rejected upgrade with a zero-length body states that absence rather than rendering nothing")
+    void statesTheAbsenceOfAZeroLengthRejectionBody() {
+        UpgradeRejectedException rejected = new UpgradeRejectedException(
+                Generators.letterStrings(8, 16).next(), Generators.integers(400, 599).next(),
+                MultiMap.caseInsensitiveMultiMap(), Buffer.buffer());
+        CompletableFuture<String> refused = new CompletableFuture<>();
+        refused.completeExceptionally(rejected);
+
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> Awaits.await(refused, CONTROL_LABEL, CONTROL_CEILING));
+
+        String message = failure.getMessage();
+        assertAll("zero-length rejection body",
+                () -> assertSame(rejected, failure.getCause(),
+                        "the cause is the identical instance received — the enrichment rewrites the "
+                                + "message and nothing else"),
+                () -> assertTrue(message.contains("body=<none>"),
+                        "a zero-length body is stated explicitly; rendering it as nothing would leave "
+                                + "the message trailing off after body= with no way to tell an empty "
+                                + "body from an absent one"));
     }
 
     @Test

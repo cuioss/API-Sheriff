@@ -29,10 +29,14 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 
 import com.sun.management.HotSpotDiagnosticMXBean;
 import de.cuioss.tools.logging.CuiLogger;
+import io.vertx.core.MultiMap;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.UpgradeRejectedException;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 
@@ -60,6 +64,26 @@ import org.awaitility.core.ConditionTimeoutException;
  * elapsed time and a full thread dump, then rethrows a {@link TimeoutException} whose message
  * carries the label, the ceiling, the elapsed time and the dump. The dump names the thread that was
  * stuck and what it was stuck on.
+ *
+ * <h2>A rejected upgrade explains itself too</h2>
+ * The same argument applies to the other opaque failure these waits produce. A WebSocket upgrade the
+ * peer refuses arrives as an {@link ExecutionException} wrapping an
+ * {@link UpgradeRejectedException}, and the assertion that trails it typically reads only
+ * {@code getStatus()} — so an <em>unexpected</em> status leaves a CI log saying which number arrived
+ * and nothing about who sent it. {@link #await(Future, String, Duration)} therefore rethrows an
+ * {@code ExecutionException} whose message names the label, the rejected status, every response
+ * header and the response body. Header presence is evidence in ONE direction: a rejection carrying
+ * the gateway's own stage-0 headers came from the gateway relaying an upstream answer. The converse
+ * does not hold — the gateway applies those headers only on the branch where the head has not yet
+ * been written, so a bare rejection means <em>either</em> it never reached the gateway <em>or</em>
+ * the gateway rendered it past that branch. Read a bare rejection as an open question, not as proof
+ * of a foreign responder.
+ *
+ * <p>The <em>shape</em> is preserved while the message is enriched: the rethrown type is still
+ * {@code ExecutionException} and its {@link Throwable#getCause() cause} is the identical
+ * {@code UpgradeRejectedException} instance that arrived. Call sites assert on both, so unwrapping
+ * the wrapper or re-wrapping the cause would break them. Any {@code ExecutionException} whose cause
+ * is something else is rethrown untouched.
  *
  * <h2>The dump has to see virtual threads</h2>
  * The gateway hands every request to a virtual-thread executor, so the request pipeline — the very
@@ -128,7 +152,10 @@ public final class Awaits {
      * @return the future's value
      * @throws TimeoutException     enriched with the label, ceiling, elapsed time and a thread dump
      * @throws InterruptedException if the waiting thread is interrupted
-     * @throws ExecutionException   if the future completed exceptionally
+     * @throws ExecutionException   if the future completed exceptionally; when the cause is an
+     *                              {@link UpgradeRejectedException} the message is enriched with the
+     *                              rejected status, headers and body, and the cause is the identical
+     *                              instance received
      */
     public static <T> T connect(Future<T> future, String what)
             throws InterruptedException, ExecutionException, TimeoutException {
@@ -144,7 +171,10 @@ public final class Awaits {
      * @return the future's value
      * @throws TimeoutException     enriched with the label, ceiling, elapsed time and a thread dump
      * @throws InterruptedException if the waiting thread is interrupted
-     * @throws ExecutionException   if the future completed exceptionally
+     * @throws ExecutionException   if the future completed exceptionally; when the cause is an
+     *                              {@link UpgradeRejectedException} the message is enriched with the
+     *                              rejected status, headers and body, and the cause is the identical
+     *                              instance received
      */
     public static <T> T connect(io.vertx.core.Future<T> future, String what)
             throws InterruptedException, ExecutionException, TimeoutException {
@@ -213,7 +243,10 @@ public final class Awaits {
      * @return the future's value
      * @throws TimeoutException     enriched with the label, ceiling, elapsed time and a thread dump
      * @throws InterruptedException if the waiting thread is interrupted
-     * @throws ExecutionException   if the future completed exceptionally
+     * @throws ExecutionException   if the future completed exceptionally; when the cause is an
+     *                              {@link UpgradeRejectedException} the message is enriched with the
+     *                              rejected status, headers and body, and the cause is the identical
+     *                              instance received
      */
     static <T> T await(Future<T> future, String what, Duration ceiling)
             throws InterruptedException, ExecutionException, TimeoutException {
@@ -222,6 +255,8 @@ public final class Awaits {
             return future.get(ceiling.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException cause) {
             throw timedOut(what, ceiling, System.nanoTime() - startNanos, cause);
+        } catch (ExecutionException cause) {
+            throw enrichRejectedUpgrade(what, cause);
         }
     }
 
@@ -236,7 +271,10 @@ public final class Awaits {
      * @return the future's value
      * @throws TimeoutException     enriched with the label, ceiling, elapsed time and a thread dump
      * @throws InterruptedException if the waiting thread is interrupted
-     * @throws ExecutionException   if the future completed exceptionally
+     * @throws ExecutionException   if the future completed exceptionally; when the cause is an
+     *                              {@link UpgradeRejectedException} the message is enriched with the
+     *                              rejected status, headers and body, and the cause is the identical
+     *                              instance received
      */
     static <T> T await(io.vertx.core.Future<T> future, String what, Duration ceiling)
             throws InterruptedException, ExecutionException, TimeoutException {
@@ -305,6 +343,61 @@ public final class Awaits {
             failure.initCause(cause);
         }
         return failure;
+    }
+
+    /**
+     * Turns an opaque upgrade rejection into one that names its own sender, and leaves every other
+     * failure exactly as it arrived.
+     *
+     * <p>The returned exception deliberately keeps the shape call sites assert on — an
+     * {@link ExecutionException} whose cause is the identical {@link UpgradeRejectedException}
+     * instance — and changes only the message.
+     *
+     * @param what    what was being awaited
+     * @param failure the failure the future completed with
+     * @return the enriched exception when the cause is a rejected upgrade, otherwise {@code failure}
+     *         itself
+     */
+    private static ExecutionException enrichRejectedUpgrade(String what, ExecutionException failure) {
+        if (!(failure.getCause() instanceof UpgradeRejectedException rejected)) {
+            return failure;
+        }
+        String message = "upgrade rejected awaiting %s: status=%s, headers=[%s], body=%s".formatted(
+                what, rejected.getStatus(), renderHeaders(rejected.getHeaders()),
+                renderBody(rejected.getBody()));
+        LOGGER.debug("Upgrade rejected: %s", message);
+        return new ExecutionException(message, rejected);
+    }
+
+    /**
+     * Renders every header of a rejected upgrade. Header <em>presence</em> is the discriminator the
+     * caller reads, so an empty or absent map is stated explicitly rather than rendered as nothing.
+     *
+     * @param headers the rejection's headers, possibly {@code null}
+     * @return the rendered headers, never {@code null}
+     */
+    private static String renderHeaders(MultiMap headers) {
+        if (null == headers || headers.isEmpty()) {
+            return "<none>";
+        }
+        return headers.entries().stream()
+                .map(header -> header.getKey() + "=" + header.getValue())
+                .collect(Collectors.joining(", "));
+    }
+
+    /**
+     * Renders the body of a rejected upgrade. Body <em>presence</em> is the discriminator the caller
+     * reads, so an empty or absent body is stated explicitly rather than rendered as nothing — the
+     * same treatment {@link #renderHeaders(MultiMap)} gives an empty or absent header map.
+     *
+     * @param body the rejection's body, possibly {@code null}
+     * @return the rendered body, never {@code null}
+     */
+    private static String renderBody(Buffer body) {
+        if (null == body || 0 == body.length()) {
+            return "<none>";
+        }
+        return body.toString();
     }
 
     /**
