@@ -203,13 +203,6 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     }
 
     /**
-     * The label value, with the vacuity guard applied. Every leg above routes through this, so an
-     * absent or blank label fails each of them explicitly rather than degrading it into an assertion
-     * about the empty string.
-     *
-     * @return the non-blank, absolute management root path the container advertises
-     */
-    /**
      * The advertised label, normalised for concatenation and comparison.
      * <p>
      * Every leg that composes a URL from the label, or compares it against another spelling of the
@@ -230,6 +223,18 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
         return normalisePath(assertedRootPathLabel());
     }
 
+    /**
+     * The label value, with the vacuity guard applied and NO normalisation. Every leg reaches the
+     * label through this — directly for the negative control, and via
+     * {@link #normalisedRootPathLabel()} everywhere a path is composed or compared — so an absent or
+     * blank label fails each of them explicitly rather than degrading into an assertion about the
+     * empty string.
+     * <p>
+     * The guards deliberately run on the RAW value: normalising first would collapse {@code "/"} to
+     * the empty string and defeat the absolute-path assertion below.
+     *
+     * @return the non-blank, absolute management root path the container advertises, unnormalised
+     */
     private static String assertedRootPathLabel() {
         String rootPath = inspectContainerLabel(gatewayContainerId(), ROOT_PATH_LABEL);
 
