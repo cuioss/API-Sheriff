@@ -188,56 +188,46 @@ opted into CUI's code-quality toolchain and should not be handed failing builds 
 never adopted, so the build parent switches every one of them off as an inherited default:
 
 `maven.javadoc.skip`, `checkstyle.skip`, `spotbugs.skip`, `pmd.skip`, `cpd.skip`, `enforcer.skip`,
-`jacoco.skip`, `license.skip`, `dependency-check.skip`, `skip.openrewrite`.
+`jacoco.skip`, `license.skip`, `skip.openrewrite`.
 
 *Re-enable any of them by setting the same property to `false` in your own `<properties>`.* Child
 properties win over parent ones, so this is a one-line reversal per tool.
 
-*With one exception, and it is the one that matters most.* `dependency-check.skip` is
-inherited-but-unbound: no POM in the chain binds `org.owasp:dependency-check-maven`, so nothing reads
-the property and setting it `false` enables no scan. It is carried for consistency with this
-project's other modules, not because a plugin consumes it. The WARNING below is where that
-consequence is spelled out -- do not read the list above as a set of uniformly working switches.
-
 [WARNING]
 ====
-*Two of those switches name security controls, not style checks -- read this before you skim past
+*One of those switches names a security control, not a style check -- read this before you skim past
 the list.*
 
 `enforcer.skip` disables *maven-enforcer*, which under `cui-java-parent` carries the
 dependency-convergence and banned-dependency guards -- without it a transitively downgraded library
-can silently win your resolution. `dependency-check.skip` names *OWASP Dependency-Check*, the
-known-vulnerable-dependency (CVE) scan.
+can silently win your resolution.
 
-*The two are not symmetric, and the asymmetry is the point.* `maven-enforcer-plugin` is genuinely
-bound by the inherited chain, so `enforcer.skip` really does suppress a plugin that would otherwise
-run. `org.owasp:dependency-check-maven` is bound *nowhere* -- not in `cui-parent-pom`, not in
-`cui-java-bom`, not in `cui-java-parent`, and not in any POM of this repository. There is no CVE scan
-in your inherited build to disable, and none to re-enable.
+It is defaulted off because that dependency-convergence guard is an inherited CUI opinion about a
+dependency graph this parent never sees, and it should not meet you as a first-build failure over a
+toolchain you never adopted. It is a *real* switch, and the one-line reversal above genuinely works:
+`<enforcer.skip>false</enforcer.skip>` in your own `<properties>` turns the guards on, they need no
+credential, and they cost seconds.
 
-They are defaulted off for two *different* reasons, one per property. `dependency-check` would need
-an NVD API key and add minutes to a build: without a key it cannot run at all, so binding it and
-defaulting it on would fail you on a missing credential rather than on a finding -- which is why
-binding it is not the fix. `enforcer` needs no key and costs seconds; its dependency-convergence
-guard is an inherited CUI opinion about a dependency graph this parent never sees, and it should not
-meet you as a first-build failure over a toolchain you never adopted. The parent leaves
-`maven.compiler.skip` and `skipTests` alone precisely because *you* compile your own sources and pull
-your own dependencies -- a graph this project's upstream scan has never seen.
+*What this parent does not do -- any more -- is touch `dependency-check.skip`.* It used to set it
+`true`, on the reasoning that nothing in the inherited chain binds `org.owasp:dependency-check-maven`,
+so the property was inert. That reasoning covered *this project's* chain, not yours. Maven properties
+are inherited and the plugin reads exactly that property name, so a consumer who bound the plugin
+themselves -- the route below -- inherited a `true` they never wrote and had their CVE scan silently
+suppressed by a parent adopted to get a context path. The property is gone. You inherit the plugin's
+own default, and there is nothing to un-set.
 
-*So you own the vulnerability scanning of the image you build, and there is no property that hands it
-to you.* The routes that work:
+*You still own the vulnerability scanning of the image you build, and no inherited property does it
+for you.* The parent leaves `maven.compiler.skip` and `skipTests` alone precisely because *you*
+compile your own sources and pull your own dependencies -- a graph this project's upstream scan has
+never seen. Two routes work:
 
 * *Scan the produced container image in your own pipeline* -- Trivy, Grype or equivalent. This is the
   route most deployers already have, it is the one this project recommends, and it also covers the
   base image the parent deliberately does not choose for you (see
-  <<_the_container_image_boundary>>). It is *not* a fallback for the property route; it is the route.
+  <<_the_container_image_boundary>>).
 * *Or bind `org.owasp:dependency-check-maven` yourself*, in your own `<build>`, with your own NVD API
-  key. Nothing in the inherited chain does it for you, so `dependency-check.skip` becomes meaningful
-  only once you have.
-
-*Do not set `<dependency-check.skip>false</dependency-check.skip>` and consider the matter handled.*
-It changes nothing and leaves you believing you are scanned. If you want the resolution guards,
-`<enforcer.skip>false</enforcer.skip>` is a real switch and does work.
+  key. Nothing in the inherited chain binds it for you -- and, since the removal above, nothing in it
+  suppresses you either. Binding it is the whole step; there is no companion property to set.
 ====
 
 Five switches are deliberately *left alone*, and each for a reason you may care about:

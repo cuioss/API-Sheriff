@@ -123,6 +123,24 @@ class BuildParentContractTest {
      */
     private static final Path PACKAGED_APPLICATION_PROPERTIES = Path.of("target/classes/application.properties");
 
+    /**
+     * The {@code groupId} half of the coordinate the worked example must inherit from.
+     *
+     * @see #BUILD_PARENT_ARTIFACT_ID
+     */
+    private static final String BUILD_PARENT_GROUP_ID = "de.cuioss.sheriff.gateway";
+
+    /**
+     * The {@code artifactId} half of the coordinate the worked example must inherit from. Asserting the
+     * complete GA alongside the version is what makes assertion (2) a check on the PARENT rather than on
+     * a version string: an unrelated parent that happened to carry the same version would otherwise keep
+     * this whole class green, because assertion (1) checks only the ABSENCE of {@code <build>},
+     * {@code <dependencies>} and {@code <profiles>} — which any unrelated parent satisfies just as well —
+     * while the example would silently have stopped inheriting the api-sheriff dependency and the
+     * quarkus-maven-plugin binding that assertion (1) exists to guard.
+     */
+    private static final String BUILD_PARENT_ARTIFACT_ID = "api-sheriff-build-parent";
+
     /** The single property a consumer is promised is enough. */
     private static final String CONSUMER_PROPERTY = "sheriff.context-path";
 
@@ -135,10 +153,20 @@ class BuildParentContractTest {
     /**
      * The hygiene toolchain a consumer must NOT inherit: this project's own code-quality gates,
      * which a deployer never opted into. Every one is switched off as an inherited default.
+     * <p>
+     * {@code dependency-check.skip} is deliberately NOT a member, and re-adding it would be a
+     * regression rather than a restoration of symmetry. This parent is PUBLISHED and Maven properties
+     * are inherited, so a consumer who binds {@code org.owasp:dependency-check-maven} themselves — a
+     * route this project's own guide offers them — would inherit our {@code true} through
+     * {@code @Parameter(property = "dependency-check.skip")} and have their CVE scan silently
+     * suppressed. {@code enforcer.skip} stays for the opposite, measured reason: maven-enforcer IS
+     * bound by the inherited chain, so dropping its skip fails a consumer's FIRST build on
+     * dependencyConvergence. The rationale for both halves is recorded at the site, in
+     * {@code build-parent/pom.xml}.
      */
     private static final List<String> REQUIRED_HYGIENE_SKIPS = List.of(
             "maven.javadoc.skip", "checkstyle.skip", "spotbugs.skip", "pmd.skip", "cpd.skip",
-            "enforcer.skip", "jacoco.skip", "license.skip", "dependency-check.skip", "skip.openrewrite");
+            "enforcer.skip", "jacoco.skip", "license.skip", "skip.openrewrite");
 
     /**
      * Switches that must stay UNSET, because each one would break something the parent exists to
@@ -205,13 +233,29 @@ class BuildParentContractTest {
     }
 
     @Test
-    @DisplayName("(2) Bump-is-enough promise: parent version tracks the reactor, dependency tracks the parent")
+    @DisplayName("(2) Bump-is-enough promise: the example inherits THIS parent, at the reactor version")
     void adoptingAReleaseIsAParentVersionBump() throws Exception {
         String reactorVersion = textOf(firstChild(rootOf(ROOT_POM), "version"));
-        String exampleParentVersion = textOf(firstChild(firstChild(rootOf(EXAMPLE_POM), "parent"), "version"));
+        Element exampleParent = firstChild(rootOf(EXAMPLE_POM), "parent");
+        String exampleParentGroupId = textOf(firstChild(exampleParent, "groupId"));
+        String exampleParentArtifactId = textOf(firstChild(exampleParent, "artifactId"));
+        String exampleParentVersion = textOf(firstChild(exampleParent, "version"));
         String dependencyVersion = apiSheriffDependencyVersionIn(rootOf(BUILD_PARENT_POM));
 
         assertAll("adopting a release must cost exactly one edit",
+                () -> assertEquals(BUILD_PARENT_GROUP_ID, exampleParentGroupId,
+                        () -> "the example's <parent><groupId> must be " + BUILD_PARENT_GROUP_ID + "; found "
+                                + rendered(exampleParentGroupId) + ". The example is only evidence about THIS "
+                                + "parent while it actually inherits from it — identity is asserted here because "
+                                + "nothing else in this class asserts it, and a version match alone would keep "
+                                + "every assertion green against a parent that is not ours"),
+                () -> assertEquals(BUILD_PARENT_ARTIFACT_ID, exampleParentArtifactId,
+                        () -> "the example's <parent><artifactId> must be " + BUILD_PARENT_ARTIFACT_ID + "; found "
+                                + rendered(exampleParentArtifactId) + ". Re-pointing the example at any other "
+                                + "artifact silently drops the inherited api-sheriff dependency and the "
+                                + "quarkus-maven-plugin binding, and assertion (1) cannot catch it: that assertion "
+                                + "checks the ABSENCE of <build>, <dependencies> and <profiles>, which an "
+                                + "unrelated parent satisfies just as well"),
                 () -> assertEquals(reactorVersion, exampleParentVersion,
                         () -> "the example's <parent><version> must equal the reactor version (" + reactorVersion
                                 + "); found " + rendered(exampleParentVersion) + ". A drifting example stops "

@@ -160,68 +160,65 @@
         <license.skip>true</license.skip>
         <skip.openrewrite>true</skip.openrewrite>
 
-        <!-- ==== TWO OF THAT LIST ARE SECURITY CONTROLS, NOT STYLE CHECKS ==================== -->
+        <!-- ==== ONE SECURITY CONTROL IS SWITCHED OFF HERE, AND ONE IS DELIBERATELY ABSENT ==== -->
         <!-- Separated from the block above deliberately. The enumeration was taken from
              deployment/pom.xml, and it is correct THERE because that module compiles nothing and has
              no dependency graph to scan. This module is the opposite case by explicit design:
              maven.compiler.skip and skipTests are LEFT ALONE precisely because the consumer compiles
              its own sources and runs its own tests — so an inheriting build carries its own
              dependencies and its own Quarkus extensions, a graph API Sheriff's upstream scan never
-             saw. Switching these two off as inherited defaults therefore removes a control from the
-             consumer's build rather than from a module that had nothing to control.
+             saw. Switching a control off as an inherited default therefore removes it from the
+             CONSUMER's build rather than from a module that had nothing to control.
 
-               - dependency-check.skip — the property name OWASP Dependency-Check reads, the
-                 known-vulnerable-dependency (CVE) scan. OWASP A06 Vulnerable and Outdated Components
-                 / A03-2025 Software Supply Chain Failures.
                - enforcer.skip — maven-enforcer, which under cui-java-parent carries the
                  dependency-convergence and banned-dependency guards; without it a transitively
-                 downgraded library can silently win the consumer's resolution.
+                 downgraded library can silently win the consumer's resolution. OWASP A06 Vulnerable
+                 and Outdated Components / A03-2025 Software Supply Chain Failures.
 
-             THE TWO ARE NOT SYMMETRIC, AND THE DIFFERENCE IS MEASURED RATHER THAN ASSUMED.
-             maven-enforcer-plugin IS bound by the inherited chain — cui-parent-pom declares it in
-             <build><plugins> (managed above it in <pluginManagement>) — so enforcer.skip genuinely
-             suppresses a plugin that would otherwise run, and setting it `false` genuinely restores
-             it. org.owasp:dependency-check-maven is bound NOWHERE: neither "dependency-check" nor
-             "owasp" occurs anywhere in cui-parent-pom, cui-java-bom or cui-java-parent (checked
-             against the resolved POMs at both 1.5.10 and 1.5.11), and no POM in this repository binds
-             it either. dependency-check.skip is therefore INHERITED-BUT-UNBOUND: it is this
-             project's own convention, carried for consistency with deployment/pom.xml and pinned by
-             BuildParentContractTest, and NOTHING READS IT. Setting it `false` enables no scan.
+             ==== WHY dependency-check.skip IS NOT DECLARED HERE, AND MUST NOT BE RE-ADDED ====
+             It was declared here, on the reasoning that nothing in the inherited chain binds
+             org.owasp:dependency-check-maven, so the property was inert. That reasoning only ever
+             covered OUR chain, and this parent is PUBLISHED. Maven properties are INHERITED, and
+             dependency-check-maven declares its own switch as
+             @Parameter(property = "dependency-check.skip") — so a consumer who binds the plugin
+             THEMSELVES, in their own <build> with their own NVD API key, inherited our `true` and had
+             their CVE scan silently suppressed by a parent they adopted to get a context path. That
+             is a security misconfiguration shipped into someone else's build (CWE-693, Protection
+             Mechanism Failure), and it contradicted the very route this block and
+             doc/user/downstream-parent.adoc both offer them.
 
-             Both stay DEFAULTED OFF, but for DIFFERENT reasons, and those reasons are stated
-             separately on purpose: a single shared sentence here previously justified both with
-             dependency-check's rationale alone, and neither half of it is true of enforcer, which
-             needs no key and costs seconds. A control riding a justification that belongs to its
-             sibling is indistinguishable from one nobody re-examined.
+             Declaring nothing leaves the plugin's own default (`false`) in force, which is the
+             correct inherited value in BOTH directions: a consumer who has not bound the plugin still
+             runs no scan and pays nothing, and a consumer who has bound it gets the scan they asked
+             for, with no companion step and nothing to un-set.
 
-               - dependency-check.skip stays off because the scan needs an NVD API key and adds
-                 minutes to every consumer build. Were the plugin ever bound here, defaulting it ON
-                 would fail a consumer on a missing credential rather than on a finding — which is
-                 also why binding it is not the answer to the paragraph above.
-               - enforcer.skip stays off because dependencyConvergence is an inherited CUI opinion
-                 about a dependency graph this parent never sees, and a deployer who never adopted
-                 CUI's toolchain should not meet it as a first-build failure. That is the same
-                 argument, and the same class of inherited-CUI-default breakage, as the
-                 Automatic-Module-Name block twenty lines below: an upstream default that fails a
-                 non-CUI consumer's very first `mvn package` for a reason that has nothing to do
-                 with API Sheriff.
+             ==== WHY enforcer.skip STAYS — DO NOT DELETE IT TO "RESTORE SYMMETRY" ====
+             The asymmetry is deliberate and rests on one measured difference. maven-enforcer-plugin
+             IS BOUND by the inherited chain: cui-parent-pom declares it in <build><plugins> (managed
+             above it in <pluginManagement>). dependency-check-maven is bound NOWHERE in that chain —
+             neither "dependency-check" nor "owasp" occurs in cui-parent-pom, cui-java-bom or
+             cui-java-parent (checked against the resolved POMs at both 1.5.10 and 1.5.11), and no POM
+             in this repository binds it either.
 
-             What is NOT acceptable is leaving that consequence invisible — a security control's
+             Because enforcer is ALREADY BOUND, dropping its skip does not restore a control the
+             consumer asked for — it turns CUI's dependencyConvergence opinion, about a dependency
+             graph this parent never sees, into a failure of the consumer's very FIRST `mvn package`
+             over a toolchain they never adopted. That is exactly the harm the Automatic-Module-Name
+             block below exists to prevent, and it is the whole reason the two properties are handled
+             differently. Removing enforcer.skip for consistency with the paragraph above would
+             re-introduce that breakage. enforcer.skip also stays a REAL switch: a consumer who wants
+             the resolution guards sets it `false` in their own <properties> and gets them.
+
+             What is NOT acceptable is leaving a control's status invisible — a security control's
              removal must be explicit and named (secure-by-default / complete mediation), which is
-             exactly what folding it into a ten-entry "hygiene" list defeats. Nor is offering a
-             re-enablement route that does nothing: a consumer who sets dependency-check.skip to
-             `false` and believes they have turned CVE scanning on is worse off than one who knows
-             there is none.
+             exactly what folding it into the undifferentiated "hygiene" list above defeats.
 
-             So the two routes differ. enforcer.skip is re-enabled by setting the same property to
-             `false` in the consumer's own <properties>, and that works. For vulnerability scanning
-             there is no property to flip: the consumer scans the image they produce (Trivy/Grype or
-             equivalent) in their own pipeline, or binds dependency-check-maven themselves. Either
-             way, whoever inherits this parent OWNS the vulnerability scanning of the image they
-             build — API Sheriff's own upstream scan never saw their graph.
-             doc/user/downstream-parent.adoc states the same thing on the consumer's side. Do NOT
-             quietly move these two back into the block above. -->
-        <dependency-check.skip>true</dependency-check.skip>
+             Whoever inherits this parent OWNS the vulnerability scanning of the image they build:
+             API Sheriff's own upstream scan never saw their graph. They scan the produced image
+             (Trivy/Grype or equivalent) in their own pipeline, or bind dependency-check-maven
+             themselves — and the second route now works unaided, because this parent no longer
+             suppresses it. doc/user/downstream-parent.adoc states the same thing on the consumer's
+             side. Do NOT quietly move enforcer.skip back into the block above. -->
         <enforcer.skip>true</enforcer.skip>
 
         <!-- ==== A valid automatic module name for the consumer's jar ======================= -->
