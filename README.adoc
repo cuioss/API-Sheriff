@@ -122,11 +122,23 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
 * Port `8443` (HTTPS) — the data-plane edge. Routes are deny-by-default: only the paths declared
   by the mounted `gateway.yaml` anchors and `endpoints/*.yaml` are served, and every other request
   is rejected with `404`. The image ships no built-in application endpoints of its own
-* Port `9000` (HTTPS) — management endpoints (`/q/health`, `/q/metrics`). The management interface
+* Port `9000` (HTTPS) — management endpoints (health and metrics), served beneath the image's
+  *management context path*. The management interface
   has exactly one port, so supplying `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_*` above converts 9000
   itself to HTTPS; there is no simultaneous plain-HTTP listener. It is additionally bound to
   `127.0.0.1` (loopback only) so the unauthenticated management interface is not exposed on all
   host interfaces, matching the security posture documented in `doc/architecture.adoc`
+
+*Both context paths — the data-plane one and the management one — are fixed when the image is
+built*, so the matching `QUARKUS_*_ROOT_PATH` environment variables are routing-inert against a
+published image — they move nothing, though a divergent value may draw a startup
+build-time-mismatch warning. Moving either takes a rebuild through the Maven seam; see
+link:doc/user/context-path.adoc[The Context Path].
+
+* Rebuilding under your own context path without cloning this repository is the supported
+  customisation path: inherit the published build parent
+  `de.cuioss.sheriff.gateway:api-sheriff-build-parent`, set one property, and build — see
+  link:doc/user/downstream-parent.adoc[Rebuilding Under Your Own Context Path]
 
 [[_known_limitations]]
 == Known Limitations

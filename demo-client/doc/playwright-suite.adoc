@@ -262,11 +262,17 @@ yourself.
 
 The bring-up starts *exactly three* containers -- `keycloak`, `api-sheriff` and
 `api-sheriff-cookie` -- rather than the roughly one dozen the full integration stack runs. It waits
-on each service's management health endpoint in turn. No port number appears in the script: the
-management scheme, the management port and the published public port are all *derived* from the
-resolved Compose model -- the `de.cuioss.sheriff.management-scheme` label plus the host ports
-published against container ports `9000` and `8443`. Renumbering a published port in
-`integration-tests/docker-compose.yml` therefore needs no script edit, and the closing banner the
+on each service's management health endpoint in turn. Neither a port number nor a management path
+appears in the script: the
+management scheme, the management *root path*, the management port and the published public port are
+all *derived* from the resolved Compose model -- the `de.cuioss.sheriff.management-scheme` label and
+its sibling `de.cuioss.sheriff.management-root-path` label, plus the host ports
+published against container ports `9000` and `8443`. The root path is derived rather than restated
+for the same reason as the scheme: it is a build-time-fixed property of the image
+(link:../../doc/user/context-path.adoc[The Context Path]) that only the deployment can report
+host-side. Renumbering a published port in
+`integration-tests/docker-compose.yml`, or moving a gateway's management context path, therefore
+needs no script edit, and the closing banner the
 script prints is built from the same derived rows rather than from a second copy of the addresses.
 
 [NOTE]
@@ -431,10 +437,13 @@ It is deliberately not attached to any `pull_request` trigger and is not added t
 
 == Keeping the Stack Documentation Honest
 
-The demo adds a bind mount to two services in `integration-tests/docker-compose.yml`, and one
-`de.cuioss.sheriff.management-scheme` label to `keycloak` so the bring-up derives that service's
-readiness probe from the model exactly as it derives the gateways'. The
-link:../../doc/development/integration-test-topology.adoc[Integration-Test Topology] document draws the mounted material of
-that stack and states that a change to `docker-compose.yml` makes its diagram stale. When the demo
+The demo adds a bind mount to two services in `integration-tests/docker-compose.yml`, and the
+`de.cuioss.sheriff.management-scheme` label -- with its sibling
+`de.cuioss.sheriff.management-root-path`, carried for label-set uniformity and *inert* on this
+service, since Keycloak serves health under no root-path prefix at all -- to `keycloak`, so the
+bring-up derives that service's readiness probe from the same model the gateway rows come from,
+minus the root-path column that parenthetical explains away.
+The link:../../doc/development/integration-test-topology.adoc[Integration-Test Topology] document
+draws the mounted material of that stack and states that a change to `docker-compose.yml` makes its diagram stale. When the demo
 mount changes shape -- a different host path, a third instance, a second mounted directory -- update
 that diagram in the same change rather than annotating it.

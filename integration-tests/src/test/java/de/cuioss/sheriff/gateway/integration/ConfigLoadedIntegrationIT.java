@@ -67,10 +67,9 @@ class ConfigLoadedIntegrationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("container reports ready — its dependencies are available, not merely the process alive")
     void managementHealthReportsUp() {
-        var response = given()
-                .baseUri(managementBaseUri())
+        var response = givenManagement()
                 .when()
-                .get("/q/health/ready")
+                .get("/health/ready")
                 .then()
                 .statusCode(200)
                 .extract();

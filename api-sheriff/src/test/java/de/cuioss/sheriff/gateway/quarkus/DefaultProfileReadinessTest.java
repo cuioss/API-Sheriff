@@ -38,9 +38,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pins what {@code /q/health/ready} reports on the <strong>shipped default profile</strong>, where no
+ * Pins what the readiness endpoint reports on the <strong>shipped default profile</strong>, where no
  * {@code sheriff.token.issuers.*} issuer is configured at all: aggregate readiness is
- * <strong>UP</strong>.
+ * <strong>UP</strong>. That endpoint is served beneath the configured management root path,
+ * {@code quarkus.management.root-path}, at {@code health/ready} under it — this class names the
+ * configured key rather than the default literal, because the path is a declared, rebuild-time
+ * choice and not a constant of the product.
  * <p>
  * This class previously <em>characterized a defect</em>. The deciding spike asked whether the
  * token-sheriff-validation extension — which requires at least one enabled issuer — drags aggregate
@@ -92,8 +95,10 @@ import org.junit.jupiter.api.Test;
  * than a claim in the class name.
  * <p>
  * Aggregation goes through SmallRye's own composition via {@link SmallRyeHealthReporter} — the same
- * code path {@code /q/health/ready} serves — so neither HTTP nor the management port is needed (the
- * test profile sets {@code quarkus.management.enabled=false}).
+ * code path the readiness endpoint serves — so neither HTTP nor the management port is needed (the
+ * test profile sets {@code quarkus.management.enabled=false}). Exercising the composition directly is
+ * also why no probe URL is derived here at all: there is no request to address, so the configured
+ * management root path never has to be resolved to reach the behaviour under test.
  */
 @QuarkusTest
 @DisplayName("Default-profile readiness with zero sheriff.token.issuers.* configured")
@@ -185,7 +190,8 @@ class DefaultProfileReadinessTest {
 
         // Assert — the aggregate is UP: an issuer-less shipped configuration now reaches ready.
         assertEquals(UP, payload.getString(STATUS),
-                "the composed /q/health/ready status with zero issuers configured; payload: " + payload);
+                "the composed readiness status served beneath quarkus.management.root-path, with zero issuers "
+                        + "configured; payload: " + payload);
 
         // Assert — and it is UP for the right reason: the gateway's own validator resolved from
         // gateway.yaml's token_validation block, which is the coverage the excluded probes duplicated.

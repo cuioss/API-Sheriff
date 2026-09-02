@@ -1,0 +1,29 @@
+{
+  "best_practices": [],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "393de4379bf0b81b1c4eecbd4a49c782015af4e75a31fd34b07a7785bef3be22"
+  },
+  "insights": [],
+  "internal_dependencies": [],
+  "key_dependencies": [],
+  "key_dependencies_reasoning": "",
+  "key_packages": {},
+  "purpose": "deployment",
+  "purpose_reasoning": "Classified deployment for the same reason as its parent: no compiled artifact, existing to be read and copied by an operator. It also pins maven.jar.plugin.automatic.module.name because cui-java-parent derives an invalid Java module name for a hyphenated consumer coordinate.",
+  "responsibility": "The worked consumer example for api-sheriff-build-parent: a minimal third-party POM that inherits the build parent, overrides sheriff.context-path, and produces a relocated-context-path gateway image. It is reference material a deployer copies, deliberately NOT a reactor module, and its build is exercised by hand as part of doc/user/downstream-parent.adoc's procedure rather than by CI.",
+  "responsibility_reasoning": "build-parent/example/pom.xml declares artifactId my-gateway with no src tree and is absent from the root reactor's module list; discover picks it up because it is a pom.xml under the repository, not because it participates in the build.",
+  "skills_by_profile": {
+    "implementation": [
+      "plan-marshall:persona-plan-marshall-agent",
+      "plan-marshall:ref-code-quality"
+    ],
+    "quality": [
+      "plan-marshall:persona-plan-marshall-agent",
+      "plan-marshall:ref-code-quality"
+    ]
+  },
+  "skills_by_profile_reasoning": "Same pom-only reasoning as its parent, minus build-server-client: my-gateway is not a reactor module, so no plan-marshall build dispatch ever targets it \u2014 its build is exercised by hand as part of the downstream-parent runbook. module_testing omitted for the same reason as the parent: it has no tests.",
+  "tips": [],
+  "type": "module"
+}

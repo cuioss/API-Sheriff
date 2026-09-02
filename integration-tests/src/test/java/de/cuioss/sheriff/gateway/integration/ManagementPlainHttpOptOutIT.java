@@ -59,9 +59,17 @@ class ManagementPlainHttpOptOutIT {
     private static final String DEFAULT_PLAIN_MANAGEMENT_PORT = "19005";
     private static final String LOG_FILE = "quarkus-plain-mgmt.log";
 
+    /**
+     * The plain-HTTP management base URI, INCLUDING the management context path — so callers append
+     * only the endpoint beneath it. The root path is shared with
+     * {@link BaseIntegrationTest#managementRootPath()} rather than respelled: this instance differs
+     * from the others only in its management SCHEME, and giving it a second copy of the path would
+     * let the two drift apart for no reason.
+     */
     private static String plainManagementBaseUri() {
         return "http://localhost:"
-                + System.getProperty("test.plain.mgmt.management.port", DEFAULT_PLAIN_MANAGEMENT_PORT);
+                + System.getProperty("test.plain.mgmt.management.port", DEFAULT_PLAIN_MANAGEMENT_PORT)
+                + BaseIntegrationTest.managementRootPath();
     }
 
     @Test
@@ -69,8 +77,9 @@ class ManagementPlainHttpOptOutIT {
     void managementServesHealthOverPlainHttp() {
         var response = given()
                 .baseUri(plainManagementBaseUri())
+                .basePath("")
                 .when()
-                .get("/q/health/live")
+                .get("/health/live")
                 .then()
                 .statusCode(200)
                 .extract();
@@ -84,7 +93,7 @@ class ManagementPlainHttpOptOutIT {
     void managementRefusesHttps() {
         HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(plainManagementBaseUri().replace("http://", "https://") + "/q/health/live"))
+                .uri(URI.create(plainManagementBaseUri().replace("http://", "https://") + "/health/live"))
                 .timeout(Duration.ofSeconds(5))
                 .GET()
                 .build();

@@ -54,7 +54,9 @@ discovered here that is feature-shaped becomes its own follow-up.
   short ADR recording that this baseline is a 1.0 release gate.
 . *Benchmark consolidation* -- the per-plan benchmarks (README convention: each hot-path
   plan shipped its own) are consolidated into one side-by-side report -- baseline
-  (`/q/health`), plain proxy, bearer, WebSocket, gRPC, passthrough relay, BFF mediation
+  (the management interface's aggregate health check, addressed beneath the configured management
+  context path -- see link:../user/context-path.adoc[The Context Path]), plain proxy, bearer,
+  WebSocket, gRPC, passthrough relay, BFF mediation
   (server + cookie) -- published via the existing pages pipeline, with regression thresholds
   recorded as the baseline contract for post-1.0 work. This item creates *no* missing
   coverage; a gap found here is a defect of the plan that skipped it.

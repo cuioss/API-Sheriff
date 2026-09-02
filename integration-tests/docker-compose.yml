@@ -19,8 +19,18 @@ services:
     # demo-client/scripts/start-dev-environment.sh consumes it for all three demo services in ONE
     # loop rather than carrying a keycloak-shaped special case. It is inert for the landed
     # integration-tests bring-up, whose discovery filters on the api-sheriff* name prefix.
+    #
+    # The management-root-path label below is carried for label-set uniformity across every labelled
+    # service, but it is INERT FOR KEYCLOAK and must not be read as a derivable truth about it:
+    # Keycloak serves health at /health/ready directly on the management port, under no root-path
+    # prefix at all. Both consumers already reflect that — integration-tests/scripts/
+    # start-integration-container.sh and demo-client/scripts/start-dev-environment.sh each split the
+    # IdP row out of the derived rows and keep Keycloak's own /health/ready literal. A future loop
+    # that starts deriving Keycloak's probe path from this label must fix the VALUE here first; it is
+    # the gateway root path, not Keycloak's.
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "1443:8443"  # External HTTPS port for Keycloak admin
@@ -204,6 +214,7 @@ services:
     # the script must never infer it from the service name.
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10443:8443"  # External test port for integration tests
@@ -370,6 +381,7 @@ services:
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10444:8443"  # External test port for MtlsHandshakeIT (test.mtls.port)
@@ -466,6 +478,7 @@ services:
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10445:8443"  # External test port for the Bff*Cookie*IT suite (test.cookie.port)
@@ -568,6 +581,7 @@ services:
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10446:8443"  # External test port for BffCookieStatelessnessIT's peer instance
@@ -654,6 +668,7 @@ services:
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10447:8443"  # External test port for the exhaustion regression (test.ws.admission.port)
@@ -753,6 +768,7 @@ services:
     # working and THAT is the bug, not the probe.
     labels:
       de.cuioss.sheriff.management-scheme: "http"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10448:8443"  # External test port for the plain-management opt-out (test.plain.mgmt.port)
@@ -862,6 +878,7 @@ services:
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
       - "10449:8443"  # External test port for the empty-passthrough_sni benchmark arm

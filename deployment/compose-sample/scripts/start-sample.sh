@@ -12,19 +12,23 @@
 #      baked HEALTHCHECK for api-sheriff, Keycloak's declared one, and plain "running" for the demo
 #      upstream, which declares none. Unscoped is correct here — that is the right meaning for each
 #      of the three services this sample runs.
-#   4. ASSERT — gate layer 2: one single-shot /q/health/ready per derived target. The baked probe is
-#      a bare TCP accept on the management port — it must be, because the management scheme is
-#      deployment-bound (ADR-0025) — so it proves the interface is listening, not that the gateway
-#      reported READY. This assertion closes that gap, and needs no retry budget precisely because
-#      step 3 already blocked on health: a non-UP answer here is a real defect, and retrying would
-#      only delay reporting it.
+#   4. ASSERT — gate layer 2: one single-shot readiness probe per derived target, addressed beneath
+#      that target's derived management root path. The baked probe is a bare TCP accept on the
+#      management port — it must be, because the management scheme is deployment-bound (ADR-0025) —
+#      so it proves the interface is listening, not that the gateway reported READY. This assertion
+#      closes that gap, and needs no retry budget precisely because step 3 already blocked on health:
+#      a non-UP answer here is a real defect, and retrying would only delay reporting it.
 #
 # The readiness contract itself is still derived, never restated (ADR-0031): WHICH services to probe
-# comes from the de.cuioss.sheriff.management-scheme label, WHICH scheme from that label's value, and
-# WHICH host port from the port published against the container-port selector 9000. Only that
-# container-side selector is a literal, and deliberately so — it is a stable platform-level fact used
-# to pick the management binding out of a service's port list, not a per-deployment value. Renumbering
-# a published port, or adding a second gateway instance, needs no edit here.
+# comes from the de.cuioss.sheriff.management-scheme label, WHICH scheme from that label's value,
+# WHICH root path the management endpoints sit beneath from the de.cuioss.sheriff.management-root-path
+# label, and WHICH host port from the port published against the container-port selector 9000. Only
+# that container-side selector is a literal, and deliberately so — it is a stable platform-level fact
+# used to pick the management binding out of a service's port list, not a per-deployment value. The
+# endpoint names beneath the derived root path (/health and /health/ready) are Quarkus' own fixed
+# suffixes, not deployment-bound values, which is why they alone stay spelled out. Renumbering a
+# published port, moving the gateway's management context path, or adding a second gateway instance
+# needs no edit here.
 #
 # Invoked by the deployment module's opt-in `compose-sample` Maven profile at pre-integration-test,
 # and directly by an operator following doc/user/compose-sample.adoc. Both paths are the same path.
@@ -126,6 +130,7 @@ fi
 # Runs BEFORE the bring-up: a model this script cannot read should fail in two seconds, and the rows
 # it produces are what the diagnostics below report against when the wait itself fails.
 SCHEME_LABEL="de.cuioss.sheriff.management-scheme"
+ROOT_PATH_LABEL="de.cuioss.sheriff.management-root-path"
 MANAGEMENT_CONTAINER_PORT="9000"
 
 echo "⏳ Deriving the readiness probe targets from the Compose model..."
@@ -134,7 +139,8 @@ import json
 import sys
 
 SCHEME_LABEL = sys.argv[1]
-MANAGEMENT_CONTAINER_PORT = sys.argv[2]
+ROOT_PATH_LABEL = sys.argv[2]
+MANAGEMENT_CONTAINER_PORT = sys.argv[3]
 
 try:
     model = json.load(sys.stdin)
@@ -157,13 +163,24 @@ for name, spec in sorted(services.items()):
         problems.append("%s: invalid %s label (got %r, expected http or https)"
                         % (name, SCHEME_LABEL, scheme))
         continue
+    # The management root path is REQUIRED on a probe target, never defaulted. Falling back to the
+    # shipped default here would let a service that lost the label keep passing against a path its
+    # gateway may no longer serve -- exactly the drift this label exists to make impossible.
+    root_path = labels.get(ROOT_PATH_LABEL)
+    if not root_path or not root_path.startswith("/"):
+        problems.append("%s: missing or non-absolute %s label (got %r)"
+                        % (name, ROOT_PATH_LABEL, root_path))
+        continue
     published = [port.get("published") for port in (spec.get("ports") or [])
                  if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
     if len(published) != 1:
         problems.append("%s: expected exactly one host port published against the management "
                         "container port %s, found %r" % (name, MANAGEMENT_CONTAINER_PORT, published))
         continue
-    rows.append("%s %s %s" % (name, scheme, published[0]))
+    # rstrip("/") normalises a trailing slash away so the endpoint suffix appended downstream cannot
+    # produce a doubled separator. A root path of exactly "/" collapses to the empty string, which is
+    # the correct rendering of "served at the port root".
+    rows.append("%s %s %s %s" % (name, scheme, published[0], root_path.rstrip("/")))
 
 if problems:
     sys.exit("readiness target discovery failed:\n  " + "\n  ".join(problems))
@@ -175,7 +192,7 @@ if not rows:
              "required, or this gate proves nothing." % SCHEME_LABEL)
 
 sys.stdout.write("\n".join(rows) + "\n")
-' "${SCHEME_LABEL}" "${MANAGEMENT_CONTAINER_PORT}")"; then
+' "${SCHEME_LABEL}" "${ROOT_PATH_LABEL}" "${MANAGEMENT_CONTAINER_PORT}")"; then
     echo "❌ Could not derive the readiness targets from docker-compose.yml (see above)"
     exit 1
 fi
@@ -183,9 +200,14 @@ fi
 # Print the container log and the full health payload. A readiness failure is almost always explained
 # by one of these two, and an operator should not have to know which commands to run next. Both gate
 # layers below call this, so the evidence is identical whichever one caught the problem.
+#
+# The health path is passed in as the service's DERIVED management root path rather than spelled out,
+# so this collector keeps working against a gateway whose management context path was moved — the same
+# rule integration-tests/scripts/start-integration-container.sh's capture_gateway_diagnostics follows.
 capture_sample_diagnostics() {
     local service="$1"
     local mgmt_url="$2"
+    local mgmt_root="$3"
     local diag_opts=(-s --connect-timeout 2 --max-time 5)
 
     # -k ONLY on https, and only because the sample's certificate is self-signed. Without it curl
@@ -196,8 +218,8 @@ capture_sample_diagnostics() {
 
     echo "----- ${COMPOSE_CMD[*]} logs ${service} -----"
     "${COMPOSE_CMD[@]}" logs --no-color "${service}" </dev/null 2>&1 || true
-    echo "----- ${mgmt_url}/q/health -----"
-    curl "${diag_opts[@]}" "${mgmt_url}/q/health" 2>&1 || true
+    echo "----- ${mgmt_url}${mgmt_root}/health -----"
+    curl "${diag_opts[@]}" "${mgmt_url}${mgmt_root}/health" 2>&1 || true
     echo ""
 }
 
@@ -211,30 +233,33 @@ capture_sample_diagnostics() {
 echo "🐳 Starting the compose sample (api-sheriff, keycloak, demo-api)..."
 if ! "${COMPOSE_CMD[@]}" up -d --wait --wait-timeout 120; then
     echo "❌ The compose sample did not report healthy within 120s"
-    while read -r SERVICE SCHEME PORT; do
+    while read -r SERVICE SCHEME PORT ROOT; do
         [[ -z "$SERVICE" ]] && continue
-        capture_sample_diagnostics "$SERVICE" "${SCHEME}://localhost:${PORT}"
+        capture_sample_diagnostics "$SERVICE" "${SCHEME}://localhost:${PORT}" "$ROOT"
     done <<< "$TARGETS"
     exit 1
 fi
 
 # ---- 4. Gate layer 2: assert readiness semantics ------------------------------------------------
-while read -r SERVICE SCHEME PORT; do
+while read -r SERVICE SCHEME PORT ROOT; do
     [[ -z "$SERVICE" ]] && continue
     MGMT_URL="${SCHEME}://localhost:${PORT}"
+    # Built from the DERIVED root path, so moving the gateway's management context path moves this
+    # probe with it and leaves no literal here to fall out of step with the deployment.
+    READY_URL="${MGMT_URL}${ROOT}/health/ready"
 
-    # -f is load-bearing: /q/health/ready answers 503 when the gateway is not READY, and WITHOUT -f
-    # curl exits 0 on that 503 — so this assertion would pass on a gateway that is merely listening.
-    # -k is applied from the DERIVED scheme, so a plain-HTTP management interface is probed without
-    # it and no branch on the service name is needed.
+    # -f is load-bearing: the readiness endpoint answers 503 when the gateway is not READY, and
+    # WITHOUT -f curl exits 0 on that 503 — so this assertion would pass on a gateway that is merely
+    # listening. -k is applied from the DERIVED scheme, so a plain-HTTP management interface is probed
+    # without it and no branch on the service name is needed.
     READY_OPTS=(-sf --connect-timeout 2 --max-time 5)
     if [[ "$SCHEME" == "https" ]]; then
         READY_OPTS+=(-k)
     fi
 
-    if ! curl "${READY_OPTS[@]}" "${MGMT_URL}/q/health/ready" > /dev/null 2>&1; then
-        echo "❌ ${SERVICE} reported healthy but ${MGMT_URL}/q/health/ready is not UP"
-        capture_sample_diagnostics "$SERVICE" "$MGMT_URL"
+    if ! curl "${READY_OPTS[@]}" "${READY_URL}" > /dev/null 2>&1; then
+        echo "❌ ${SERVICE} reported healthy but ${READY_URL} is not UP"
+        capture_sample_diagnostics "$SERVICE" "$MGMT_URL" "$ROOT"
         exit 1
     fi
     echo "✅ ${SERVICE} is ready!"

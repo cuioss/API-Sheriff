@@ -79,6 +79,16 @@ to *run* the finished gateway).
   certificate and configuration material, and the two trust boundaries -- drawn from
   `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
 
+| link:context-path-verification.adoc[Context Path -- Verification Runbook]
+| The six-case procedure that proves the context-path seam, with the responses observed rather than
+  predicted: the default application and management interfaces in both management schemes, the
+  native rebuild through `-Dsheriff.context-path` / `-Dsheriff.management-context-path` and the two
+  artifact inspections that show the seam acted, the two error shapes a non-root path produces
+  (in-context `problem+json` versus off-context plain Vert.x `404`), the management interface staying
+  put when the application path moves, and the baked `HEALTHCHECK` remaining indifferent to both.
+  Also records the route-table consequence -- `path_prefix` values are matched against the raw
+  inbound path, so a moved application context path must be reflected in `gateway.yaml`.
+
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
 | Which declared gateway limit has a boundary assertion and which does not -- the thirteen-file
   descriptor surface, the strict preset's resolved caps that appear in no yaml, one row per limit
@@ -109,7 +119,8 @@ to *run* the finished gateway).
   `healthcheck:` key is a mirror of the image's baked declaration rather than a second authority, why
   the exec form is the only one a distroless image can carry, and why Keycloak's probe is
   TCP-accept-level only; how `start-sample.sh` gates in two layers -- `compose up --wait` on the baked
-  container health check, then a single-shot `/q/health/ready` assertion -- deriving its entire probe
+  container health check, then a single-shot readiness assertion beneath the derived management
+  context path (link:../user/context-path.adoc[The Context Path]) -- deriving its entire probe
   target from the resolved Compose model under
   link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031],
   and where its one remaining bound comes from; and the opt-in `skipComposeSample` / `compose-sample`

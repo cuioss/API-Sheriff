@@ -127,7 +127,8 @@ here, because that is the right condition for each of this sample's three servic
 stack scopes its own `--wait` to the gateway service names, because its model also carries backends
 for which "healthy" would mean something else.)
 
-*Layer 2 -- semantics.* One single-shot `GET /q/health/ready` per derived target. Layer 1's signal is
+*Layer 2 -- semantics.* One single-shot readiness `GET` per derived target, addressed beneath that
+target's derived management root path. Layer 1's signal is
 a bare TCP accept -- it must be, because the management scheme is deployment-bound under
 link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] --
 so it proves the interface is listening, not that the gateway reported `READY`. This assertion closes
@@ -136,21 +137,42 @@ non-`UP` answer here is a real defect, and retrying would only delay reporting i
 
 Layer 2 derives its whole probe target from `docker compose config --format json`:
 
-* *which services to probe* -- those carrying the `de.cuioss.sheriff.management-scheme` label;
+* *which services to probe beneath a root path* -- those carrying the
+  `de.cuioss.sheriff.management-scheme` label, *minus the identity provider*, which is waited on
+  separately and unprefixed (see the carve-out below);
 * *which scheme to speak* -- that label's value;
+* *which root path the probe sits beneath* -- the sibling `de.cuioss.sheriff.management-root-path`
+  label's value, *required* on a probe target and never defaulted: falling back to the shipped
+  default would let a service that lost the label keep passing against a path its gateway may no
+  longer serve, which is the exact drift the label exists to make impossible;
 * *which host port to hit* -- the port published against the container-port selector 9000.
 
-The only literal is the container-side management port, and deliberately so: it is a stable
-platform-level fact used as the *selector* that picks the management binding out of a service's port
-list, not a per-deployment value. Renumbering the published port, or adding a second gateway
-instance, therefore needs no edit to the script.
+*The identity-provider carve-out is part of the rule, not an implementation detail.* Keycloak carries
+*both* labels, but for label-set uniformity only: it serves `/health/ready` directly on its management
+port under *no* prefix, so splicing its root-path label into a probe URL addresses a path it does not
+serve. An implementation therefore splits the IdP row out of the derived set and keeps the unprefixed
+literal for it. `integration-tests/scripts/start-integration-container.sh` does exactly that where it
+partitions the discovered rows into `KEYCLOAK_TARGET` and `READINESS_TARGETS`, and the comment at that
+split states the reason at the site; the integration-test runbook
+(`.claude/skills/run-integration-tests/SKILL.md`) spells the same carve-out out for a human reader in
+its probe list. This sample's own stack never reaches the case, because only its
+gateway service carries the labels -- but the rule above is stated in its general form, so the
+exclusion belongs in it rather than in the one script that happens to need it.
+
+The only literals are the container-side management port and the endpoint names beneath the derived
+root path, and both deliberately so. The port is a stable platform-level fact used as the *selector*
+that picks the management binding out of a service's port list, not a per-deployment value; the
+endpoint names (`/health`, `/health/ready`) are Quarkus' own fixed suffixes rather than
+deployment-bound values. Renumbering the published port, moving the gateway's management context path
+(link:../user/context-path.adoc[The Context Path]), or adding a second gateway instance therefore
+needs no edit to the script.
 
 ADR-0031's negative list is binding here, and each item is a real failure mode:
 
-* *No restated host port and no restated scheme.* A list in the script mirroring the compose file
-  becomes a defect the moment either changes.
-* *No liveness probe standing in for readiness.* `/q/health/live` answers as soon as the process is
-  up, which is strictly earlier than the point at which the gateway can serve a request. Gating on
+* *No restated host port, no restated scheme and no restated root path.* A list in the script
+  mirroring the compose file becomes a defect the moment any of them changes.
+* *No liveness probe standing in for readiness.* The liveness endpoint answers as soon as the process
+  is up, which is strictly earlier than the point at which the gateway can serve a request. Gating on
   it would clear the wait before the stack is usable -- the exact race the gate exists to remove.
   Layer 1's baked container probe is liveness-shaped for the same structural reason, which is why
   layer 2 is not redundant with it. `curl -sf` is equally load-bearing in that assertion: without

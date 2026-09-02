@@ -6,6 +6,15 @@ scrape_configs:
   - job_name: 'quarkus-benchmark'
     static_configs:
       - targets: ['api-sheriff:9000']
+    # DELIBERATELY LITERAL. Most consumers derive the management root path from the
+    # de.cuioss.sheriff.management-root-path Compose label, but nothing can derive it HERE: this
+    # file is bind-mounted into the Prometheus
+    # container verbatim (`./prometheus.yml:/etc/prometheus/prometheus.yml:ro`), and Prometheus
+    # interpolates no environment variables into a scrape config — so there is no templating mechanism
+    # that reaches this value. Changing the gateway's management root path therefore means editing
+    # this literal by hand. That is not left to reviewer vigilance: ManagementRootPathLabelIT asserts
+    # this path agrees with the label, so an edit to one without the other turns the IT red. See
+    # doc/user/context-path.adoc.
     metrics_path: '/q/metrics'
     # The management interface is HTTPS-only (Quarkus' management config has a single port, so
     # activating TLS converts 9000 itself). Without the scheme switch Prometheus silently stops

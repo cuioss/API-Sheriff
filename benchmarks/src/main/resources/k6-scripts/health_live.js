@@ -1,9 +1,13 @@
 /**
  * @fileoverview Benchmark for the Quarkus management LIVENESS endpoint over TLS.
  *
- * Drives `/q/health/live` on the management port — the liveness probe only, not the aggregate
- * surface its sibling `gateway_health.js` drives on the same scheme and port. The two retained
- * health benchmarks are distinguished by work done, not by transport.
+ * Drives the LIVENESS endpoint beneath the management context path — the liveness probe only, not
+ * the aggregate health surface its sibling `gateway_health.js` drives on the same scheme and port.
+ * The two retained health benchmarks are distinguished by work done, not by transport.
+ *
+ * The context path is NOT restated here. It is resolved once by `lib/target.js` from
+ * `MANAGEMENT_ROOT_PATH` (default `/q`), so a gateway rebuilt onto a different management context
+ * path is benchmarked at its real endpoint instead of 404ing at a stale literal.
  *
  * This is NO LONGER plain HTTP. Quarkus' management interface has exactly one port, so activating
  * TLS converted port 9000 itself to HTTPS and no plain-HTTP surface remains anywhere in the stack.
@@ -20,9 +24,12 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { managementUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'healthLiveCheck';
-const TARGET_URL = __ENV.TARGET_URL || 'https://api-sheriff:9000/q/health/live';
+// managementUrl resolves independently of GATEWAY_TARGET: the health benchmarks stay deliberately
+// excluded from the cross-gateway comparison lane, because APISIX exposes no management interface.
+const TARGET_URL = __ENV.TARGET_URL || managementUrl('/health/live');
 
 export const options = {
     scenarios: { default: scenario(vus(50), duration()) },

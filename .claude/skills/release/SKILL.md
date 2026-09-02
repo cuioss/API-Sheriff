@@ -497,6 +497,32 @@ twice through `cuioss-parent-pom` and cost five weeks of red builds the first ti
 
 Keep the script in sync with `cuioss-parent-pom`'s copy; there is no shared parent to inherit it from.
 
+**(vi) Confirm the non-reactor example POM's parent version still tracks the reactor.**
+
+```bash
+python3 -c "import xml.etree.ElementTree as ET; ns={'m':'http://maven.apache.org/POM/4.0.0'}; r=ET.parse('pom.xml').getroot().find('m:version',ns).text.strip(); e=ET.parse('build-parent/example/pom.xml').getroot().find('m:parent/m:version',ns).text.strip(); print('reactor=%s example=%s' % (r, e)); raise SystemExit(0 if r == e else 1)"
+```
+
+(Written as a single `python3 -c` rather than a heredoc on purpose: an agent executing this procedure
+is bound by the one-command-per-call and no-heredoc rules, so a heredoc here would prescribe a step
+it may not run.)
+
+Exit `0` proceeds; exit `1` **stops the release** — fix `build-parent/example/pom.xml` first, then
+restart Step 3.
+
+**`build-parent/example/pom.xml` is NOT a reactor module** — it is absent from the root `<modules>`,
+deliberately, because a native build must never enter the default lane. The consequence is the whole
+reason this item exists: **no version-bump tooling reaches it.** `release:prepare` inside the pinned
+`reusable-maven-release.yml` rewrites the reactor's POMs only, this repository configures no
+`versions-maven-plugin` or `maven-release-plugin` of its own, and nothing else edits that file. Its
+`<parent><version>` is a hand-maintained pin.
+
+`BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` asserts that pin equals the reactor
+root version, so a missed bump is not silent — it turns `main` red on the first build after the cut.
+This item catches a drift that already exists *before* spending a release on it; **Step 10's
+`build-parent/example/pom.xml` sub-step is what stops the cut itself creating one.** Both are
+required: this one looks backward, that one forward.
+
 ### Step 4 — Gate on a green `main`
 
 The release builds from `main`, so the gate must be bound to **a named commit** — the `origin/main`
@@ -940,6 +966,37 @@ If the version-bearing files are already correct — the common case, since they
 during the cycle leading up to the cut — say so explicitly in the Step 12 report rather than
 silently skipping the step. "Checked, already correct" and "forgot to check" must not look alike.
 
+#### `build-parent/example/pom.xml` — the one pin the release moves *past* rather than *to*
+
+**This one is not in the table above, and it is not optional.** Every other file there names the
+version just *released*; this one must name the trunk's new *SNAPSHOT*, because it is a `<parent>`
+pin on this repository's own build parent. Set it to whatever `pom.xml`'s `<version>` says on `main`
+after the release force-pushed its version bump:
+
+```bash
+git fetch origin main && git checkout main && git pull
+python3 -c "import xml.etree.ElementTree as ET; ns={'m':'http://maven.apache.org/POM/4.0.0'}; r=ET.parse('pom.xml').getroot().find('m:version',ns).text.strip(); e=ET.parse('build-parent/example/pom.xml').getroot().find('m:parent/m:version',ns).text.strip(); print('reactor=%s example=%s' % (r, e)); raise SystemExit(0 if r == e else 1)"
+```
+
+Non-zero means the example lags. Edit its `<parent><version>` to the reactor value, re-run the check,
+and ship it in the same PR as the rest of this step.
+
+**Why no tooling does this for you.** `build-parent/example/pom.xml` is deliberately *not* a reactor
+module — it is absent from the root `<modules>` so a native build never enters the default lane — so
+`release:prepare` inside the pinned `reusable-maven-release.yml` rewrites every reactor POM's version
+and walks straight past this one. This repository configures no `versions-maven-plugin` or
+`maven-release-plugin` of its own, so nothing else touches it either. The pin is hand-maintained, and
+this step is the hand.
+
+**What fails when it is missed.** `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump`
+asserts the example's parent version equals the reactor root version, so the first build of `main`
+after the cut goes red. Fix the POM; **do not widen that assertion to tolerate a lagging version** —
+its own failure message argues against exactly that, and the guard is the only reason a missed bump
+is visible at all.
+
+Do **not** solve this by adding the example to `<modules>`. Its header records why it is outside the
+reactor, and that reasoning is unchanged by the release cadence.
+
 ### Step 11 — Reformat the generated release notes
 
 The release is created with **auto-generated** notes (a flat `## What's Changed` list). Rewrite them
@@ -1005,7 +1062,9 @@ digest; confirmation that **exactly one** of each expected artifact exists; the 
 observed `visibility` value (Step 9) — report the field verbatim, `public` / `internal` / `private`,
 never a bare "done", since `internal` is exactly the outcome that reads as done and is not; which
 version-bearing examples (Step 10) were updated, or that they were **checked and already correct**;
-and how many dependency PRs were collapsed or removed while reformatting the notes.
+the `reactor=… example=…` line from the `build-parent/example/pom.xml` parity check, so the bump is
+reported as a *value*, not as a tick; and how many dependency PRs were collapsed or removed while
+reformatting the notes.
 
 State plainly which image checks were made **anonymously** and which were authenticated. An
 authenticated check is not evidence about outside consumers, and on an `internal` package every
@@ -1039,6 +1098,10 @@ authenticated check passes.
 - **Update the version-bearing examples (Step 10) after the image is public**, and delete any caveat
   the release has overtaken. `doc/user/container-image.adoc` is exempt — its `<version>` is a
   deliberate placeholder, not a stale pin.
+- **Bump `build-parent/example/pom.xml`'s `<parent><version>` to the trunk's new SNAPSHOT (Step 10).**
+  It is not a reactor module, so `release:prepare` walks past it and no plugin in this repository
+  updates it. `BuildParentContractTest.adoptingAReleaseIsAParentVersionBump` turns `main` red on the
+  first build after a missed bump — fix the POM, never the assertion.
 - **The release is not atomic.** A green `release` job means the jars are already irrevocable. On an
   image-lane failure, never re-run the whole workflow — and re-run **`publish-image` alone** only
   for a *transient* failure. A re-run replays the original event context and checks out the release

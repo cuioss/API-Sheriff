@@ -44,6 +44,18 @@ CONFIG_DIRS=()
 # The container-side management port, matching MANAGEMENT_CONTAINER_PORT in
 # start-integration-container.sh's probe-target discovery.
 MANAGEMENT_CONTAINER_PORT=9000
+# The management context path (quarkus.management.root-path). Unlike start-integration-container.sh
+# this script cannot DERIVE it from the Compose model: it deliberately drives a bare `docker run`
+# against the image rather than bringing up the stack, so there is no resolved model to read the
+# de.cuioss.sheriff.management-root-path label from. It mirrors that label the same way
+# MANAGEMENT_CONTAINER_PORT above mirrors the published port. It is hand-maintained but no longer
+# unguarded: ManagementRootPathLabelIT#invalidConfigScriptRootPathAgreesWithLabel parses this
+# assignment out of this file and asserts it equals the label, so a divergence fails the build
+# instead of surfacing as a confusing case-7 failure. Relocating the management context path still
+# means editing it here as well -- update this value, not the assertion. That test matches on the
+# variable NAME, so a rename here fails the test rather than silently passing.
+# See doc/user/context-path.adoc.
+MANAGEMENT_ROOT_PATH=/q
 # Host port for case 7's negative leg. Deliberately outside the 19000-19005 block
 # docker-compose.yml publishes for the six gateway instances, so this script can run
 # against a live integration stack without colliding with it. A collision surfaces as
@@ -152,7 +164,7 @@ assert_fails_to_boot() {
                 # which is the partial-config serving this leg exists to catch. '000' is
                 # curl's no-response code and is what a refused or reset connection yields.
                 code="$(curl "${probe_opts[@]}" \
-                    "${scheme}://localhost:${mgmt_probe_port}/q/health/ready" || true)"
+                    "${scheme}://localhost:${mgmt_probe_port}${MANAGEMENT_ROOT_PATH}/health/ready" || true)"
                 if [[ -n "${code}" && "${code}" != "000" ]]; then
                     served_by="${scheme} (HTTP ${code})"
                 fi

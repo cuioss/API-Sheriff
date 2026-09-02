@@ -144,7 +144,8 @@ has its own wait earlier in the script. The service names handed to `--wait` are
 column of the same Compose-model-derived rows layer 2 probes, so the set waited on and the set
 asserted are one set from one source.
 
-*Layer 2 -- semantics.* One single-shot `GET /q/health/ready` per discovered instance. The question
+*Layer 2 -- semantics.* One single-shot readiness `GET` per discovered instance, addressed beneath
+that instance's derived management root path. The question
 this layer answers is *did `GatewayReadinessCheck` report `UP`?* -- which layer 1 structurally cannot
 answer, for the reason <<baked-container-check>> gives.
 
@@ -154,15 +155,19 @@ assertion runs the runtime has already reported the instance healthy, so a non-`
 defect rather than an early ask, and retrying would only delay reporting it.
 
 Both layers cover all seven instances from one derivation: the service set, each instance's published
-management port, and the scheme its management interface speaks are read from the resolved Compose
-model, so adding, removing or renumbering an instance needs no edit to the script. Every instance is
+management port, the scheme its management interface speaks and the *root path* its management
+endpoints sit beneath -- the latter two from the `de.cuioss.sheriff.management-scheme` and
+`de.cuioss.sheriff.management-root-path` labels -- are read from the resolved Compose model, so
+adding, removing, renumbering or re-pathing an instance
+(link:../user/context-path.adoc[The Context Path]) needs no edit to the script. Every instance is
 asserted, not only the primary one -- the suites drive the TLS ports directly, so an unasserted
 instance is a race that surfaces as a connection refusal in the IT phase rather than as a bring-up
 failure here.
 
 === The gate asserts readiness, not liveness
 
-`/q/health/live` is deliberately *not* what layer 2 asserts. Liveness answers as soon as the process
+The management interface's liveness endpoint is deliberately *not* what layer 2 asserts. Liveness
+answers as soon as the process
 is up, which is strictly earlier than the point at which the suite may drive the instance -- an
 instance that is live but not ready would serve the suite's first request against a validator that is
 not yet bound.
@@ -174,6 +179,13 @@ The Keycloak wait is derived the same way, from the `keycloak` service's own
 `de.cuioss.sheriff.management-scheme` label and its published management port, so no host and no
 port number is restated in the script. It remains a host-side retry loop, run before the gateways are
 started at all, and is untouched by the gateway-scoped `--wait` above.
+
+Its *root path* is the one column deliberately not derived. Keycloak carries the
+`de.cuioss.sheriff.management-root-path` label for label-set uniformity, but the label is *inert*
+there -- Keycloak serves health directly on its management port under no root-path prefix at all --
+so the IdP row is split out and its root-path column discarded rather than composed. A future loop
+that starts deriving Keycloak's probe path from that label must fix the *value* first: it is the
+gateway's root path, not Keycloak's.
 
 === What `GatewayReadinessCheck` attests -- and what it does not
 
@@ -303,14 +315,15 @@ budget per script, and ADR-0031 records the residual duplication rather than cla
 === The demo bring-up does *not* gate this way
 
 Everything above describes `integration-tests/scripts/start-integration-container.sh`. The parallel
-developer bring-up, `demo-client/scripts/start-dev-environment.sh`, is deliberately unchanged: it
-still runs a single-layer host-side `/q/health/ready` loop against a measured single-number retry
-budget, because not every service it starts runs an image carrying a baked health check, so it has
-nothing to delegate the waiting to.
+developer bring-up, `demo-client/scripts/start-dev-environment.sh`, keeps its layering deliberately
+unchanged: it still runs a single-layer host-side readiness loop against a measured single-number
+retry budget, because not every service it starts runs an image carrying a baked health check, so it
+has nothing to delegate the waiting to. It derives its probe target from the same two labels this
+document names, so the *shape* of the derivation is shared even though the *layering* is not.
 
-The two scripts therefore agree on *what is finally asserted* -- `/q/health/ready`, failing closed on
-a non-2xx answer -- and differ on *where the waiting happens*. The measured evidence above justifies
-both. ADR-0031 records that split in its scope note, which is why its `affects: demo-client` metadata
+The two scripts therefore agree on *what is finally asserted* -- the readiness endpoint beneath the
+derived management root path, failing closed on a 4xx or 5xx answer -- and differ on *where the
+waiting happens*. The measured evidence above justifies both. ADR-0031 records that split in its scope note, which is why its `affects: demo-client` metadata
 remains correct.
 
 === `-plain-mgmt` serves plain HTTP by design

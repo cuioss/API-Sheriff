@@ -94,7 +94,11 @@ certificate without that name would fail hostname verification on the token-key 
 The script preflights the image, brings the three services up, and then gates on the stack being
 genuinely usable rather than merely started. The gate has two layers: it waits on each service's own
 health signal -- for the gateway, the `HEALTHCHECK` baked into its image -- and then asserts
-readiness with a single request to `/q/health/ready`. The second layer is not redundant with the
+readiness with a single request to the readiness endpoint, composed beneath the management context
+path the compose file publishes as the `de.cuioss.sheriff.management-root-path` label. The script
+restates that path nowhere; it derives it, because the path is build-time fixed in the image and a
+gateway built with a different one serves its probes elsewhere
+(link:context-path.adoc[The Context Path]). The second layer is not redundant with the
 first; <<_reading_the_container_health_signal>> explains what each one proves. Either layer failing
 exits non-zero, printing the container log and the full health payload.
 
@@ -132,9 +136,11 @@ Two other endpoints are published:
 |===
 | Address | What it is
 
-| `https://localhost:9000/q/health/ready`
+| `https://localhost:9000`, beneath the published management context path
 | The gateway's management interface -- HTTPS, because the sample supplies management certificates.
-  This is what the readiness gate probes.
+  Its readiness endpoint is what the readiness gate probes; the path it sits beneath comes from the
+  compose file's `de.cuioss.sheriff.management-root-path` label rather than from anything this page
+  restates. <<_reading_the_container_health_signal>> composes the probe from it.
 
 | `https://localhost:1443`
 | The Keycloak admin console, for inspecting the realm or minting a token by hand.
@@ -202,12 +208,36 @@ management interface speaks HTTPS in this sample but plain HTTP in a deployment 
 probe that spoke either one would be wrong against the other. It measures the one thing that is true
 under both.
 
-Readiness has its own answer, and it is one request away:
+Readiness has its own answer, and it is one request away -- addressed beneath the *management context
+path*, which is fixed when the image is built and published to the host side by the compose file's
+`de.cuioss.sheriff.management-root-path` label. Read it from there rather than assuming it, exactly as
+the readiness gate does:
 
 [source,bash]
 ----
-curl -k https://localhost:9000/q/health/ready
+# Read the label off the RUNNING gateway container. Docker's own --format is used rather than a
+# JSON parser so this step needs nothing beyond the Compose v2 the guide already asks for.
+MGMT_ROOT=$(docker inspect \
+  --format '{{ index .Config.Labels "de.cuioss.sheriff.management-root-path" }}' \
+  "$(docker compose -f deployment/compose-sample/docker-compose.yml ps -q api-sheriff)")
+
+# Drop any trailing separator before composing. The suffix below already begins with `/`, so a label
+# of `/` would compose `//health/ready` and a label of `/ops/` would compose `/ops//health/ready` --
+# neither is served. The shipped label is `/q`, where this line is a no-op; it matters exactly when
+# you follow the instruction above and READ the label rather than assuming it.
+MGMT_ROOT="${MGMT_ROOT%"${MGMT_ROOT##*[!/]}"}"
+
+curl -k "https://localhost:9000${MGMT_ROOT}/health/ready"
 ----
+
+That normalisation is the same rule the rest of the project applies to this label --
+`BaseIntegrationTest.normalisePath`, `integration-tests/scripts/start-integration-container.sh` and
+the k6 resolver all collapse the whole trailing run before composing.
+
+The endpoint names beneath that path (`/health`, `/health/ready`, `/health/live`, `/metrics`) are
+Quarkus' own fixed suffixes, so those alone stay spelled out. What the path itself can be, and why
+moving it costs a rebuild rather than an environment variable, is in
+link:context-path.adoc[The Context Path].
 
 That endpoint answers `503` while the gateway is not ready, which is what makes it a readiness signal
 rather than a second liveness one. Use it -- not the health column -- before concluding the stack is

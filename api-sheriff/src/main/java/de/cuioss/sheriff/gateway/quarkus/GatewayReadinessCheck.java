@@ -34,8 +34,23 @@ import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
 import org.eclipse.microprofile.health.Readiness;
 
 /**
- * SmallRye {@code @Readiness} probe served on the management port ({@code /q/health/ready}),
- * reporting whether the gateway is ready to serve traffic.
+ * SmallRye {@code @Readiness} probe served on the management port, reporting whether the gateway is
+ * ready to serve traffic.
+ * <p>
+ * The probe's path is not fixed here, and WHICH key places it depends on
+ * {@code quarkus.management.enabled}. While the management interface is enabled — which every shipped
+ * deployment is, because {@code src/main/resources/application.properties} pins
+ * {@code quarkus.management.enabled=true} — every non-application route is served by the MANAGEMENT
+ * router, so readiness is served beneath the configured management root path,
+ * {@code quarkus.management.root-path} (default {@code /q}), at {@code health/ready} under it, on the
+ * management port; {@code quarkus.http.non-application-root-path} governs nothing there. Set
+ * {@code quarkus.management.enabled=false} and the non-application endpoints move back onto the MAIN
+ * HTTP port, where readiness is served at
+ * <code>{quarkus.http.root-path}/{quarkus.http.non-application-root-path}/health/ready</code> instead —
+ * a different port and a different path. Whichever route applies, the placing keys are build-time
+ * fixed, so a deployment that moves the context path rebuilds the image rather than setting an
+ * environment variable — see {@code doc/user/context-path.adoc}, and block (d) of
+ * {@code application.properties} for the same two-mode routing stated at its source.
  * <p>
  * Readiness reflects two facts, per {@code architecture.adoc} § Metrics (Health):
  * <ul>

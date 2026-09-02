@@ -127,17 +127,26 @@ more on gateway A than on gateway B", never as an absolute relay-throughput clai
 |Name |Path |What it measures
 
 |`healthLiveCheck`
-|`https://api-sheriff:9000/q/health/live`
+|`managementUrl('/health/live')`
 |Management-interface *liveness* throughput over TLS — the liveness probe only. Still the lightest
  path in the stack (no routing, no pipeline, no upstream), so it remains the harness-health
  indicator: a run whose numbers collapse here indicates a host or container problem, not a gateway
  regression. It is no longer a plain-HTTP floor — see the note below.
 
 |`gatewayHealth`
-|`https://api-sheriff:9000/q/health`
-|Management-interface *aggregate* health throughput over TLS — `/q/health` runs every registered
- health check, including the token-sheriff JWKS readiness check, so it is the heavier of the two.
+|`managementUrl('/health')`
+|Management-interface *aggregate* health throughput over TLS — the aggregate check runs every
+ registered health check, including the token-sheriff JWKS readiness check, so it is the heavier of
+ the two.
 |===
+
+Both paths are *composed*, not restated. `managementUrl()` in `lib/target.js` concatenates the
+management host and port with the gateway's *management context path*, taken from the
+`MANAGEMENT_ROOT_PATH` environment variable and defaulting to the shipped value when it is unset;
+the endpoint suffixes above are Quarkus' own fixed names. A run against a gateway built with a
+different management context path therefore needs no script edit — only the variable. The
+application-side resolvers (`targetUrl()`, `wsUrl()`) compose `HTTP_ROOT_PATH` the same way. Why the
+path is fixed at build time at all is in link:../doc/user/context-path.adoc[The Context Path].
 
 Both are retained so their existing badge / history / trend series are not orphaned.
 

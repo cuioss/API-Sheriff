@@ -91,7 +91,7 @@ services:
     # from a service that never came up. bash IS present, so /dev/tcp is the available primitive.
     # This is an ACCEPT-LEVEL probe only — it proves the management listener is bound, not that the
     # realm finished importing. That is sufficient here: it exists to order the gateway's start
-    # behind the IdP's, and the gateway's own readiness gate (scripts/wait-for-ready.sh) is what
+    # behind the IdP's, and the gateway's own readiness gate (scripts/start-sample.sh) is what
     # asserts the stack is actually usable.
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo -n > /dev/tcp/127.0.0.1/9000'"]
@@ -156,22 +156,31 @@ services:
     # .env file, which Compose auto-loads; start-sample.sh reads the value back out of the resolved
     # model rather than restating it. An inline fallback would be a second copy to keep in lockstep.
     image: ${API_SHERIFF_IMAGE}
-    # Declares the scheme this instance's MANAGEMENT interface speaks. scripts/wait-for-ready.sh
-    # derives its entire probe URL from this label plus the host port published against container
-    # port 9000 — so the readiness gate restates neither scheme nor port, and renumbering the
-    # published port below needs no script edit (ADR-0031).
+    # Declares WHAT this instance's MANAGEMENT interface speaks and WHERE it serves. scripts/
+    # start-sample.sh derives its entire probe URL from these two labels plus the host port published
+    # against container port 9000 — so the readiness gate restates neither scheme, nor root path, nor
+    # port, and renumbering the published port below needs no script edit (ADR-0031).
+    #
+    # management-root-path is the deployment-visible copy of the gateway's own management context
+    # path. It is the SAME kind of fact as the scheme: fixed in the image at build time, movable by a
+    # deployment, and therefore a value a host-side probe must read rather than assume. Move the
+    # gateway's management context path and this label moves with it; every consumer follows without
+    # an edit. Both labels are REQUIRED by the derivation and are never defaulted — a service that
+    # loses one fails discovery loudly instead of silently probing the shipped default.
     labels:
       de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
     ports:
       - "8443:8443"  # Public TLS listener — the only port published off-host
       # Management interface (health/metrics), HTTPS — bound to the LOOPBACK interface rather than to
-      # every host interface. /q/health and /q/metrics carry no authentication by construction, so
-      # publishing them on 0.0.0.0 hands an internal-state view to anything that can reach the host.
-      # Nothing is lost by narrowing it here: the readiness gate (scripts/wait-for-ready.sh) probes
-      # localhost, and the https://localhost:9000/q/health/ready address the user guide documents
-      # still resolves. A deployment that genuinely needs off-host scraping widens this deliberately
-      # and puts a private network or an authenticating proxy in front of it — it does not open the
-      # port to every interface and leave it unauthenticated.
+      # every host interface. The health and metrics endpoints — served beneath the management root
+      # path the label above declares — carry no authentication by construction, so publishing them
+      # on 0.0.0.0 hands an internal-state view to anything that can reach the host. Nothing is lost
+      # by narrowing it here: the readiness gate (scripts/start-sample.sh) probes localhost, and the
+      # readiness address the user guide documents — https://localhost:9000 beneath that same root
+      # path — still resolves. A deployment that genuinely needs off-host scraping widens this
+      # deliberately and puts a private network or an authenticating proxy in front of it — it does
+      # not open the port to every interface and leave it unauthenticated.
       - "127.0.0.1:9000:9000"
     environment:
       # This block is the DEPLOYMENT DOOR, and it is deliberately the same door the release smoke

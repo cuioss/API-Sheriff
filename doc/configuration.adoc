@@ -575,6 +575,16 @@ separate port serving health and metrics. It follows the same rule as `tls`: neu
   in order to fail, so the actionable sentence lands at the `/management/port` JSON pointer rather
   than surfacing as a generic unknown-key error against the parent object. The port default is
   `9000`.
+
+| (no context-path key)
+| *This block declares no root path either, and for a different reason from the port.* The
+  management context path is `quarkus.management.root-path` (shipped default `/q`), and it is a
+  *build-time* key: it is fixed at augmentation, so no runtime source could project it whatever
+  ordinal that source had -- unlike the port, which is deployment-bound and merely omitted. Moving it
+  is a rebuild, through `api-sheriff/pom.xml`'s `-Dsheriff.management-context-path` seam. It is also
+  an *independent absolute* key: moving the *application* context path does not move the probes with
+  it. Both properties, the seam that sets them and the mechanism that makes the seam act are in
+  link:user/context-path.adoc[The Context Path].
 |===
 
 *Why there is no port here.* The management block reaches the runtime through a configuration
@@ -605,8 +615,9 @@ the link:user/tls-edge.adoc[operator TLS-edge topic].
 `HEALTHCHECK` -- what `docker ps` renders as `(healthy)` -- and that is a property of the *artifact*,
 not of the configuration document. There is no `health_check` block, no cadence key and no enable
 toggle for it anywhere in this file; the whole declaration lives in
-`api-sheriff/src/main/docker/Dockerfile.native`. It is also not the same signal as the
-`/q/health/ready` endpoint the port above serves, and the two are routinely conflated: the baked
+`api-sheriff/src/main/docker/Dockerfile.native`. It is also not the same signal as the readiness
+endpoint the port above serves beneath the configured management context path
+(link:user/context-path.adoc[The Context Path]), and the two are routinely conflated: the baked
 probe is a protocol-blind TCP accept and therefore reports *liveness*, whereas readiness is
 `GatewayReadinessCheck`'s answer over the management interface. One constraint follows from the
 probe being configuration-free: it targets `9000` as a compiled-in constant and does not follow
@@ -1986,6 +1997,12 @@ directive), and the NiFi-proprietary `X-ProxyScheme/-Host/-Port/-ContextPath`. P
 | prefix      | `X-ProxyContextPath` -> `X-Forwarded-Prefix` (RFC 7239: none)
 | client IP   | `X-Forwarded-For` chain -> RFC 7239 `for` chain
 |===
+
+*The `prefix` field is not this gateway's context path.* It is an *inbound* hint a trusted proxy
+sends about where it published the gateway, honored only under `trust_scheme_host` and used only when
+composing forwarded values -- it never moves where this gateway itself serves; the gateway's own
+application and management context paths (`/` and `/q/...` by default) are build-time and are moved
+only by rebuilding, see link:user/context-path.adoc[The Context Path].
 
 *Sanitization (fail-safe, never throws).* Every honored value passes the `cui-http`
 header-value pipeline (CR/LF, NUL, control characters, over-length, suspicious patterns; the

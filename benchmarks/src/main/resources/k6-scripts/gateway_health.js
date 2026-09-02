@@ -1,10 +1,15 @@
 /**
  * @fileoverview Benchmark for the Quarkus management interface's AGGREGATE health surface over TLS.
  *
- * Drives `/q/health` on the management port, which runs every registered health check (including
- * the token-sheriff JWKS readiness check) and is therefore the heavier of the two retained health
- * benchmarks. Its sibling `health_live.js` drives `/q/health/live` on the same scheme and port;
- * the two are distinguished by work done, not by transport.
+ * Drives the AGGREGATE `health` endpoint beneath the management context path, which runs every
+ * registered health check (including the token-sheriff JWKS readiness check) and is therefore the
+ * heavier of the two retained health benchmarks. Its sibling `health_live.js` drives the liveness
+ * endpoint beneath the same context path, on the same scheme and port; the two are distinguished
+ * by work done, not by transport.
+ *
+ * The context path is NOT restated here. It is resolved once by `lib/target.js` from
+ * `MANAGEMENT_ROOT_PATH` (default `/q`), so a gateway rebuilt onto a different management context
+ * path is benchmarked at its real endpoint instead of 404ing at a stale literal.
  *
  * This benchmark previously targeted the gateway's own `https://api-sheriff:8443/api/health`
  * data-plane endpoint and differenced against `proxied_static.js` to isolate proxy cost. That is
@@ -19,11 +24,12 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { buildSummary, duration, maxErrorRate, scenario, SUMMARY_TREND_STATS, vus } from './lib/summary.js';
+import { managementUrl } from './lib/target.js';
 
 const BENCHMARK_NAME = 'gatewayHealth';
-// Hard-coded rather than routed through lib/target.js: the health benchmarks are deliberately
-// excluded from the cross-gateway comparison lane (APISIX exposes no management interface).
-const TARGET_URL = __ENV.TARGET_URL || 'https://api-sheriff:9000/q/health';
+// managementUrl resolves independently of GATEWAY_TARGET: the health benchmarks stay deliberately
+// excluded from the cross-gateway comparison lane, because APISIX exposes no management interface.
+const TARGET_URL = __ENV.TARGET_URL || managementUrl('/health');
 
 export const options = {
     scenarios: { default: scenario(vus(50), duration()) },

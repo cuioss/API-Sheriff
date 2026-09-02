@@ -40,10 +40,9 @@ class GracefulShutdownIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the liveness probe reports the process alive")
     void livenessUp() {
-        var response = given()
-                .baseUri(managementBaseUri())
+        var response = givenManagement()
                 .when()
-                .get("/q/health/live")
+                .get("/health/live")
                 .then()
                 .statusCode(200)
                 .extract();
@@ -54,10 +53,9 @@ class GracefulShutdownIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the readiness probe reports the gateway ready")
     void readinessUp() {
-        var response = given()
-                .baseUri(managementBaseUri())
+        var response = givenManagement()
                 .when()
-                .get("/q/health/ready")
+                .get("/health/ready")
                 .then()
                 .statusCode(200)
                 .extract();

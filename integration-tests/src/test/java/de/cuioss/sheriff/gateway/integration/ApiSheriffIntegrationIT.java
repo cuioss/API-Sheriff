@@ -15,8 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
-import static io.restassured.RestAssured.given;
-
 import org.junit.jupiter.api.Test;
 
 /**
@@ -36,21 +34,25 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void quarkusHealthEndpoint() {
-        given()
-                .baseUri(managementBaseUri())
+        givenManagement()
                 .when()
-                .get("/q/health")
+                .get("/health")
                 .then()
                 .statusCode(200)
                 .contentType("application/json");
     }
 
     /**
-     * Pins the target of the {@code gatewayHealth} k6 benchmark.
+     * Pins that the ENDPOINT the {@code gatewayHealth} k6 benchmark resolves to keeps answering
+     * {@code 200} over HTTPS on the management port.
      * <p>
-     * Consumer: {@code benchmarks/src/main/resources/k6-scripts/gateway_health.js}, whose
-     * {@code TARGET_URL} default is {@code https://api-sheriff:9000/q/health} — the same scheme and
-     * path this test drives, on the same management port.
+     * <strong>It does not pin the benchmark's own target resolution, and cannot.</strong> This test
+     * reaches the endpoint through {@link BaseIntegrationTest#givenManagement()};
+     * {@code benchmarks/src/main/resources/k6-scripts/gateway_health.js} reaches it through
+     * {@code lib/target.js}'s {@code managementUrl('/health')}, or from {@code __ENV.TARGET_URL}.
+     * The two resolutions never meet, so a change to the benchmark's target leaves this test green.
+     * That narrowing is deliberate: reading {@code lib/target.js} from a Java IT would couple this
+     * suite to the k6 script's internals for a guard whose whole purpose is endpoint survival.
      * <p>
      * <strong>Contract being pinned:</strong> moving this endpoint, or reverting the management
      * interface to plain HTTP, breaks the {@code gatewayHealth} benchmark. This guard lives here
@@ -62,10 +64,9 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void benchmarkGatewayHealthTargetServesOverHttps() {
-        given()
-                .baseUri(managementBaseUri())
+        givenManagement()
                 .when()
-                .get("/q/health")
+                .get("/health")
                 .then()
                 .statusCode(200);
     }
@@ -75,10 +76,9 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
      */
     @Test
     void metricsEndpoint() {
-        given()
-                .baseUri(managementBaseUri())
+        givenManagement()
                 .when()
-                .get("/q/metrics")
+                .get("/metrics")
                 .then()
                 .statusCode(200);
     }

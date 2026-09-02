@@ -1,0 +1,411 @@
+= Context Path -- Verification Runbook
+:toc:
+:toclevels: 3
+:sectnums:
+
+The context path is a *build-time* knob with no runtime lever, so nothing about it can be checked by
+restarting a container with a different environment variable. Proving it works means rebuilding the
+artifact through the Maven seam and driving the result. This document is the procedure for doing
+that, and it carries the *observed* responses from the run that established it rather than the ones
+a reader would expect.
+
+The mechanism itself -- the three keys, the carrier-key indirection, and why the environment-variable
+form is inert -- is in link:../user/context-path.adoc[The Context Path]. This is the developer-side
+companion, in the same split `compose-sample.adoc` already uses: the
+link:../user/compose-sample.adoc[operator guide] describes running the thing, the
+link:compose-sample.adoc[contributor guide] describes why it is built the way it is.
+
+Six cases. Cases 1 and 2 establish the default; case 3 rebuilds through the seam; cases 4 through 6
+drive the rebuilt artifact. All six were executed against commit `9ccda16` on
+`feature/configurable-context-path`, and every response recorded below was observed, not predicted.
+
+== What the run used
+
+The procedure needs a gateway that boots, which means a configuration document, and the smallest one
+that boots is smaller than the compose sample's. Two config directories were used, identical except
+for their route prefixes -- the difference is the subject of <<_case_4_non_root_application_interface>>.
+
+[source,yaml]
+----
+# gateway.yaml -- the whole of it
+version: 1
+metadata:
+  config_version: "context-path-verification"
+allowed_methods: ["GET", "HEAD"]
+security_defaults:
+  profile: strict
+anchors:
+  api:
+    path_prefix: /api          # /gw/api in the prefixed variant
+    type: proxy
+    access: public
+token_validation:
+  issuers:
+    - name: static
+      issuer: https://api-sheriff.test/ctxpath
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+----
+
+Three details are load-bearing and each cost one failed boot to discover:
+
+* *A `token_validation` block is mandatory even for an all-public route set.* Omitting it aborts
+  startup with `token_validation is required to build the bearer-token validator` --
+  `TokenValidatorProducer.onStartup` forces the validator into existence eagerly, so there is no
+  "no routes need it, so it is not built" path.
+* *Use a `source: file` JWKS.* A file loader resolves synchronously and needs no identity provider,
+  which is what keeps this runbook a single-container procedure.
+* *The main listener needs TLS material or an explicit opt-out.* The shipped
+  `quarkus.http.insecure-requests=redirect` fails the boot with
+  `Cannot set quarkus.http.insecure-requests without enabling SSL` when no certificate is supplied.
+  Either supply `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` / `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES`, or set
+  `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`. Both were exercised below.
+
+Every `docker run` below assumes that material laid out host-side in three directories:
+
+* `/tmp/ctxpath/config-default/gateway.yaml` -- the document above, with `path_prefix: /api`.
+* `/tmp/ctxpath/config-prefixed/gateway.yaml` -- the same document with `path_prefix: /gw/api`.
+* `/tmp/ctxpath/certs/` -- `test-jwks.json`, plus the self-signed `server.crt` / `server.key` pair the
+  TLS postures use. The JWKS file is mounted by *every* run below, plain-HTTP ones included: it is
+  named by `gateway.yaml`, not by a listener.
+
+The four containers this runbook creates publish disjoint host ports, so all four can run
+concurrently and none of the cases needs a teardown before the next one:
+
+[cols="2,2,2,3", options="header"]
+|===
+| Container | Image | Host ports (app / mgmt) | Posture
+
+| `ctxpath-default` | `api-sheriff:ctxpath-default` | `8080` / `9000` | plain HTTP, both listeners
+| `ctxpath-default-tls` | `api-sheriff:ctxpath-default` | `8443` / `9443` | HTTPS, both listeners
+| `ctxpath-gw` | `api-sheriff:ctxpath` | `8081` / `9001` | plain HTTP, unprefixed `gateway.yaml`
+| `ctxpath-gw-prefixed` | `api-sheriff:ctxpath` | `8082` / `9002` | plain HTTP, prefixed `gateway.yaml`
+|===
+
+The upstream is deliberately *not* started. Every route in this runbook resolves to an unreachable
+alias, so a matched route answers `502` with the gateway's own envelope. That is the signal being
+tested: a `502` proves route selection *succeeded*, which is exactly the fact a context-path change
+can break, and it proves it without a second container.
+
+[[_case_1_default_application_interface]]
+== Case 1 -- Default path: the application interface answers on `/`
+
+Build and run with no seam property at all, then drive the data plane.
+
+[source,bash]
+----
+python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
+  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests"
+
+docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:ctxpath-default api-sheriff/
+----
+
+Then start one container per listener posture. Both cases 1 and 2 are driven against these two, so
+they are the only run commands the default-path half of the runbook needs:
+
+[source,bash]
+----
+# Plain HTTP -- main listener on 8080, management opted out of TLS by name
+docker run -d --name ctxpath-default \
+  -p 8080:8080 -p 9000:9000 \
+  -v /tmp/ctxpath/config-default:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  api-sheriff:ctxpath-default
+
+# HTTPS/h2 -- the shipped posture, both listeners terminated
+docker run -d --name ctxpath-default-tls \
+  -p 8443:8443 -p 9443:9000 \
+  -v /tmp/ctxpath/config-default:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  api-sheriff:ctxpath-default
+----
+
+The plain-HTTP container needs `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` for the reason recorded
+above -- the shipped `redirect` value refuses to boot without a certificate -- and the TLS container
+supplies that certificate instead, which is why neither variable appears in both.
+
+Observed, over plain HTTP (`ctxpath-default`, host port `8080`) and over HTTPS/h2
+(`ctxpath-default-tls`, host port `8443`):
+
+[cols="2,3", options="header"]
+|===
+| Request | Observed
+
+| `GET /api`
+| `502 Bad Gateway`, `Content-Type: application/problem+json`,
+  `{"type":"urn:api-sheriff:problem:upstream","title":"Upstream","status":502}` -- the route matched
+  and the gateway tried to forward.
+
+| `GET /no-such-route`
+| `404 Not Found`, `Content-Type: application/problem+json`,
+  `{"type":"urn:api-sheriff:problem:input-validation","title":"Input Validation","status":404}`
+|===
+
+*Both answers carry the gateway's envelope, and at the default path they always will.* With
+`quarkus.http.root-path=/` every request is in context by construction, so the plain-`404` shape of
+<<_case_4_non_root_application_interface>> cannot occur. That is the whole reason the off-context
+error surface is invisible until someone moves the path.
+
+[[_case_2_default_management_interface]]
+== Case 2 -- Default path: the management interface answers on `/q`, in both schemes
+
+Same artifact, management port. The management scheme is deployment-bound (ADR-0025), so both
+postures were driven rather than one -- and both are already running from case 1, so this case adds
+no container: `ctxpath-default` carries the plain-HTTP opt-out, `ctxpath-default-tls` the management
+certificate pair.
+
+*Plain HTTP* (`ctxpath-default`, host port `9000`), via the named opt-out
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`:
+
+[cols="2,2", options="header"]
+|===
+| Endpoint | Observed
+
+| `/q/health` | `200`, `application/json`
+| `/q/health/ready` | `200`, `application/json`
+| `/q/health/live` | `200`, `application/json`
+| `/q/metrics` | `200`, `application/openmetrics-text; version=1.0.0`
+|===
+
+The opt-out is audited, as it should be -- boot emitted `ApiSheriff-115` at `WARNING`, naming the
+port and what breaks.
+
+*HTTPS* (the shipped default; `ctxpath-default-tls`, host port `9443`), with
+`QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES` / `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES`
+supplied: the same four endpoints, the same four status codes and content types, over TLS.
+
+The readiness payload, recorded in full because the rest of this runbook only reports its status
+code:
+
+[source,json]
+----
+{
+    "status": "UP",
+    "checks": [
+        {
+            "name": "gateway-readiness",
+            "status": "UP",
+            "data": {
+                "config": "loaded",
+                "config_version": "context-path-verification",
+                "issuers": 1,
+                "jwks": "ready"
+            }
+        }
+    ]
+}
+----
+
+[[_case_3_rebuild_through_the_seam]]
+== Case 3 -- The rebuild: both seam properties, native, then the image
+
+This is the case that proves the seam end to end, and it is not optional: the whole feature is a
+build seam, so a run that skips the rebuild has verified nothing about it.
+
+[source,bash]
+----
+python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
+  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests \
+    -Dsheriff.context-path=/gw -Dsheriff.management-context-path=/mgmt"
+
+docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:ctxpath api-sheriff/
+----
+
+Observed: `BUILD SUCCESS` in 126s (native, container-build via the Mandrel builder image), then a
+clean image build.
+
+*A green build is not evidence the seam acted*, so the artifact was inspected rather than trusted.
+Two independent measurements, both taken:
+
+*The native executable.* `strings` over
+`target/api-sheriff-0.2.0-SNAPSHOT-runner` returns `/gw/`, `/gw/q/`, `/mgmt`, `/mgmt/health`,
+`/mgmt/health/live`, `/mgmt/health/ready`, `/mgmt/health/group`, `/mgmt/health/started` and
+`/mgmt/metrics`. (`/gw/q/` is `quarkus.http.non-application-root-path` composing relative to the
+moved root path, as documented -- it is inert while the management interface is enabled, but the
+router still registers it.)
+
+*The generated build-time configuration.* The same properties through a JVM `package` put
+`/gw` and `/mgmt` into `target/quarkus-app/quarkus/generated-bytecode.jar`, in
+`io/quarkus/runtime/generated/BuildTimeRunTimeFixedConfigSourceBuilder.class` and in
+`VertxHttpProcessor$initializeRouter` / `$finalizeRouter`. A default `package` of the same tree puts
+*zero* occurrences of either there, and the same `BuildTimeRunTimeFixedConfigSourceBuilder` records
+the constants `/` for `quarkus.http.root-path` and `/q` for `quarkus.management.root-path`.
+
+That pairing is the actual proof: the seam moves the recorded value, and the unconfigured build still
+ships the stock paths.
+
+[NOTE]
+====
+*One documented cost was not reproduced by this run, and the record says so.*
+When the carrier-key indirection was chosen, the cost accepted with it was that the two keys would be
+logged as unrecognized configuration on every boot, because they are ours on Quarkus' namespace. That
+expectation is what this run tested. The declaration sites in
+`api-sheriff/src/main/resources/application.properties`, `api-sheriff/pom.xml` and
+`build-parent/pom.xml` have since been corrected to match the finding below.
+
+No such warning was emitted by the seam-active JVM augmentation, by the seam-active native
+augmentation, or by the resulting container at boot -- three places it was looked for. The likely
+reason is structural rather than a filtered log line: at runtime the carrier key is only ever
+*referenced* by an expression, never *provided* by a config source, and an unset expression key
+produces no unrecognized-key report.
+
+This changes nothing about the design. The carrier keys are still not a Quarkus-owned configuration
+surface -- they carry no validation, no documentation and no tooling support -- and that cost was
+accepted deliberately when the indirection was chosen. What is corrected here is only the
+*observability* claim: the cost is structural, not a log line you will see.
+====
+
+[[_case_4_non_root_application_interface]]
+== Case 4 -- Non-root path: the application interface at `/gw/**`, and both error shapes
+
+Run the image built in case 3 and drive it:
+
+[source,bash]
+----
+docker run -d --name ctxpath-gw \
+  -p 8081:8080 -p 9001:9000 \
+  -v /tmp/ctxpath/config-default:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  api-sheriff:ctxpath
+----
+
+This is the `/gw` + `/mgmt` container cases 4, 5 and 6 all drive; the probes below are issued against
+host port `8081`. *Two response shapes are recorded here as separate probes*, because the difference
+between them is the operator-facing consequence of choosing a non-root path.
+
+[cols="2,3", options="header"]
+|===
+| Request | Observed
+
+| `GET /gw/no-such-route` (in context)
+a| `404 Not Found` +
+`Content-Type: application/problem+json` +
+`{"type":"urn:api-sheriff:problem:input-validation","title":"Input Validation","status":404}`
+
+The request reached the gateway's catch-all and failed deny-by-default route selection, so it is
+answered by the gateway, in the gateway's RFC 9457 envelope.
+
+| `GET /no-such-route` (off context)
+a| `404 Not Found` +
+`content-type: text/html; charset=utf-8` +
+`<html><body><h1>Resource not found</h1></body></html>`
+
+The request never reached the gateway at all. Quarkus' main router is mounted beneath
+`quarkus.http.root-path`, and the gateway's catch-all is registered *inside* it, so a path outside
+the context path is answered by Vert.x' own not-found page -- no `problem+json`, no gateway error
+semantics, nothing in the gateway's error metrics.
+|===
+
+*No `mainRouter` catch-all was added, deliberately.* Restoring the envelope for off-context requests
+would mean serving something at a prefix the deployment declared the gateway does not occupy. That
+assumption -- that nothing else is ever mounted there -- is the one a context path exists to avoid
+making. The cross-referenced discussion is in
+link:../user/context-path.adoc#_off_context_requests_answer_with_a_plain_404[The Context Path].
+
+=== The route table is matched against the raw path, prefix included
+
+This was established by measurement during the run and is the one behaviour a reader is most likely
+to get wrong.
+
+The prefixed configuration is a second container off the same image, differing only in which config
+directory it mounts:
+
+[source,bash]
+----
+docker run -d --name ctxpath-gw-prefixed \
+  -p 8082:8080 -p 9002:9000 \
+  -v /tmp/ctxpath/config-prefixed:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  api-sheriff:ctxpath
+----
+
+With the *unprefixed* configuration (`path_prefix: /api`, the same document case 1 used --
+`ctxpath-gw`, host port `8081`), `GET /gw/api` against the `/gw` build answered `404` with the
+gateway's `problem+json` envelope --
+the request reached the gateway, but no route matched. With the *prefixed* configuration
+(`path_prefix: /gw/api` -- `ctxpath-gw-prefixed`, host port `8082`), the identical request answered
+`502` with the upstream envelope: route selection succeeded and the forward was attempted.
+
+The cause is in `GatewayEdgeRoute.buildPipelineRequest`, which builds the pipeline request from
+`HttpServerRequest.uri()` -- the raw inbound URI, prefix and all -- and stage 1 canonicalises *that*
+before stage 2 selects on it. Route selection therefore never sees a root-path-relative path.
+
+*The operational rule that follows:* a deployment that moves the application context path must
+include the new prefix in its anchor and route `path_prefix` values. `gateway.yaml` is not rewritten
+by the context path; the two are configured independently and must be kept in agreement.
+
+[[_case_5_non_root_management_interface]]
+== Case 5 -- Non-root path: the management interface at `/mgmt`, unmoved by the application change
+
+Same container (`ctxpath-gw`), management port -- published host-side on `9001`.
+
+[cols="2,2", options="header"]
+|===
+| Endpoint | Observed
+
+| `/mgmt/health` | `200`, `application/json`
+| `/mgmt/health/ready` | `200`, `application/json` (payload identical in shape to case 2)
+| `/mgmt/health/live` | `200`, `application/json`
+| `/mgmt/metrics` | `200`, `application/openmetrics-text; version=1.0.0`
+| `/q/health/ready` | `404` -- the shipped default no longer answers
+| `/health/ready` | `404` -- and neither does the unprefixed form
+|===
+
+The two `404` rows are the point of the case. `quarkus.management.root-path` is an *independent
+absolute* key: it moved because `-Dsheriff.management-context-path=/mgmt` moved it, not because the
+application path moved. A build carrying only `-Dsheriff.context-path=/gw` leaves the probes exactly
+where they were.
+
+[[_case_6_health_check_probe]]
+== Case 6 -- The baked `HEALTHCHECK` still passes under a non-root path
+
+The PLAN-01 container probe is a protocol-blind TCP accept against `127.0.0.1:9000`, carrying no URL
+and reading no configuration, so neither context path can reach it. Re-verified rather than assumed:
+
+[source,bash]
+----
+docker inspect --format '{{json .State.Health}}' ctxpath-gw
+----
+
+Observed on the `/gw` + `/mgmt` container: `"Status":"healthy"`, `"FailingStreak":0`, and five
+consecutive probe entries each with `"ExitCode":0`. The same inspection against the default-path
+container (`ctxpath-default`) reported `healthy 0` as well.
+
+That is the expected result and the reason it is worth recording: the probe's indifference to the
+context path is a *property of it being URL-free*, and a future change that made it speak HTTP would
+break silently on exactly this build.
+
+== Cleanup
+
+[source,bash]
+----
+docker rm -f ctxpath-gw ctxpath-gw-prefixed ctxpath-default ctxpath-default-tls
+docker rmi api-sheriff:ctxpath api-sheriff:ctxpath-default
+----
+
+Rebuild without the seam properties before continuing other work -- `target/` otherwise holds a
+prefixed executable that no other procedure in this repository expects.
+
+== Reading this runbook against a later tree
+
+Every response above is a recorded observation from one run, not a contract. Re-run the six cases
+after any change to `application.properties`' context-path declarations, to the two Maven profiles in
+`api-sheriff/pom.xml`, or to `GatewayEdgeRoute`'s request construction. The cheapest single check
+that the seam still acts is case 3's artifact inspection: the seam build must put the configured
+values into `BuildTimeRunTimeFixedConfigSourceBuilder`, and the default build must put `/` and `/q`
+there. A green build proves neither.
