@@ -106,7 +106,7 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the advertised management root path is the one readiness is actually served beneath")
     void advertisedRootPathServesReadiness() {
-        String rootPath = assertedRootPathLabel();
+        String rootPath = normalisedRootPathLabel();
 
         int status = given()
                 .relaxedHTTPSValidation()
@@ -154,7 +154,7 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     @Test
     @DisplayName("prometheus.yml's hand-maintained metrics_path agrees with the advertised label")
     void prometheusScrapePathAgreesWithLabel() {
-        String rootPath = assertedRootPathLabel();
+        String rootPath = normalisedRootPathLabel();
         String metricsPath = prometheusMetricsPath();
 
         assertEquals(rootPath + "/metrics", metricsPath,
@@ -171,8 +171,8 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     @Test
     @DisplayName("verify-invalid-config-fails.sh's hand-maintained root path agrees with the advertised label")
     void invalidConfigScriptRootPathAgreesWithLabel() {
-        String rootPath = assertedRootPathLabel();
-        String scriptRootPath = invalidConfigScriptRootPath();
+        String rootPath = normalisedRootPathLabel();
+        String scriptRootPath = normalisePath(invalidConfigScriptRootPath());
 
         assertEquals(rootPath, scriptRootPath,
                 () -> INVALID_CONFIG_SCRIPT + " sets " + SCRIPT_ROOT_PATH_VAR + "='" + scriptRootPath
@@ -187,7 +187,7 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     @Test
     @DisplayName("BaseIntegrationTest's management-root-path default agrees with the advertised label")
     void baseIntegrationTestDefaultAgreesWithLabel() {
-        String rootPath = normalisePath(assertedRootPathLabel());
+        String rootPath = normalisedRootPathLabel();
         String configuredRootPath = managementRootPath();
 
         assertEquals(rootPath, configuredRootPath,
@@ -209,6 +209,27 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
      *
      * @return the non-blank, absolute management root path the container advertises
      */
+    /**
+     * The advertised label, normalised for concatenation and comparison.
+     * <p>
+     * Every leg that composes a URL from the label, or compares it against another spelling of the
+     * same path, MUST route through this rather than through {@link #assertedRootPathLabel()}. The
+     * raw accessor is validated but not normalised: it returns {@code "/"} verbatim for a
+     * root-mounted management interface, and {@code "/" + "/health/ready"} is {@code //health/ready}
+     * — a path the gateway does not serve — while {@code "/" + "/metrics"} compares unequal to
+     * {@code prometheus.yml}'s {@code /metrics}. Both legs would fail against a correctly-configured
+     * gateway, reporting a drift that does not exist.
+     * <p>
+     * This is the same trailing-slash rule {@link BaseIntegrationTest#normalisePath(String)} applies
+     * to the configured side, applied to the advertised side, so both halves of every comparison are
+     * normalised identically.
+     *
+     * @return the advertised management root path, normalised for concatenation
+     */
+    private static String normalisedRootPathLabel() {
+        return normalisePath(assertedRootPathLabel());
+    }
+
     private static String assertedRootPathLabel() {
         String rootPath = inspectContainerLabel(gatewayContainerId(), ROOT_PATH_LABEL);
 
