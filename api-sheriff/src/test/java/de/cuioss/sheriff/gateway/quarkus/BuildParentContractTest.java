@@ -512,14 +512,14 @@ class BuildParentContractTest {
         @Test
         @DisplayName("the disabled-switch parse reads the anchored paragraph and nothing after it")
         void disabledListParseStopsAtTheParagraph() {
-            List<String> lines = ("""
+            List<String> lines = """
                     ... so the build parent switches every one of them off as an inherited default:
 
                     `alpha.skip`, `beta.skip`,
                     `gamma.skip`.
 
                     A later paragraph mentioning `not.a.member` must not be collected.
-                    """).lines().toList();
+                    """.lines().toList();
 
             assertEquals(Set.of("alpha.skip", "beta.skip", "gamma.skip"), documentedDisabledSwitches(lines),
                     "the enumeration is the one paragraph after the anchor sentence — it wraps across lines, so "
