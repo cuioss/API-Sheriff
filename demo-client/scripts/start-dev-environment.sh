@@ -156,8 +156,17 @@ for name in wanted:
                             "port %s, found %r" % (name, role, container_port, ports[role]))
             usable = False
     if usable:
+        # The root path is emitted LAST, matching deployment/compose-sample/scripts/start-sample.sh
+        # and integration-tests/scripts/start-integration-container.sh. That position is
+        # LOAD-BEARING, not cosmetic: rstrip("/") normalises a trailing slash away so the endpoint
+        # suffix appended downstream cannot produce a doubled separator, and a root path of exactly
+        # "/" therefore collapses to the empty string -- the correct rendering of "served at the
+        # port root". Under default IFS, shell `read` collapses the resulting run of whitespace, so
+        # an empty field is harmless ONLY while it is the trailing one. Emitted in a middle column
+        # it would shift every later column left by one, silently handing the public port to
+        # GATEWAY_MGMT_ROOT. Do not append a sixth column after this one.
         rows.append("%s %s %s %s %s" % (name, scheme, ports["management"][0],
-                                        root_path.rstrip("/"), ports["public"][0]))
+                                        ports["public"][0], root_path.rstrip("/")))
 
 if problems:
     sys.exit("demo stack port discovery failed:\n  " + "\n  ".join(problems))
@@ -172,10 +181,10 @@ fi
 # entry; the gateway rows drive the gateway readiness loop and the SPA entry-point banner.
 IDP_TARGET="$(printf '%s\n' "$DEMO_TARGETS" | grep "^${DEMO_IDP_SERVICE} ")"
 GATEWAY_TARGETS="$(printf '%s\n' "$DEMO_TARGETS" | grep -v "^${DEMO_IDP_SERVICE} ")"
-# The fourth field is discarded deliberately: it is the IdP's management-root-path column, and
+# The trailing field is discarded deliberately: it is the IdP's management-root-path column, and
 # Keycloak serves /health/ready directly on the management port under no root-path prefix, so the
 # gateway root path its label carries for label-set uniformity must NOT be spliced into its probe.
-read -r _ IDP_MGMT_SCHEME IDP_MGMT_PORT _ IDP_PUBLIC_PORT <<< "$IDP_TARGET"
+read -r _ IDP_MGMT_SCHEME IDP_MGMT_PORT IDP_PUBLIC_PORT _ <<< "$IDP_TARGET"
 
 # Rebuild the image from the (possibly just-rebuilt) native executable. This is LOAD-BEARING:
 # `compose up` alone silently reuses a stale image, so a native fix appears not to take effect and
@@ -258,7 +267,7 @@ $COMPOSE_CMD up -d --no-deps "${DEMO_GATEWAY_SERVICES[@]}"
 GATEWAY_READY_ATTEMPTS=30
 
 echo "⏳ Waiting for the demo gateway instances to be ready..."
-while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT_ROOT _; do
+while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT _ GATEWAY_MGMT_ROOT; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
 
     GATEWAY_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
@@ -305,7 +314,7 @@ echo ""
 # same addresses for the Playwright suite; a literal copy here would be a third place to keep in
 # lockstep with the model.
 echo "📱 Demo entry points (the SPA is served BY the gateway, so it is same-origin with /auth/*):"
-while read -r GATEWAY_SERVICE _ _ _ GATEWAY_PUBLIC_PORT; do
+while read -r GATEWAY_SERVICE _ _ GATEWAY_PUBLIC_PORT _; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
     echo "  🖥️  ${GATEWAY_SERVICE}: https://localhost:${GATEWAY_PUBLIC_PORT}/assets/demo/index.html"
 done <<< "$GATEWAY_TARGETS"
