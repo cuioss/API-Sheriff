@@ -141,10 +141,11 @@ class AwaitsTest {
         // The rejection's own message deliberately carries no digits: were it to restate the status,
         // the wrapper's default toString rendering would satisfy the status assertion below even with
         // the enrichment dropped, and this probe would stop being falsifiable.
+        String bodyContent = Generators.letterStrings(4, 10).next();
         UpgradeRejectedException rejected = new UpgradeRejectedException(
                 Generators.letterStrings(8, 16).next(), status,
                 MultiMap.caseInsensitiveMultiMap().add(headerName, Generators.letterStrings(4, 10).next()),
-                Buffer.buffer(Generators.letterStrings(4, 10).next()));
+                Buffer.buffer(bodyContent));
         CompletableFuture<String> refused = new CompletableFuture<>();
         refused.completeExceptionally(rejected);
 
@@ -159,7 +160,11 @@ class AwaitsTest {
                 () -> assertTrue(message.contains(String.valueOf(status)),
                         "the failure names the rejected status"),
                 () -> assertTrue(message.contains(headerName),
-                        "the failure names the rejection's headers, whose presence is the discriminator"));
+                        "the failure names the rejection's headers, whose presence is the discriminator"),
+                () -> assertTrue(message.contains(bodyContent),
+                        "the failure names the rejection's body content — without this the pair is "
+                                + "blind to a regression that stops rendering a non-empty body, since "
+                                + "the companion test only pins the empty case"));
     }
 
     /**

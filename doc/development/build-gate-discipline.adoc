@@ -374,9 +374,18 @@ It is a reading of the accumulating population, not a measurement of the hazard.
   with one green and two reds inside the overlap this excludes concurrent-build load as *the
   discriminator* -- which is what "machine load explains the flake" requires -- and it is not a
   demonstration that host load has no effect at all.
-* *The macOS application firewall.* `socketfilterfw --getglobalstate` reports `State = 0`: the
-  firewall is off, block-all is disabled and stealth mode is off, so none of the three is
-  intercepting loopback connections.
+* *The macOS application firewall.* Three settings, three separate queries -- `--getglobalstate`
+  establishes only the global state, so the other two claims need their own evidence rather than
+  being read off it:
++
+[source,text]
+----
+socketfilterfw --getglobalstate   -> Firewall is disabled. (State = 0)
+socketfilterfw --getblockall      -> Firewall has block all state set to disabled.
+socketfilterfw --getstealthmode   -> Firewall stealth mode is off
+----
++
+None of the three is intercepting loopback connections.
 
 Machine load therefore moves out of the "never formally excluded" column, and no candidate reading
 on this page rests on load or on how often the gate is run.
