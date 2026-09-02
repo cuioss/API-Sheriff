@@ -53,7 +53,7 @@ stack serves the self-signed localhost bundle); omitting it makes every probe be
 certificate validation and look like a dead container:
 The probe path is **composed**, never restated: the endpoint names below (`/health`, `/health/live`, `/health/ready`) are Quarkus' own fixed suffixes, but the prefix they hang from is the gateway's **management context path**, which is build-time fixed in the image and published host-side by each service's `de.cuioss.sheriff.management-root-path` compose label (see `doc/user/context-path.adoc`). Resolve it once, then compose:
 
-```
+```shell
 MGMT=$(docker compose -f integration-tests/docker-compose.yml config --format json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["api-sheriff"]["labels"]["de.cuioss.sheriff.management-root-path"])')
 ```

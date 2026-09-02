@@ -322,9 +322,8 @@ has nothing to delegate the waiting to. It derives its probe target from the sam
 document names, so the *shape* of the derivation is shared even though the *layering* is not.
 
 The two scripts therefore agree on *what is finally asserted* -- the readiness endpoint beneath the
-derived management root path, failing closed on
-a non-2xx answer -- and differ on *where the waiting happens*. The measured evidence above justifies
-both. ADR-0031 records that split in its scope note, which is why its `affects: demo-client` metadata
+derived management root path, failing closed on a 4xx or 5xx answer -- and differ on *where the
+waiting happens*. The measured evidence above justifies both. ADR-0031 records that split in its scope note, which is why its `affects: demo-client` metadata
 remains correct.
 
 === `-plain-mgmt` serves plain HTTP by design

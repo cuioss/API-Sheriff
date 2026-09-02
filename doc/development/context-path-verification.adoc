@@ -59,7 +59,7 @@ Three details are load-bearing and each cost one failed boot to discover:
 * *The main listener needs TLS material or an explicit opt-out.* The shipped
   `quarkus.http.insecure-requests=redirect` fails the boot with
   `Cannot set quarkus.http.insecure-requests without enabling SSL` when no certificate is supplied.
-  Either supply `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` / `_KEY_FILES`, or set
+  Either supply `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` / `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES`, or set
   `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`. Both were exercised below.
 
 The upstream is deliberately *not* started. Every route in this runbook resolves to an unreachable
@@ -122,8 +122,9 @@ were driven rather than one.
 The opt-out is audited, as it should be -- boot emitted `ApiSheriff-115` at `WARNING`, naming the
 port and what breaks.
 
-*HTTPS* (the shipped default), with `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES` / `_KEY_FILES`
-supplied: the same four endpoints, the same four status codes and content types, over TLS.
+*HTTPS* (the shipped default), with `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES` /
+`QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES` supplied: the same four endpoints, the same four
+status codes and content types, over TLS.
 
 The readiness payload, recorded in full because the rest of this runbook only reports its status
 code:

@@ -441,9 +441,9 @@ The demo adds a bind mount to two services in `integration-tests/docker-compose.
 `de.cuioss.sheriff.management-scheme` label -- with its sibling
 `de.cuioss.sheriff.management-root-path`, carried for label-set uniformity and *inert* on this
 service, since Keycloak serves health under no root-path prefix at all -- to `keycloak`, so the
-bring-up derives that service's readiness probe from the model exactly as it derives the gateways'.
-The
-link:../../doc/development/integration-test-topology.adoc[Integration-Test Topology] document draws the mounted material of
-that stack and states that a change to `docker-compose.yml` makes its diagram stale. When the demo
+bring-up derives that service's readiness probe from the same model the gateway rows come from,
+minus the root-path column that parenthetical explains away.
+The link:../../doc/development/integration-test-topology.adoc[Integration-Test Topology] document
+draws the mounted material of that stack and states that a change to `docker-compose.yml` makes its diagram stale. When the demo
 mount changes shape -- a different host path, a third instance, a second mounted directory -- update
 that diagram in the same change rather than annotating it.
