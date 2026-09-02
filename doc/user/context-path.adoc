@@ -340,26 +340,36 @@ bind-mounted into the Prometheus container verbatim, and Prometheus interpolates
 variables into a scrape config -- there is no templating mechanism that reaches the value. Changing
 the gateway's management root path therefore means editing that literal by hand.
 
-Two further hand-maintained literals under `integration-tests/` share that constraint, and relocating
-the management context path means editing them as well:
+Three further hand-maintained literals share that constraint, and relocating the management context
+path means editing them as well:
 
 * `integration-tests/scripts/verify-invalid-config-fails.sh` -- it drives a bare `docker run` rather
   than bringing up the stack, so there is no resolved Compose model to read the label from.
 * `integration-tests/src/test/java/.../BaseIntegrationTest.java` -- the suite's own default constant.
+* `.github/workflows/release.yml`'s `MANAGEMENT_CONTEXT_PATH` -- the path the published-image smoke
+  probe is composed beneath. That lane runs `docker run` against a *pulled* image, so it too has no
+  resolved Compose model, and `Dockerfile.native` declares no root-path OCI label to inspect either.
 
-*None of the three is left to reviewer vigilance.* `ManagementRootPathLabelIT` carries one assertion
-leg per literal -- `prometheusScrapePathAgreesWithLabel`,
-`invalidConfigScriptRootPathAgreesWithLabel` and `baseIntegrationTestDefaultAgreesWithLabel` -- each
-comparing its literal against the Compose label after the same trailing-slash normalisation. Editing
+*None of the four is left to reviewer vigilance.* The three under `integration-tests/` each have an
+assertion leg in `ManagementRootPathLabelIT` -- `prometheusScrapePathAgreesWithLabel`,
+`invalidConfigScriptRootPathAgreesWithLabel` and `baseIntegrationTestDefaultAgreesWithLabel` --
+comparing the literal against the Compose label after the same trailing-slash normalisation. Editing
 one without the others turns the integration suite red rather than producing a silently blind
 Prometheus, a case-7 failure that reads as a gateway fault, or a suite probing the wrong path.
 
-*Being asserted is not the same as being derived*, and the distinction is why all three still have to
-be edited by hand. Prometheus interpolates nothing into a scrape config, the script has no resolved
-Compose model, and a test default cannot read a label that only exists once the stack is up -- so
-each value must be written, and the IT is what makes writing it wrong a build failure rather than a
-silent drift. Prefer deriving where a resolved model exists; where one does not, expect to edit by
-hand and to be caught when you forget.
+The fourth is asserted where it lives, because the release lane never brings the stack up and so has
+no label to compare against. Its *Assert the smoke-probe path matches the shipped management root
+path* step compares the workflow constant against `application.properties`' declared default -- the
+acting value, since that lane's `./mvnw verify -Pintegration-tests` passes no
+`-Dsheriff.management-context-path` and leaves the seam profile inactive -- and fails the release
+before the image is built.
+
+*Being asserted is not the same as being derived*, and the distinction is why all four still have to
+be edited by hand. Prometheus interpolates nothing into a scrape config, the script and the release
+lane have no resolved Compose model, and a test default cannot read a label that only exists once the
+stack is up -- so each value must be written, and the assertions are what make writing it wrong a
+build failure rather than a silent drift. Prefer deriving where a resolved model exists; where one
+does not, expect to edit by hand and to be caught when you forget.
 
 === The baked container health check is unaffected by either path
 

@@ -49,6 +49,10 @@ permissions:
 # application.properties declaration is the acting source, and that value is /q. A build that starts
 # driving the seam property must change this value in the SAME commit — otherwise the probe 404s
 # against a perfectly healthy image and the smoke fails for a reason that reads like a broken build.
+#
+# That obligation is ASSERTED rather than left to the comment: the "Assert the smoke-probe path
+# matches the shipped management root path" step below compares this constant against the shipped
+# declaration and fails the release, before the image is built, when the two disagree.
 env:
   MANAGEMENT_CONTEXT_PATH: /q
 
@@ -220,6 +224,56 @@ jobs:
             exit 1
           fi
           echo "Version identity confirmed: ${POM_VERSION}"
+
+      # THE SMOKE-PROBE PATH AND THE SHIPPED DECLARATION ARE TWO COPIES OF ONE VALUE, AND THIS STEP IS
+      # WHAT KEEPS THEM EQUAL.
+      #
+      # MANAGEMENT_CONTEXT_PATH (declared at the top of this workflow) composes the published-image
+      # smoke probe URL. It cannot be DERIVED here, and that is settled rather than unexamined: this
+      # lane drives `docker run` against a pulled image, so there is no resolved Compose model to read
+      # the de.cuioss.sheriff.management-root-path label from, and
+      # api-sheriff/src/main/docker/Dockerfile.native declares no root-path OCI label to inspect. Where
+      # derivation is structurally impossible the answer is an assertion — the same answer
+      # ManagementRootPathLabelIT gives for the three hand-maintained literals under integration-tests/.
+      #
+      # application.properties is the right side to assert against, because the image this lane
+      # publishes is built by the plain `./mvnw verify -Pintegration-tests` below, which passes no
+      # -Dsheriff.management-context-path. api-sheriff/pom.xml's management-context-path profile
+      # therefore stays inactive and the shipped declaration's inline default is the acting value.
+      # Do NOT "fix" a failure here by passing the seam property into that build: activating a profile
+      # the design deliberately keeps inactive, inside the release lane, is a far larger change than
+      # correcting a constant, and it buys nothing this assertion does not already give.
+      #
+      # It runs BEFORE the image build and long before any push, so a mismatch costs seconds rather
+      # than a 90-minute native build followed by a smoke failure that reads like a broken image.
+      - name: Assert the smoke-probe path matches the shipped management root path
+        env:
+          SHIPPED_PROPERTIES: api-sheriff/src/main/resources/application.properties
+        run: |
+          if [ ! -f "$SHIPPED_PROPERTIES" ]; then
+            echo "::error::${SHIPPED_PROPERTIES} is missing, so the smoke-probe path cannot be checked against the value the image is built with. Restore the file rather than removing this step."
+            exit 1
+          fi
+          DECLARED="$(awk '/^quarkus\.management\.root-path=/ { sub(/^[^=]*=/, ""); print }' "$SHIPPED_PROPERTIES")"
+          if [ -z "$DECLARED" ]; then
+            echo "::error::No quarkus.management.root-path declaration in ${SHIPPED_PROPERTIES}. MANAGEMENT_CONTEXT_PATH='${MANAGEMENT_CONTEXT_PATH}' in .github/workflows/release.yml would then be an unchecked literal again. Restore the declaration rather than removing this step."
+            exit 1
+          fi
+          # The declaration is an expression over a carrier key -- ${quarkus.sheriff-mgmt-path:/q} --
+          # and with the seam property unset it is the inline default that acts. A plain literal is
+          # accepted unchanged, so this keeps working if the carrier indirection is ever retired.
+          EFFECTIVE="$DECLARED"
+          case "$DECLARED" in
+            '${'*':'*'}')
+              EFFECTIVE="${DECLARED#*:}"
+              EFFECTIVE="${EFFECTIVE%\}}"
+              ;;
+          esac
+          if [ "$EFFECTIVE" != "$MANAGEMENT_CONTEXT_PATH" ]; then
+            echo "::error::Smoke-probe path disagrees with the image this lane publishes. .github/workflows/release.yml declares MANAGEMENT_CONTEXT_PATH='${MANAGEMENT_CONTEXT_PATH}', while ${SHIPPED_PROPERTIES} declares quarkus.management.root-path='${DECLARED}', which acts as '${EFFECTIVE}' for the unseamed build this lane runs. The probe would 404 against a perfectly healthy image. Change the workflow constant to match the shipped declaration; do NOT pass -Dsheriff.management-context-path into the integration-test build to make them agree."
+            exit 1
+          fi
+          echo "Smoke-probe path confirmed: MANAGEMENT_CONTEXT_PATH='${MANAGEMENT_CONTEXT_PATH}' matches the acting quarkus.management.root-path in ${SHIPPED_PROPERTIES}."
 
       # THE ONE AND ONLY IMAGE BUILD IN THIS LANE.
       # integration-tests/pom.xml binds `docker compose build api-sheriff` to pre-integration-test,
