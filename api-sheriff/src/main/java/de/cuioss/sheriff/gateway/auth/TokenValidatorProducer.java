@@ -26,7 +26,6 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
-
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;

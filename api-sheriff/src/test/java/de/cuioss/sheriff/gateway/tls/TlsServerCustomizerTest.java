@@ -27,7 +27,6 @@ import java.util.Set;
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
-
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpVersion;
 import org.junit.jupiter.api.DisplayName;

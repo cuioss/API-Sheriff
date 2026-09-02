@@ -28,7 +28,6 @@ import javax.crypto.spec.SecretKeySpec;
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

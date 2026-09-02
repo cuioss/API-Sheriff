@@ -26,7 +26,6 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValueType;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

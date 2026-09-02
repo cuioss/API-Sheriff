@@ -40,7 +40,6 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessor;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
-
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.http.HttpClient;
 import org.jspecify.annotations.Nullable;

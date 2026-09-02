@@ -31,7 +31,6 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.edge.ResponseStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

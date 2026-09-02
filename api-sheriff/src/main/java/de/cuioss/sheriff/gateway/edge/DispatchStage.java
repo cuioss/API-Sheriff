@@ -34,7 +34,6 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
-
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;

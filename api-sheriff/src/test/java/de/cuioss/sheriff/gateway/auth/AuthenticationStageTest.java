@@ -47,7 +47,6 @@ import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import jakarta.inject.Provider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

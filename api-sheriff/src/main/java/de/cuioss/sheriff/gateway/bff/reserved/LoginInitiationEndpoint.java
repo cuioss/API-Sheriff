@@ -26,7 +26,6 @@ import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

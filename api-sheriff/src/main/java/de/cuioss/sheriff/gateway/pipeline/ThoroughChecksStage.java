@@ -31,7 +31,6 @@ import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
-
 import org.jspecify.annotations.Nullable;
 
 /**

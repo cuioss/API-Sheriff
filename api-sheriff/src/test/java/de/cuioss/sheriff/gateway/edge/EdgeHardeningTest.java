@@ -22,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
-
 import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

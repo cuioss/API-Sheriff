@@ -35,7 +35,6 @@ import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource.UpstreamFetcher;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

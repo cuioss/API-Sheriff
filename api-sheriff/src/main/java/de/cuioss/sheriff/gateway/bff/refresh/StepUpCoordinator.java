@@ -29,7 +29,6 @@ import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser;
 import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser.StepUpChallenge;
 import de.cuioss.sheriff.token.client.flow.StepUpHandler;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

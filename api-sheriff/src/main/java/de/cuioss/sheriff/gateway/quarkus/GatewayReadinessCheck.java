@@ -24,7 +24,6 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.CreationException;
 import jakarta.enterprise.inject.Instance;

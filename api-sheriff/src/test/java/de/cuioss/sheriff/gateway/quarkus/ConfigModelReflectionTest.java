@@ -30,7 +30,6 @@ import java.util.TreeSet;
 
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

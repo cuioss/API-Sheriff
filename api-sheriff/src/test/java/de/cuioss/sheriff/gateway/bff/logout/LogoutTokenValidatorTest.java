@@ -34,7 +34,6 @@ import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.LogoutSubject;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

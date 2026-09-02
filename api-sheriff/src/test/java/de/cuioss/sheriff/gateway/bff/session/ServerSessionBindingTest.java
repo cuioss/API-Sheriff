@@ -27,7 +27,6 @@ import java.util.Optional;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

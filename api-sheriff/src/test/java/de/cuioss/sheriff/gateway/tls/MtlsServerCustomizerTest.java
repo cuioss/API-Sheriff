@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
-
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.http.HttpServerOptions;
 import org.jspecify.annotations.Nullable;

@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.config.SecurityConfigurationBuilder;
-
 import lombok.experimental.UtilityClass;
 
 /**

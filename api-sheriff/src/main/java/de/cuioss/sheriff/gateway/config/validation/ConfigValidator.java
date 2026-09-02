@@ -64,7 +64,6 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

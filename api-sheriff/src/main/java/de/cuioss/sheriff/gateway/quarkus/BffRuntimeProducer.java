@@ -77,7 +77,6 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.tools.logging.CuiLogger;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;

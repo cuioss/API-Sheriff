@@ -28,7 +28,6 @@ import java.util.Optional;
 
 
 import de.cuioss.sheriff.token.client.flow.FlowContext;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

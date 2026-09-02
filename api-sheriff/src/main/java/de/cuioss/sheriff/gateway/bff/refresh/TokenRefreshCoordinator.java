@@ -31,7 +31,6 @@ import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

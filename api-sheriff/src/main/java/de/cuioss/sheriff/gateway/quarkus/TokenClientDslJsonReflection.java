@@ -23,7 +23,6 @@ import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.client.token.UserInfoResponse;
 import de.cuioss.sheriff.token.client.token._TokenResponse_DslJsonConverter;
 import de.cuioss.sheriff.token.client.token._UserInfoResponse_DslJsonConverter;
-
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 /**

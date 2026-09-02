@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.events;
 
 import java.io.Serial;
 
+
 import org.jspecify.annotations.Nullable;
 
 /**

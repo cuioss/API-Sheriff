@@ -23,7 +23,6 @@ import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
-
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;

@@ -21,7 +21,6 @@ import java.util.Objects;
 
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
-
 import io.vertx.core.http.HttpServerResponse;
 
 /**

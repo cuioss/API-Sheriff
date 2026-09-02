@@ -35,7 +35,6 @@ import javax.net.ssl.SSLParameters;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.quarkus.vertx.http.HttpServerOptionsCustomizer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpVersion;

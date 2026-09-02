@@ -23,7 +23,6 @@ import java.util.List;
 
 
 import de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector;
-
 import io.quarkus.scheduler.Scheduler;
 import io.quarkus.scheduler.Trigger;
 import io.quarkus.test.junit.QuarkusTest;

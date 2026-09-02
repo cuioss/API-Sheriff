@@ -38,7 +38,6 @@ import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
-
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;

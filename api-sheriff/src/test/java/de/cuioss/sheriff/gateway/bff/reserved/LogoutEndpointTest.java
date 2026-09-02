@@ -33,7 +33,6 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

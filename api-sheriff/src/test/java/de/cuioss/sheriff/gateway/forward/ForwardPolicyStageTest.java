@@ -34,7 +34,6 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.edge.ResponseStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

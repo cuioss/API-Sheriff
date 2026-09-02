@@ -30,7 +30,6 @@ import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
-
 import jakarta.inject.Provider;
 import org.jspecify.annotations.Nullable;
 

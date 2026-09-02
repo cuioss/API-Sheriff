@@ -23,7 +23,6 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenException;
 import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;

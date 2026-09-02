@@ -44,7 +44,6 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
-
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 /**

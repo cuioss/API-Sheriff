@@ -40,7 +40,6 @@ import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.tools.logging.CuiLogger;
-
 import org.jspecify.annotations.Nullable;
 
 /**

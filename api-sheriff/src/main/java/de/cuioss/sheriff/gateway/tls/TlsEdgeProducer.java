@@ -30,7 +30,6 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 import de.cuioss.tools.logging.CuiLogger;
-
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;

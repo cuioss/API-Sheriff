@@ -36,17 +36,36 @@ pre-build sha, and the freshness check then reports `stale` for a commit whose g
 passed. A "the worktree was never verified" refusal immediately after a green gate is this
 interaction, not a lost build.
 
-=== The pre-commit formatter is not idempotent
+*Update 2026-09-01:* this change lands the fixed point itself, so a gate run against an unmodified
+`main` now rewrites nothing and neither the churn nor the freshness interaction above fires. Both
+return the moment the tree drifts away from the fixed point again -- so the mechanism is documented
+here as live, not retired. What changed is that the default state is now *at* the fixed point rather
+than 180 files away from it, and -- per the corrected section below -- the churn a run does produce
+converges in one pass, so it can be committed rather than reverted.
 
-`org.openrewrite.java.format.AutoFormat` and its companions do not converge in one pass: on a tree
-away from their fixed point, a run takes A to B, and the next run takes B to C rather than leaving
-B alone. What was observed when this was diagnosed was a `main` that gave every run real work to
-do, and the work was not stable.
+=== The pre-commit formatter converges in one pass (corrected 2026-09-01)
 
-`main` is at the fixed point today, so the recipes have nothing to do and the instability has
-nothing to act on. It comes back with the first change the recipes want to rewrite. The practical
-consequence, on any run that does have work to do, is that "run the formatter again and see if it
-settles" is not a diagnostic here. It will not settle.
+This section previously recorded the opposite -- that `org.openrewrite.java.format.AutoFormat` and
+its companions "do not converge in one pass: a run takes A to B, and the next run takes B to C",
+and that "run the formatter again and see if it settles" was not a diagnostic because "it will not
+settle". That was measured against the *old* recipe list. It no longer holds.
+
+*MEASURED (2026-09-01, two consecutive `verify -Ppre-commit -DskipTests` runs):* run 1 took a clean
+tree to 180 changed files (113 insertions, 137 deletions). Run 2 was executed over that churned
+tree *without reverting* and produced **no further change** -- the working diff against `HEAD` was
+byte-identical, SHA-256 `e18290636a54e18a676d48407975840b9476e5deafb15f013603cbfb5bd5211f` on both
+runs. The recipes reach their fixed point in a single pass, so running the formatter again *is* now
+a valid diagnostic, and a converged tree is safe to commit.
+
+*INFERRED, not established:* the earlier non-convergence was most likely caused by
+`AutoFormat` running interleaved with the `UpgradeToJava8 -> ... -> UpgradeToJava25` migration
+composite, which was removed from the recipe list in the same change that produced the measurement
+above. The convergence was measured only *after* that removal, so the causal link between the two is
+a hypothesis that fits the evidence, not a finding. Nobody re-ran the old list to confirm it.
+
+The prior claim that "`main` is at the fixed point today" was also false at the time of writing:
+`main` was 180 files away from it. That is what this change lands -- the fixed point itself, so the
+claim becomes true rather than aspirational.
 
 === `SimplifyTestThrows` silently reverts an accepted narrowing
 

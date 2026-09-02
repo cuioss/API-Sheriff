@@ -47,7 +47,6 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;

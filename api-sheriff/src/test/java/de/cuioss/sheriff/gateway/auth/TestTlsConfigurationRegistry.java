@@ -24,6 +24,7 @@ import java.util.Optional;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
+
 import io.quarkus.tls.BaseTlsConfiguration;
 import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;

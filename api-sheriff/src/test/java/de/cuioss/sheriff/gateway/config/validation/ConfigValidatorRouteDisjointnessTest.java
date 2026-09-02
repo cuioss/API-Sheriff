@@ -37,7 +37,6 @@ import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

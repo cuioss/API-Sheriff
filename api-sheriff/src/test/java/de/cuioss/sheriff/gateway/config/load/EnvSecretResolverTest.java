@@ -27,7 +27,6 @@ import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver.MalformedPlacehol
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver.MissingVariableException;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
