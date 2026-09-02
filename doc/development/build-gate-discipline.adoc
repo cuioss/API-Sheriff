@@ -178,11 +178,14 @@ under `clean test-compile`, and a signature change that yielded *26*.
 
 `.mvn/maven.config` carries `-T1`. It is not a leftover, and the parallel form it replaced bought
 nothing measurable. But the pin is a *measured rate reduction, not a cure*. The condition it was
-introduced against is still live, and has since been measured to survive the pin three times: twice
-before this investigation (both second-hand, recorded below) and once by this investigation's own
+introduced against is still live, and has since been measured to survive the pin four times: twice
+before this investigation (both second-hand, recorded below), once by this investigation's own
 31-run budget, with `-T1` re-read from `.mvn/maven.config` and confirmed in effect before the first
-run — the only first-hand instance, and the strongest. This section was first written when the pin
-looked like the fix; that reading is corrected below rather than quietly restated.
+run -- the only instance first-hand to this document, and the strongest -- and a fourth time on
+2026-09-02, by an unrelated plan's finalize gate on the same machine (recorded below; second-hand to
+this document, but first-hand to the reporter rather than inherited from the destroyed artifacts).
+This section was first written when the pin looked like the fix; that reading is corrected below
+rather than quietly restated.
 
 === Provenance of the figures in this section
 
@@ -192,6 +195,13 @@ longer exist -- the `stabilize-edge-suite-awaits` plan directory was deleted -- 
 re-verify them, and they are reported as recorded rather than as re-checkable. The figures under
 *The condition is macOS-local* are *first-hand* to the 2026-09-01 investigation and are labelled
 MEASURED or INFERRED individually.
+
+The 2026-09-02 corroboration recorded further below is a third provenance class, and it is worth
+keeping distinct from the first two: it is *second-hand to this document* but *first-hand to its
+reporter* -- an unrelated plan that ran the gate on this same machine and reported what it saw.
+Unlike the `stabilize-edge-suite-awaits` figures, its artifacts still exist, so it is re-checkable
+by someone who goes and looks. It is not, however, an independent rate estimate; the reporter was
+explicit that the run was a finalize gate rather than a designed soak.
 
 === What the parallel form cost (MEASURED-but-second-hand)
 
@@ -262,8 +272,12 @@ progress.
 *MEASURED -- what this rules out.* Three readings are excluded by the data, not merely unsupported:
 
 * *Not reactor parallelism.* `-T1` was in effect for every one of the 31 runs.
-* *Not cross-class co-tenancy or machine load.* Five of the stalls occurred on the arm that selected
-  a *single* test class in a *single* Surefire fork, with no other test class in the reactor.
+* *Not cross-class co-tenancy inside the build.* Five of the stalls occurred on the arm that selected
+  a *single* test class in a *single* Surefire fork, with no other test class in the reactor. Read
+  the scope of that evidence exactly: it excludes a second test class in the same reactor as the
+  disturber, and it says nothing about host CPU, I/O, file-descriptor or memory pressure originating
+  outside the build. Machine load was excluded separately and later -- see the 2026-09-02
+  corroboration below, which supplies the concurrent-load control this arm never carried.
 * *Not connection establishment alone.* `PassthroughRelayTest.propagatesHalfCloseToBackend` stalled
   awaiting a half-close on an *already-established* connection, and the stall also strikes plain HTTP
   request/response exchanges (`timed out awaiting the edge response to GET /nowhere`), not just
@@ -274,27 +288,138 @@ captured dump shows the awaiting thread parked in `Awaits` while the Vert.x acce
 three event-loop threads* sit simultaneously at `sun.nio.ch.KQueue.poll` via
 `KQueueSelectorImpl.doSelect`. Every Vert.x thread is idle with nothing to do.
 
-*INFERRED.* All-threads-idle is what rules out saturation, deadlock and a blocked handler: the work
-never arrived rather than arriving late. The reading that fits is a *loopback readiness event that
-the macOS kqueue selector never delivered*. `KQueue` is the macOS-only selector implementation, which
-is what makes this platform-local; the Linux CI lane has not reproduced it.
+*INFERRED.* What the dumps establish is narrower than what is inferred from them: at each of the two
+captures, no sampled Vert.x thread was executing. Two dumps are two instants, not a continuous
+observation of the stall. From those two instants the inference is that saturation, deadlock and a
+blocked handler are not what is happening -- the work never arrived rather than arriving late -- and
+the reading that fits is a *loopback readiness event that the macOS kqueue selector never
+delivered*. `KQueue` is the macOS-only selector implementation, which is what makes this
+platform-local; the Linux CI lane has not reproduced it. That chain is an inference with good fit,
+not a property the two samples establish.
 
 *MEASURED -- what the 2026-09-01 budget did not find.* Zero reproductions, in 31 runs, of the
 separate *unexpected-upgrade-status* symptom the budget was actually sized against. That arm is
 therefore *inconclusive with stated power*, never an all-clear -- see the power caveat below.
 
-*Supersedes the earlier inferred mechanism.* The TIME_WAIT / ephemeral-port-reuse reading recorded
-in the previous revision of this section is *contradicted* by the 2026-09-01 data, not merely
-unconfirmed: the stall reproduced in fixtures that bind their ports with `listen(0)` and *hold* them
-for the whole fixture lifetime, so there is no released port and no re-bind window to race.
+*Partly supersedes the earlier inferred mechanism -- and only partly.* The previous revision of this
+section recorded a TIME_WAIT / ephemeral-port-reuse reading and this document then called it
+*contradicted* by the 2026-09-01 data. That was itself an over-claim, and it is corrected here
+rather than quietly softened, because the correction is to a sentence this investigation wrote.
+
+The hypothesis has more than one form, and the evidence covers exactly one of them:
+
+* *The listener form is contradicted.* The stall reproduced in fixtures that bind with `listen(0)`
+  and *hold* the listening socket for the whole fixture lifetime. For those ports there is no
+  release and no re-bind window to race, so port reuse of the *listener* cannot be the mechanism.
+* *The accepted-socket and client-socket forms remain uninstrumented.* Nothing in the 31-run budget
+  observed the ephemeral ports of the accepted connections or of the clients the fixtures drive --
+  and those are the sockets the traffic actually crosses, and the ones that do churn ephemeral ports
+  from run to run. TIME_WAIT on that side is neither confirmed nor excluded; it was never looked at.
+
+Retiring a hypothesis on evidence that covers one of its forms is precisely the failure mode this
+page exists to prevent -- "a plausible root cause is not the root cause" has a mirror image, which
+is that a refuted sub-case is not a refuted case. The listener form is closed. The rest is open.
+
+=== Corroboration from an unrelated plan (2026-09-02, MEASURED-but-second-hand)
+
+A second, unrelated plan hit the same condition on the same machine while this one was in review,
+and reported what it saw. It is recorded here because it adds *population and eliminations* --
+nothing else. It instruments no mechanism, and it must not be read as narrowing any of the readings
+left open above.
+
+*Setup.* Branch `feature/configurable-context-path` at `4b487ec`, rebased onto `origin/main`
+`82e44cc8`, so both #241 (the tiered `Awaits` ceilings) and #242 are present. Command
+`verify -Ppre-commit` over the whole reactor, ~1907 tests. Six invocations, of which one is excluded
+as *NO-VERDICT* -- the wrapper timed out at 522 s without producing a pass or a fail -- under the
+same exclusion rule this investigation's own budget applied.
+
+*Result.* *1 GREEN / 4 RED* across the `N=5` verdict-producing runs. The 95% interval on that is
+roughly *28-99%*: consistent with the ~50% recorded above, and far too wide to refine it. This is
+explicitly *not* an independent rate estimate. It was a finalize gate rather than a designed soak,
+and the reporter said so.
+
+*Post-rebase specifically.* Of the three runs after the rebase: *3 RED / 0 GREEN*, every one
+carrying #241's own instrumented-ceiling wording, and every elapsed time in the *30004-30007 ms*
+range against a 30000 ms ceiling. Two standing claims on this page reproduce independently there: the
+stall *has never been observed to end*, and *widening a ceiling absorbs nothing* -- these runs were
+red against the newer, wider instrumented ceiling exactly as earlier runs were against the older
+one.
+
+*A new site.* `GrpcStatusMapperTest.rendersUnknownMessageForNullCategory`. That class appears
+earlier on this page only among the `-T1C` wire-corruption failures; neither it nor this method had
+been recorded carrying the *stall* signature before.
+
+That changes how the population reads. Eleven test classes in this repository construct a live
+`Vertx.vertx()` -- verified first-hand against the tree at the time of writing:
+`GatewayEdgePipelineTest`, `GatewayEdgeRouteBffWiringTest`, `GatewayEdgeRouteTest`,
+`GrpcDispatchStageTest`, `GrpcStatusMapperTest`, `PassthroughRelayTest`, `ReservedBodyCeilingTest`,
+`RouteRuntimeAssemblerTest`, `SniFrontListenerTest`, `TlsEdgeProducerTest` and
+`WebSocketRelayStageTest`. *Seven of those eleven* have now carried the stall signature: the five
+named above, plus `GrpcStatusMapperTest` by the method just named, plus `SniFrontListenerTest` --
+which is counted on class timing alone (31.16 s locally against 0.944 s in CI, consistent with one
+method reaching the ceiling) and is therefore *INFERRED*. Six of the seven are named down to the
+method; the seventh is a class-timing inference and is not to be quoted as a measured site.
+
+*INFERRED.* The set keeps recruiting new sites whose only shared property is `Vertx.vertx()` plus
+`listen(0)` plus a fresh client. That fits a uniform per-attempt hazard -- every live-socket attempt
+carrying the same probability -- better than any reading in which particular fixtures are special.
+It is a reading of the accumulating population, not a measurement of the hazard.
+
+*What this run additionally eliminates.* Two candidates that earlier passes had left standing:
+
+* *Machine load, and with it gate cadence.* The control this page had been missing now exists. A
+  parallel plan was running Maven builds in windows overlapping runs 4 and 5 *and* the single GREEN
+  run (2026-09-01 23:24-23:31 local, against their 23:19-23:25 and 23:26-23:33). Concurrent load
+  sits on both sides of the green/red split, so it does not separate them. Read the scope exactly:
+  with one green and two reds inside the overlap this excludes concurrent-build load as *the
+  discriminator* -- which is what "machine load explains the flake" requires -- and it is not a
+  demonstration that host load has no effect at all.
+* *The macOS application firewall.* `socketfilterfw --getglobalstate` reports `State = 0`: the
+  firewall is off, block-all is disabled and stealth mode is off, so none of the three is
+  intercepting loopback connections.
+
+Machine load therefore moves out of the "never formally excluded" column, and no candidate reading
+on this page rests on load or on how often the gate is run.
+
+*The CI contrast, re-confirmed at a newer commit.* Run 33596810317 on `main` at `82e44cc8`,
+2026-09-02, compared same-for-same against the local run:
+
+* `WebSocketRelayStageTest` -- 13 tests in 0.648 s in CI; 34.75 s locally, failed
+* `GrpcStatusMapperTest` -- 3 tests in 0.978 s in CI; 30.59 s locally
+* `ReservedBodyCeilingTest` -- 7 tests in 3.646 s in CI; 9.557 s locally
+* `PassthroughRelayTest` -- 4 tests in 1.060 s in CI; 30.69 s locally
+* `SniFrontListenerTest` -- 5 tests in 0.944 s in CI; 31.16 s locally
+
+`ReservedBodyCeilingTest` is the one row that is merely slower rather than stalled -- 9.557 s is
+nowhere near the ceiling -- and it is listed so the four that *are* at the ceiling are not read as
+five. Alongside this, `gh run list --workflow=maven.yml --branch=main --limit=20` returned *20
+successes out of 20*. The Linux lane still does not reproduce the condition.
+
+*A trap worth its own warning: `Tests run: 0` in the CI log does not mean "skipped in CI".* The CI
+log reports `Tests run: 0` for `WebSocketRelayStageTest` and `GrpcStatusMapperTest`. Taken at face
+value that *inverts* the contrast above -- it reads as "these classes are not covered in CI at all",
+which would make the comparison meaningless rather than damning. It is an artifact of nesting: those
+lines are the outer `@Nested` containers, which carry no direct `@Test` methods, and the real tests
+report under their nested display names, all green. Anyone re-deriving this contrast by grepping the
+class name alone will get a false "not covered in CI" result. Match on the nested display names, or
+read the surefire XML.
+
+*One method count, stated without the conclusion it invites.*
+`PassthroughRelayTest.relaysPrefixThenLiveBytes` now has a *third* recorded occurrence. That is the
+count, and it is all that is being claimed: whether the method is genuinely over-represented or
+merely the most-sampled one is *not* established -- no per-method sampling denominator was ever
+recorded, so the two cannot be told apart from these counts.
 
 === State the limit of the finding precisely
 
 What was measured in the original investigation is the causal link -- parallel fails, serial passes,
 `n=7`. The mechanism was inferred, and the inference has since been *revised*: TIME_WAIT ephemeral
-port reuse is now contradicted (above), and the current inference is an undelivered macOS kqueue
+port reuse is now contradicted *in its listener form* (above), while its accepted-socket and
+client-socket forms remain uninstrumented, and the current inference is an undelivered macOS kqueue
 readiness notification. CPU and file-descriptor pressure were never formally excluded by the
-original work; the all-threads-idle dumps now argue against both.
+original work; the all-threads-idle dumps argue against both, and the 2026-09-02 concurrent-load
+control recorded above now excludes machine load as the discriminator outright. File-descriptor
+pressure specifically still rests on the dumps alone -- no control has ever been run against it.
 
 *The re-opening that the previous revision said the fix did not depend on has happened.* That
 sentence read "the fix does not depend on which of those it is; a re-opening of the question does",
@@ -312,14 +437,21 @@ Two power caveats travel with any green result here, and both are load-bearing:
 
 === What a contributor does about it
 
-The 2026-09-01 investigation changed no production or test code: the evidence named a host-level
-loopback condition, not a defect in any fixture or in the gateway, and fixing a mechanism the
-evidence excludes would have been a third unmeasured fix. Until that changes:
+The 2026-09-01 investigation changed no production or test code: the evidence pointed at a
+host-level loopback condition and named no defect in any fixture or in the gateway, and fixing a
+mechanism the evidence excludes would have been a third unmeasured fix. The wording there is
+deliberate. The 31-run budget was pre-registered against a *different* symptom -- an unexpected
+upgrade status -- and found the stall instead; it audited no fixture and no gateway path. "Named no
+defect" is what was observed. "There is no defect" is a universal negative the budget was never
+shaped to establish. Until that changes:
 
 * *A single red edge-suite run on macOS is not evidence of a branch defect.* Establish provenance
   before acting on it -- roughly a quarter of local runs of this suite carry the stall.
-* *Establish that provenance against CI, not against a local re-run.* The Linux lane is the
-  authority for whether a change broke the edge suite.
+* *Establish that provenance against CI, not against a local re-run.* For the 30-second stall
+  signature specifically, the Linux lane is the authority: it has never reproduced that signature,
+  so a red there is a real defect rather than this condition. It is *not* the authority for macOS
+  behaviour in general -- this very section argues the condition under study is macOS-local, and a
+  genuine macOS-only regression is exactly the case a green Linux lane cannot clear.
 * *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.*
   The 30-second ceiling is what makes the condition visible and measurable; raising it would hide
   the phenomenon rather than address it.
