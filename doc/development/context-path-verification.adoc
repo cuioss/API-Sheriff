@@ -62,6 +62,27 @@ Three details are load-bearing and each cost one failed boot to discover:
   Either supply `QUARKUS_HTTP_SSL_CERTIFICATE_FILES` / `QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES`, or set
   `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`. Both were exercised below.
 
+Every `docker run` below assumes that material laid out host-side in three directories:
+
+* `/tmp/ctxpath/config-default/gateway.yaml` -- the document above, with `path_prefix: /api`.
+* `/tmp/ctxpath/config-prefixed/gateway.yaml` -- the same document with `path_prefix: /gw/api`.
+* `/tmp/ctxpath/certs/` -- `test-jwks.json`, plus the self-signed `server.crt` / `server.key` pair the
+  TLS postures use. The JWKS file is mounted by *every* run below, plain-HTTP ones included: it is
+  named by `gateway.yaml`, not by a listener.
+
+The four containers this runbook creates publish disjoint host ports, so all four can run
+concurrently and none of the cases needs a teardown before the next one:
+
+[cols="2,2,2,3", options="header"]
+|===
+| Container | Image | Host ports (app / mgmt) | Posture
+
+| `ctxpath-default` | `api-sheriff:ctxpath-default` | `8080` / `9000` | plain HTTP, both listeners
+| `ctxpath-default-tls` | `api-sheriff:ctxpath-default` | `8443` / `9443` | HTTPS, both listeners
+| `ctxpath-gw` | `api-sheriff:ctxpath` | `8081` / `9001` | plain HTTP, unprefixed `gateway.yaml`
+| `ctxpath-gw-prefixed` | `api-sheriff:ctxpath` | `8082` / `9002` | plain HTTP, prefixed `gateway.yaml`
+|===
+
 The upstream is deliberately *not* started. Every route in this runbook resolves to an unreachable
 alias, so a matched route answers `502` with the gateway's own envelope. That is the signal being
 tested: a `502` proves route selection *succeeded*, which is exactly the fact a context-path change
@@ -80,7 +101,40 @@ python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
 docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:ctxpath-default api-sheriff/
 ----
 
-Observed, over plain HTTP and over HTTPS/h2 (two separate containers, one per listener posture):
+Then start one container per listener posture. Both cases 1 and 2 are driven against these two, so
+they are the only run commands the default-path half of the runbook needs:
+
+[source,bash]
+----
+# Plain HTTP -- main listener on 8080, management opted out of TLS by name
+docker run -d --name ctxpath-default \
+  -p 8080:8080 -p 9000:9000 \
+  -v /tmp/ctxpath/config-default:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  api-sheriff:ctxpath-default
+
+# HTTPS/h2 -- the shipped posture, both listeners terminated
+docker run -d --name ctxpath-default-tls \
+  -p 8443:8443 -p 9443:9000 \
+  -v /tmp/ctxpath/config-default:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
+  -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
+  api-sheriff:ctxpath-default
+----
+
+The plain-HTTP container needs `QUARKUS_HTTP_INSECURE_REQUESTS=enabled` for the reason recorded
+above -- the shipped `redirect` value refuses to boot without a certificate -- and the TLS container
+supplies that certificate instead, which is why neither variable appears in both.
+
+Observed, over plain HTTP (`ctxpath-default`, host port `8080`) and over HTTPS/h2
+(`ctxpath-default-tls`, host port `8443`):
 
 [cols="2,3", options="header"]
 |===
@@ -104,10 +158,13 @@ error surface is invisible until someone moves the path.
 [[_case_2_default_management_interface]]
 == Case 2 -- Default path: the management interface answers on `/q`, in both schemes
 
-Same artifact, port `9000`. The management scheme is deployment-bound (ADR-0025), so both postures
-were driven rather than one.
+Same artifact, management port. The management scheme is deployment-bound (ADR-0025), so both
+postures were driven rather than one -- and both are already running from case 1, so this case adds
+no container: `ctxpath-default` carries the plain-HTTP opt-out, `ctxpath-default-tls` the management
+certificate pair.
 
-*Plain HTTP*, via the named opt-out `QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`:
+*Plain HTTP* (`ctxpath-default`, host port `9000`), via the named opt-out
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management`:
 
 [cols="2,2", options="header"]
 |===
@@ -122,9 +179,9 @@ were driven rather than one.
 The opt-out is audited, as it should be -- boot emitted `ApiSheriff-115` at `WARNING`, naming the
 port and what breaks.
 
-*HTTPS* (the shipped default), with `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES` /
-`QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES` supplied: the same four endpoints, the same four
-status codes and content types, over TLS.
+*HTTPS* (the shipped default; `ctxpath-default-tls`, host port `9443`), with
+`QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES` / `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES`
+supplied: the same four endpoints, the same four status codes and content types, over TLS.
 
 The readiness payload, recorded in full because the rest of this runbook only reports its status
 code:
@@ -210,9 +267,23 @@ accepted deliberately when the indirection was chosen. What is corrected here is
 [[_case_4_non_root_application_interface]]
 == Case 4 -- Non-root path: the application interface at `/gw/**`, and both error shapes
 
-Run the image built in case 3 and drive it. *Two response shapes are recorded here as separate
-probes*, because the difference between them is the operator-facing consequence of choosing a
-non-root path.
+Run the image built in case 3 and drive it:
+
+[source,bash]
+----
+docker run -d --name ctxpath-gw \
+  -p 8081:8080 -p 9001:9000 \
+  -v /tmp/ctxpath/config-default:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  api-sheriff:ctxpath
+----
+
+This is the `/gw` + `/mgmt` container cases 4, 5 and 6 all drive; the probes below are issued against
+host port `8081`. *Two response shapes are recorded here as separate probes*, because the difference
+between them is the operator-facing consequence of choosing a non-root path.
 
 [cols="2,3", options="header"]
 |===
@@ -248,11 +319,27 @@ link:../user/context-path.adoc#_off_context_requests_answer_with_a_plain_404[The
 This was established by measurement during the run and is the one behaviour a reader is most likely
 to get wrong.
 
-With the *unprefixed* configuration (`path_prefix: /api`, the same document case 1 used),
-`GET /gw/api` against the `/gw` build answered `404` with the gateway's `problem+json` envelope --
+The prefixed configuration is a second container off the same image, differing only in which config
+directory it mounts:
+
+[source,bash]
+----
+docker run -d --name ctxpath-gw-prefixed \
+  -p 8082:8080 -p 9002:9000 \
+  -v /tmp/ctxpath/config-prefixed:/app/sheriff-config:ro \
+  -v /tmp/ctxpath/certs:/app/certificates:ro \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  api-sheriff:ctxpath
+----
+
+With the *unprefixed* configuration (`path_prefix: /api`, the same document case 1 used --
+`ctxpath-gw`, host port `8081`), `GET /gw/api` against the `/gw` build answered `404` with the
+gateway's `problem+json` envelope --
 the request reached the gateway, but no route matched. With the *prefixed* configuration
-(`path_prefix: /gw/api`), the identical request answered `502` with the upstream envelope: route
-selection succeeded and the forward was attempted.
+(`path_prefix: /gw/api` -- `ctxpath-gw-prefixed`, host port `8082`), the identical request answered
+`502` with the upstream envelope: route selection succeeded and the forward was attempted.
 
 The cause is in `GatewayEdgeRoute.buildPipelineRequest`, which builds the pipeline request from
 `HttpServerRequest.uri()` -- the raw inbound URI, prefix and all -- and stage 1 canonicalises *that*
@@ -265,7 +352,7 @@ by the context path; the two are configured independently and must be kept in ag
 [[_case_5_non_root_management_interface]]
 == Case 5 -- Non-root path: the management interface at `/mgmt`, unmoved by the application change
 
-Same container, port `9000`.
+Same container (`ctxpath-gw`), management port -- published host-side on `9001`.
 
 [cols="2,2", options="header"]
 |===
@@ -297,7 +384,7 @@ docker inspect --format '{{json .State.Health}}' ctxpath-gw
 
 Observed on the `/gw` + `/mgmt` container: `"Status":"healthy"`, `"FailingStreak":0`, and five
 consecutive probe entries each with `"ExitCode":0`. The same inspection against the default-path
-container reported `healthy 0` as well.
+container (`ctxpath-default`) reported `healthy 0` as well.
 
 That is the expected result and the reason it is worth recording: the probe's indifference to the
 context path is a *property of it being URL-free*, and a future change that made it speak HTTP would

@@ -93,8 +93,11 @@ what is built:
     grow a <build> block to compensate — and that growth is exactly what the contract test fails on.
 
     It is deliberately NOT a reactor module. A native build must never enter the default lane, and this
-    example exists to be built BY HAND from the deliverable-10 runbook:
+    example exists to be built BY HAND from the deliverable-10 runbook. Being outside the reactor, its
+    inherited api-sheriff dependency is resolved from the LOCAL REPOSITORY rather than from a sibling
+    module, so the reactor has to be installed there first — a clean checkout has no such artifact:
 
+        mvn install -pl api-sheriff -am -DskipTests          # bootstrap: api-sheriff into ~/.m2
         mvn -f build-parent/example/pom.xml package          # JVM-mode runner
         mvn -f build-parent/example/pom.xml package -Pnative # native executable, inherited
 
@@ -299,10 +302,32 @@ compensate.
 
 Executed once, end to end, against commit `9ccda16`. The responses below were observed.
 
+=== 0. Bootstrap: install the reactor into the local repository
+
+*This step is not optional, and skipping it is the first way this procedure fails.* The example is
+deliberately not a reactor module, so nothing builds `api-sheriff` on its behalf: its inherited
+dependency resolves to `de.cuioss.sheriff.gateway:api-sheriff:0.2.0-SNAPSHOT` from the local Maven
+repository, and a clean checkout has no such artifact. Install it once:
+
+[source,bash]
+----
+mvn install -pl api-sheriff -am -DskipTests
+----
+
+(The build *parent* needs no install: the example resolves it through
+`<relativePath>../pom.xml</relativePath>`, off disk. A published consumer, which carries an empty
+`<relativePath/>`, resolves both from a repository instead -- which is the release lane's job, not
+this runbook's.)
+
+Re-run this step after any change to `api-sheriff`'s sources or its `application.properties`;
+otherwise the example builds against the previously installed snapshot and the result says nothing
+about the tree you are sitting on.
+
 === 1. JVM mode
 
 [source,bash]
 ----
+mvn install -pl api-sheriff -am -DskipTests   # step 0, if not already done
 mvn -f build-parent/example/pom.xml package
 ----
 
@@ -358,6 +383,7 @@ verification runbook].
 
 [source,bash]
 ----
+mvn install -pl api-sheriff -am -DskipTests           # step 0, if not already done
 mvn -f build-parent/example/pom.xml package -Pnative
 ----
 

@@ -296,11 +296,16 @@ answer is a different mechanism, not a different variable.
   `-Dsheriff.management-context-path` seam -- see link:context-path.adoc[The Context Path].
 |===
 
-*The matching environment variables are inert, and silently so.* `QUARKUS_HTTP_ROOT_PATH`,
+*The matching environment variables are routing-inert.* `QUARKUS_HTTP_ROOT_PATH`,
 `QUARKUS_MANAGEMENT_ROOT_PATH` and `QUARKUS_HTTP_NON_APPLICATION_ROOT_PATH` set on a container
-started from a published artifact do nothing at all -- no error, no warning, no effect. That is the
-ordinary build-time behaviour above, called out because a path looks like the most deployment-shaped
-value in the whole surface and is not one.
+started from a published artifact move nothing: the routing value was fixed at augmentation and the
+override cannot reach it. That is the ordinary build-time behaviour above, called out because a path
+looks like the most deployment-shaped value in the whole surface and is not one.
+
+*Inert is not the same as silent.* Quarkus records the built value in the artifact and compares it
+against the runtime one under `quarkus.config.build-time-mismatch-at-runtime`, left at its `warn`
+default here, so a divergent override may emit a startup warning naming the key. Read such a warning
+as confirmation that the override was ignored -- never as a sign it partly applied.
 
 The ADR-0025 consequence follows without an exception: because a context path is *build-time*, it is
 not part of `gateway.yaml`'s neutral vocabulary, and that absence is structural rather than
@@ -541,6 +546,7 @@ above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
 | No -- build-time. It is set in the Maven `native` profile.
 
 | The context path (application or management)
-| No -- build-time, and the variable is *silently* inert rather than refused. It takes a rebuild
-  through the Maven seam; see link:context-path.adoc[The Context Path].
+| No -- build-time. The variable is *routing-inert* rather than refused, and may draw a startup
+  build-time-mismatch warning naming the key. It takes a rebuild through the Maven seam; see
+  link:context-path.adoc[The Context Path].
 |===

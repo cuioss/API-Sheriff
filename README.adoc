@@ -130,8 +130,9 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
   host interfaces, matching the security posture documented in `doc/architecture.adoc`
 
 *Both context paths — the data-plane one and the management one — are fixed when the image is
-built*, so the matching `QUARKUS_*_ROOT_PATH` environment variables are silently inert against a
-published image. Moving either takes a rebuild through the Maven seam; see
+built*, so the matching `QUARKUS_*_ROOT_PATH` environment variables are routing-inert against a
+published image — they move nothing, though a divergent value may draw a startup
+build-time-mismatch warning. Moving either takes a rebuild through the Maven seam; see
 link:doc/user/context-path.adoc[The Context Path].
 
 * Rebuilding under your own context path without cloning this repository is the supported

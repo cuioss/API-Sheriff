@@ -82,9 +82,17 @@ environment variable:
 [IMPORTANT]
 ====
 *`QUARKUS_HTTP_ROOT_PATH`, `QUARKUS_HTTP_NON_APPLICATION_ROOT_PATH` and `QUARKUS_MANAGEMENT_ROOT_PATH`
-are inert against an already-built image.* Setting any of them on a container started from a
-published artifact does nothing at all -- no error, no warning, no effect. Changing a context path
-*always* costs a rebuild.
+are routing-inert against an already-built image.* Setting any of them on a container started from a
+published artifact moves nothing: the value that governs routing was fixed at augmentation, and the
+override cannot reach it. Changing a context path *always* costs a rebuild.
+
+*It is not necessarily silent, though, and this runbook does not claim it is.* The built value is
+recorded in the artifact and compared against the runtime one by
+`io.quarkus.deployment.configuration.ConfigGenerationBuildStep`'s build-time-mismatch check, which is
+governed by `quarkus.config.build-time-mismatch-at-runtime` -- left at its `warn` default here. A
+divergent override may therefore produce a startup warning naming the key. The *routing* claim above
+is measured; the absence of a log line is not, so treat a mismatch warning as expected noise rather
+than as evidence the override took effect.
 ====
 
 === Why it is not in `gateway.yaml` either
@@ -332,19 +340,26 @@ bind-mounted into the Prometheus container verbatim, and Prometheus interpolates
 variables into a scrape config -- there is no templating mechanism that reaches the value. Changing
 the gateway's management root path therefore means editing that literal by hand.
 
-That one is not left to reviewer vigilance. `ManagementRootPathLabelIT` asserts the scrape path
-agrees with the Compose label, so editing one without the other turns the integration suite red
-rather than producing a silently blind Prometheus.
-
-Two further hand-maintained literals under `integration-tests/` are *not* machine-guarded, and
-relocating the management context path means editing them as well:
+Two further hand-maintained literals under `integration-tests/` share that constraint, and relocating
+the management context path means editing them as well:
 
 * `integration-tests/scripts/verify-invalid-config-fails.sh` -- it drives a bare `docker run` rather
   than bringing up the stack, so there is no resolved Compose model to read the label from.
 * `integration-tests/src/test/java/.../BaseIntegrationTest.java` -- the suite's own default constant.
 
-Nothing asserts either against the label. Prefer deriving where a resolved model exists; where one
-does not, expect to edit by hand.
+*None of the three is left to reviewer vigilance.* `ManagementRootPathLabelIT` carries one assertion
+leg per literal -- `prometheusScrapePathAgreesWithLabel`,
+`invalidConfigScriptRootPathAgreesWithLabel` and `baseIntegrationTestDefaultAgreesWithLabel` -- each
+comparing its literal against the Compose label after the same trailing-slash normalisation. Editing
+one without the others turns the integration suite red rather than producing a silently blind
+Prometheus, a case-7 failure that reads as a gateway fault, or a suite probing the wrong path.
+
+*Being asserted is not the same as being derived*, and the distinction is why all three still have to
+be edited by hand. Prometheus interpolates nothing into a scrape config, the script has no resolved
+Compose model, and a test default cannot read a label that only exists once the stack is up -- so
+each value must be written, and the IT is what makes writing it wrong a build failure rather than a
+silent drift. Prefer deriving where a resolved model exists; where one does not, expect to edit by
+hand and to be caught when you forget.
 
 === The baked container health check is unaffected by either path
 
