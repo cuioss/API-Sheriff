@@ -178,9 +178,11 @@ under `clean test-compile`, and a signature change that yielded *26*.
 
 `.mvn/maven.config` carries `-T1`. It is not a leftover, and the parallel form it replaced bought
 nothing measurable. But the pin is a *measured rate reduction, not a cure*. The condition it was
-introduced against is still live, and has since been measured to survive the pin twice. This section
-was first written when the pin looked like the fix; that reading is corrected below rather than
-quietly restated.
+introduced against is still live, and has since been measured to survive the pin three times: twice
+before this investigation (both second-hand, recorded below) and once by this investigation's own
+31-run budget, with `-T1` re-read from `.mvn/maven.config` and confirmed in effect before the first
+run — the only first-hand instance, and the strongest. This section was first written when the pin
+looked like the fix; that reading is corrected below rather than quietly restated.
 
 === Provenance of the figures in this section
 
@@ -222,6 +224,12 @@ than left standing: the fixtures do *not* leak servers (`@AfterEach` closes serv
 `Vertx` instance, each awaited), and `Map.of()`'s randomised iteration order does not reach the one
 functional failure, because `renderRejection` applies every stage header and only then overrides
 `content-type`, which is order-independent.
+
+Per the rule in "A build whose output says it did nothing has verified nothing", the serial greens
+above were checked for vacuity before being believed: both runs show `Tests run: 1886, Failures: 0`
+for `api-sheriff` in the reactor log, not merely a zero exit. The executor's `tests_run` field
+reports only the *last* module's surefire summary (202, from `benchmarks`), so it cannot answer this
+question -- read the reactor log.
 
 === The pin was measured insufficient, twice (MEASURED-but-second-hand)
 
@@ -317,11 +325,6 @@ evidence excludes would have been a third unmeasured fix. Until that changes:
   the phenomenon rather than address it.
 * *Do not change `-T1`.* It is a measured rate reduction and is still worth having; it is simply not
   a cure.
-
-Per the rule below, the serial greens were checked for vacuity before being believed: both runs
-show `Tests run: 1886, Failures: 0` for `api-sheriff` in the reactor log, not merely a zero exit.
-The executor's `tests_run` field reports only the *last* module's surefire summary (202, from
-`benchmarks`), so it cannot answer this question -- read the reactor log.
 
 == Two rules about reading a check's output
 

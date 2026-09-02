@@ -72,9 +72,12 @@ import org.awaitility.core.ConditionTimeoutException;
  * {@code getStatus()} — so an <em>unexpected</em> status leaves a CI log saying which number arrived
  * and nothing about who sent it. {@link #await(Future, String, Duration)} therefore rethrows an
  * {@code ExecutionException} whose message names the label, the rejected status, every response
- * header and the response body. Whether headers are present at all is the discriminator: a rejection
- * carrying the gateway's own stage-0 headers came from the gateway relaying an upstream answer, while
- * a bare rejection never reached it.
+ * header and the response body. Header presence is evidence in ONE direction: a rejection carrying
+ * the gateway's own stage-0 headers came from the gateway relaying an upstream answer. The converse
+ * does not hold — the gateway applies those headers only on the branch where the head has not yet
+ * been written, so a bare rejection means <em>either</em> it never reached the gateway <em>or</em>
+ * the gateway rendered it past that branch. Read a bare rejection as an open question, not as proof
+ * of a foreign responder.
  *
  * <p>The <em>shape</em> is preserved while the message is enriched: the rethrown type is still
  * {@code ExecutionException} and its {@link Throwable#getCause() cause} is the identical

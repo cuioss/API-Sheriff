@@ -482,11 +482,18 @@ class WebSocketRelayStageTest {
      * <p>
      * These two halves answer the two halves of the question. {@code Awaits} enriches the
      * {@link ExecutionException} message with the rejected status, the response headers and the body,
-     * and header <em>presence</em> discriminates the two mechanisms: {@code WebSocketRelayStage}
-     * applies the gateway's stage-0 security headers before writing the head on every rejection path
-     * it renders (see {@code onUpstreamFailure}), so a rejection carrying them was written by this
-     * gateway relaying an upstream's verbatim status, while a bare rejection never reached the
-     * gateway at all. The LISTEN report then names the responder in either case.
+     * and header <em>presence</em> is evidence in ONE direction only. {@code WebSocketRelayStage}
+     * applies the gateway's stage-0 security headers in {@code onUpstreamFailure} only on the branch
+     * where the head has not yet been written, so a rejection carrying them was written by this
+     * gateway relaying an upstream's verbatim status — that inference is sound.
+     * <p>
+     * The converse is NOT sound, and the discriminator must not be read as if it were: the same
+     * method returns early when {@code response.ended()}, and falls through to a bare
+     * {@code response.end()} when the head was already written, so a rejection the gateway DID
+     * render can arrive with no stage-0 headers. A bare rejection therefore means <em>either</em> the
+     * connection never reached the gateway <em>or</em> the gateway rendered it past the header
+     * branch — the LISTEN report below is what separates those two, and is the reason it is captured
+     * in every case rather than only on the bare path.
      * <p>
      * Supplied lazily to {@code assertEquals}, so a green run pays for none of it.
      *
