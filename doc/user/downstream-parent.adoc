@@ -58,8 +58,9 @@ a| *A GraalVM/Mandrel route.* The profile sets `quarkus.native.container-build=t
 runtime is what you supply.
 
 a| *Neutralised hygiene tooling.* Checkstyle, SpotBugs, PMD/CPD, JaCoCo, license stamping and
-OpenRewrite are switched off as inherited defaults. So are two *security* controls -- dependency-check
-and enforcer -- which is called out separately below because it is not a style decision.
+OpenRewrite are switched off as inherited defaults. So is enforcer, a *security* control rather than a
+style check; and no CVE scan is bound by the chain at all. Both are called out separately below,
+because neither is a style decision.
 a| *Your own quality toolchain*, if you want one, and *your own vulnerability scanning*, which you do
 want -- see <<_composing_with_cui_java_parent>>.
 
@@ -180,7 +181,7 @@ explicitly, exactly as for any other managed dependency.
 
 Inheriting this parent transitively inherits `api-sheriff-parent` and, through it,
 `de.cuioss:cui-java-parent` -- which binds license-header stamping, OpenRewrite, Checkstyle,
-SpotBugs, PMD/CPD, enforcer, JaCoCo and dependency-check.
+SpotBugs, PMD/CPD, enforcer and JaCoCo.
 
 That is *this project's* internal hygiene, not yours. A deployer rebuilding a gateway image has not
 opted into CUI's code-quality toolchain and should not be handed failing builds over conventions they
@@ -192,32 +193,51 @@ never adopted, so the build parent switches every one of them off as an inherite
 *Re-enable any of them by setting the same property to `false` in your own `<properties>`.* Child
 properties win over parent ones, so this is a one-line reversal per tool.
 
+*With one exception, and it is the one that matters most.* `dependency-check.skip` is
+inherited-but-unbound: no POM in the chain binds `org.owasp:dependency-check-maven`, so nothing reads
+the property and setting it `false` enables no scan. It is carried for consistency with this
+project's other modules, not because a plugin consumes it. The WARNING below is where that
+consequence is spelled out -- do not read the list above as a set of uniformly working switches.
+
 [WARNING]
 ====
-*Two of those ten are security controls, not style checks -- read this before you skim past the list.*
+*Two of those switches name security controls, not style checks -- read this before you skim past
+the list.*
 
-`dependency-check.skip` disables *OWASP Dependency-Check*, the known-vulnerable-dependency (CVE) scan.
 `enforcer.skip` disables *maven-enforcer*, which under `cui-java-parent` carries the
 dependency-convergence and banned-dependency guards -- without it a transitively downgraded library
-can silently win your resolution.
+can silently win your resolution. `dependency-check.skip` names *OWASP Dependency-Check*, the
+known-vulnerable-dependency (CVE) scan.
 
-They are defaulted off for two *different* real reasons, one per control. `dependency-check` needs an
-NVD API key and adds minutes to a build: without a key it cannot run at all, so defaulting it on
-would fail you on a missing credential rather than on a finding. `enforcer` needs no key and costs
-seconds -- its dependency-convergence guard is an inherited CUI opinion about a dependency graph this
-parent never sees, and it should not meet you as a first-build failure over a toolchain you never
-adopted. But the consequence is yours, and it is not covered by API Sheriff's own scanning. The parent leaves
+*The two are not symmetric, and the asymmetry is the point.* `maven-enforcer-plugin` is genuinely
+bound by the inherited chain, so `enforcer.skip` really does suppress a plugin that would otherwise
+run. `org.owasp:dependency-check-maven` is bound *nowhere* -- not in `cui-parent-pom`, not in
+`cui-java-bom`, not in `cui-java-parent`, and not in any POM of this repository. There is no CVE scan
+in your inherited build to disable, and none to re-enable.
+
+They are defaulted off for two *different* reasons, one per property. `dependency-check` would need
+an NVD API key and add minutes to a build: without a key it cannot run at all, so binding it and
+defaulting it on would fail you on a missing credential rather than on a finding -- which is why
+binding it is not the fix. `enforcer` needs no key and costs seconds; its dependency-convergence
+guard is an inherited CUI opinion about a dependency graph this parent never sees, and it should not
+meet you as a first-build failure over a toolchain you never adopted. The parent leaves
 `maven.compiler.skip` and `skipTests` alone precisely because *you* compile your own sources and pull
 your own dependencies -- a graph this project's upstream scan has never seen.
 
-*So you own the vulnerability scanning of the image you build.* Take one of these two routes, not
-neither:
+*So you own the vulnerability scanning of the image you build, and there is no property that hands it
+to you.* The routes that work:
 
-* set `<dependency-check.skip>false</dependency-check.skip>` (and, if you want the resolution guards,
-  `<enforcer.skip>false</enforcer.skip>`) in your own `<properties>`; or
-* scan the produced container image in your own pipeline -- Trivy, Grype or equivalent -- which is
-  the route most deployers already have, and which also covers the base image the parent
-  deliberately does not choose for you (see <<_the_container_image_boundary>>).
+* *Scan the produced container image in your own pipeline* -- Trivy, Grype or equivalent. This is the
+  route most deployers already have, it is the one this project recommends, and it also covers the
+  base image the parent deliberately does not choose for you (see
+  <<_the_container_image_boundary>>). It is *not* a fallback for the property route; it is the route.
+* *Or bind `org.owasp:dependency-check-maven` yourself*, in your own `<build>`, with your own NVD API
+  key. Nothing in the inherited chain does it for you, so `dependency-check.skip` becomes meaningful
+  only once you have.
+
+*Do not set `<dependency-check.skip>false</dependency-check.skip>` and consider the matter handled.*
+It changes nothing and leaves you believing you are scanned. If you want the resolution guards,
+`<enforcer.skip>false</enforcer.skip>` is a real switch and does work.
 ====
 
 Five switches are deliberately *left alone*, and each for a reason you may care about:

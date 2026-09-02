@@ -21,13 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
@@ -148,6 +151,29 @@ class BuildParentContractTest {
      */
     private static final List<String> MUST_NOT_BE_SET = List.of(
             "skipPublishing", "maven.deploy.skip", "maven.install.skip", "maven.compiler.skip", "skipTests");
+
+    /**
+     * The consumer-facing guide. It restates two of this POM's property sets as hardcoded prose — the
+     * disabled-switch enumeration and the untouched-switch table — and neither can be generated into
+     * AsciiDoc at build time. Where derivation is structurally impossible the answer is an assertion,
+     * so assertions (6) and (7) below read both lists back out of the guide and compare them.
+     */
+    private static final Path DOWNSTREAM_GUIDE = REACTOR_ROOT.resolve("doc/user/downstream-parent.adoc");
+
+    /** The sentence the guide's disabled-switch enumeration immediately follows. */
+    private static final String DISABLED_LIST_ANCHOR =
+            "switches every one of them off as an inherited default:";
+
+    /** Matches the sentence introducing the untouched-switch table, capturing its count claim. */
+    private static final Pattern LEFT_ALONE_INTRO =
+            Pattern.compile("^(\\w+) switches are deliberately \\*left alone\\*");
+
+    /** A backticked identifier — the form every property name takes in the guide. */
+    private static final Pattern BACKTICKED = Pattern.compile("`([A-Za-z0-9._-]+)`");
+
+    /** English cardinals 0..10, for the count claim the untouched-switch table's intro makes. */
+    private static final List<String> CARDINALS = List.of(
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten");
 
     @Test
     @DisplayName("(1) One-property promise: the example declares one property and no build machinery")
@@ -283,6 +309,55 @@ class BuildParentContractTest {
                                 + MUST_NOT_BE_SET.stream().filter(properties::containsKey).toList()));
     }
 
+    @Test
+    @DisplayName("(6) Guide parity: the documented disabled-switch list is the set the parent declares")
+    void guideEnumeratesExactlyTheDeclaredSkipSwitches() throws Exception {
+        Set<String> declared = declaredSkipSwitches();
+        Set<String> documented = documentedDisabledSwitches(guideLines());
+
+        assertAll("the guide's hardcoded enumeration must mirror the POM's authoritative set",
+                () -> assertFalse(declared.isEmpty(),
+                        "build-parent/pom.xml must declare at least one skip switch; finding none means the "
+                                + "property lookup broke rather than that the two sides agree, and the comparison "
+                                + "below would be vacuously green"),
+                () -> assertEquals(declared, documented,
+                        () -> "doc/user/downstream-parent.adoc enumerates " + documented
+                                + " but build-parent/pom.xml declares " + declared
+                                + ". A consumer reads that list to decide which switches they can flip, so a "
+                                + "switch present in one side and absent from the other is a false statement about "
+                                + "their build. The list cannot be generated into AsciiDoc at build time, which is "
+                                + "why it is asserted instead — edit the GUIDE to match the POM. Widening this "
+                                + "expectation, or deleting the assertion, restores exactly the silent drift it "
+                                + "exists to catch"));
+    }
+
+    @Test
+    @DisplayName("(7) Guide parity: the documented untouched-switch table is the must-not-be-set contract")
+    void guideEnumeratesExactlyTheUntouchedSwitches() throws Exception {
+        List<String> lines = guideLines();
+        Set<String> documented = documentedUntouchedSwitches(lines);
+        String cardinal = documentedUntouchedCardinal(lines);
+
+        assertAll("the untouched-switch table must mirror the must-not-be-set contract",
+                () -> assertTrue(MUST_NOT_BE_SET.size() < CARDINALS.size(),
+                        () -> "the must-not-be-set contract has grown to " + MUST_NOT_BE_SET.size()
+                                + " entries, beyond the cardinals this assertion can spell. Extend CARDINALS "
+                                + "rather than dropping the count check"),
+                () -> assertEquals(Set.copyOf(MUST_NOT_BE_SET), documented,
+                        () -> "doc/user/downstream-parent.adoc's untouched-switch table lists " + documented
+                                + " but the contract asserted by (5) is " + MUST_NOT_BE_SET
+                                + ". Each of those switches is left unset for a reason the table states; a row "
+                                + "the contract does not carry documents a promise nothing keeps, and a contract "
+                                + "entry with no row leaves a consumer guessing why their build broke. Edit the "
+                                + "GUIDE, or extend MUST_NOT_BE_SET if the contract genuinely changed — do not "
+                                + "relax the comparison"),
+                () -> assertEquals(CARDINALS.get(MUST_NOT_BE_SET.size()), cardinal.toLowerCase(Locale.ROOT),
+                        () -> "the guide says \"" + cardinal + " switches are deliberately left alone\" while the "
+                                + "contract carries " + MUST_NOT_BE_SET.size()
+                                + ". A count in prose goes stale the moment the set beneath it moves, and it is "
+                                + "the one part of the sentence a reader trusts without checking"));
+    }
+
     /**
      * Matched positive/negative controls over the extraction helpers every assertion above depends
      * on. Without these the whole class is unfalsifiable by inspection: it is green today because
@@ -393,12 +468,231 @@ class BuildParentContractTest {
                             "an expression without an inline default must yield no carrier: the default is what "
                                     + "keeps an unconfigured build shipping the stock path"));
         }
+
+        /**
+         * Deliberately seeds BOTH cell kinds with backticked property names. The table's prose cells
+         * genuinely do name properties in backticks — the real guide's last row explains the
+         * {@code skipPublishing} / {@code maven.deploy.skip} distinction inside its prose — so a parse
+         * that collected every backtick in the block would still be green against today's table by
+         * coincidence, and would silently start collecting the wrong set the moment a prose cell
+         * mentioned a property the table does not list.
+         */
+        private static final String TABLE_SAMPLE = """
+                Three switches are deliberately *left alone*, and each for a reason you may care about:
+
+                [cols="1,3", options="header"]
+                |===
+                | Property | Why it is untouched
+
+                | `alpha.skip`
+                | Prose that names `decoy.skip`, which is not a row.
+
+                | `beta.skip` +
+                  `gamma.skip`
+                | Both left unset; see `second.decoy` for why.
+                |===
+                """;
+
+        @Test
+        @DisplayName("the untouched-switch table parse reads property cells and ignores prose backticks")
+        void untouchedTableParseDiscriminatesCellKinds() {
+            List<String> lines = TABLE_SAMPLE.lines().toList();
+
+            assertAll("untouched-switch table extraction",
+                    () -> assertEquals(Set.of("alpha.skip", "beta.skip", "gamma.skip"),
+                            documentedUntouchedSwitches(lines),
+                            "only a cell BEGINNING with a backticked token is a property cell; a prose cell "
+                                    + "naming a property in backticks must not be collected, and a multi-property "
+                                    + "row's continuation line must be"),
+                    () -> assertEquals("Three", documentedUntouchedCardinal(lines),
+                            "the count claim must be read out of the introducing sentence, since that is the "
+                                    + "number a reader checks the table against"));
+        }
+
+        @Test
+        @DisplayName("the disabled-switch parse reads the anchored paragraph and nothing after it")
+        void disabledListParseStopsAtTheParagraph() {
+            List<String> lines = ("""
+                    ... so the build parent switches every one of them off as an inherited default:
+
+                    `alpha.skip`, `beta.skip`,
+                    `gamma.skip`.
+
+                    A later paragraph mentioning `not.a.member` must not be collected.
+                    """).lines().toList();
+
+            assertEquals(Set.of("alpha.skip", "beta.skip", "gamma.skip"), documentedDisabledSwitches(lines),
+                    "the enumeration is the one paragraph after the anchor sentence — it wraps across lines, so "
+                            + "the parse must join them, and it must stop at the blank line rather than absorbing "
+                            + "every backtick in the rest of the document");
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
     // Extraction helpers. Every one returns null / empty on absence so the assertions above can fail
     // on absence rather than only on mismatch; the Controls nested class pins that in both directions.
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The skip switches build-parent declares as inherited defaults: every property whose NAME names a
+     * skip and whose value is {@code true}. Derived from the POM rather than restated, so a switch
+     * added there is picked up here without editing this class — which is what makes assertion (6) a
+     * guard on the guide rather than on a second hardcoded copy.
+     *
+     * @return the declared skip-switch names, in document order
+     * @throws IOException if the POM cannot be read
+     * @throws SAXException if the POM cannot be parsed
+     * @throws ParserConfigurationException if the parser cannot be configured
+     */
+    private static Set<String> declaredSkipSwitches()
+            throws IOException, SAXException, ParserConfigurationException {
+        Set<String> skips = new LinkedHashSet<>();
+        propertiesOf(rootOf(BUILD_PARENT_POM)).forEach((key, value) -> {
+            if (key.toLowerCase(Locale.ROOT).contains("skip") && "true".equals(value)) {
+                skips.add(key);
+            }
+        });
+        return skips;
+    }
+
+    /**
+     * @return the consumer guide's lines
+     * @throws IOException if the guide cannot be read
+     */
+    private static List<String> guideLines() throws IOException {
+        assertTrue(Files.isRegularFile(DOWNSTREAM_GUIDE),
+                () -> "expected the consumer guide at " + DOWNSTREAM_GUIDE.toAbsolutePath()
+                        + " (module basedir is Surefire's working directory, so the reactor root is '..'). "
+                        + "It is missing, so both guide-parity assertions would assert over nothing");
+        return Files.readAllLines(DOWNSTREAM_GUIDE);
+    }
+
+    /**
+     * The property names the guide enumerates as switched off, read out of the paragraph following
+     * {@link #DISABLED_LIST_ANCHOR}. The anchor is a sentence rather than a line number so the parse
+     * survives ordinary editing above it; a rewording of the anchor itself fails loudly instead of
+     * silently reading an empty list.
+     *
+     * @param lines the guide's lines
+     * @return the enumerated property names, in document order
+     */
+    private static Set<String> documentedDisabledSwitches(List<String> lines) {
+        int index = indexOfLineContaining(lines, DISABLED_LIST_ANCHOR) + 1;
+        while (index < lines.size() && lines.get(index).isBlank()) {
+            index++;
+        }
+        StringBuilder paragraph = new StringBuilder();
+        while (index < lines.size() && !lines.get(index).isBlank()) {
+            paragraph.append(lines.get(index)).append(' ');
+            index++;
+        }
+        Set<String> names = backtickedIn(paragraph.toString());
+        assertFalse(names.isEmpty(),
+                () -> "the paragraph after \"" + DISABLED_LIST_ANCHOR + "\" in "
+                        + DOWNSTREAM_GUIDE.toAbsolutePath() + " names no backticked property. The enumeration "
+                        + "is read from exactly there, so an empty read means the parse broke rather than that "
+                        + "the guide lists nothing");
+        return names;
+    }
+
+    /**
+     * The property names the guide's untouched-switch table lists, taken from its PROPERTY cells only.
+     * A cell is a property cell when it begins with a backticked token; a prose cell that happens to
+     * name a property in backticks is deliberately not collected, because collecting it would compare
+     * the contract against a set the table never claimed.
+     *
+     * @param lines the guide's lines
+     * @return the tabulated property names, in document order
+     */
+    private static Set<String> documentedUntouchedSwitches(List<String> lines) {
+        int start = indexOfLineFrom(lines, indexOfLineMatching(lines, LEFT_ALONE_INTRO), "|===");
+        Set<String> names = new LinkedHashSet<>();
+        StringBuilder cell = new StringBuilder();
+        boolean propertyCell = false;
+        for (int index = start + 1; index < lines.size(); index++) {
+            String line = lines.get(index);
+            if ("|===".equals(line.strip())) {
+                if (propertyCell) {
+                    names.addAll(backtickedIn(cell.toString()));
+                }
+                return names;
+            }
+            if (line.startsWith("|")) {
+                if (propertyCell) {
+                    names.addAll(backtickedIn(cell.toString()));
+                }
+                cell.setLength(0);
+                String body = line.substring(1).stripLeading();
+                propertyCell = body.startsWith("`");
+                cell.append(body);
+            } else if (propertyCell) {
+                cell.append(' ').append(line);
+            }
+        }
+        return fail("the untouched-switch table in " + DOWNSTREAM_GUIDE.toAbsolutePath()
+                + " is not terminated by a '|===' delimiter, so its rows cannot be read. Restore the "
+                + "delimiter rather than relaxing this assertion");
+    }
+
+    /**
+     * The count claim the untouched-switch table's introducing sentence makes, as written.
+     *
+     * @param lines the guide's lines
+     * @return the cardinal word, in its original casing
+     */
+    private static String documentedUntouchedCardinal(List<String> lines) {
+        Matcher matcher = LEFT_ALONE_INTRO.matcher(lines.get(indexOfLineMatching(lines, LEFT_ALONE_INTRO)));
+        assertTrue(matcher.find(),
+                "the line located by the untouched-switch intro pattern must match it — if it does not, the "
+                        + "lookup and the extraction disagree and the count claim is read from the wrong line");
+        return matcher.group(1);
+    }
+
+    /** @return the backticked identifiers in {@code text}, in order of appearance */
+    private static Set<String> backtickedIn(String text) {
+        Set<String> names = new LinkedHashSet<>();
+        Matcher matcher = BACKTICKED.matcher(text);
+        while (matcher.find()) {
+            names.add(matcher.group(1));
+        }
+        return names;
+    }
+
+    /** @return the index of the first line containing {@code needle}; fails when there is none */
+    private static int indexOfLineContaining(List<String> lines, String needle) {
+        for (int index = 0; index < lines.size(); index++) {
+            if (lines.get(index).contains(needle)) {
+                return index;
+            }
+        }
+        return fail("no line containing \"" + needle + "\" in " + DOWNSTREAM_GUIDE.toAbsolutePath()
+                + " — the enumeration is located by that anchor sentence, so rewording it silently disarms "
+                + "the guard. Restore the sentence, or update the anchor to follow the rewrite");
+    }
+
+    /** @return the index of the first line matching {@code pattern}; fails when there is none */
+    private static int indexOfLineMatching(List<String> lines, Pattern pattern) {
+        for (int index = 0; index < lines.size(); index++) {
+            if (pattern.matcher(lines.get(index)).find()) {
+                return index;
+            }
+        }
+        return fail("no line matching /" + pattern.pattern() + "/ in " + DOWNSTREAM_GUIDE.toAbsolutePath()
+                + " — the untouched-switch table is located by that sentence, so rewording it silently "
+                + "disarms the guard. Restore the sentence, or update the pattern to follow the rewrite");
+    }
+
+    /** @return the index of the first line at or after {@code from} equal to {@code exact} */
+    private static int indexOfLineFrom(List<String> lines, int from, String exact) {
+        for (int index = from; index < lines.size(); index++) {
+            if (exact.equals(lines.get(index).strip())) {
+                return index;
+            }
+        }
+        return fail("no '" + exact + "' delimiter after line " + from + " in "
+                + DOWNSTREAM_GUIDE.toAbsolutePath() + " — the untouched-switch table must follow its "
+                + "introducing sentence");
+    }
 
     /**
      * The carrier key the shipped {@code application.properties} reads for {@code key}.
