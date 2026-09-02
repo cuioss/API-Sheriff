@@ -137,9 +137,16 @@ public abstract class BaseIntegrationTest {
     }
 
     /**
-     * Normalises a context path for concatenation: a trailing slash is removed, so appending
-     * {@code "/health"} never yields a double slash, and the root value {@code "/"} collapses to the
-     * empty string rather than leaving one behind.
+     * Normalises a context path for concatenation: the ENTIRE trailing run of slashes is removed, so
+     * appending {@code "/health"} never yields a double slash, and the root value {@code "/"} collapses
+     * to the empty string rather than leaving one behind.
+     * <p>
+     * The whole run rather than a single character is load-bearing: stripping only the last separator
+     * leaves {@code "/ops//"} as {@code "/ops/"}, which still splices a doubled separator into every
+     * composed URL. It would also diverge from the host-side Compose probe in
+     * {@code integration-tests/scripts/start-integration-container.sh}, which collapses the full run —
+     * and since {@link ManagementRootPathLabelIT} runs THIS method over both sides of its comparison,
+     * a multi-slash label would be reported as a divergence that is not one.
      * <p>
      * Package-private rather than private so a test comparing an INDEPENDENTLY obtained path against
      * this class's configured one applies the identical rule to both sides.
@@ -148,9 +155,9 @@ public abstract class BaseIntegrationTest {
      * and the empty effective path as a divergence when they denote the same path.
      *
      * @param path the configured context path
-     * @return the path with any trailing slash removed
+     * @return the path with every trailing slash removed
      */
     static String normalisePath(String path) {
-        return path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+        return path.replaceAll("/+$", "");
     }
 }

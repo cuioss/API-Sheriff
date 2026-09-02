@@ -55,8 +55,15 @@ The probe path is **composed**, never restated: the endpoint names below (`/heal
 
 ```shell
 MGMT=$(docker compose -f integration-tests/docker-compose.yml config --format json \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["api-sheriff"]["labels"]["de.cuioss.sheriff.management-root-path"])')
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["api-sheriff"]["labels"]["de.cuioss.sheriff.management-root-path"].rstrip("/"))')
 ```
+
+The `.rstrip("/")` is load-bearing, not tidy-up, and it belongs at the resolution step so every probe
+below inherits it. `${MGMT}` is concatenated directly with a suffix that already starts with `/`, so a
+label of `/` would compose `//health/live` and a label of `/ops/` would compose `/ops//health/live` —
+neither is served, and the failure looks like a dead container rather than a bad prefix. Stripping the
+whole trailing run leaves the shipped `/q` untouched and turns a root-path label into an empty prefix,
+which is the same rule `BaseIntegrationTest.normalisePath` and `start-integration-container.sh` apply.
 
 - `curl -skf "https://localhost:19000${MGMT}/health/live"` — liveness (the startup wait uses this)
 - `curl -sk  "https://localhost:19000${MGMT}/health/ready"` — readiness; **this is the diagnostic goldmine** — the gateway's own `GatewayReadinessCheck` attaches `config`, one whole-validator `jwks` state, an `issuers` count, and on failure a single `error` string naming the exact cause (there is no per-issuer breakdown — the validator resolves as a unit)
