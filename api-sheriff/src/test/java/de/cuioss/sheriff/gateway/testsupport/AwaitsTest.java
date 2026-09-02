@@ -54,12 +54,13 @@ import org.junit.jupiter.api.Test;
  * dump, and the tests below go red rather than continuing to pass on a message that no longer
  * explains anything.
  *
- * <p>The rejected-upgrade enrichment carries a fourth, independent red-on-drop property: drop it and
- * exactly {@link #reportsStatusAndHeadersOnARejectedUpgrade()} goes red. It joins neither existing
- * set, because it asserts on nothing but the thrown type, the cause identity and the rejection
- * detail — never on the dump, never on the elapsed time. Keeping the three probes disjoint is what
- * lets a single red method name which mechanism was lost, so a new assertion here must not reach for
- * the dump or the measurement either.
+ * <p>The rejected-upgrade enrichment carries a fourth, independent red-on-drop property, narrowed by
+ * two probes: drop the enrichment and both {@link #reportsStatusAndHeadersOnARejectedUpgrade()} and
+ * {@link #statesTheAbsenceOfAZeroLengthRejectionBody()} go red, while dropping only the empty-body
+ * rendering reddens exactly the latter. Neither joins an existing set, because both assert on nothing
+ * but the thrown type, the cause identity and the rejection detail — never on the dump, never on the
+ * elapsed time. Keeping the probes disjoint is what lets a single red method name which mechanism was
+ * lost, so a new assertion here must not reach for the dump or the measurement either.
  */
 @EnableGeneratorController
 @DisplayName("Awaits")
@@ -159,6 +160,36 @@ class AwaitsTest {
                         "the failure names the rejected status"),
                 () -> assertTrue(message.contains(headerName),
                         "the failure names the rejection's headers, whose presence is the discriminator"));
+    }
+
+    /**
+     * The empty-body companion to {@link #reportsStatusAndHeadersOnARejectedUpgrade()}. A rejection
+     * whose body is a zero-length {@link Buffer} must state that absence, rather than render nothing
+     * after {@code body=} — the same treatment an empty header map already gets. It stays inside the
+     * same disjoint set: thrown type, cause identity and rejection detail only, never the dump and
+     * never the elapsed measurement.
+     */
+    @Test
+    @DisplayName("a rejected upgrade with a zero-length body states that absence rather than rendering nothing")
+    void statesTheAbsenceOfAZeroLengthRejectionBody() {
+        UpgradeRejectedException rejected = new UpgradeRejectedException(
+                Generators.letterStrings(8, 16).next(), Generators.integers(400, 599).next(),
+                MultiMap.caseInsensitiveMultiMap(), Buffer.buffer());
+        CompletableFuture<String> refused = new CompletableFuture<>();
+        refused.completeExceptionally(rejected);
+
+        ExecutionException failure = assertThrows(ExecutionException.class,
+                () -> Awaits.await(refused, CONTROL_LABEL, CONTROL_CEILING));
+
+        String message = failure.getMessage();
+        assertAll("zero-length rejection body",
+                () -> assertSame(rejected, failure.getCause(),
+                        "the cause is the identical instance received — the enrichment rewrites the "
+                                + "message and nothing else"),
+                () -> assertTrue(message.contains("body=<none>"),
+                        "a zero-length body is stated explicitly; rendering it as nothing would leave "
+                                + "the message trailing off after body= with no way to tell an empty "
+                                + "body from an absent one"));
     }
 
     @Test

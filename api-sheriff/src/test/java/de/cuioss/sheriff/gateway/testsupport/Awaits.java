@@ -386,13 +386,18 @@ public final class Awaits {
     }
 
     /**
-     * Renders the body of a rejected upgrade, stating its absence rather than printing {@code null}.
+     * Renders the body of a rejected upgrade. Body <em>presence</em> is the discriminator the caller
+     * reads, so an empty or absent body is stated explicitly rather than rendered as nothing — the
+     * same treatment {@link #renderHeaders(MultiMap)} gives an empty or absent header map.
      *
      * @param body the rejection's body, possibly {@code null}
      * @return the rendered body, never {@code null}
      */
     private static String renderBody(Buffer body) {
-        return null == body ? "<none>" : body.toString();
+        if (null == body || 0 == body.length()) {
+            return "<none>";
+        }
+        return body.toString();
     }
 
     /**
