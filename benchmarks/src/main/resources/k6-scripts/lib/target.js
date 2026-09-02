@@ -97,13 +97,24 @@ function withoutTrailingSlash(url) {
  * (`/` for the application, `/q` for management) compose byte-identically to the literals these
  * resolvers replaced.
  *
+ * The WHOLE trailing run of slashes is stripped, not just one, because the contract above is about
+ * the returned segment rather than about how many slashes were supplied: `/custom//` composes into
+ * a doubled slash before the route if only the last one is dropped. It deliberately does NOT reuse
+ * {@link withoutTrailingSlash}, whose single-slash semantics are correct for the base URLs it
+ * normalizes elsewhere in this module.
+ *
+ * `/` and `/q` are unaffected by the widening -- both already normalized to `''` and `/q` -- so this
+ * is not a fourth instance of the root-context-path class of defect this module has already been
+ * bitten by; it is the multi-slash case that was never covered.
+ *
  * @param {string|undefined} raw the configured context path, or `undefined`/empty when unset
  * @param {string} fallback the context path assumed when nothing is configured
  * @returns {string} the concatenable segment, possibly empty
  */
 function rootPathSegment(raw, fallback) {
     const resolved = raw === undefined || raw === '' ? fallback : raw;
-    return withoutTrailingSlash(resolved.startsWith('/') ? resolved : `/${resolved}`);
+    const absolute = resolved.startsWith('/') ? resolved : `/${resolved}`;
+    return absolute.replace(/\/+$/, '');
 }
 
 /**

@@ -23,15 +23,20 @@ KEYCLOAK_URL="${KEYCLOAK_URL:?KEYCLOAK_URL must be set}"
 # steps, because this gate and the k6 health benchmarks read the SAME variable and must resolve it
 # to the same endpoint: unset or empty falls back to the shipped default; a missing leading slash is
 # added, so "q" composes as "/q" here exactly as it does there rather than yielding "…:9000q/…";
-# a trailing slash is dropped, so the root context path "/" composes to nothing rather than to a
-# doubled slash. The `case` form is deliberate under `set -e` -- a `[ … ] && …` guard whose test is
-# false returns non-zero and would abort the script.
+# and the whole TRAILING RUN of slashes is dropped, so the root context path "/" composes to nothing
+# rather than to a doubled slash, and "/custom//" composes to "/custom" rather than leaving one
+# behind. The loop is what makes that a run rather than a single slash -- ${var%/} strips exactly one
+# and mirrors an earlier, narrower version of rootPathSegment. The `case` form is deliberate under
+# `set -e` -- a `[ … ] && …` guard whose test is false returns non-zero and would abort the script;
+# a `while` whose condition goes false is a compound and does not.
 MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH:-/q}"
 case "${MANAGEMENT_ROOT_PATH}" in
     /*) ;;
     *) MANAGEMENT_ROOT_PATH="/${MANAGEMENT_ROOT_PATH}" ;;
 esac
-MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH%/}"
+while [ "${MANAGEMENT_ROOT_PATH}" != "${MANAGEMENT_ROOT_PATH%/}" ]; do
+    MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH%/}"
+done
 
 # The APPLICATION half of the same pair, normalised identically and for the same reason. It reads
 # HTTP_ROOT_PATH because that is the variable lib/target.js reads (target.js:124) before applying it
@@ -46,7 +51,9 @@ case "${APPLICATION_ROOT_PATH}" in
     /*) ;;
     *) APPLICATION_ROOT_PATH="/${APPLICATION_ROOT_PATH}" ;;
 esac
-APPLICATION_ROOT_PATH="${APPLICATION_ROOT_PATH%/}"
+while [ "${APPLICATION_ROOT_PATH}" != "${APPLICATION_ROOT_PATH%/}" ]; do
+    APPLICATION_ROOT_PATH="${APPLICATION_ROOT_PATH%/}"
+done
 
 MAX_RETRIES=30
 RETRY_INTERVAL=2
