@@ -2,19 +2,29 @@
   "best_practices": [],
   "generation": {
     "by": "architecture",
-    "tree_sha": "e34d6dc0242c06da8a3c253846889c9667ca0a1545ac014ec29d83c0164b2958"
+    "tree_sha": "659ac268fcadab1a5f32473c4bab988c59cc245e964467ab7151beddf3f74e6c"
   },
   "insights": [],
   "internal_dependencies": [],
   "key_dependencies": [],
   "key_dependencies_reasoning": "",
   "key_packages": {},
-  "purpose": "",
-  "purpose_reasoning": "",
-  "responsibility": "",
-  "responsibility_reasoning": "",
-  "skills_by_profile": {},
-  "skills_by_profile_reasoning": "",
+  "purpose": "deployment",
+  "purpose_reasoning": "Classified deployment rather than library: it ships no compiled artifact and exists to be PUBLISHED and inherited, in the same shape as the existing deployment module which is also pom-only and also misleads build_systems=maven into suggesting java skills.",
+  "responsibility": "Publishes the downstream build parent a third-party deployer inherits from to produce an API Sheriff image carrying a custom context path. It carries no Java and builds no artifact: it declares the consumer-facing sheriff.context-path knob and its mapping onto the quarkus.sheriff-* carrier keys, the api-sheriff dependency plus the Quarkus platform BOM, the quarkus-maven-plugin binding with the main class pinned, and the native profile. Adopting a new API Sheriff release is a parent-version bump and nothing else.",
+  "responsibility_reasoning": "pom-only module (packaging=pom, no src tree); quarkus-maven-plugin short-circuits on pom packaging, so the reactor walks it as a near no-op and all value is delivered by inheritance on the consumer side.",
+  "skills_by_profile": {
+    "implementation": [
+      "plan-marshall:persona-plan-marshall-agent",
+      "plan-marshall:ref-code-quality",
+      "plan-marshall:build-server-client"
+    ],
+    "quality": [
+      "plan-marshall:persona-plan-marshall-agent",
+      "plan-marshall:ref-code-quality"
+    ]
+  },
+  "skills_by_profile_reasoning": "Mirrors the existing pom-only deployment module rather than the java modules. The POM carries no Java source, so java/java-cui implementation skills would be resolved off build_systems=maven and be wrong here. module_testing is deliberately omitted: the parent has no tests of its own \u2014 its contract is asserted from api-sheriff by BuildParentContractTest, which lives in and is skill-resolved by that module.",
   "tips": [],
   "type": "module"
 }
