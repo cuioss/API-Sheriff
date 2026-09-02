@@ -177,11 +177,26 @@
                  dependency-convergence and banned-dependency guards; without it a transitively
                  downgraded library can silently win the consumer's resolution.
 
-             They stay DEFAULTED OFF: dependency-check needs an NVD API key and adds minutes, and a
-             deployer who never adopted CUI's toolchain should not meet either as a first-build
-             failure. What is NOT acceptable is leaving that consequence invisible — a security
-             control's removal must be explicit and named (secure-by-default / complete mediation),
-             which is exactly what folding it into a ten-entry "hygiene" list defeats.
+             Both stay DEFAULTED OFF, but for DIFFERENT reasons, and those reasons are stated
+             separately on purpose: a single shared sentence here previously justified both with
+             dependency-check's rationale alone, and neither half of it is true of enforcer, which
+             needs no key and costs seconds. A control riding a justification that belongs to its
+             sibling is indistinguishable from one nobody re-examined.
+
+               - dependency-check.skip stays off because the scan needs an NVD API key and adds
+                 minutes to every consumer build. Without a key it cannot run at all, so defaulting
+                 it ON would fail a consumer on a missing credential rather than on a finding.
+               - enforcer.skip stays off because dependencyConvergence is an inherited CUI opinion
+                 about a dependency graph this parent never sees, and a deployer who never adopted
+                 CUI's toolchain should not meet it as a first-build failure. That is the same
+                 argument, and the same class of inherited-CUI-default breakage, as the
+                 Automatic-Module-Name block twenty lines below: an upstream default that fails a
+                 non-CUI consumer's very first `mvn package` for a reason that has nothing to do
+                 with API Sheriff.
+
+             What is NOT acceptable is leaving that consequence invisible — a security control's
+             removal must be explicit and named (secure-by-default / complete mediation), which is
+             exactly what folding it into a ten-entry "hygiene" list defeats.
 
              A consumer re-enables either by setting the same property to `false` in its own
              <properties>; doc/user/downstream-parent.adoc states the same thing on the consumer's
