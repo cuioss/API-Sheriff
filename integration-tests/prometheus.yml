@@ -6,9 +6,9 @@ scrape_configs:
   - job_name: 'quarkus-benchmark'
     static_configs:
       - targets: ['api-sheriff:9000']
-    # DELIBERATELY LITERAL, and the one place in integration-tests/ that still restates the
-    # management root path. Everything else derives it from the de.cuioss.sheriff.management-root-path
-    # Compose label, but nothing can derive it HERE: this file is bind-mounted into the Prometheus
+    # DELIBERATELY LITERAL. Most consumers derive the management root path from the
+    # de.cuioss.sheriff.management-root-path Compose label, but nothing can derive it HERE: this
+    # file is bind-mounted into the Prometheus
     # container verbatim (`./prometheus.yml:/etc/prometheus/prometheus.yml:ro`), and Prometheus
     # interpolates no environment variables into a scrape config — so there is no templating mechanism
     # that reaches this value. Changing the gateway's management root path therefore means editing

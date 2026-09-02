@@ -42,7 +42,9 @@ public abstract class BaseIntegrationTest {
 
     /**
      * The gateway's MANAGEMENT context path ({@code quarkus.management.root-path}) at its shipped
-     * default, and the single place this suite spells it. It is an INDEPENDENT ABSOLUTE key: it does
+     * default. It is one of three hand-maintained spellings under {@code integration-tests/} --
+     * {@code prometheus.yml} and {@code verify-invalid-config-fails.sh} carry the others, and only
+     * the former is asserted against the Compose label. It is an INDEPENDENT ABSOLUTE key: it does
      * not move when {@code quarkus.http.root-path} moves, which is why the two are separate
      * properties here rather than one composed value.
      */

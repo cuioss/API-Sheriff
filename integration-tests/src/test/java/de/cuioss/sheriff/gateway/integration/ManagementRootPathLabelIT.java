@@ -37,8 +37,12 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Proves the {@value #ROOT_PATH_LABEL} Compose label is <strong>honest</strong>: the management
- * context path it advertises is the path the running gateway actually serves, and the one
+ * context path it advertises is the path the running gateway actually serves, and the path
  * {@code prometheus.yml}'s hand-maintained {@code metrics_path} literal names.
+ * <p>
+ * {@code prometheus.yml} is the only hand-maintained management path this IT guards, not the only
+ * one that exists: {@code verify-invalid-config-fails.sh} and {@code BaseIntegrationTest} also
+ * spell it, and nothing asserts either against the label.
  * <p>
  * <strong>Why this IT exists.</strong> The label is the single source of truth every host-side
  * consumer derives its probe path from — {@code start-integration-container.sh}'s readiness gate and
@@ -152,10 +156,12 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
         assertEquals(rootPath + "/metrics", metricsPath,
                 () -> "prometheus.yml scrapes '" + metricsPath + "' but the " + ROOT_PATH_LABEL
                         + " label advertises '" + rootPath + "'. That file is bind-mounted verbatim and "
-                        + "Prometheus interpolates nothing into a scrape config, so its metrics_path is "
-                        + "the one management path in integration-tests/ that CANNOT be derived and must "
-                        + "be edited by hand — this assertion is what stops the two drifting apart "
-                        + "silently. Update prometheus.yml, not this assertion");
+                        + "Prometheus interpolates nothing into a scrape config, so its metrics_path "
+                        + "CANNOT be derived and must be edited by hand — this assertion is what stops "
+                        + "the two drifting apart silently. Update prometheus.yml, not this assertion. "
+                        + "Note it is not the only hand-maintained management path under "
+                        + "integration-tests/: verify-invalid-config-fails.sh and BaseIntegrationTest "
+                        + "also spell it, and neither is asserted against the label");
     }
 
     /**

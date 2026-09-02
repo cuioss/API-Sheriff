@@ -48,9 +48,11 @@ MANAGEMENT_CONTAINER_PORT=9000
 # this script cannot DERIVE it from the Compose model: it deliberately drives a bare `docker run`
 # against the image rather than bringing up the stack, so there is no resolved model to read the
 # de.cuioss.sheriff.management-root-path label from. It mirrors that label the same way
-# MANAGEMENT_CONTAINER_PORT above mirrors the published port, and the agreement between the two is
-# machine-guarded by ManagementRootPathLabelIT rather than left to review. See
-# doc/user/context-path.adoc.
+# MANAGEMENT_CONTAINER_PORT above mirrors the published port. NOTHING MACHINE-GUARDS THAT
+# AGREEMENT: ManagementRootPathLabelIT asserts the label against the running container and against
+# prometheus.yml, and never opens this script, so this assignment is hand-maintained and a
+# divergence surfaces only as a confusing case-7 failure. Relocating the management context path
+# means editing it here as well. See doc/user/context-path.adoc.
 MANAGEMENT_ROOT_PATH=/q
 # Host port for case 7's negative leg. Deliberately outside the 19000-19005 block
 # docker-compose.yml publishes for the six gateway instances, so this script can run

@@ -33,6 +33,21 @@ case "${MANAGEMENT_ROOT_PATH}" in
 esac
 MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH%/}"
 
+# The APPLICATION half of the same pair, normalised identically and for the same reason. It reads
+# HTTP_ROOT_PATH because that is the variable lib/target.js reads (target.js:124) before applying it
+# inside targetUrl() (target.js:170) -- so the data-plane row below and proxied_static.js, which
+# builds the same route via targetUrl('/proxy/static'), compose from one value. Omitting this half
+# is not a cosmetic gap: with HTTP_ROOT_PATH=/gw the benchmark drives /gw/proxy/static while an
+# un-prefixed pre-flight probes /proxy/static, so the gate either passes against a route the
+# benchmark never uses or fails against one it does. The default "/" normalises to the empty string,
+# so the composed URL is byte-identical to the previous literal when the path is not relocated.
+APPLICATION_ROOT_PATH="${HTTP_ROOT_PATH:-/}"
+case "${APPLICATION_ROOT_PATH}" in
+    /*) ;;
+    *) APPLICATION_ROOT_PATH="/${APPLICATION_ROOT_PATH}" ;;
+esac
+APPLICATION_ROOT_PATH="${APPLICATION_ROOT_PATH%/}"
+
 MAX_RETRIES=30
 RETRY_INTERVAL=2
 
@@ -68,6 +83,6 @@ check_service "Keycloak" "${KEYCLOAK_URL}/health/ready"
 # Data-plane target. Until this probe existed INTEGRATION_SERVICE_URL was required but never used,
 # so a deleted or misrouted data-plane route sailed through pre-flight and surfaced only as a k6
 # threshold breach. /proxy/static is the matrix baseline driven by proxied_static.js.
-check_service "Gateway data plane (proxiedStatic target)" "${INTEGRATION_SERVICE_URL}/proxy/static"
+check_service "Gateway data plane (proxiedStatic target)" "${INTEGRATION_SERVICE_URL}${APPLICATION_ROOT_PATH}/proxy/static"
 
 echo "=== All benchmark targets are served. Proceeding with benchmarks. ==="

@@ -53,8 +53,10 @@
              properties are resolved only after profile activation has already been decided. A consumer
              sets a POM property, so a profile here would silently never fire and the override would be
              lost with no error. Do NOT "simplify" this into an <activation><property> profile: that is
-             the single most likely edit a later reader will attempt, and it breaks the whole module
-             while leaving every build green.
+             the single most likely edit a later reader will attempt, and it breaks the whole module.
+             It does not, however, leave the build green: BuildParentContractTest reads the top-level
+             <properties> of this POM only, so moving the mapping into a profile makes the carrier
+             lookup null and its assertion fires.
 
              quarkus-maven-plugin honours a plain Maven property as build-time Quarkus configuration.
              That is not speculative: api-sheriff/pom.xml's `native` profile already binds
@@ -80,8 +82,11 @@
              carrier. The 250-ordinal declaration still wins, but resolves the carrier from whatever
              source supplies it: this mapping at ordinal 100, or the inline default when a consumer
              overrides nothing. So do NOT "correct" the two target names below to the stock Quarkus
-             keys; that reads more obvious, keeps every build green, and silently stops the parent
-             working. Quarkus owns no such keys, so the accepted cost of this shape was that it
+             keys; that reads more obvious and silently stops the parent working. It does not keep
+             the build green either: BuildParentContractTest asserts both directions of exactly that
+             edit: the carrier names must be present and the two stock Quarkus keys must be absent
+             from this POM, so the substitution turns it red. Quarkus owns no such keys, so the
+             accepted cost of this shape was that it
              would log them as unrecognized configuration at boot; that warning was not in fact
              observed at JVM or native augmentation or at container boot — measured, not
              guaranteed. -->
@@ -110,7 +115,8 @@
              behalf is part of what this parent is for.
 
              The duplication is guarded rather than merely tolerated:
-             .claude/skills/release/check-quarkus-alignment.py rglobs every reactor pom.xml and reports
+             .claude/skills/release/check-quarkus-alignment.py rglobs every pom.xml under the
+             repository (not just the reactor's, so this non-reactor example is covered too) and reports
              a property declared at two different values as "declared inconsistently", exiting 2 — which
              the release gate treats as blocking. So this value drifting from the reactor root's cannot
              reach a release, and no new drift mechanism was added for it. Keep it equal to the

@@ -196,10 +196,15 @@ default when nothing does. So the seam acts, and an unconfigured build still shi
 
 [WARNING]
 ====
-*Do not flatten these declarations back to literals.* The literal form reads more obviously, every
-build stays green, and `-Dsheriff.context-path` silently stops acting. There is no test that can
-observe the difference from inside a default build, because a default build produces the same bytes
-either way -- which is precisely what makes the regression quiet.
+*Do not flatten these declarations back to literals.* The literal form reads more obviously and
+`-Dsheriff.context-path` silently stops acting -- a default build produces the same bytes either
+way, so the regression is invisible at runtime.
+
+It is not, however, invisible to the suite: two tests assert the declared form directly, and
+flattening either declaration turns them red. `ContextPathDefaultsTest` reads the RAW declared value
+out of the packaged `target/classes/application.properties` and asserts it is the expression rather
+than the resolved value, and `BuildParentContractTest.carrierFor` fails when a declaration is not an
+expression over its carrier. Those are the guards; do not remove them as redundant with this prose.
 ====
 
 === The accepted cost: two keys on a namespace that does not own them
@@ -319,17 +324,27 @@ own literal. A future loop that starts deriving Keycloak's probe path from this 
 *value* there first -- it is the gateway's root path, not Keycloak's.
 ====
 
-=== The one deliberate literal that survives
+=== The deliberate literals that survive
 
-`integration-tests/prometheus.yml` still restates the management root path in its `metrics_path`, and
-that is the only place under `integration-tests/` that does. Nothing can derive it there: the file is
+`integration-tests/prometheus.yml` still restates the management root path in its `metrics_path`.
+Nothing can derive it there: the file is
 bind-mounted into the Prometheus container verbatim, and Prometheus interpolates no environment
 variables into a scrape config -- there is no templating mechanism that reaches the value. Changing
 the gateway's management root path therefore means editing that literal by hand.
 
-That is not left to reviewer vigilance. `ManagementRootPathLabelIT` asserts the scrape path agrees
-with the Compose label, so editing one without the other turns the integration suite red rather than
-producing a silently blind Prometheus.
+That one is not left to reviewer vigilance. `ManagementRootPathLabelIT` asserts the scrape path
+agrees with the Compose label, so editing one without the other turns the integration suite red
+rather than producing a silently blind Prometheus.
+
+Two further hand-maintained literals under `integration-tests/` are *not* machine-guarded, and
+relocating the management context path means editing them as well:
+
+* `integration-tests/scripts/verify-invalid-config-fails.sh` -- it drives a bare `docker run` rather
+  than bringing up the stack, so there is no resolved Compose model to read the label from.
+* `integration-tests/src/test/java/.../BaseIntegrationTest.java` -- the suite's own default constant.
+
+Nothing asserts either against the label. Prefer deriving where a resolved model exists; where one
+does not, expect to edit by hand.
 
 === The baked container health check is unaffected by either path
 
