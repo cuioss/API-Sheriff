@@ -263,8 +263,9 @@ jobs:
           # and with the seam property unset it is the inline default that acts. A plain literal is
           # accepted unchanged, so this keeps working if the carrier indirection is ever retired.
           EFFECTIVE="$DECLARED"
+          # shellcheck disable=SC2016  # the ${...} here is a literal to match in $DECLARED, not an expansion
           case "$DECLARED" in
-            '${'*':'*'}')
+            \$\{*:*\})
               EFFECTIVE="${DECLARED#*:}"
               EFFECTIVE="${EFFECTIVE%\}}"
               ;;

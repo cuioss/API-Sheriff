@@ -26,9 +26,10 @@ KEYCLOAK_URL="${KEYCLOAK_URL:?KEYCLOAK_URL must be set}"
 # and the whole TRAILING RUN of slashes is dropped, so the root context path "/" composes to nothing
 # rather than to a doubled slash, and "/custom//" composes to "/custom" rather than leaving one
 # behind. The loop is what makes that a run rather than a single slash -- ${var%/} strips exactly one
-# and mirrors an earlier, narrower version of rootPathSegment. The `case` form is deliberate under
-# `set -e` -- a `[ … ] && …` guard whose test is false returns non-zero and would abort the script;
-# a `while` whose condition goes false is a compound and does not.
+# and mirrors an earlier, narrower version of rootPathSegment. The `case` form is preferred for
+# readability, NOT for `set -e` safety: a false `[ … ]` on the left of `&&` is exempt from errexit
+# (bash exempts every command in an AND-list except the one after the final `&&`), and a false
+# `while` condition is likewise exempt, so neither form would abort here. Verified by running both.
 MANAGEMENT_ROOT_PATH="${MANAGEMENT_ROOT_PATH:-/q}"
 case "${MANAGEMENT_ROOT_PATH}" in
     /*) ;;
