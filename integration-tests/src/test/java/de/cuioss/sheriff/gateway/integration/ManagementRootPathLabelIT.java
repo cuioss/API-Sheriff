@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.ImageLabelInspector.inspectContainerLabel;
+import static de.cuioss.sheriff.gateway.integration.ImageLabelInspector.runCapturing;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -24,12 +25,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -96,8 +94,6 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
      * could in principle collide with it.
      */
     private static final String NOT_THE_LABEL_PATH = "/not-the-management-root";
-
-    private static final long COMPOSE_TIMEOUT_SECONDS = 30L;
 
     @Test
     @DisplayName("the advertised management root path is the one readiness is actually served beneath")
@@ -198,7 +194,7 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
     private static String gatewayContainerId() {
         String containerId = runCapturing(
                 new ProcessBuilder("docker", "compose", "-f", COMPOSE_FILE, "ps", "-q", GATEWAY_SERVICE),
-                "docker compose ps -q " + GATEWAY_SERVICE);
+                "docker compose ps -q " + GATEWAY_SERVICE, "is the stack up?");
 
         assertFalse(containerId.isBlank(),
                 () -> "no running container for the " + GATEWAY_SERVICE + " Compose service. This IT "
@@ -232,37 +228,5 @@ class ManagementRootPathLabelIT extends BaseIntegrationTest {
                 .orElseGet(() -> fail("no metrics_path key in " + PROMETHEUS_CONFIG.toAbsolutePath()
                         + " — this IT asserts that literal agrees with the " + ROOT_PATH_LABEL
                         + " label, and it cannot do so if the key has been renamed or removed"));
-    }
-
-    /**
-     * Runs a short-lived command and returns its merged output, stripped. The process is waited on
-     * before its output is read, for the same reason
-     * {@link ImageLabelInspector#inspectContainerLabel(String, String)} does so — see that method.
-     *
-     * @param builder     the configured command
-     * @param description how to name this command in a failure message
-     * @return the command's output, stripped
-     */
-    private static String runCapturing(ProcessBuilder builder, String description) {
-        builder.redirectErrorStream(true);
-        try {
-            Process process = builder.start();
-            if (!process.waitFor(Duration.ofSeconds(COMPOSE_TIMEOUT_SECONDS))) {
-                process.destroyForcibly();
-                fail(() -> description + " did not complete within " + COMPOSE_TIMEOUT_SECONDS + "s");
-            }
-            String output;
-            try (InputStream in = process.getInputStream()) {
-                output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            assertEquals(0, process.exitValue(),
-                    () -> description + " failed — is the stack up? Output: " + output.strip());
-            return output.strip();
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot run " + description, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted during " + description, e);
-        }
     }
 }

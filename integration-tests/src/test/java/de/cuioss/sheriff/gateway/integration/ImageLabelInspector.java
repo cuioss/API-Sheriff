@@ -70,7 +70,7 @@ final class ImageLabelInspector {
      * @return the label value, stripped; empty when the image does not carry the label
      */
     static String inspectLabel(String image, String label) {
-        return readLabel(
+        return runCapturing(
                 new ProcessBuilder("docker", "image", "inspect", "--format", labelTemplate(label), image),
                 "docker image inspect on " + image,
                 "is the image built?");
@@ -94,7 +94,7 @@ final class ImageLabelInspector {
      * @return the label value, stripped; empty when the container does not carry the label
      */
     static String inspectContainerLabel(String container, String label) {
-        return readLabel(
+        return runCapturing(
                 new ProcessBuilder("docker", "inspect", "--format", labelTemplate(label), container),
                 "docker inspect on container " + container,
                 "is the stack up?");
@@ -106,7 +106,7 @@ final class ImageLabelInspector {
     }
 
     /**
-     * Runs an inspect subprocess and returns its single-value output, stripped.
+     * Runs a short-lived docker subprocess and returns its single-value output, stripped.
      * <p>
      * The process is waited on <em>before</em> its output is read, and that order is load-bearing.
      * Reading first would make the timeout unreachable: {@code readAllBytes()} blocks until EOF, and
@@ -115,13 +115,19 @@ final class ImageLabelInspector {
      * first is safe here because the output is a single label value (or a short daemon error), orders
      * of magnitude below the pipe buffer that would otherwise deadlock a read-after-wait; that bound
      * is also why no reader thread is warranted.
+     * <p>
+     * Package-private rather than private because that reasoning is not label-specific: it holds for
+     * any single-value docker read, and {@link ManagementRootPathLabelIT} performs one
+     * ({@code docker compose ps -q}) to resolve the container whose label it then inspects. Sharing
+     * this method is what keeps the handling above stated once — a second copy is exactly what would
+     * let one of them silently regress.
      *
-     * @param builder     the configured inspect command
+     * @param builder     the configured command
      * @param description how to name this read in a failure message
      * @param hint        the actionable suggestion appended to a non-zero-exit failure
      * @return the command's output, stripped
      */
-    private static String readLabel(ProcessBuilder builder, String description, String hint) {
+    static String runCapturing(ProcessBuilder builder, String description, String hint) {
         builder.redirectErrorStream(true);
         try {
             Process process = builder.start();
