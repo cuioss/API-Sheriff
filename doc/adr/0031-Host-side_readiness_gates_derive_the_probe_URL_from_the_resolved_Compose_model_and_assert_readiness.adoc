@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: A host-side bring-up gate restates neither scheme nor published port -- it derives both from the resolved Compose model via the service's management-scheme label -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a single-shot readiness assertion behind it, which needs no retry budget because the waiting already happened.
+// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model via the service's management-scheme and management-root-path labels -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a single-shot readiness assertion behind it, which needs no retry budget because the waiting already happened.
 // tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, container-health
 // affects: integration-tests, demo-client
 // supersedes:
@@ -55,9 +55,12 @@ fail closed on a non-2xx answer. What changed is only where the *waiting* happen
 never what is finally asserted.
 
 **Derive the whole probe target from the resolved Compose model.** The script
-resolves the service set, each service's published management port, and the scheme
-its management interface speaks, from the model -- the scheme via an explicit
-per-service label rather than by inferring it from a name or a port number. No
+resolves the service set, each service's published management port, the scheme
+its management interface speaks, and the management context path that interface
+is served beneath, from the model -- the scheme and the context path each via an
+explicit per-service label (`de.cuioss.sheriff.management-scheme` and
+`de.cuioss.sheriff.management-root-path`) rather than by inferring either from a
+name or a port number. No
 host and no *published* host port is restated in the script. The container-side
 management port remains a fixed literal, used as the selector that picks the
 management binding out of each service's port list; that is a stable

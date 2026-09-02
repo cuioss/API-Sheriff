@@ -1,0 +1,200 @@
+= ADR-0038: A build-time key the shipped artifact declares is made configurable through a carrier key in the build tool's own namespace
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: A build-time configuration key that the shipped artifact declares is made build-configurable by declaring it as an EXPRESSION over a carrier key in the build tool's own namespace, never by having the build seam set the framework key directly -- because the artifact's own declaration outranks the forwarded build property and would silently override it, and because the forwarding path keeps only prefixed names.
+// tags: build-time-config, config-source-ordinal, configuration-surface, build-seam, maven, quarkus, artifact-purity, expression-default, silent-inertness
+// affects: api-sheriff, api-sheriff-parent
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The shipped artifact declares its own configuration explicitly rather than relying on
+framework defaults, so that a reader of the packaged file can see what the artifact
+actually asks for. Some of the keys it declares are *build-time fixed*: they are
+resolved once during augmentation and baked into the executable, and no environment
+variable moves them afterwards. Making such a key operator-configurable therefore has
+to happen at build time, through the build tool.
+
+That produces a conflict whose direction ordinary intuition gets backwards, and three
+properties of it make it dangerous.
+
+**The artifact's own declaration outranks the build tool.** A property forwarded from
+the build into augmentation and the artifact's packaged configuration file are two
+configuration sources for one key, and the packaged file is the higher-ordinal one. A
+build seam that sets the framework key directly is therefore overridden by the very
+declaration it exists to change. The more obvious shape is the one that cannot work.
+
+**The forwarding path is namespace-filtered.** The build plugin forwards properties
+into augmentation through a filter that keeps only names in its own namespace. An
+operator-facing property named in the project's vocabulary is dropped before it reaches
+the configuration at all, so the seam has two independent ways to be inert and only one
+of them is about ordinals.
+
+**Both failures are invisible.** A default build produces byte-identical output whether
+the seam works or not. Nothing at runtime differs, no test that exercises the default
+path changes colour, and the build stays green. The seam is discovered to be inert only
+by someone who exercises it and inspects the augmented output -- which is to say, by
+measurement, not by review.
+
+The architectural question this settles is therefore not "how do we set this one key",
+but: when a build-time key the artifact declares must become configurable, what shape
+does the seam take so that it acts, so that the artifact keeps its explicit declaration,
+and so that a later reader cannot silently disable it?
+
+== Decision
+
+**A build-time configuration key that the shipped artifact declares is made configurable
+by declaring it as an expression over a carrier key in the build tool's own namespace --
+never by having the build seam set the framework key directly.**
+
+Four mechanisms realise it.
+
+**The declaration becomes a delegation.** The packaged configuration file continues to
+declare the key, and continues to own its default, but declares it as an expression with
+an inline default rather than as a literal. The higher-ordinal declaration still wins;
+what it wins *with* is a reference. The carrier resolves from whatever source supplies
+it -- the forwarded build property when the seam is active, the inline default when
+nothing is. The ordinal contest is not fought, it is inverted.
+
+**The carrier lives in the build tool's namespace.** The build profile maps the
+operator-facing project property onto a carrier name carrying the framework prefix,
+because that prefix is what survives the forwarding filter. The operator-facing
+vocabulary stays the project's own; the prefix is an implementation detail of the
+transport.
+
+**The carrier is a pure carrier.** It is never given a configuration mapping, never
+documented as a settable key, and never claimed as a configuration surface. It exists
+only to be referenced by the expression. A construct added solely to make it look
+official would assert a surface that does not exist -- a documented key nobody should
+ever set.
+
+**The shape is asserted, not merely explained.** Because the default build behaves
+identically either way, prose cannot defend the shape. Two guards do: a test that reads
+the *raw declared value* out of the packaged artifact and asserts it is the expression
+rather than the resolved value, and a contract test that fails when a declaration is not
+an expression over its carrier. Flattening either declaration back to a literal turns
+both red. This is the same discipline the repository applies to any declared limit --
+a key that parses is not a key that acts, and only an assertion that discriminates
+proves the difference.
+
+== Consequences
+
+=== Positive
+
+* The seam acts, and it acts through a property named in the project's own vocabulary
+  rather than the framework's, so the operator-facing knob is a surface this project
+  owns and can keep stable across framework changes.
+* An unconfigured build still ships the default from the artifact's own file. The
+  explicit-declaration posture survives the change: the packaged artifact states what it
+  asks for, rather than falling back to a framework annotation default.
+* Because the mechanism is ordinal *inversion* rather than ordinal *competition*, a
+  lower-ordinal source is sufficient to drive the key. A downstream build that inherits a
+  parent model can therefore supply the carrier through ordinary property inheritance,
+  which is what makes a one-property customisation promise achievable at all.
+* The two failure modes that were invisible become build failures, because the guards
+  assert the declared form rather than the resolved behaviour.
+
+=== Negative
+
+* The carrier names occupy the framework's namespace without being owned by it. They get
+  no validation, no documentation, no tooling completion, and no guarantee that a typo in
+  either will be reported rather than silently ignored. The coupling between the
+  declaration and the carrier is held by a test instead.
+* The packaged file no longer shows the effective value at a glance. Reading the
+  declaration now requires following one indirection to the inline default.
+* Framework normalisation applied to the raw declared string before expression expansion
+  can produce a cosmetically different read-back inside a test harness that reads the key
+  back through the configuration API. The augmentation path expands before it normalises,
+  so the packaged artifact and the running router are unaffected; the divergence is
+  confined to the harness and is asserted as observed rather than papered over.
+
+=== Risks
+
+* This is precisely the shape a later reader "simplifies". The literal form reads more
+  obviously, a default build is unchanged, and nothing at runtime protests. Only the two
+  guards convert that edit into a red build, so removing them as redundant with the
+  explanatory prose removes the only defence.
+* The absence of an unrecognized-key report for the carriers is *measured, not
+  guaranteed*. A future framework release that begins reporting them is the accepted cost
+  materialising rather than a regression, and the correct response is to accept the noise,
+  not to add a construct whose only purpose is to silence it.
+
+== Alternatives Considered
+
+**Have the build seam set the framework key directly.** The obvious shape: a profile that
+sets the framework key from the operator's property. Rejected because it cannot work --
+the artifact's own declaration is the higher-ordinal source and overrides it. The failure
+is silent in both directions: the build succeeds and the artifact is unchanged.
+
+**Drop the declaration from the shipped artifact and let the build seam be the sole
+source.** Removes the conflict by removing one of the two sources. Rejected because the
+effective default then comes from the framework's own annotation default rather than from
+the artifact, which is exactly the implicitness the explicit-declaration posture exists to
+remove; and it deletes the packaged-declaration assertions that are the only place the
+shipped configuration surface is pinned.
+
+**Declare the expression with an empty inline default.** Cosmetically tidier -- it avoids
+the normalisation artefact above. Rejected for the same reason as the previous option: the
+packaged artifact then records the empty string and the effective default returns to the
+framework, trading an explicit declaration for a cosmetic improvement in a test read-back.
+
+**Document the framework key as the operator-facing knob.** Tells operators to set the
+framework property directly and drops the project-owned name. Rejected because it
+surrenders the vocabulary boundary -- the project's configurable surface would be defined
+by whatever the framework happens to call things this release -- and because it makes a
+downstream single-property promise impossible: a consumer would have to know, and restate,
+framework keys.
+
+**Move the knob into the runtime configuration language.** Rejected by construction rather
+than on preference: a build-time key is resolved before any runtime source is read, so a
+runtime source cannot project it at all. This is the same classification boundary that
+keeps build-time knobs out of the neutral configuration vocabulary.
+
+**A container build argument.** Rejected because the image build copies a pre-built
+executable and therefore runs strictly after augmentation. It carries no build-time
+configuration and cannot reach the key.
+
+The rejected options fall into two classes, and the classes are what generalise. One class
+lets a source that cannot win try to win anyway -- direct assignment from the build seam.
+The other buys a working seam by surrendering the artifact's explicit declaration --
+dropping the key, emptying its default, or handing the vocabulary to the framework. The
+chosen shape is the only one that keeps both the declaration and the seam.
+
+== Generalisation
+
+When two configuration sources declare the same key and the one you cannot move is the
+higher-ordinal one, do not contest the ordinal -- change what the winning declaration
+*declares*. A winning literal is a value and ends the resolution; a winning expression is
+a delegation and re-opens it against a source you control. The diagnostic question is not
+"how do I outrank this declaration?" but "can I change what it says rather than whether it
+wins?"
+
+Two conditions make the technique safe to reach for. The delegation must carry its own
+inline default, so the artifact still states its shipped value and nothing becomes
+implicit. And the delegated form must be asserted directly, because a delegation that has
+been flattened back to a literal behaves identically in the default case -- the state you
+are protecting is the *shape of the declaration*, not any observable behaviour, so only an
+assertion over the declaration itself can detect its loss.
+
+== References
+
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] --
+  the policy / deployment-bound / build-time classification this decision operates inside, and
+  the rule that build-time knobs leave the runtime configuration surface entirely
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032] --
+  the packaged-configuration purity discipline the shipped declaration is bound by
+* link:../user/context-path.adoc[Configuring the context path] -- the mechanism as an operator reads it
+* link:../user/downstream-parent.adoc[Rebuilding under your own context path] -- the downstream
+  inheritance path this decision makes possible
+* link:../development/context-path-verification.adoc[Context-path verification runbook] -- the
+  measurements the decision rests on
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] --
+  the assertion discipline the two guards implement
