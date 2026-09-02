@@ -13,6 +13,13 @@
         "tree_sha": "517b17dfb40606c055f70164b7e42f14c9ec9cd2b00ada7943fe2fa2c7cf2813"
       }
     },
+    "api-sheriff-build-parent": {
+      "description": "",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "e34d6dc0242c06da8a3c253846889c9667ca0a1545ac014ec29d83c0164b2958"
+      }
+    },
     "api-sheriff-parent": {
       "description": "Maven aggregator and parent POM for the API Sheriff multi-module build. Inherits de.cuioss:cui-java-parent, pins the Quarkus BOM and shared plugin/dependency management, and defines the coverage profile plus module ordering (api-sheriff, integration-tests, benchmarks).",
       "generation": {}
@@ -43,6 +50,13 @@
     "integration-tests": {
       "description": "Integration test coordinator: builds the native gateway container and orchestrates the docker-compose stack (gateway, Keycloak, go-httpbin, nginx-static, Prometheus) via the integration-tests profile, running IT suites (proxy pass-through, health) with REST Assured and Awaitility.",
       "generation": {}
+    },
+    "my-gateway": {
+      "description": "",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "e34d6dc0242c06da8a3c253846889c9667ca0a1545ac014ec29d83c0164b2958"
+      }
     }
   },
   "name": "API-Sheriff"
