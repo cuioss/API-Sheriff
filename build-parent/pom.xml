@@ -156,11 +156,40 @@
         <spotbugs.skip>true</spotbugs.skip>
         <pmd.skip>true</pmd.skip>
         <cpd.skip>true</cpd.skip>
-        <enforcer.skip>true</enforcer.skip>
         <jacoco.skip>true</jacoco.skip>
         <license.skip>true</license.skip>
-        <dependency-check.skip>true</dependency-check.skip>
         <skip.openrewrite>true</skip.openrewrite>
+
+        <!-- ==== TWO OF THAT LIST ARE SECURITY CONTROLS, NOT STYLE CHECKS ==================== -->
+        <!-- Separated from the block above deliberately. The enumeration was taken from
+             deployment/pom.xml, and it is correct THERE because that module compiles nothing and has
+             no dependency graph to scan. This module is the opposite case by explicit design:
+             maven.compiler.skip and skipTests are LEFT ALONE precisely because the consumer compiles
+             its own sources and runs its own tests — so an inheriting build carries its own
+             dependencies and its own Quarkus extensions, a graph API Sheriff's upstream scan never
+             saw. Switching these two off as inherited defaults therefore removes a control from the
+             consumer's build rather than from a module that had nothing to control.
+
+               - dependency-check.skip — OWASP Dependency-Check, the known-vulnerable-dependency (CVE)
+                 scan. OWASP A06 Vulnerable and Outdated Components / A03-2025 Software Supply Chain
+                 Failures.
+               - enforcer.skip — maven-enforcer, which under cui-java-parent carries the
+                 dependency-convergence and banned-dependency guards; without it a transitively
+                 downgraded library can silently win the consumer's resolution.
+
+             They stay DEFAULTED OFF: dependency-check needs an NVD API key and adds minutes, and a
+             deployer who never adopted CUI's toolchain should not meet either as a first-build
+             failure. What is NOT acceptable is leaving that consequence invisible — a security
+             control's removal must be explicit and named (secure-by-default / complete mediation),
+             which is exactly what folding it into a ten-entry "hygiene" list defeats.
+
+             A consumer re-enables either by setting the same property to `false` in its own
+             <properties>; doc/user/downstream-parent.adoc states the same thing on the consumer's
+             side. Whoever inherits this parent OWNS the vulnerability scanning of the image they
+             build — either by re-enabling this, or by scanning the produced image (Trivy/Grype) in
+             their own pipeline. Do NOT quietly move these two back into the block above. -->
+        <dependency-check.skip>true</dependency-check.skip>
+        <enforcer.skip>true</enforcer.skip>
 
         <!-- ==== A valid automatic module name for the consumer's jar ======================= -->
         <!-- Not a stylistic default: without it the parent's one-property promise is false for most
