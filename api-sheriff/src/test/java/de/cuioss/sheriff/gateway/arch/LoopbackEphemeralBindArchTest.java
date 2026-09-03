@@ -353,7 +353,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("No fixture passes a wildcard host literal to the host-bound listen overload")
-        void noFixturePassesAWildcardHostLiteral() throws IOException {
+        void noFixturePassesAWildcardHostLiteral() throws Exception {
             List<String> offenders = new ArrayList<>();
             for (Path source : guardedSources()) {
                 List<String> lines = Files.readAllLines(source);
@@ -379,7 +379,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("The sweep finds the specimen's deliberate wildcard host literal (positive control)")
-        void sweepFindsTheDeliberateWildcardHostLiteral() throws IOException {
+        void sweepFindsTheDeliberateWildcardHostLiteral() throws Exception {
             Path specimen = TEST_SOURCE_ROOT.resolve(
                     "de/cuioss/sheriff/gateway/arch/specimen/WildcardEphemeralBindSpecimen.java");
 
@@ -400,7 +400,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("The sweep leaves the loopback-bound spelling alone (negative control)")
-        void sweepDoesNotFlagTheLoopbackBoundSpelling() throws IOException {
+        void sweepDoesNotFlagTheLoopbackBoundSpelling() throws Exception {
             Path specimen = TEST_SOURCE_ROOT.resolve(
                     "de/cuioss/sheriff/gateway/arch/specimen/LoopbackEphemeralBindSpecimen.java");
 
@@ -414,7 +414,7 @@ class LoopbackEphemeralBindArchTest {
         /** Non-vacuity: the sweep must actually be reading a populated source tree. */
         @Test
         @DisplayName("Wildcard sweep is non-vacuous: the guarded source set resolves")
-        void sweepIsNonVacuous() throws IOException {
+        void sweepIsNonVacuous() throws Exception {
             assertTrue(Files.isDirectory(TEST_SOURCE_ROOT),
                     "The test source root did not resolve to a directory at " + TEST_SOURCE_ROOT
                             + ", so the sweep scanned nothing and its clean verdict is empty.");
