@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.net.ServerSocket;
 import java.util.Optional;
 
+
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.AccessTarget.CodeUnitCallTarget;
 import com.tngtech.archunit.core.domain.AccessTarget.ConstructorCallTarget;
@@ -145,7 +146,7 @@ class LoopbackEphemeralBindArchTest {
         if (name.startsWith(SPECIMEN_PACKAGE + ".")) {
             return false;
         }
-        return !name.equals(CARVED_OUT_TEST) && !name.startsWith(CARVED_OUT_TEST + "$");
+        return !CARVED_OUT_TEST.equals(name) && !name.startsWith(CARVED_OUT_TEST + "$");
     }
 
     /**
@@ -231,7 +232,7 @@ class LoopbackEphemeralBindArchTest {
 
     @Test
     @DisplayName("Test fixtures must not bind a bare ephemeral wildcard socket")
-    void testFixturesMustNotBindABareEphemeralWildcard() {
+    void fixturesMustNotBindABareEphemeralWildcard() {
         ArchRule rule = classes()
                 .that(IN_GUARDED_SELECTION)
                 .should(notBindABareEphemeralWildcard())
@@ -339,7 +340,7 @@ class LoopbackEphemeralBindArchTest {
         @DisplayName("Production's deliberate wildcard binder stays out of scope (positive control)")
         void productionWildcardBinderIsOutOfScope() {
             Optional<JavaClass> binder = PRODUCTION_CLASSES.stream()
-                    .filter(javaClass -> javaClass.getName().equals(PRODUCTION_WILDCARD_BINDER))
+                    .filter(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName()))
                     .findFirst();
             assertTrue(binder.isPresent(),
                     PRODUCTION_WILDCARD_BINDER + " did not resolve in the production import, so this "
@@ -352,7 +353,7 @@ class LoopbackEphemeralBindArchTest {
                             + "stopped matching, in which case the whole guard is blind");
 
             assertFalse(TEST_CLASSES.stream()
-                            .anyMatch(javaClass -> javaClass.getName().equals(PRODUCTION_WILDCARD_BINDER)),
+                            .anyMatch(javaClass -> PRODUCTION_WILDCARD_BINDER.equals(javaClass.getName())),
                     PRODUCTION_WILDCARD_BINDER + " appeared in the guarded test selection. The guard "
                             + "would demand a loopback bind from production, which binds its configured "
                             + "public port on purpose — fix the import scope rather than the production "
