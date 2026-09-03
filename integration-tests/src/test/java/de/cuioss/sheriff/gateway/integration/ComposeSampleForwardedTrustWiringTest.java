@@ -116,24 +116,24 @@ class ComposeSampleForwardedTrustWiringTest {
     }
 
     @Test
-    @DisplayName("every ${VAR} the sample references is supplied by the compose environment block")
+    @DisplayName("every ${VAR} the sample's YAML config documents reference is supplied by the compose environment block")
     void everyReferencedVariableIsSuppliedByTheComposeFile() throws Exception {
         Set<String> referenced = variablesReferencedByTheSample();
         Map<String, String> environment = sampleEnvironment();
 
         // Vacuity guards on BOTH derived sides — an empty either side makes the loop assert nothing.
         assertFalse(referenced.isEmpty(),
-                () -> "no ${VAR} reference was derived from any document under " + CONFIG_DIR
-                        + " — either the parser broke or the sample stopped using the placeholder"
-                        + " engine. Until this resolves the wiring below is unchecked, so this is a"
-                        + " failure, not a pass.");
+                () -> "no ${VAR} reference was derived from the sample's YAML config documents ("
+                        + GATEWAY_YAML.getFileName() + " and endpoints/*.yaml) — either the parser"
+                        + " broke or the sample stopped using the placeholder engine. Until this"
+                        + " resolves the wiring below is unchecked, so this is a failure, not a pass.");
         assertFalse(environment.isEmpty(),
                 () -> "the '" + GATEWAY_SERVICE + "' service declared no environment entries, so the"
                         + " per-variable check below would pass without checking anything");
 
         for (String variable : referenced) {
             assertTrue(environment.containsKey(variable),
-                    () -> "a sample document under " + CONFIG_DIR + " references ${" + variable
+                    () -> "a YAML config document of the sample references ${" + variable
                             + "} but the '" + GATEWAY_SERVICE + "' service does not supply it. The"
                             + " placeholder carries no default, so this stack fails its boot — add the"
                             + " variable beside the placeholder rather than adding a default to the"
@@ -224,14 +224,23 @@ class ComposeSampleForwardedTrustWiringTest {
     }
 
     /**
-     * Lists the sample documents the loader runs its {@code ${VAR}} substitution over, in the order
-     * {@code ConfigLoader} reads them: the gateway document, then each {@code endpoints/*.yaml}.
+     * Lists the sample's <strong>YAML config documents</strong> — the ones {@code ConfigLoader} runs
+     * its {@code ${VAR}} substitution over — in the order it reads them: the gateway document, then
+     * each {@code endpoints/*.yaml}.
      * <p>
      * The {@code .yaml} filter and the name ordering mirror {@code ConfigLoader.listEndpointFiles} so
      * this test's population is the loader's population. An absent {@code endpoints/} directory is
      * legal (the loader treats it as no endpoints), so it contributes nothing rather than failing.
+     * <p>
+     * {@code topology.properties} sits in the same directory and is deliberately <em>not</em> here.
+     * It is substituted by {@code TopologyResolver}, not by this loader, and under a different rule:
+     * a defaulted {@code ${VAR:-default}} is legitimate there, so the sample's
+     * {@code ${TOPOLOGY_UPSTREAM:-http://demo-api:8080}} is correctly absent from the compose
+     * {@code environment:} block. Including it would demand a variable the sample is right not to
+     * supply and turn this test red — the caller's assertions therefore say "YAML config documents",
+     * never "every document in the directory".
      *
-     * @return the readable sample documents, gateway first
+     * @return the readable YAML config documents, gateway first
      * @throws IOException when the endpoints directory cannot be listed
      */
     private static List<Path> substitutedDocuments() throws IOException {
