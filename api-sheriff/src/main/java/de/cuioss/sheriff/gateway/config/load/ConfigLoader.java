@@ -45,6 +45,7 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.BooleanNode;
 import com.fasterxml.jackson.databind.node.IntNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.LongNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
@@ -89,7 +90,9 @@ import org.yaml.snakeyaml.nodes.Node;
  * simpler means.
  * <p>
  * Each substituted scalar is typed from the destination type the bundled schema declares at that
- * value's own JSON pointer, never from the resolved string's shape — see {@link #coerce}.
+ * value's own JSON pointer, never from the resolved string's shape — see {@link #coerce}. Where that
+ * destination is a list, one resolved {@code ${VAR}} supplies the whole list (comma-separated), and an
+ * empty resolution fails the boot rather than yielding an empty list — see {@link #substituteChild}.
  * <p>
  * The endpoint-enablement resolution, topology-alias resolution, cross-cutting
  * semantic validation, and route-table assembly steps of the full boot sequence are
@@ -141,6 +144,12 @@ public final class ConfigLoader {
      * refusal is the first use.
      */
     private static final String ERROR_MESSAGE_KEYWORD = "errorMessage";
+    /**
+     * The schema-declared destination type that selects the list-valued substitution arm. It is the
+     * arm's <em>whole</em> selector: no pointer is tested and no item type is consulted, so the rule
+     * reaches every array-typed pointer the bundled schemas declare rather than a chosen few.
+     */
+    private static final String ARRAY_TYPE = "array";
     private static final Pattern INTEGER = Pattern.compile("-?\\d+");
     /**
      * Bound on {@code $ref} indirections followed when resolving a destination type. The bundled
@@ -434,18 +443,60 @@ public final class ConfigLoader {
         }
     }
 
+    /**
+     * Resolves a substituted scalar and re-types it from its destination, or descends into a node that
+     * carries no placeholder of its own.
+     * <p>
+     * Where the destination is an {@code array}, this method also resolves the declared <em>item</em>
+     * type — from the element pointer {@code pointer + "/0"}, which {@link #childSchema} consumes as an
+     * index through {@code items} — and owns the empty-resolution refusal. An empty resolution is
+     * refused <em>here</em>, at the substitution site, rather than by any later validation pass: the
+     * schema declares no {@code minItems} on these pointers, so an explicit {@code []} written by the
+     * operator stays legal and a validator reading the bound list provably cannot distinguish it from a
+     * list a variable emptied. Substitution can make that distinction; validation cannot.
+     * <p>
+     * The refusal is deliberately conditioned on an {@code array} destination. A placeholder resolving
+     * to an empty value at a <em>scalar</em> destination behaves exactly as it did before — the
+     * indistinguishability argument above is a property of list destinations only, so widening the
+     * refusal would change behaviour across the whole configuration surface for no stated reason.
+     * <p>
+     * The recorded {@link ConfigError} names the pointer and the rule and never echoes the resolved
+     * value, which at an allow-list pointer is topology intelligence.
+     */
     private void substituteChild(JsonNode child, JsonNode schemaTree, String file, String pointer,
             List<ConfigError> errors, Consumer<JsonNode> replacer) {
-        if (child.isTextual() && secretResolver.hasReference(child.asText())) {
-            try {
-                replacer.accept(coerce(secretResolver.resolve(child.asText()),
-                        declaredScalarType(schemaTree, pointer)));
-            } catch (EnvSecretResolver.MissingVariableException | EnvSecretResolver.MalformedPlaceholderException e) {
-                errors.add(new ConfigError(file, pointer, e.getMessage()));
-            }
-        } else {
+        if (!child.isTextual() || !secretResolver.hasReference(child.asText())) {
             substitute(child, schemaTree, file, pointer, errors);
+            return;
         }
+        try {
+            String resolved = secretResolver.resolve(child.asText());
+            String declared = declaredType(schemaTree, pointer);
+            String itemType = null;
+            if (ARRAY_TYPE.equals(declared)) {
+                if (hasBlankElement(resolved)) {
+                    errors.add(new ConfigError(file, pointer,
+                            "placeholder at a list-typed field resolved to an empty value or to an empty "
+                                    + "comma-separated element; supply the whole list from one variable, "
+                                    + "or write an explicit [] to mean 'none'"));
+                    return;
+                }
+                itemType = declaredType(schemaTree, pointer + "/0");
+            }
+            replacer.accept(coerce(resolved, declared, itemType));
+        } catch (EnvSecretResolver.MissingVariableException | EnvSecretResolver.MalformedPlaceholderException e) {
+            errors.add(new ConfigError(file, pointer, e.getMessage()));
+        }
+    }
+
+    /**
+     * Reports whether the comma-separated {@code value} carries any element that is blank once
+     * stripped. A wholly blank resolution is the single-blank-element case, so it is covered here too.
+     * The split keeps trailing empty fields ({@code limit = -1}) so a trailing separator is caught
+     * rather than silently discarded.
+     */
+    private static boolean hasBlankElement(String value) {
+        return Stream.of(value.split(",", -1)).anyMatch(String::isBlank);
     }
 
     /**
@@ -468,14 +519,49 @@ public final class ConfigLoader {
      * the value — which is what keeps a resolved secret out of every collected {@link ConfigError}.
      * Only substituted scalars pass through here; a literal (unquoted) value was already typed by the
      * YAML parser.
+     * <p>
+     * A destination declared {@code array} is re-typed into the whole list rather than a single value:
+     * one resolved {@code ${VAR}} splits on {@code ,}, each element is stripped, and each is typed in
+     * turn by the destination's declared <em>item</em> type. That is what lets one environment variable
+     * supply a list whose cardinality is therefore no longer fixed in the mounted file. The arm is
+     * selected by the <strong>declared type alone</strong> — it carries no pointer test and no item-type
+     * predicate — so it reaches every array-typed pointer the bundled schemas declare, including those
+     * whose items are objects. Both schemas are in radius: this pass runs over {@code gateway.yaml}
+     * against the gateway schema and over each {@code endpoints/*.yaml} against the endpoint schema, so
+     * the endpoint documents' array-typed keys are reached on exactly the same terms. At an
+     * object-items pointer the item type pins no scalar arm, each element falls through to shape
+     * inference, and the resulting array of scalars is refused moments later by the schema-validation
+     * pass, with a diagnostic naming the expected and actual types and never the value. Reaching those
+     * pointers and failing loudly is the deliberate behaviour; silently skipping them is not.
+     *
+     * @param value        the fully substituted string
+     * @param declaredType the type the schema declares at the value's own pointer, or {@code null} when
+     *                     the schema pins none
+     * @param itemType     the type the schema declares for an element of that value, consulted only by
+     *                     the {@code array} arm; {@code null} when the destination is not a list or the
+     *                     schema pins no single element type
      */
-    private static JsonNode coerce(String value, @Nullable String declaredType) {
+    private static JsonNode coerce(String value, @Nullable String declaredType, @Nullable String itemType) {
         return switch (declaredType) {
             case "string" -> TextNode.valueOf(value);
             case "boolean" -> coerceBoolean(value);
             case "integer", "number" -> coerceNumber(value);
+            case ARRAY_TYPE -> coerceList(value, itemType);
             case null, default -> inferFromShape(value);
         };
+    }
+
+    /**
+     * Splits a resolved value on {@code ,} into the list its destination declares, stripping each
+     * element and typing it from {@code itemType}. Blank elements never reach here — {@link
+     * #substituteChild} refuses them before the split, so every member below is a non-blank value.
+     */
+    private static ArrayNode coerceList(String value, @Nullable String itemType) {
+        ArrayNode list = JsonNodeFactory.instance.arrayNode();
+        for (String element : value.split(",", -1)) {
+            list.add(coerce(element.strip(), itemType, null));
+        }
+        return list;
     }
 
     private static JsonNode coerceBoolean(String value) {
@@ -516,17 +602,24 @@ public final class ConfigLoader {
     }
 
     /**
-     * Reports the single scalar type the bundled schema declares for the instance location
-     * {@code pointer}, or {@code null} when the schema pins no single scalar type there.
+     * Reports the single type the bundled schema declares for the instance location {@code pointer},
+     * or {@code null} when the schema pins no single type there.
+     * <p>
+     * The answer is any one of the schema's own {@code type} values — {@code "string"},
+     * {@code "boolean"}, {@code "integer"}, {@code "number"} and {@code "array"} are the ones this
+     * loader acts on. {@code "array"} is what selects the list-valued substitution arm, so the walk is
+     * deliberately not restricted to scalar types.
      * <p>
      * The walk follows {@code properties}, {@code patternProperties}, {@code additionalProperties},
      * {@code items}, and local {@code $ref}s, mirroring the structures the bundled schemas actually
-     * use. {@code null} — returned for an undescribed pointer, a union {@code type}, or an absent
+     * use. Passing an element pointer (a numeric last token) is how a caller asks for a list's declared
+     * <em>item</em> type: {@link #childSchema} consumes any token as an index through {@code items}.
+     * {@code null} — returned for an undescribed pointer, a union {@code type}, or an absent
      * {@code type} keyword — is the "cannot pin it" signal that routes the caller to shape inference;
      * it is never an error, because a pointer the schema does not describe is refused moments later by
      * the schema validation pass itself.
      */
-    private static @Nullable String declaredScalarType(JsonNode schemaTree, String pointer) {
+    private static @Nullable String declaredType(JsonNode schemaTree, String pointer) {
         JsonNode current = deref(schemaTree, schemaTree);
         for (String token : pointer.split("/")) {
             if (token.isEmpty()) {
@@ -684,7 +777,7 @@ public final class ConfigLoader {
 
     /**
      * Parses the same bundled schema resource into a plain tree, which
-     * {@link #declaredScalarType(JsonNode, String)} walks to answer "what type does this pointer
+     * {@link #declaredType(JsonNode, String)} walks to answer "what type does this pointer
      * declare?". The validator's own {@link Schema} handle exposes no such lookup, so the resource is
      * read a second time rather than reaching into the validator's internals. Both reads target a
      * bundled classpath resource, so a plain mapper is the right reader — the hardened YAML factory

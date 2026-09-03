@@ -60,7 +60,7 @@ producer's eager-boot behavior is intended, and the schema, `ConfigValidator`, a
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: edge-case / false-security
-|Location |`config/load/ConfigLoader.java:382-402,637-673`
+|Location |`config/load/ConfigLoader.java` — `withinExpansionLimits`, `buildMapper`, `hardenedYamlFactory`
 |===
 
 Neither the compose-only pre-pass (`LoaderOptions` default `allowDuplicateKeys=true`; the
@@ -77,7 +77,7 @@ and snake-case.
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: edge-case
-|Location |`config/load/ConfigLoader.java:392-396,328`
+|Location |`config/load/ConfigLoader.java` — `withinExpansionLimits` (`composeAll`), `readYaml` (`readTree`)
 |===
 
 `withinExpansionLimits` runs `composeAll` and walks every document, but `mapper.readTree
@@ -277,12 +277,12 @@ can be lost. Acceptable for metrics; worth one sentence of Javadoc honesty.
 [cols="1,4"]
 |===
 |Severity |INFO — Confidence MEDIUM — Category: edge-case (latent)
-|Location |`config/load/ConfigLoader.java:414-436,530-546`
+|Location |`config/load/ConfigLoader.java` — `substitute`, `declaredType`
 |===
 
 Pointer construction concatenates raw field names (`pointer + "/" + name`) with no `~0`/`~1`
 escaping. A map key containing `/` (possible in `patternProperties`-style maps if ever widened)
-would corrupt the error location and the `declaredScalarType` schema walk (falls back to shape
+would corrupt the error location and the `declaredType` schema walk (falls back to shape
 inference — benign but silent). No current key class carries `/`.
 
 === CFG-18 — Third copy of YAML limit constants; pre-pass divergences

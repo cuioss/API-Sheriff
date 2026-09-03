@@ -262,6 +262,24 @@ forwarded:                         # resolved by cui-http (de.cuioss.http.forwar
   trusted_proxies: [10.0.0.5/32, 10.0.0.6/32]   # MANDATORY; the exact proxy addresses --
                                    #   keep as narrow as possible; empty => forwarding
                                    #   headers are never trusted; TCP peer is the client
+                                   #
+                                   # OR, supplied whole from the environment:
+                                   #   trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+                                   #   with SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32
+                                   #
+                                   #   ONE variable carries the WHOLE list, comma-separated
+                                   #   and stripped, so the number of proxies is fixed by the
+                                   #   deployment rather than by this file -- which is the
+                                   #   point, since the trusted set differs per environment
+                                   #   while the mounted document is copied unchanged.
+                                   #   Use the BARE ${VAR}: a ${VAR:-default} form would let
+                                   #   the gateway boot with a trust set nobody chose, so an
+                                   #   empty resolution FAILS THE BOOT instead. Writing an
+                                   #   explicit [] here still means "trust no proxy" and
+                                   #   stays valid -- the refusal is of an emptied
+                                   #   SUBSTITUTION, never of a list you wrote empty.
+                                   #   The PRESENCE of the forwarded block still requires a
+                                   #   file edit; only the value is environment-supplied.
   trust_scheme_host: false         # honor sanitized scheme/host/port/prefix from proxies
                                    #   (ForwardedResolverConfig.trustAll)
   emit: x-forwarded                # x-forwarded (default) | both (adds RFC 7239 Forwarded)
@@ -1966,6 +1984,20 @@ the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
   also *manage* the `X-Forwarded-*` family (append or strip) -- see the mixed-family
   requirement in link:adr/0003-forwarded-headers.adoc[ADR-0003].
 
+  *The whole list can be supplied by one `${VAR}`.* Because this field declares an `array`, a
+  placeholder written as its value is typed from that destination and split on `,`, with each
+  element stripped -- so `trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"` with
+  `SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32` binds the two-element list. This is the
+  deployment-bound case the mechanism exists for: the trusted set genuinely differs per
+  environment while the mounted document does not. Use the *bare* `${VAR}` form. An *empty
+  resolution* -- an unset-and-defaulted `${VAR:-}`, or a variable resolving to an empty value or
+  carrying an empty comma-separated element -- is *refused at the substitution site* and fails
+  the boot, naming this pointer and never echoing the resolved value. That refusal is deliberate
+  and cannot be delegated to validation: this field declares no `minItems`, so an explicit `[]`
+  is legal and a validator reading the bound list cannot tell a list you wrote empty from one a
+  variable emptied. Writing `trusted_proxies: []` yourself therefore remains valid and still
+  means *no proxy is trusted*.
+
 | `trust_scheme_host`
 | Maps to `ForwardedResolverConfig.trustAll`: honor the *sanitized* forwarded scheme / host /
   port / context-path prefix. Off by default (secure default: nothing is honored); enable only
@@ -2093,6 +2125,62 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * The `forwarded` block is optional; when present, `forwarded.trusted_proxies` must be present
   within it (may be empty = forwarding headers are never trusted); the trust-all CIDRs `0.0.0.0/0`
   *and* `::/0` are rejected as unsafe.
+* A `${VAR}` written at a *list-valued* key supplies the whole list: the placeholder is typed from
+  the destination's declared `array` and split on `,`, each element stripped. An *empty resolution*
+  at such a key -- a value resolving to empty, the defaulted `${VAR:-}` shape, or any empty
+  comma-separated element -- *fails the boot*, reported at the value's own pointer and never
+  echoing the resolved value. The refusal happens at the substitution site rather than in
+  validation, because these keys declare no `minItems`: an explicit `[]` you write is legal, so a
+  validator reading the bound list cannot distinguish it from a list a variable emptied, whereas
+  substitution can. Writing `[]` yourself is therefore unaffected. This rule is scoped to `array`
+  destinations: a `${VAR}` resolving to empty at a *scalar* key behaves as it always has.
+* *The list-valued rule is uniform, and its radius is the declared type alone.* It carries no key
+  name and no pointer test, so it reaches *every* `array`-typed key the bundled schemas declare --
+  not only the one the compose sample uses. *Both* schemas are in radius: the loader runs the same
+  substitution pass over `gateway.yaml` against the gateway schema and over each
+  `endpoints/*.yaml` against the endpoint schema, so an endpoint document's array keys are reached
+  on identical terms. The authoritative sets are the `array`-typed nodes of
+  `schema/gateway.schema.json` and `schema/endpoint.schema.json`; the enumerations below name them
+  as of this writing and are checked against those files, not maintained independently of them.
++
+--
+In `gateway.yaml` the schema declares 18 such keys. Seventeen declare string items and are the
+usable set: `allowed_methods` (global, anchor and endpoint), `auth.required_scopes`, the
+`security_filter` lists `allowed_paths` / `allowed_header_names` / `blocked_header_names` /
+`allowed_content_types`, the `security_headers.cors` lists `allowed_origins` / `allowed_methods` /
+`allowed_headers`, `tls.cipher_suites`, `tls.alpn`, `forwarded.trusted_proxies`,
+`token_validation.issuers[].jwks.allowed_egress_hosts`, `oidc.scopes`,
+`oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims` and
+`oidc.user_info.default_view`.
+
+An `endpoints/*.yaml` document reaches `auth.required_scopes`, `allowed_methods` and the four
+`security_filter` lists through the same shared definitions, and adds six further string-item keys
+of its own: `routes[].match.methods`, the `routes[].forward` lists `headers_allow` /
+`headers_deny` / `query_allow` / `query_deny`, and `routes[].websocket.allowed_origins`.
+--
++
+Three of the reachable keys are arrays of *objects* rather than strings -- `token_validation.issuers`
+in `gateway.yaml`, and `endpoint.routes` and `routes[].match.headers` in an endpoint document. At
+each the mechanism *reaches* the key rather than silently skipping it, produces scalars where the
+schema requires objects, and the schema-validation pass then *refuses the document* -- a loud
+failure, not a wrong value. `tls.passthrough_sni` is *not* a member at all: it is an object map of
+SNI hostname to topology alias, not an array, so the rule never matches it and it cannot be
+supplied this way.
+* *Reachable is not recommended.* Per
+  link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025],
+  `forwarded.trusted_proxies` is *deployment-bound* -- genuinely different per environment -- and is
+  the intended user of this mechanism. `tls.cipher_suites` and `tls.alpn` remain *policy*: the
+  uniform rule makes them mechanically reachable by a `${VAR}`, and that reachability is not an
+  endorsement. A decision that is the same in every environment belongs in `gateway.yaml` under a
+  neutral name; supplying it from the environment is discouraged.
++
+The same caution applies with more force to the endpoint-document keys, because several of them are
+*security controls*: the `routes[].forward` header and query allow/deny lists and
+`routes[].websocket.allowed_origins` decide what crosses the gateway and which origins may open a
+socket. They are reachable by a `${VAR}` on the same uniform terms as any other list, so an
+environment variable can widen or empty them. Treat them as policy that belongs in the committed
+endpoint document -- note that an *empty* resolution fails the boot rather than silently opening the
+control, which is the rule above doing exactly the work it was added for.
 * `upstream.connect_timeout_ms` / `read_timeout_ms` must be positive integers; they are
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second

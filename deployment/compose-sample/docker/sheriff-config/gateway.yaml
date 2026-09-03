@@ -40,6 +40,24 @@ tls:
     - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
   alpn: ["h2", "http/1.1"]
 
+# WHOSE forwarding headers this gateway believes. Until a request's immediate TCP peer is inside this
+# CIDR set, an inbound X-Forwarded-For is ignored and the peer's own address is what the upstream is
+# told — so this list is the difference between a client that can state its own address and one that
+# cannot. It is MANDATORY: declaring a `forwarded` block without it is refused at boot.
+#
+# The whole list arrives from ONE environment variable, comma-separated, because the trusted set is
+# genuinely different in every environment while this document is meant to be copied unchanged
+# (ADR-0032: the deployment supplies what it names). The loader types the placeholder from the
+# `array` this key declares and splits it, so the number of proxies is fixed by the deployment rather
+# than by this file.
+#
+# The BARE ${VAR} form is deliberate — the same rule oidc.client_secret follows. A `${VAR:-default}`
+# would let the stack boot with a trust set nobody chose, which for an allow-list is the failure mode
+# worth being loud about; an empty resolution fails the boot instead. Write the value in
+# docker-compose.yml, never here.
+forwarded:
+  trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+
 # One namespace. `type: proxy` + `access: public` are the two mandatory classification axes, and a
 # public anchor carries NO auth block — public IS the absence of auth, so the require: none posture
 # lives on the endpoint instead (endpoints/demo-api.yaml).
