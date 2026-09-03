@@ -206,15 +206,25 @@ services:
       # gateway.yaml does not (it carries the bare ${SHERIFF_TRUSTED_PROXIES} placeholder and no
       # default; leaving this unset fails the boot rather than starting with an empty allow-list).
       #
-      # NARROW THIS BEFORE YOU DEPLOY. The value below is Docker's default address pool for bridge
-      # networks — the range this sample's own bridge is allocated from — and it is a placeholder for
-      # a shape, not a recommendation: this sample publishes only 8443 off-host and puts NO proxy in
-      # front of the gateway, so nothing here is actually a trusted proxy. A real deployment lists the
-      # exact addresses of its own proxies, normally as /32 host routes
-      # (e.g. SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32) — never a whole bridge range, and never
-      # a range wide enough to include the clients themselves, which would let any caller state its
-      # own address.
-      - SHERIFF_TRUSTED_PROXIES=172.16.0.0/12
+      # REPLACE THIS BEFORE YOU DEPLOY. This sample publishes only 8443 off-host and puts NO proxy in
+      # front of the gateway, so nothing in this stack is actually a trusted proxy — and the bare
+      # ${VAR} form above refuses an empty resolution, so the value cannot be "none". The two
+      # addresses below are therefore deliberately UNREACHABLE ones: 192.0.2.0/24 is RFC 5737
+      # TEST-NET-1, reserved for documentation, never routable, and never allocated by Docker's
+      # default bridge address pools. They demonstrate the SHAPE a real value takes — exact proxy
+      # addresses as /32 host routes — while trusting no peer that can actually open a connection to
+      # this gateway.
+      #
+      # Do NOT substitute a bridge range such as 172.16.0.0/12 here. On the Linux docker-proxy path a
+      # host-originated connection reaches the container from the bridge GATEWAY address, and every
+      # co-located container (keycloak, demo-api) holds an address in the same range; on Docker
+      # Desktop every client, remote ones included, arrives from the VM's gateway. Any of those would
+      # then be inside the trusted set and could state its own address via X-Forwarded-For. Never a
+      # whole bridge range, and never a range wide enough to include the clients themselves.
+      #
+      # A real deployment replaces both entries with the exact addresses of its own proxies
+      # (e.g. SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32).
+      - SHERIFF_TRUSTED_PROXIES=192.0.2.10/32,192.0.2.11/32
       # The public TLS listener's certificate and key.
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
