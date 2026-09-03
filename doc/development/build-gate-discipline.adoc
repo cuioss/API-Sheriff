@@ -193,8 +193,9 @@ The `-T1C` measurements, the 2026-08-31 recurrence and the 2026-09-01 acceptance
 *MEASURED-but-second-hand*. They were measured by earlier investigations whose evidence artifacts no
 longer exist -- the `stabilize-edge-suite-awaits` plan directory was deleted -- so nothing here can
 re-verify them, and they are reported as recorded rather than as re-checkable. The figures under
-*The condition is macOS-local* are *first-hand* to the 2026-09-01 investigation and are labelled
-MEASURED or INFERRED individually.
+*The condition is macOS-local* are *first-hand* -- the population figures to the 2026-09-01
+investigation, the mechanism and its controls to the 2026-09-03 one -- and each is labelled
+MEASURED, INFERRED or SUPERSEDED individually, carrying the date it belongs to.
 
 The 2026-09-02 corroboration recorded further below is a third provenance class, and it is worth
 keeping distinct from the first two: it is *second-hand to this document* but *first-hand to its
@@ -256,20 +257,71 @@ The two together are why a small green streak must never be read as an all-clear
 A `4/4` green run under `-T1` was once read that way, and the 2026-08-31 recurrence is what that
 reading cost.
 
-=== The condition is macOS-local, and the stall is a lost loopback readiness event
+=== The condition is macOS-local: a wildcard ephemeral bind collides with a foreign loopback listener
+
+Two investigations feed this section and they are not interchangeable. The *2026-09-01* budget
+measured the population -- how often the stall strikes, which methods, how long. The *2026-09-03*
+work measured the *mechanism*, and refuted the reading 2026-09-01 had inferred. Every claim below
+carries which of the two it came from, because the second one overturned a conclusion of the first
+and a reader needs to be able to tell them apart.
+
+*The mechanism, MEASURED 2026-09-03.* First-hand to the investigation that measured it, on macOS
+26.6.2 (darwin 25.6.0) under JDK 25.0.1.
+
+`.listen(0)` with no host argument binds the *dual-stack wildcard* `*:P`. Netty sets
+`SO_REUSEADDR=true` on that socket, and macOS then permits the wildcard bind to take an ephemeral
+port another process already holds as a `127.0.0.1`-specific listener. Both bindings coexist and
+neither call fails. A client dialling `127.0.0.1:P` is then routed by BSD most-specific-match to the
+*other* process, which accepts the connection and never answers it. Vert.x's acceptor sits in
+`KQueue.poll` because nothing was ever queued on its listener -- it is idle *correctly*, not stuck.
+
+Four controls establish that, and each states its own scope:
+
+* *The live capture.* At the ceiling the JVM held only its own listener and its client socket, with
+  *no server-side accepted socket*. A system-wide `lsof -iTCP:65034` named the owner: a VS Code
+  helper process holding `127.0.0.1:65034 (LISTEN)` and the accepted connection, at
+  `rxbytes=146 / txbytes=0` -- the request arrived and nothing was ever sent back. The system-wide
+  query is the load-bearing part. A *per-process* `lsof` shows the same missing accepted socket, but
+  it cannot name the foreign owner, so on its own it is suggestive rather than conclusive.
+* *Deterministic reproduction (E1).* Squat `127.0.0.1:P` with a loopback-specific listener, then
+  wildcard-bind Vert.x on the same `P`: the bind succeeds and the request stalls, *1 of 1*. That arm
+  shows the mechanism reproduces on demand; at `N=1` it is not a rate estimate and is not quoted as
+  one.
+* *Matched negative control (E2).* `listen(P, "127.0.0.1")` against the same squatted port is refused
+  with `BindException`. The loopback-specific bind *collides* exactly where the wildcard bind
+  silently coexists, which is why the fix is a fix rather than a reshuffle.
+* *The rate, with its denominator.* 179 foreign `127.0.0.1` listeners sat inside the 16384-port
+  ephemeral range (49152-65535) on the machine under test, predicting *1.0925%* per `listen(0)`. A
+  positive control over *20 000* ephemeral allocations measured *1.0931%*: the wildcard arm was
+  handed all 179 occupied ports, and the loopback-bound arm was handed *0*. The three ports the bare
+  reproducer stalled on -- 61547, 62911 and 65034 -- are all inside that occupied set.
+
+*INFERRED.* A ~1.09% per-`listen(0)` collision rate and the ~26% per-run stall rate recorded below
+are consistent rather than in tension, because a run performs many ephemeral binds and one collision
+is enough to stall it. Nobody counted binds per run, so this is a consistency check between two
+independently measured figures -- not a derivation of either, and not a claim that the arithmetic
+closes.
+
+*Provenance, stated because this page insists on it.* The 2026-09-03 probe sources, run logs and
+population counts were working material under `.plan/temp/`, not a committed artifact. While they
+exist the block above is re-checkable; once they are cleared it becomes recorded-but-not-re-checkable,
+the same class as the `stabilize-edge-suite-awaits` figures further up this page. What survives the
+probes is the fix, the guard and this write-up.
 
 The 2026-09-01 investigation ran a pre-registered, non-extensible budget of *31 runs* (26 with only
 `WebSocketRelayStageTest` selected, 5 whole-module), with `-T1` re-read and confirmed before the
-first run. Everything in this subsection is *first-hand* unless marked otherwise.
+first run. Everything attributed to that budget below is *first-hand* to it unless marked otherwise.
 
-*MEASURED.* A 30-second stall reproduced in *8 of the 31 runs* (25.8%) -- 5 of 26 on the
+*MEASURED (2026-09-01).* A 30-second stall reproduced in *8 of the 31 runs* (25.8%) -- 5 of 26 on the
 single-class arm, 3 of 5 on the whole-module arm. It struck *ten distinct test methods across five
 classes* (`WebSocketRelayStageTest`, `GatewayEdgePipelineTest`, `GatewayEdgeRouteBffWiringTest`,
 `GatewayEdgeRouteTest`, `PassthroughRelayTest`), always by hitting the fixtures' 30000 ms `Awaits`
 ceiling essentially exactly -- 30004 to 30010 ms elapsed, i.e. no progress at all rather than slow
 progress.
 
-*MEASURED -- what this rules out.* Three readings are excluded by the data, not merely unsupported:
+*MEASURED -- what this rules out.* Four readings are excluded by the data, not merely unsupported.
+The first three are excluded by the 31-run budget; the fourth is excluded by the 2026-09-03
+measurement above and carries its own provenance, because the budget could not have shown it:
 
 * *Not reactor parallelism.* `-T1` was in effect for every one of the 31 runs.
 * *Not cross-class co-tenancy inside the build.* Five of the stalls occurred on the arm that selected
@@ -282,20 +334,45 @@ progress.
   awaiting a half-close on an *already-established* connection, and the stall also strikes plain HTTP
   request/response exchanges (`timed out awaiting the edge response to GET /nowhere`), not just
   WebSocket upgrades.
+* *Not an undelivered kqueue readiness event* -- MEASURED 2026-09-03, *not* by this budget. The E1/E2
+  pair excludes the selector reading directly: a loopback-bound listener on a squatted port is
+  *refused*, while a wildcard listener on that same port *succeeds and then stalls*. The
+  discriminator is which bind the kernel accepts, not which notification the selector delivers. The
+  entry sits in this list rather than in *What this run additionally eliminates* below because that
+  list is scoped to what the 2026-09-02 run eliminated, and that run measured nothing about ports
+  either; this elimination belongs to neither run and is attributed to the date that produced it.
++
+It also resolves the bullet above it in the mechanism's favour rather than against it. A connection
+that establishes and then never completes is exactly what acceptance by a *foreign* listener looks
+like -- MEASURED at `rxbytes=146 / txbytes=0` in the live capture, INFERRED for the individual
+`propagatesHalfCloseToBackend` occurrence, whose socket state was never captured.
 
 *MEASURED -- the thread dumps.* On two independent occurrences, in two different fixtures, the
 captured dump shows the awaiting thread parked in `Awaits` while the Vert.x acceptor thread *and all
 three event-loop threads* sit simultaneously at `sun.nio.ch.KQueue.poll` via
 `KQueueSelectorImpl.doSelect`. Every Vert.x thread is idle with nothing to do.
 
-*INFERRED.* What the dumps establish is narrower than what is inferred from them: at each of the two
-captures, no sampled Vert.x thread was executing. Two dumps are two instants, not a continuous
-observation of the stall. From those two instants the inference is that saturation, deadlock and a
-blocked handler are not what is happening -- the work never arrived rather than arriving late -- and
-the reading that fits is a *loopback readiness event that the macOS kqueue selector never
-delivered*. `KQueue` is the macOS-only selector implementation, which is what makes this
-platform-local; the Linux CI lane has not reproduced it. That chain is an inference with good fit,
-not a property the two samples establish.
+*What the dumps establish, and what they do not.* At each of the two captures, no sampled Vert.x
+thread was executing. Two dumps are two instants, not a continuous observation of the stall. From
+those two instants, saturation, deadlock and a blocked handler are excluded -- the work never
+arrived rather than arriving late. That much still stands, and the measured mechanism agrees with
+it: nothing was ever queued on the fixture's listener, so there was nothing for any of those threads
+to do.
+
+*SUPERSEDED (INFERRED 2026-09-01, refuted 2026-09-03) -- the kqueue-readiness reading.* The previous
+revision of this section took the same two dumps one step further, to *a loopback readiness event
+that the macOS kqueue selector never delivered*, and marked it an inference with good fit rather
+than an established property. That step is now refuted. It is kept here rather than deleted because
+how it failed is the useful part.
+
+The observation was read correctly and the conclusion drawn from it was wrong. Turning "no thread
+had work" into "a notification was lost" assumes the work had been queued somewhere a selector could
+lose it, and it had not been queued at all. `KQueue` being the macOS-only selector implementation
+then made the platform-local fit look like corroboration -- but the platform-local property is
+really BSD most-specific-match routing plus what macOS permits `SO_REUSEADDR` to do, and `KQueue`
+appears in the dumps only because it is where an idle acceptor waits on this platform. A component
+that shows up in every stack trace of a stall is not thereby the component at fault; it may simply
+be where correct idling looks the same as being stuck.
 
 *MEASURED -- what the 2026-09-01 budget did not find.* Zero reproductions, in 31 runs, of the
 separate *unexpected-upgrade-status* symptom the budget was actually sized against. That arm is
@@ -318,7 +395,20 @@ The hypothesis has more than one form, and the evidence covers exactly one of th
 
 Retiring a hypothesis on evidence that covers one of its forms is precisely the failure mode this
 page exists to prevent -- "a plausible root cause is not the root cause" has a mirror image, which
-is that a refuted sub-case is not a refuted case. The listener form is closed. The rest is open.
+is that a refuted sub-case is not a refuted case. The listener form is closed. The rest is open --
+which is where this page stood until 2026-09-03, and is superseded by the paragraph that follows.
+
+*Where that correction landed, in hindsight (2026-09-03).* The listener form was contradicted
+correctly and for the right reason -- those fixtures hold the socket, so there is no release and no
+re-bind window to race. The measured mechanism is nevertheless *on the listener socket*, by an
+entirely different route: not reuse of a port this process released, but coexistence with a port
+another process still holds. TIME_WAIT was never involved at all, and the accepted-socket and
+client-socket forms left open above turned out not to be needed rather than to be the answer.
+
+So the mirror image has a second edge. Refuting one listener-side story is what made the listener
+socket look answered-for, and the passes that followed instrumented the client, the accepted socket
+and the selector -- everything except the one bind call that decided the outcome. A refuted sub-case
+is not a refuted case; it is also not a cleared *location*.
 
 === Corroboration from an unrelated plan (2026-09-02, MEASURED-but-second-hand)
 
@@ -422,18 +512,41 @@ recorded, so the two cannot be told apart from these counts.
 === State the limit of the finding precisely
 
 What was measured in the original investigation is the causal link -- parallel fails, serial passes,
-`n=7`. The mechanism was inferred, and the inference has since been *revised*: TIME_WAIT ephemeral
-port reuse is now contradicted *in its listener form* (above), while its accepted-socket and
-client-socket forms remain uninstrumented, and the current inference is an undelivered macOS kqueue
-readiness notification. CPU and file-descriptor pressure were never formally excluded by the
-original work; the all-threads-idle dumps argue against both, and the 2026-09-02 concurrent-load
-control recorded above now excludes machine load as the discriminator outright. File-descriptor
-pressure specifically still rests on the dumps alone -- no control has ever been run against it.
+`n=7`. The mechanism is no longer inferred: it was *MEASURED* on 2026-09-03 and is recorded above
+with its four controls. The chain of readings that preceded it is worth keeping in order, because
+each was retired by evidence rather than by preference -- TIME_WAIT ephemeral port reuse,
+contradicted in its listener form; an undelivered macOS kqueue readiness notification, refuted by
+the E1/E2 pair; and finally a dual-stack wildcard ephemeral bind coexisting with a foreign
+`127.0.0.1` listener, which is where the evidence now sits.
+
+CPU and file-descriptor pressure were never formally excluded by the original work. The
+all-threads-idle dumps argue against both, and the 2026-09-02 concurrent-load control recorded above
+excludes machine load as the discriminator outright. File-descriptor pressure specifically still
+rests on the dumps alone -- no control has ever been run against it, and the 2026-09-03 work did not
+run one either. A measured mechanism for the occurrences that were captured is not an exclusion of
+every other candidate; it says nothing about that one.
+
+*Three things this does not settle.* None is closed by the fix, and none is to be quoted as closed:
+
+* *The 5 s TEARDOWN-tier occurrence.*
+  `ReservedBodyCeilingTest.retiresConnectionAfterDeclaredLengthRejection`, elapsed *5.036 s* against
+  the 5000 ms teardown ceiling. A half-close against a connection a foreign process holds would
+  plausibly produce it -- a conjecture with no measurement behind it. That class is also one of the
+  fix sites, so its listener is now loopback-bound, which changes nothing here: binding the listener
+  does not measure the teardown tier.
+* *Why CI is clean.* The reading is that Linux runners hold no such `127.0.0.1`-specific listeners in
+  the ephemeral range. That is *INFERRED*, and it is directly testable -- run the population probe on
+  a runner and count what it finds. Nobody has.
+* *Whether the mechanism accounts for every historical occurrence*, including the
+  possibly-contaminated second-hand `p = 0.50` full-suite tally. The originating artifacts are
+  destroyed, so that question is not merely unanswered; it is unanswerable from the record that
+  survives.
 
 *The re-opening that the previous revision said the fix did not depend on has happened.* That
 sentence read "the fix does not depend on which of those it is; a re-opening of the question does",
 and it was written on the premise that the pin was a fix. The 2026-08-31 recurrence retired that
-premise, so the question is open and the mechanism now matters.
+premise, the question re-opened, and the mechanism turned out to matter a great deal -- the fix that
+eventually landed acts on the bind call, which no reading before 2026-09-03 had pointed at.
 
 Two power caveats travel with any green result here, and both are load-bearing:
 
@@ -448,14 +561,32 @@ Two power caveats travel with any green result here, and both are load-bearing:
 
 The 2026-09-01 investigation changed no production or test code: the evidence pointed at a
 host-level loopback condition and named no defect in any fixture or in the gateway, and fixing a
-mechanism the evidence excludes would have been a third unmeasured fix. The wording there is
-deliberate. The 31-run budget was pre-registered against a *different* symptom -- an unexpected
-upgrade status -- and found the stall instead; it audited no fixture and no gateway path. "Named no
-defect" is what was observed. "There is no defect" is a universal negative the budget was never
-shaped to establish. Until that changes:
+mechanism the evidence excludes would have been a third unmeasured fix. That restraint was correct
+on the evidence then available, and the wording it produced was deliberate. The 31-run budget was
+pre-registered against a *different* symptom -- an unexpected upgrade status -- and found the stall
+instead; it audited no fixture and no gateway path. "Named no defect" is what was observed. "There
+is no defect" is a universal negative the budget was never shaped to establish.
+
+*That changed on 2026-09-03, and a fix has landed.* The defect was in the fixtures after all, and it
+was one call. Every live-socket fixture bound its ephemeral server with the single-argument
+`listen(0)` overload -- the dual-stack wildcard -- while the client in that same fixture dialled
+`127.0.0.1`. All *20* such sites across *9* files now bind through `LoopbackHost.ADDRESS` in
+`de.cuioss.sheriff.gateway.testsupport`, and every `Awaits` ceiling now folds a `SocketSnapshot`
+capture of the kernel's own view -- `lsof` for this pid plus `netstat -anv -p tcp` -- into its
+timeout message. A future occurrence therefore arrives with its evidence attached, instead of
+requiring another investigation to go and obtain it.
+
+*The condition is not thereby closed.* What landed removes the measured transport-level cause. No
+post-fix rate has been measured, the quarter-of-runs figure below is a *pre-fix* rate, and the three
+items under *State the limit of the finding precisely* are all still open. Read a post-fix green
+streak the way this page has already had to learn to read one: as absence of evidence at some
+unstated `N`, never as an all-clear.
 
 * *A single red edge-suite run on macOS is not evidence of a branch defect.* Establish provenance
-  before acting on it -- roughly a quarter of local runs of this suite carry the stall.
+  before acting on it -- roughly a quarter of local runs of this suite carried the stall before the
+  fix. If one appears after it, read the `SocketSnapshot` block in the timeout message first: a
+  foreign owner named there is this condition recurring, and its absence is a reason to look
+  elsewhere rather than to assume it.
 * *Establish that provenance against CI, not against a local re-run.* For the 30-second stall
   signature specifically, the Linux lane is the authority: it has never reproduced that signature,
   so a red there is a real defect rather than this condition. It is *not* the authority for macOS
@@ -463,9 +594,16 @@ shaped to establish. Until that changes:
   genuine macOS-only regression is exactly the case a green Linux lane cannot clear.
 * *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.*
   The 30-second ceiling is what makes the condition visible and measurable; raising it would hide
-  the phenomenon rather than address it.
+  the phenomenon rather than address it. It is now also the *capture* point -- widening it delays
+  the one snapshot that names a foreign owner, on top of hiding the stall.
 * *Do not change `-T1`.* It is a measured rate reduction and is still worth having; it is simply not
   a cure.
+* *Bind every new live-socket fixture through `LoopbackHost.ADDRESS`* -- never a bare `listen(0)` or
+  `new ServerSocket(0)` that will later be dialled on loopback.
+  `LoopbackEphemeralBindArchTest` is the fitness function that enforces this and fails the build on
+  either spelling. The four `TlsEdgeProducerTest` sites are an explicit, documented carve-out: they
+  hold a port precisely so a *wildcard* production bind is refused, they are never dialled, and
+  binding them to loopback would invert the very assertion they exist to make.
 
 == Two rules about reading a check's output
 
