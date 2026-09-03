@@ -2135,20 +2135,37 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   substitution can. Writing `[]` yourself is therefore unaffected. This rule is scoped to `array`
   destinations: a `${VAR}` resolving to empty at a *scalar* key behaves as it always has.
 * *The list-valued rule is uniform, and its radius is the declared type alone.* It carries no key
-  name and no pointer test, so it reaches *every* one of the 18 `array`-typed keys the bundled
-  schema declares -- not only the one the compose sample uses. Seventeen declare string items and
-  are the usable set: `allowed_methods` (global, anchor and endpoint), `auth.required_scopes`, the
-  `security_filter` lists `allowed_paths` / `allowed_header_names` / `blocked_header_names` /
-  `allowed_content_types`, the `security_headers.cors` lists `allowed_origins` / `allowed_methods` /
-  `allowed_headers`, `tls.cipher_suites`, `tls.alpn`, `forwarded.trusted_proxies`,
-  `token_validation.issuers[].jwks.allowed_egress_hosts`, `oidc.scopes`,
-  `oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims` and
-  `oidc.user_info.default_view`. The eighteenth, `token_validation.issuers`, is an array of
-  *objects*: the mechanism *reaches* it rather than silently skipping it, produces scalars where
-  the schema requires objects carrying `name` and `issuer`, and the schema-validation pass then
-  *refuses the document* -- a loud failure, not a wrong value. `tls.passthrough_sni` is *not* a
-  member at all: it is an object map of SNI hostname to topology alias, not an array, so the rule
-  never matches it and it cannot be supplied this way.
+  name and no pointer test, so it reaches *every* `array`-typed key the bundled schemas declare --
+  not only the one the compose sample uses. *Both* schemas are in radius: the loader runs the same
+  substitution pass over `gateway.yaml` against the gateway schema and over each
+  `endpoints/*.yaml` against the endpoint schema, so an endpoint document's array keys are reached
+  on identical terms. The authoritative sets are the `array`-typed nodes of
+  `schema/gateway.schema.json` and `schema/endpoint.schema.json`; the enumerations below name them
+  as of this writing and are checked against those files, not maintained independently of them.
++
+--
+In `gateway.yaml` the schema declares 18 such keys. Seventeen declare string items and are the
+usable set: `allowed_methods` (global, anchor and endpoint), `auth.required_scopes`, the
+`security_filter` lists `allowed_paths` / `allowed_header_names` / `blocked_header_names` /
+`allowed_content_types`, the `security_headers.cors` lists `allowed_origins` / `allowed_methods` /
+`allowed_headers`, `tls.cipher_suites`, `tls.alpn`, `forwarded.trusted_proxies`,
+`token_validation.issuers[].jwks.allowed_egress_hosts`, `oidc.scopes`,
+`oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims` and
+`oidc.user_info.default_view`.
+
+An `endpoints/*.yaml` document reaches `auth.required_scopes`, `allowed_methods` and the four
+`security_filter` lists through the same shared definitions, and adds six further string-item keys
+of its own: `routes[].match.methods`, the `routes[].forward` lists `headers_allow` /
+`headers_deny` / `query_allow` / `query_deny`, and `routes[].websocket.allowed_origins`.
+--
++
+Three of the reachable keys are arrays of *objects* rather than strings -- `token_validation.issuers`
+in `gateway.yaml`, and `endpoint.routes` and `routes[].match.headers` in an endpoint document. At
+each the mechanism *reaches* the key rather than silently skipping it, produces scalars where the
+schema requires objects, and the schema-validation pass then *refuses the document* -- a loud
+failure, not a wrong value. `tls.passthrough_sni` is *not* a member at all: it is an object map of
+SNI hostname to topology alias, not an array, so the rule never matches it and it cannot be
+supplied this way.
 * *Reachable is not recommended.* Per
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025],
   `forwarded.trusted_proxies` is *deployment-bound* -- genuinely different per environment -- and is
@@ -2156,6 +2173,14 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   uniform rule makes them mechanically reachable by a `${VAR}`, and that reachability is not an
   endorsement. A decision that is the same in every environment belongs in `gateway.yaml` under a
   neutral name; supplying it from the environment is discouraged.
++
+The same caution applies with more force to the endpoint-document keys, because several of them are
+*security controls*: the `routes[].forward` header and query allow/deny lists and
+`routes[].websocket.allowed_origins` decide what crosses the gateway and which origins may open a
+socket. They are reachable by a `${VAR}` on the same uniform terms as any other list, so an
+environment variable can widen or empty them. Treat them as policy that belongs in the committed
+endpoint document -- note that an *empty* resolution fails the boot rather than silently opening the
+control, which is the rule above doing exactly the work it was added for.
 * `upstream.connect_timeout_ms` / `read_timeout_ms` must be positive integers; they are
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second

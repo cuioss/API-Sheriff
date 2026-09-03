@@ -26,6 +26,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,6 +34,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
@@ -121,19 +123,21 @@ class ComposeSampleForwardedTrustWiringTest {
 
         // Vacuity guards on BOTH derived sides — an empty either side makes the loop assert nothing.
         assertFalse(referenced.isEmpty(),
-                () -> "no ${VAR} reference was derived from " + GATEWAY_YAML + " — either the parser"
-                        + " broke or the sample stopped using the placeholder engine. Until this"
-                        + " resolves the wiring below is unchecked, so this is a failure, not a pass.");
+                () -> "no ${VAR} reference was derived from any document under " + CONFIG_DIR
+                        + " — either the parser broke or the sample stopped using the placeholder"
+                        + " engine. Until this resolves the wiring below is unchecked, so this is a"
+                        + " failure, not a pass.");
         assertFalse(environment.isEmpty(),
                 () -> "the '" + GATEWAY_SERVICE + "' service declared no environment entries, so the"
                         + " per-variable check below would pass without checking anything");
 
         for (String variable : referenced) {
             assertTrue(environment.containsKey(variable),
-                    () -> "the sample's gateway.yaml references ${" + variable + "} but the '"
-                            + GATEWAY_SERVICE + "' service does not supply it. The placeholder carries no"
-                            + " default, so this stack fails its boot — add the variable beside the"
-                            + " placeholder rather than adding a default to the document.");
+                    () -> "a sample document under " + CONFIG_DIR + " references ${" + variable
+                            + "} but the '" + GATEWAY_SERVICE + "' service does not supply it. The"
+                            + " placeholder carries no default, so this stack fails its boot — add the"
+                            + " variable beside the placeholder rather than adding a default to the"
+                            + " document.");
         }
     }
 
@@ -187,27 +191,62 @@ class ComposeSampleForwardedTrustWiringTest {
     }
 
     /**
-     * Derives every {@code ${VAR}} name the sample's {@code gateway.yaml} references, from the file
-     * itself rather than from a mirrored list — a mirrored list cannot notice a placeholder being added.
+     * Derives every {@code ${VAR}} name the sample references, from the committed files themselves
+     * rather than from a mirrored list — a mirrored list cannot notice a placeholder being added.
      * <p>
-     * The walk is over the <strong>parsed</strong> document's scalar values, not its raw text, because
+     * The scan covers <strong>every document the loader substitutes</strong>, not only
+     * {@code gateway.yaml}: {@code ConfigLoader} runs the same {@code substitute()} pass over each
+     * {@code endpoints/*.yaml} document, so a placeholder written there fails an operator's boot
+     * exactly as one in the gateway document does. Scanning only the gateway document would let the
+     * test's name claim a closure it does not deliver — an endpoint placeholder added later would
+     * stay unchecked while this stayed green.
+     * <p>
+     * The walk is over each <strong>parsed</strong> document's scalar values, not its raw text, because
      * that is exactly the surface the loader substitutes: comments never reach the placeholder engine,
      * so a {@code ${VAR:-default}} written in prose to explain the rule is documentation and not a
      * reference. Scanning raw text would report it as one and demand a compose variable for it.
      *
      * @return the referenced variable names, in first-appearance order
-     * @throws IOException when the document cannot be read
+     * @throws IOException when a document cannot be read
      */
     private static Set<String> variablesReferencedByTheSample() throws IOException {
         assertTrue(Files.isRegularFile(GATEWAY_YAML),
                 () -> "cannot read the sample's gateway document: " + GATEWAY_YAML + " does not exist");
-        Object document;
-        try (InputStream in = Files.newInputStream(GATEWAY_YAML)) {
-            document = new Yaml().load(in);
-        }
         Set<String> referenced = new LinkedHashSet<>();
-        collectVariableReferences(document, referenced);
+        for (Path document : substitutedDocuments()) {
+            Object parsed;
+            try (InputStream in = Files.newInputStream(document)) {
+                parsed = new Yaml().load(in);
+            }
+            collectVariableReferences(parsed, referenced);
+        }
         return referenced;
+    }
+
+    /**
+     * Lists the sample documents the loader runs its {@code ${VAR}} substitution over, in the order
+     * {@code ConfigLoader} reads them: the gateway document, then each {@code endpoints/*.yaml}.
+     * <p>
+     * The {@code .yaml} filter and the name ordering mirror {@code ConfigLoader.listEndpointFiles} so
+     * this test's population is the loader's population. An absent {@code endpoints/} directory is
+     * legal (the loader treats it as no endpoints), so it contributes nothing rather than failing.
+     *
+     * @return the readable sample documents, gateway first
+     * @throws IOException when the endpoints directory cannot be listed
+     */
+    private static List<Path> substitutedDocuments() throws IOException {
+        List<Path> documents = new ArrayList<>();
+        documents.add(GATEWAY_YAML);
+        Path endpoints = CONFIG_DIR.resolve("endpoints");
+        if (Files.isDirectory(endpoints)) {
+            try (Stream<Path> entries = Files.list(endpoints)) {
+                entries.filter(Files::isRegularFile)
+                        .filter(p -> p.getFileName().toString().endsWith(".yaml"))
+                        .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                        .forEach(documents::add);
+            }
+        }
+        return documents;
     }
 
     /** Walks a parsed YAML node, collecting the {@code ${VAR}} names any scalar value references. */

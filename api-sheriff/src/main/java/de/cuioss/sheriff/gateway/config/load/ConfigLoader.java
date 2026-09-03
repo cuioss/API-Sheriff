@@ -525,12 +525,14 @@ public final class ConfigLoader {
      * turn by the destination's declared <em>item</em> type. That is what lets one environment variable
      * supply a list whose cardinality is therefore no longer fixed in the mounted file. The arm is
      * selected by the <strong>declared type alone</strong> — it carries no pointer test and no item-type
-     * predicate — so it reaches every array-typed pointer the bundled schema declares, including the one
-     * whose items are objects. There the item type pins no scalar arm, each element falls through to
-     * shape inference, and the resulting array of scalars is refused moments later by the
-     * schema-validation pass, with a diagnostic naming the expected and actual types and never the
-     * value. Reaching that pointer and failing loudly is the deliberate behaviour; silently skipping it
-     * is not.
+     * predicate — so it reaches every array-typed pointer the bundled schemas declare, including those
+     * whose items are objects. Both schemas are in radius: this pass runs over {@code gateway.yaml}
+     * against the gateway schema and over each {@code endpoints/*.yaml} against the endpoint schema, so
+     * the endpoint documents' array-typed keys are reached on exactly the same terms. At an
+     * object-items pointer the item type pins no scalar arm, each element falls through to shape
+     * inference, and the resulting array of scalars is refused moments later by the schema-validation
+     * pass, with a diagnostic naming the expected and actual types and never the value. Reaching those
+     * pointers and failing loudly is the deliberate behaviour; silently skipping them is not.
      *
      * @param value        the fully substituted string
      * @param declaredType the type the schema declares at the value's own pointer, or {@code null} when
