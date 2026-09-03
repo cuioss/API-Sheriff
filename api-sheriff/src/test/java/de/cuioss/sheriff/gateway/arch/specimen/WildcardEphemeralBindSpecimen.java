@@ -76,4 +76,22 @@ public final class WildcardEphemeralBindSpecimen {
     public Future<NetServer> bindWildcardViaListen(NetServer server) {
         return server.listen(0);
     }
+
+    /**
+     * The deliberate violation the <em>bytecode</em> rule structurally cannot see: the host-bound
+     * {@code listen(int, String)} overload passed a wildcard host literal. At the call-target level
+     * this is indistinguishable from {@code listen(0, LoopbackHost.ADDRESS)} — same name, same
+     * parameter types — so only a source-level sweep can tell them apart.
+     * <p>
+     * It is the standing positive control for that sweep: the sweep must FIND this line. A sweep
+     * that stopped matching would otherwise report zero offenders across the tree and read exactly
+     * like a clean one.
+     *
+     * @param server the server to bind; supplied by the caller so this specimen never creates a
+     *               {@code Vertx} instance
+     * @return the listen future, never completed because this method is never invoked
+     */
+    public Future<NetServer> bindWildcardHostViaListen(NetServer server) {
+        return server.listen(0, "0.0.0.0");
+    }
 }

@@ -22,8 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 
 import com.tngtech.archunit.base.DescribedPredicate;
@@ -67,6 +74,16 @@ import org.junit.jupiter.api.Test;
  * {@link ServerSocket#ServerSocket(int)} and the single-int {@code listen(int)} overload — because
  * a guard against one leaves the other free to reintroduce the identical bind under a different
  * name.
+ * <p>
+ * <strong>What the bytecode rule cannot see, and what covers it.</strong> Keying on the signature
+ * buys precision at a stated cost: {@code listen(0, "0.0.0.0")} and
+ * {@code listen(0, LoopbackHost.ADDRESS)} are <em>the same call target</em> — same name, same
+ * parameter types — so the rule accepts both, and the first rebuilds the wildcard bind this guard
+ * exists to refuse. The discriminator is the argument's text, which lives in the source rather than
+ * the bytecode. {@link WildcardHostLiteralSweep} covers exactly that gap with a source sweep, and
+ * carries its own matched controls. Neither half is sufficient alone: the rule reaches call shapes
+ * a text scan would misread, and the sweep reaches literals the rule is blind to. This limit is
+ * recorded rather than left implicit so a green rule is not read as more than it proves.
  * <p>
  * <strong>Scope: the test tree only.</strong> Production binds configured ports rather than
  * ephemeral ones, and {@code SniFrontListener.start()} binds the wildcard deliberately via
@@ -112,6 +129,20 @@ class LoopbackEphemeralBindArchTest {
     private static final String PRODUCTION_WILDCARD_BINDER = "de.cuioss.sheriff.gateway.tls.SniFrontListener";
 
     private static final String LISTEN = "listen";
+
+    /** Where this module's test sources live, relative to the module directory Surefire runs in. */
+    private static final Path TEST_SOURCE_ROOT = Path.of("src", "test", "java");
+
+    /**
+     * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
+     * <p>
+     * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
+     * IPv6 {@code ::}, and the empty host. A quoted literal is the only shape this can match by
+     * construction — a host held in a constant carries no literal to match, which is exactly the
+     * correct usage this must not flag.
+     */
+    private static final Pattern WILDCARD_HOST_LISTEN =
+            Pattern.compile("\\.listen\\s*\\(\\s*\\d+\\s*,\\s*\"(?:0\\.0\\.0\\.0|::|)\"");
 
     private static final JavaClasses TEST_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.ONLY_INCLUDE_TESTS)
@@ -198,6 +229,26 @@ class LoopbackEphemeralBindArchTest {
         return LISTEN.equals(target.getName()) && isSingleIntParameter(target);
     }
 
+    /**
+     * The {@code .java} sources the wildcard sweep scans: every test source except the specimen
+     * package, which carries the sweep's own deliberate violation.
+     *
+     * @return the guarded source files
+     * @throws IOException when the source tree cannot be walked
+     */
+    private static List<Path> guardedSources() throws IOException {
+        if (!Files.isDirectory(TEST_SOURCE_ROOT)) {
+            return List.of();
+        }
+        try (Stream<Path> walk = Files.walk(TEST_SOURCE_ROOT)) {
+            return walk.filter(Files::isRegularFile)
+                    .filter(path -> path.toString().endsWith(".java"))
+                    .filter(path -> !path.toString().replace('\\', '/')
+                            .contains("/de/cuioss/sheriff/gateway/arch/specimen/"))
+                    .toList();
+        }
+    }
+
     private static boolean isSingleIntParameter(CodeUnitCallTarget target) {
         var parameters = target.getRawParameterTypes();
         return parameters.size() == 1 && parameters.get(0).isEquivalentTo(int.class);
@@ -282,6 +333,95 @@ class LoopbackEphemeralBindArchTest {
                         "No class in the guarded selection was seen calling the host-bound "
                                 + "listen(int, String) form. Zero violations is then uninformative: it "
                                 + "cannot be told apart from a scan that sees no bind calls at all."));
+    }
+
+    @Nested
+    @DisplayName("Wildcard host literal sweep")
+    class WildcardHostLiteralSweep {
+
+        /**
+         * Closes the gap the bytecode rule structurally cannot reach. {@code listen(0, "0.0.0.0")}
+         * and {@code listen(0, LoopbackHost.ADDRESS)} are the same call target — same name, same
+         * parameter types — so {@link #isHostBoundListenOverload} accepts both and the rule above
+         * treats the first as safe. Vert.x reads {@code "0.0.0.0"} as the wildcard host, so that
+         * spelling reconstitutes the exact bind the guard exists to refuse, in a form the guard
+         * cannot see.
+         * <p>
+         * The discriminator is the argument's <em>text</em>, which lives in the source rather than
+         * the bytecode — hence a source sweep rather than a wider ArchUnit rule. Reported by
+         * CodeRabbit on PR #255.
+         */
+        @Test
+        @DisplayName("No fixture passes a wildcard host literal to the host-bound listen overload")
+        void noFixturePassesAWildcardHostLiteral() throws IOException {
+            List<String> offenders = new ArrayList<>();
+            for (Path source : guardedSources()) {
+                List<String> lines = Files.readAllLines(source);
+                for (int i = 0; i < lines.size(); i++) {
+                    if (WILDCARD_HOST_LISTEN.matcher(lines.get(i)).find()) {
+                        offenders.add(source.getFileName() + ":" + (i + 1) + " — " + lines.get(i).strip());
+                    }
+                }
+            }
+
+            assertTrue(offenders.isEmpty(),
+                    "A fixture binds an ephemeral port to a wildcard host literal. That is the "
+                            + "measured stall exposure in the two-argument spelling, and the bytecode "
+                            + "rule above cannot see it — listen(int, String) is one call target "
+                            + "whatever the host string. Bind through LoopbackHost.ADDRESS instead. "
+                            + "Offenders: " + offenders);
+        }
+
+        /**
+         * The matched positive control. Without it, a sweep whose regex stopped matching — or one
+         * pointed at a directory that no longer holds sources — would report zero offenders and be
+         * indistinguishable from a clean tree.
+         */
+        @Test
+        @DisplayName("The sweep finds the specimen's deliberate wildcard host literal (positive control)")
+        void sweepFindsTheDeliberateWildcardHostLiteral() throws IOException {
+            Path specimen = TEST_SOURCE_ROOT.resolve(
+                    "de/cuioss/sheriff/gateway/arch/specimen/WildcardEphemeralBindSpecimen.java");
+
+            assertTrue(Files.exists(specimen),
+                    "The wildcard specimen source is missing at " + specimen + ", so the sweep's "
+                            + "positive control is exercising nothing.");
+            assertTrue(Files.readAllLines(specimen).stream()
+                            .anyMatch(line -> WILDCARD_HOST_LISTEN.matcher(line).find()),
+                    "The sweep no longer matches the specimen's deliberate listen(0, \"0.0.0.0\") "
+                            + "call. Its clean verdict over the rest of the tree therefore proves "
+                            + "nothing — fix the pattern rather than the specimen.");
+        }
+
+        /**
+         * The matched negative control: the sweep must NOT flag the loopback-bound spelling. Without
+         * it, a pattern that matched every {@code listen(int, String)} call would pass the positive
+         * control above while flagging every correct site.
+         */
+        @Test
+        @DisplayName("The sweep leaves the loopback-bound spelling alone (negative control)")
+        void sweepDoesNotFlagTheLoopbackBoundSpelling() throws IOException {
+            Path specimen = TEST_SOURCE_ROOT.resolve(
+                    "de/cuioss/sheriff/gateway/arch/specimen/LoopbackEphemeralBindSpecimen.java");
+
+            assertTrue(Files.exists(specimen), "The loopback specimen source is missing at " + specimen);
+            assertFalse(Files.readAllLines(specimen).stream()
+                            .anyMatch(line -> WILDCARD_HOST_LISTEN.matcher(line).find()),
+                    "The sweep flags the host-bound loopback spelling, so it does not discriminate "
+                            + "between a wildcard literal and a correct bind.");
+        }
+
+        /** Non-vacuity: the sweep must actually be reading a populated source tree. */
+        @Test
+        @DisplayName("Wildcard sweep is non-vacuous: the guarded source set resolves")
+        void sweepIsNonVacuous() throws IOException {
+            assertTrue(Files.isDirectory(TEST_SOURCE_ROOT),
+                    "The test source root did not resolve to a directory at " + TEST_SOURCE_ROOT
+                            + ", so the sweep scanned nothing and its clean verdict is empty.");
+            assertTrue(guardedSources().size() > 1,
+                    "The guarded source set resolved to at most one file, which cannot be the whole "
+                            + "test tree — the sweep is scanning far less than it claims.");
+        }
     }
 
     @Nested
