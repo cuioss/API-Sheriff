@@ -14,10 +14,10 @@
       }
     },
     "api-sheriff-build-parent": {
-      "description": "",
+      "description": "Publishes the downstream build parent a third-party deployer inherits from to produce an API Sheriff image carrying a custom context path. It carries no Java and builds no artifact: it declares the consumer-facing sheriff.context-path knob and its mapping onto the quarkus.sheriff-* carrier keys, the api-sheriff dependency plus the Quarkus platform BOM, the quarkus-maven-plugin binding with the main class pinned, and the native profile. Adopting a new API Sheriff release is a parent-version bump and nothing else.",
       "generation": {
         "by": "architecture",
-        "tree_sha": "e34d6dc0242c06da8a3c253846889c9667ca0a1545ac014ec29d83c0164b2958"
+        "tree_sha": "659ac268fcadab1a5f32473c4bab988c59cc245e964467ab7151beddf3f74e6c"
       }
     },
     "api-sheriff-parent": {
@@ -52,10 +52,10 @@
       "generation": {}
     },
     "my-gateway": {
-      "description": "",
+      "description": "The worked consumer example for api-sheriff-build-parent: a minimal third-party POM that inherits the build parent, overrides sheriff.context-path, and produces a relocated-context-path gateway image. It is reference material a deployer copies, deliberately NOT a reactor module, and its build is exercised by hand as part of doc/user/downstream-parent.adoc's procedure rather than by CI.",
       "generation": {
         "by": "architecture",
-        "tree_sha": "e34d6dc0242c06da8a3c253846889c9667ca0a1545ac014ec29d83c0164b2958"
+        "tree_sha": "393de4379bf0b81b1c4eecbd4a49c782015af4e75a31fd34b07a7785bef3be22"
       }
     }
   },
