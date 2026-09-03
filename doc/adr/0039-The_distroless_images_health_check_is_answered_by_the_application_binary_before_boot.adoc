@@ -73,8 +73,11 @@ what makes the probe correct under a deployment-bound scheme.
 *The port is a compiled-in constant, not a configuration lookup.* The probe path
 reads no gateway configuration at all, which is what keeps it fast, side-effect-free
 and independent of whether configuration is resolvable. The consequence is stated
-rather than hidden: a deployment that moves the management port must override the
-image's `HEALTHCHECK` to match, and fails closed -- never healthy -- if it does not.
+rather than hidden: a deployment that moves the management port away from the
+compiled-in value makes the baked check fail closed -- never healthy -- and the only
+remedy is an image rebuilt against the new port. Overriding the `HEALTHCHECK` does
+not reach it, because the override still names the one executable the image carries
+and that binary probes the constant it was built with.
 
 *The probe logic is its own class, not a branch inside the entry point.* An entry
 point is inherently untestable: every path either terminates the process or hands
@@ -128,9 +131,10 @@ every consumer inherits.
   contract.** Every future argument must be distinguishable from the probe token.
   The whole-token match is what keeps that cost at zero, and it is the property to
   preserve if the command line grows.
-* **The management port is compiled in.** A deployment that moves it and does not
-  move the `HEALTHCHECK` never reports healthy. That is the right direction to fail,
-  but it is silent until someone reads the health column.
+* **The management port is compiled in.** A deployment that moves it never reports
+  healthy until the image is rebuilt against the new port; no `HEALTHCHECK` override
+  reaches a different port, because the override still names the same binary. That is
+  the right direction to fail, but it is silent until someone reads the health column.
 
 === Risks
 
