@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -291,7 +292,7 @@ public final class SocketSnapshot {
                 + String.join(System.lineSeparator(), capped);
         return loopback.size() > capped.size()
                 ? rendered + System.lineSeparator()
-                        + "... (%d further loopback rows omitted)".formatted(loopback.size() - capped.size())
+                + "... (%d further loopback rows omitted)".formatted(loopback.size() - capped.size())
                 : rendered;
     }
 

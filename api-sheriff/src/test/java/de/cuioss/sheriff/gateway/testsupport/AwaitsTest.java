@@ -239,13 +239,13 @@ class AwaitsTest {
      */
     @Test
     @DisplayName("the OS socket snapshot enumerates a loopback socket this JVM actually holds")
-    void theOsSocketSnapshotSeesThisJvmsLoopbackSockets() throws IOException {
+    void theOsSocketSnapshotSeesThisJvmsLoopbackSockets() throws Exception {
         Assumptions.assumeTrue(SocketSnapshot.available(),
                 "lsof and netstat are both required to capture the OS socket state");
         InetAddress loopback = InetAddress.getLoopbackAddress();
         try (ServerSocket listener = new ServerSocket(0, 1, loopback);
-                Socket client = new Socket();
-                Socket ignored = acceptAfter(listener, client)) {
+             Socket client = new Socket();
+             Socket ignored = acceptAfter(listener, client)) {
             TimeoutException failure = assertThrows(TimeoutException.class,
                     () -> Awaits.awaitLatch(new CountDownLatch(1), CONTROL_LABEL, CONTROL_CEILING));
 
