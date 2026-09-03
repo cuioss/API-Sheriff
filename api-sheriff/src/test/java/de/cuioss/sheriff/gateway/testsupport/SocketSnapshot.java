@@ -53,8 +53,11 @@ import de.cuioss.tools.logging.CuiLogger;
  *   <li>no socket for the port at all — the connect was never issued; look above the socket layer</li>
  * </ul>
  *
- * <p>{@code netstat -anv -p tcp} adds the columns that actually discriminate the surviving
- * hypothesis. The {@code -v} is load-bearing rather than cosmetic. It adds {@code rxbytes} /
+ * <p>{@code netstat} adds the columns that actually discriminate the surviving hypothesis. The
+ * invocation is platform-dependent — {@code -anv -p tcp} on macOS, {@code -ant} on Linux, because
+ * Linux reads {@code -p} as <em>show-program</em> rather than as a protocol selector — and the
+ * discriminating columns below are the macOS ones. On macOS the {@code -v} is load-bearing rather
+ * than cosmetic. It adds {@code rxbytes} /
  * {@code txbytes} — cumulative per-socket byte counters, which say whether anything was <em>ever</em>
  * transferred, where a queue depth says only what is pending right now — and {@code process:pid},
  * which is the only way to tell a socket this JVM still owns from a kernel-side remnant of one it has
@@ -201,7 +204,7 @@ public final class SocketSnapshot {
      * @return the argv tail for this platform, never empty
      */
     private static String[] netstatArgs() {
-        return IS_MACOS ? new String[] {"-anv", "-p", "tcp"} : new String[] {"-ant"};
+        return IS_MACOS ? new String[]{"-anv", "-p", "tcp"} : new String[]{"-ant"};
     }
 
     /**
