@@ -784,7 +784,7 @@ class GatewayEdgeRouteTest {
         /** A TEST-NET-3 address (RFC 5737) — never routable, so it can only have come from the header. */
         private static final String SPOOFED_CLIENT = "203.0.113.7";
         private static final String FORWARDED_FOR = "X-Forwarded-For";
-        private static final String LOOPBACK = "127.0.0.1";
+        private static final String LOOPBACK = LoopbackHost.ADDRESS;
 
         @TempDir
         Path configDir;
@@ -854,12 +854,13 @@ class GatewayEdgeRouteTest {
                 seenByUpstream.set(request.getHeader(FORWARDED_FOR));
                 reached.set(true);
                 request.response().end();
-            }).listen(0), "the stub upstream server to start listening");
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
             Router router = Router.router(vertx);
             new GatewayEdgeRoute(new RouteTable(List.of(proxyRoute(upstream.actualPort()))), loaded,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
-            HttpServer front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
             HttpClient client = vertx.createHttpClient();
             try {
