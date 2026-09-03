@@ -92,6 +92,17 @@ public final class SocketSnapshot {
      */
     static final String SECTION_HEADER = "socket snapshot (OS view of this JVM's TCP sockets):";
 
+    /**
+     * Opens the {@code lsof} half of a capture. Package-private and consumed by {@code capture()}
+     * itself so a probe that narrows a message to one tool's rows cannot drift from the rendering
+     * it narrows: changing the banner changes both sides at once.
+     */
+    static final String LSOF_SUBSECTION = "  lsof -w -nP -iTCP -a -p ";
+
+    /** Opens the {@code netstat} half of a capture. Same drift argument as {@link #LSOF_SUBSECTION}. */
+    static final String NETSTAT_SUBSECTION =
+            "  netstat -anv -p tcp (Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate):";
+
     private static final CuiLogger LOGGER = new CuiLogger(SocketSnapshot.class);
 
     /**
@@ -147,10 +158,10 @@ public final class SocketSnapshot {
                 .append(SECTION_HEADER)
                 .append(System.lineSeparator()).append("  pid=").append(pid)
                 .append(", ports observed=").append(ports.isEmpty() ? "<none>" : ports)
-                .append(System.lineSeparator()).append("  lsof -w -nP -iTCP -a -p ").append(pid).append(':')
+                .append(System.lineSeparator()).append(LSOF_SUBSECTION).append(pid).append(':')
                 .append(System.lineSeparator()).append(indent(lsof))
                 .append(System.lineSeparator())
-                .append("  netstat -anv -p tcp (Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate):")
+                .append(NETSTAT_SUBSECTION)
                 .append(System.lineSeparator()).append(indent(netstat))
                 .toString();
     }

@@ -249,10 +249,21 @@ class AwaitsTest {
             TimeoutException failure = assertThrows(TimeoutException.class,
                     () -> Awaits.awaitLatch(new CountDownLatch(1), CONTROL_LABEL, CONTROL_CEILING));
 
-            assertTrue(portAppearsAsAnAddressIn(snapshotSectionOf(failure.getMessage()),
-                    listener.getLocalPort()),
-                    "the snapshot names the port of a socket this JVM holds; without that it is a "
-                            + "section header over a degradation note and proves nothing");
+            String section = snapshotSectionOf(failure.getMessage());
+            int port = listener.getLocalPort();
+
+            assertAll("both capture tools name the port of a socket this JVM holds",
+                    () -> assertTrue(portAppearsAsAnAddressIn(lsofRowsOf(section), port),
+                            "the lsof half does not name the port. Asserted on its own rows rather "
+                                    + "than on the whole section: available() proves only that both "
+                                    + "binaries are executable, so a section-wide match lets either "
+                                    + "tool's output stand in for the other's and the probe would "
+                                    + "pass on a half-degraded capture."),
+                    () -> assertTrue(portAppearsAsAnAddressIn(netstatRowsOf(section), port),
+                            "the netstat half does not name the port. netstat is filtered to the "
+                                    + "ports lsof reported, so this failing while lsof passes means "
+                                    + "the join between the two views produced nothing — the "
+                                    + "discriminating columns this capture exists for are absent."));
         }
     }
 
@@ -269,6 +280,37 @@ class AwaitsTest {
     private static String snapshotSectionOf(String message) {
         int start = message.indexOf(SocketSnapshot.SECTION_HEADER);
         return start < 0 ? "" : message.substring(start);
+    }
+
+    /**
+     * Narrows a snapshot section to the {@code lsof} rows — from its banner up to the
+     * {@code netstat} banner that follows it.
+     *
+     * @param section the snapshot section
+     * @return the rows, or the empty string when the banner is absent
+     */
+    private static String lsofRowsOf(String section) {
+        int start = section.indexOf(SocketSnapshot.LSOF_SUBSECTION);
+        if (start < 0) {
+            return "";
+        }
+        int end = section.indexOf(SocketSnapshot.NETSTAT_SUBSECTION, start);
+        return end < 0 ? section.substring(start) : section.substring(start, end);
+    }
+
+    /**
+     * Narrows a snapshot section to the {@code netstat} rows — from its banner to the end.
+     *
+     * <p>The degraded rendering names the ports it failed to match, but as a bare set rather than as
+     * address tokens, so {@link #portAppearsAsAnAddressIn} does not mistake it for a real row. That
+     * is what lets this half be asserted directly instead of needing a degradation carve-out.
+     *
+     * @param section the snapshot section
+     * @return the rows, or the empty string when the banner is absent
+     */
+    private static String netstatRowsOf(String section) {
+        int start = section.indexOf(SocketSnapshot.NETSTAT_SUBSECTION);
+        return start < 0 ? "" : section.substring(start);
     }
 
     /**
