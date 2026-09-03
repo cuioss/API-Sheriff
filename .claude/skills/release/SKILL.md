@@ -267,13 +267,14 @@ transition during `release:prepare`.
 > break the version-identity assertion in the `Assert the checked-out project version matches the
 > released version` step.
 
-**A mismatch is a decision to put to the user, never a default to pick.** As of the `0.1.0` cut the
-tree reads `pom.xml` `0.2.0-SNAPSHOT` against `current-version: 0.1.0` / `next-version:
-0.2.0-SNAPSHOT` — the correct *post-release* state for a `0.1.0` that has already gone out. Cutting
-`0.1.1` from that tree releases **backwards** from the declared development line: the transition is
-`0.2.0-SNAPSHOT` → `0.1.1`, not the `X.Y.Z-SNAPSHOT` → `X.Y.Z` shape the convention describes, and it
-forces a second decision about what `next-version` then becomes (back to `0.2.0-SNAPSHOT`? on to
-`0.1.2-SNAPSHOT`?).
+**A mismatch is a decision to put to the user, never a default to pick.** Read the actual
+numbers out of `.github/project.yml` and `pom.xml` — never carry a remembered pair into the
+decision. The common shape after a release is a tree whose pom already floats on the *next*
+minor snapshot while `current-version` still names the version just published. Cutting a
+patch from that tree releases **backwards** from the declared development line: the
+transition is `X.(Y+1).0-SNAPSHOT` → `X.Y.Z`, not the `X.Y.Z-SNAPSHOT` → `X.Y.Z` shape the
+convention describes, and it forces a second decision about what `next-version` then becomes
+(back to the minor snapshot, or on to the next patch snapshot?).
 
 **Stop and get an explicit answer on both** — the version being cut *and* the resulting
 `next-version` — **before opening the version-bump PR.** On Path A that PR's merge is the release,
@@ -1023,8 +1024,24 @@ and that **no PR appears in the new file that was not in the original**.
 
 #### House format rules (apply exactly)
 
-1. **Two top-level groups:** `## Features & Enhancements` and `## Dependency Updates`.
-2. **Features & Enhancements** — group functional PRs by theme with `###` subheadings:
+1. **Three top-level groups, in this order:** `## Quarkus`,
+   `## Features & Enhancements`, and `## Dependency Updates`.
+2. **Quarkus is the headline** — the Quarkus platform version is the single most
+   important fact in a release, so it gets its **own top-level section at the very top**,
+   never a bullet buried under dependency updates. Open it with a one-line statement of the
+   target version, then the PR line(s):
+
+   ```
+   ## Quarkus
+
+   This release targets **Quarkus <new>** (previously <old>).
+
+   * <PR line(s)>
+   ```
+
+   If Quarkus did **not** change in this cycle, state the unchanged version in the same
+   one-line form and omit the PR line. Never also list Quarkus under `### Java`.
+3. **Features & Enhancements** — group functional PRs by theme with `###` subheadings:
    - `### API & Code Quality` — also the home for refactor/standards/cleanup recipes, **not** under
      build/tooling
    - `### Security`
@@ -1034,24 +1051,58 @@ and that **no PR appears in the new file that was not in the original**.
 
    Add release-specific themes when the cycle has a dominant thread. Adapt headings to the actual
    PRs; omit empty sections.
-3. **Dependency Updates** — group by type with `###` subheadings:
-   - `### Java` — Java libraries (Quarkus, cui-*, …)
+4. **Dependency Updates** — group by type with `###` subheadings:
+   - `### Java` — Java libraries (cui-*, …). **Not** Quarkus — that has its own top
+     section (rule 2).
    - `### Infra` — platform/build/CI: build plugins, GitHub Action bumps (harden-runner,
      `actions/*`, claude-code-action), `cui-java-parent`, and cuioss-organization workflow bumps
-4. **Collapse version chains** — when the same artifact is bumped repeatedly (`A → B → C`), keep only
-   the **latest** entry spanning the full range, using the latest PR's URL/author (e.g.
-   `version.quarkus 3.34.2 → 3.35.0 → 3.37.0` becomes a single `3.34.2 to 3.37.0`). This matters:
-   `step-security/harden-runner` and `anthropics/claude-code-action` are bumped dozens of times per
-   cycle — collapse each to one Infra line.
-5. **Remove all OpenRewrite bumps and friends** — drop every `rewrite-maven-plugin`,
+5. **Collapse by library identity — one line per library, spanning the full range.**
+   The unit of collapsing is the *library*, not the PR title. Merge into a single line
+   whenever the PRs concern the same library, in all three shapes that occur:
+   - **Version chains** — several bumps of one artifact (`A → B → C`) collapse to one line
+     spanning `A → C`, carrying the latest PR's author.
+   - **The same library in several places** — one library bumped in more than one module or
+     directory is **one** line naming them all, not one line each. Those titles differ only
+     by that suffix, so do not wait for identical titles before merging.
+   - **One upstream release landing as several coordinates** — when a single upstream bump
+     arrives as separate PRs against different coordinates (e.g. a version property *and*
+     a BOM or parent), that is **one** bump: one line naming the coordinates in parentheses.
+
+   Carry every merged PR's URL onto the surviving line, comma-separated.
+6. **Recover versions the title omits.** Dependabot truncates a title to
+   `bump <lib> in /<dir>`, with no versions, when several dependencies must move together.
+   Never publish a dependency line without a version range: read the PR body, which states
+   ``Updates `<lib>` from X to Y``, and use those versions when computing the range:
+
+   ```bash
+   gh pr view <n> --repo cuioss/API-Sheriff --json body --jq .body | head -6
+   ```
+7. **Remove all OpenRewrite bumps and friends** — drop every `rewrite-maven-plugin`,
    `rewrite-migrate-java`, `rewrite-testing-frameworks` and related PR.
-6. **Remove internal tooling churn** — drop PRs that only touch dev/build orchestration with no
+8. **Remove internal tooling churn** — drop PRs that only touch dev/build orchestration with no
    user-facing effect: `marshal.json` / plan-marshall config migrations, plan-marshall build wiring,
    internal dev-skill changes, and **the mechanical version-declaration PR itself**.
-7. **Preserve each kept PR line verbatim** (`* <title> by @author in <url>`); when two PRs share an
-   identical title, merge them onto one line with both URLs. For collapsed chains keep the latest
-   PR's line and adjust only the version span.
-8. **Keep the trailing `**Full Changelog**: ...compare/<prev>...<version>` line.**
+9. **Preserve each kept PR line** in its original
+   `* <title> by @author in <url>` shape. Rules 5 and 6 **override** verbatimness where
+   they conflict: rewrite the title's version range to span the collapsed chain, and name
+   the several modules or coordinates on the surviving line.
+10. **Keep the trailing `**Full Changelog**: ...compare/<prev>...<version>` line.**
+
+#### Verify before publishing (mandatory)
+
+These rules are easy to under-apply: a duplicate survives whenever two PRs touch the same
+library under differing titles. After building the notes file and **before**
+`gh release edit`, assert that every library appears exactly once:
+
+```bash
+grep -oE '(bump|update) [^ ]+ (from|in)' .plan/temp/release-<version>.md \
+  | sort | uniq -c | sort -rn | head
+```
+
+Every count must be `1`. Any count `>1` is an unmerged duplicate — collapse it per rule
+5 and re-run. Also confirm that no dependency line is missing a version range
+(rule 6).
+
 
 ### Step 12 — Report
 
