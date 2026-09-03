@@ -65,6 +65,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -238,7 +239,8 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient();
             try {
                 // Act
-                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), "127.0.0.1", "/nothing")
+                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS,
+                                "/nothing")
                         .compose(HttpClientRequest::send);
 
                 // Assert
@@ -257,7 +259,8 @@ class GatewayEdgeRouteTest {
             // Arrange — a real upgrade against a stub upstream, so the HTTP response never ends
             HttpServer upstream = Awaits.connect(vertx.createHttpServer()
                     .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
-                    .listen(0), "the stub upstream WebSocket server to start listening");
+                    .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream WebSocket server to start listening");
             CompletableFuture<Object> stashed = new CompletableFuture<>();
             HttpServer front = startFront(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), stashed);
             WebSocketClient client = vertx.createWebSocketClient();
@@ -290,13 +293,15 @@ class GatewayEdgeRouteTest {
             // exhausts the sub-budget while leaving one general permit for ordinary traffic
             HttpServer upstream = Awaits.connect(vertx.createHttpServer()
                     .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
-                    .listen(0), "the stub upstream WebSocket server to start listening");
+                    .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream WebSocket server to start listening");
             Router router = Router.router(vertx);
             new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
-            HttpServer front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
             WebSocketClient wsClient = vertx.createWebSocketClient();
             HttpClient httpClient = vertx.createHttpClient();
@@ -340,7 +345,8 @@ class GatewayEdgeRouteTest {
                 stashed.complete(ctx.get(ADMISSION_GUARD_KEY));
             });
             newEdge(table).registerRoutes(router);
-            return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+            return Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
         }
     }
@@ -883,7 +889,7 @@ class GatewayEdgeRouteTest {
 
     private WebSocket connectWs(WebSocketClient client, int port) throws Exception {
         return Awaits.connect(client.connect(new WebSocketConnectOptions()
-                        .setHost("127.0.0.1").setPort(port).setURI("/w/room")),
+                        .setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/w/room")),
                 "the WebSocket upgrade to complete");
     }
 
@@ -908,7 +914,7 @@ class GatewayEdgeRouteTest {
 
     private static int statusOf(HttpClient client, int port) throws Exception {
         return Awaits.connect(
-                client.request(io.vertx.core.http.HttpMethod.GET, port, "127.0.0.1", "/unmatched")
+                client.request(io.vertx.core.http.HttpMethod.GET, port, LoopbackHost.ADDRESS, "/unmatched")
                         .compose(HttpClientRequest::send),
                 "the edge response to GET /unmatched").statusCode();
     }
@@ -924,7 +930,7 @@ class GatewayEdgeRouteTest {
                 .match(MatchConfig.builder().pathPrefix("/w").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
 

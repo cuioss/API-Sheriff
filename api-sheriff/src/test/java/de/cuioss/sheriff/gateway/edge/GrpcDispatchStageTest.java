@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
@@ -240,20 +241,21 @@ class GrpcDispatchStageTest {
                 response.putTrailer("grpc-status", "0");
                 response.putTrailer("grpc-message", "ok");
                 response.end();
-            }).listen(0), "the stub gRPC upstream to start listening");
+            }).listen(0, LoopbackHost.ADDRESS), "the stub gRPC upstream to start listening");
             int upstreamPort = upstream.actualPort();
 
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
             // path does (ResponseStage#relayWithTrailers).
             ResponseStage responseStage = new ResponseStage();
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
-                    .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, "127.0.0.1", "/svc.Service/Method")
+                    .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, LoopbackHost.ADDRESS,
+                            "/svc.Service/Method")
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
                             .relayWithTrailers(upResp, clientReq.response(), false, Map.of())
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
-                    .listen(0), "the relaying front server to start listening");
+                    .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
         }
 
         @AfterEach
@@ -273,7 +275,8 @@ class GrpcDispatchStageTest {
 
             // Act — POST the front server and read the full response including its trailers
             MultiMap trailers = Awaits.connect(client
-                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, "127.0.0.1", "/svc.Service/Method")
+                    .request(io.vertx.core.http.HttpMethod.POST, frontPort, LoopbackHost.ADDRESS,
+                            "/svc.Service/Method")
                     .compose(req -> req.send())
                     .compose(resp -> resp.body().map(buffer -> {
                         body.set(buffer);

@@ -23,6 +23,7 @@ import java.util.Map;
 
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientResponse;
@@ -203,9 +204,9 @@ class GrpcStatusMapperTest {
         private HttpClientResponse render(EventType eventType, Map<String, String> stageHeaders) throws Exception {
             server = Awaits.connect(vertx.createHttpServer()
                     .requestHandler(req -> mapper.renderRejection(req.response(), eventType, stageHeaders))
-                    .listen(0), "the rendering server to start listening");
+                    .listen(0, LoopbackHost.ADDRESS), "the rendering server to start listening");
             int port = server.actualPort();
-            return Awaits.connect(client.request(HttpMethod.POST, port, "127.0.0.1", "/svc.Service/Method")
+            return Awaits.connect(client.request(HttpMethod.POST, port, LoopbackHost.ADDRESS, "/svc.Service/Method")
                     .compose(req -> req.send()), "the rendered gRPC rejection response");
         }
     }

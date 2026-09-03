@@ -140,7 +140,17 @@ class TlsEdgeProducerTest {
         @DisplayName("refuses to boot when the public port is already held by another socket")
         void failsWhenThePublicPortIsHeld() throws Exception {
             // Arrange — a resolvable passthrough SNI, so the front listener genuinely attempts a bind,
-            // aimed at a port this test holds open for the duration
+            // aimed at a port this test holds open for the duration.
+            //
+            // The wildcard bind here is deliberate and is the only place in the module's test tree
+            // that stays wildcard-bound. Every OTHER ephemeral listener in this tree is loopback-bound
+            // through LoopbackHost.ADDRESS, because it is dialled on loopback and a wildcard bind would
+            // leave it reachable from any interface. This socket is never dialled at all — it exists
+            // solely to OCCUPY the port — and what it must collide with is production's own bind:
+            // SniFrontListener.start() binds the wildcard via netServer.listen(publicPort)
+            // (api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/SniFrontListener.java:98).
+            // Narrowing this holder to loopback would leave the wildcard free, the producer's bind
+            // would succeed, and the control would silently stop controlling anything.
             try (ServerSocket held = new ServerSocket(0)) {
                 int port = held.getLocalPort();
                 TlsConfig tls = TlsConfig.builder()
@@ -181,6 +191,8 @@ class TlsEdgeProducerTest {
             // Arrange — no tls block at all, so the relay map is empty. The port is HELD open for the
             // whole test: a producer that tried to start the front here would be refused the bind and
             // would fail the boot, so a quiet onStartup is positive evidence that it never tried.
+            // Wildcard-bound for the same reason as failsWhenThePublicPortIsHeld — the holder has to
+            // collide with production's wildcard listen(publicPort), and it is never dialled.
             try (ServerSocket held = new ServerSocket(0)) {
                 int port = held.getLocalPort();
                 GatewayConfig config = GatewayConfig.builder().version(1).build();
@@ -206,6 +218,8 @@ class TlsEdgeProducerTest {
             // differs from noFrontListenerWhenPassthroughEmpty in the arrange that matters: a
             // passthrough entry IS declared here, and only the alias lookup empties the map. As there,
             // the port is held open so that an attempted bind would be refused and surface loudly.
+            // Wildcard-bound for the same reason as failsWhenThePublicPortIsHeld — the holder has to
+            // collide with production's wildcard listen(publicPort), and it is never dialled.
             try (ServerSocket held = new ServerSocket(0)) {
                 int port = held.getLocalPort();
                 TlsConfig tls = TlsConfig.builder()
@@ -240,6 +254,15 @@ class TlsEdgeProducerTest {
      * cases do, would defeat the very bind being asserted. It is instead narrowed by re-probing the
      * released port and retrying a bounded number of times, so a port that was taken inside the
      * window is discarded rather than handed out.
+     * <p>
+     * The probe socket is <em>wildcard</em>-bound, and deliberately so — the fourth and last such
+     * site in this module's test tree. The port it hands back is the one
+     * {@code SniFrontListener.start()} will bind, and that bind is a wildcard one
+     * ({@code netServer.listen(publicPort)} at
+     * {@code api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/SniFrontListener.java:98}).
+     * Probing loopback alone would answer a narrower question than the one being asked — a port free
+     * on the loopback address but already held on another interface would be reported free and then
+     * fail the producer's bind. Nothing dials this socket; it is bound and immediately closed.
      *
      * @return a currently-free localhost port
      * @throws IOException when no free ephemeral port can be allocated within the retry budget
