@@ -155,6 +155,18 @@ services:
     # No inline `:-default` here on purpose. The default lives in exactly one place, the sibling
     # .env file, which Compose auto-loads; start-sample.sh reads the value back out of the resolved
     # model rather than restating it. An inline fallback would be a second copy to keep in lockstep.
+    #
+    # VERSION SKEW, until 0.2.0 ships. The SHERIFF_TRUSTED_PROXIES wiring below needs a loader that
+    # types a placeholder from its destination's declared `array` type and splits it into the whole
+    # list. The pinned default in .env is the 0.1.1 release, which PREDATES that: it resolves the
+    # placeholder to a single string, hands a string to a key the schema declares an array, and fails
+    # the boot. The .env pin is deliberately NOT bumped ahead of the release — it names an image that
+    # exists, which is the rule that file states about itself. Until 0.2.0 is published, exercise this
+    # sample against a locally built image using the override .env already documents:
+    #
+    #   API_SHERIFF_IMAGE=api-sheriff:distroless ./scripts/start-sample.sh
+    #
+    # Running it against the pinned default before then proves nothing except the skew.
     image: ${API_SHERIFF_IMAGE}
     # Declares WHAT this instance's MANAGEMENT interface speaks and WHERE it serves. scripts/
     # start-sample.sh derives its entire probe URL from these two labels plus the host port published
@@ -189,6 +201,20 @@ services:
       #
       # Where the gateway's own configuration is mounted.
       - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # WHOSE forwarding headers the gateway believes — the whole comma-separated list, supplied by
+      # this one variable because the trusted set differs per environment while the mounted
+      # gateway.yaml does not (it carries the bare ${SHERIFF_TRUSTED_PROXIES} placeholder and no
+      # default; leaving this unset fails the boot rather than starting with an empty allow-list).
+      #
+      # NARROW THIS BEFORE YOU DEPLOY. The value below is Docker's default address pool for bridge
+      # networks — the range this sample's own bridge is allocated from — and it is a placeholder for
+      # a shape, not a recommendation: this sample publishes only 8443 off-host and puts NO proxy in
+      # front of the gateway, so nothing here is actually a trusted proxy. A real deployment lists the
+      # exact addresses of its own proxies, normally as /32 host routes
+      # (e.g. SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32) — never a whole bridge range, and never
+      # a range wide enough to include the clients themselves, which would let any caller state its
+      # own address.
+      - SHERIFF_TRUSTED_PROXIES=172.16.0.0/12
       # The public TLS listener's certificate and key.
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
