@@ -98,6 +98,13 @@ import org.awaitility.core.ConditionTimeoutException;
  * fails for any reason the dump degrades to the {@link Thread#getAllStackTraces()} rendering rather
  * than propagating, and the timeout is still reported.
  *
+ * <h2>And the dump alone is not enough</h2>
+ * A dump proves what the JVM was doing; it cannot say whether the awaited work ever reached the
+ * machine. Every timeout therefore also carries {@link SocketSnapshot#capture()} — the kernel's own
+ * view of this process's TCP sockets, including the per-socket queue depths that separate "the bytes
+ * arrived and nobody was told" from "nothing was ever sent". Read the reading guide on
+ * {@link SocketSnapshot} before drawing a conclusion from it.
+ *
  * <h2>Structure</h2>
  * The public surface is tier-named and takes no duration. Each entry point delegates to a
  * package-private {@link Duration}-taking core, which is where the instrumentation lives. That seam
@@ -324,7 +331,8 @@ public final class Awaits {
 
     /**
      * Builds the enriched timeout carrying everything needed to diagnose the hang from a CI log
-     * alone: the label, the ceiling, the measured elapsed time and a full thread dump.
+     * alone: the label, the ceiling, the measured elapsed time, a full thread dump and the OS
+     * socket snapshot.
      *
      * @param what         what was being awaited
      * @param ceiling      the ceiling that was reached
@@ -334,9 +342,9 @@ public final class Awaits {
      */
     private static TimeoutException timedOut(String what, Duration ceiling, long elapsedNanos,
             Throwable cause) {
-        String message = "timed out awaiting %s: ceiling=%s ms, elapsed=%s ns (%s ms)%n%s".formatted(
+        String message = "timed out awaiting %s: ceiling=%s ms, elapsed=%s ns (%s ms)%n%s%n%s".formatted(
                 what, ceiling.toMillis(), elapsedNanos,
-                TimeUnit.NANOSECONDS.toMillis(elapsedNanos), threadDump());
+                TimeUnit.NANOSECONDS.toMillis(elapsedNanos), threadDump(), SocketSnapshot.capture());
         LOGGER.debug("Await ceiling reached: %s", message);
         TimeoutException failure = new TimeoutException(message);
         if (null != cause) {

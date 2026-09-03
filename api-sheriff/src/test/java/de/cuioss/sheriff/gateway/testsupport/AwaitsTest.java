@@ -22,6 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -37,6 +42,7 @@ import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.UpgradeRejectedException;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -53,6 +59,13 @@ import org.junit.jupiter.api.Test;
  * <p>The assertions are deliberately falsifiable: drop the elapsed measurement, or drop the thread
  * dump, and the tests below go red rather than continuing to pass on a message that no longer
  * explains anything.
+ *
+ * <p>The OS socket snapshot carries its own red-on-drop property, again kept in a set of its own:
+ * {@link #reportsTheOsSocketSnapshotOnTimeout()} asserts the section is present at all, and
+ * {@link #theOsSocketSnapshotSeesThisJvmsLoopbackSockets()} asserts the capture actually enumerates
+ * a socket this JVM holds. Splitting them is what separates "the call was removed" from "the call
+ * survived but now reports nothing" — a header-only assertion would stay green against a capture
+ * permanently degraded to {@code lsof unavailable}. Neither touches the dump or the measurement.
  *
  * <p>The rejected-upgrade enrichment carries a fourth, independent red-on-drop property, narrowed by
  * two probes: drop the enrichment and both {@link #reportsStatusAndHeadersOnARejectedUpgrade()} and
@@ -195,6 +208,97 @@ class AwaitsTest {
                         "a zero-length body is stated explicitly; rendering it as nothing would leave "
                                 + "the message trailing off after body= with no way to tell an empty "
                                 + "body from an absent one"));
+    }
+
+    /**
+     * The presence half of the socket-snapshot control. It asserts on the thrown type and the
+     * snapshot section only — never the dump, never the elapsed measurement — so removing the
+     * snapshot call reddens exactly this method and its content companion, and nothing else.
+     */
+    @Test
+    @DisplayName("a timeout carries the OS socket snapshot section")
+    void reportsTheOsSocketSnapshotOnTimeout() {
+        TimeoutException failure = assertThrows(TimeoutException.class,
+                () -> Awaits.awaitLatch(new CountDownLatch(1), CONTROL_LABEL, CONTROL_CEILING));
+
+        assertTrue(failure.getMessage().contains(SocketSnapshot.SECTION_HEADER),
+                "the failure carries the OS socket snapshot, which is what separates 'the bytes "
+                        + "arrived and nobody was told' from 'nothing was ever sent'");
+    }
+
+    /**
+     * The content half. A snapshot that resolved neither capture binary would still satisfy the
+     * presence assertion above while carrying no evidence at all, so this one opens a real loopback
+     * connection and requires the capture to name its port.
+     *
+     * <p>It abstains where the binaries are absent rather than failing: whether {@code lsof} and
+     * {@code netstat} exist is a property of the machine, not of the code under test, and a test that
+     * went red on a runner without them would be reporting the wrong thing. The abstention is the
+     * honest reading — this probe proves the capture works where it can run, and says nothing where
+     * it cannot.
+     */
+    @Test
+    @DisplayName("the OS socket snapshot enumerates a loopback socket this JVM actually holds")
+    void theOsSocketSnapshotSeesThisJvmsLoopbackSockets() throws IOException {
+        Assumptions.assumeTrue(SocketSnapshot.available(),
+                "lsof and netstat are both required to capture the OS socket state");
+        InetAddress loopback = InetAddress.getLoopbackAddress();
+        try (ServerSocket listener = new ServerSocket(0, 1, loopback);
+                Socket client = new Socket();
+                Socket ignored = acceptAfter(listener, client)) {
+            TimeoutException failure = assertThrows(TimeoutException.class,
+                    () -> Awaits.awaitLatch(new CountDownLatch(1), CONTROL_LABEL, CONTROL_CEILING));
+
+            assertTrue(portAppearsAsAnAddressIn(snapshotSectionOf(failure.getMessage()),
+                    listener.getLocalPort()),
+                    "the snapshot names the port of a socket this JVM holds; without that it is a "
+                            + "section header over a degradation note and proves nothing");
+        }
+    }
+
+    /**
+     * Narrows a timeout message to its socket-snapshot section.
+     *
+     * <p>Searching the whole message would be unsound: a five-digit port is a plausible substring of
+     * the eight-digit elapsed-nanos measurement and of the hexadecimal addresses in the thread dump,
+     * so a match outside the section would not be evidence that the capture saw anything.
+     *
+     * @param message the timeout message
+     * @return the section, or the empty string when the message carries none
+     */
+    private static String snapshotSectionOf(String message) {
+        int start = message.indexOf(SocketSnapshot.SECTION_HEADER);
+        return start < 0 ? "" : message.substring(start);
+    }
+
+    /**
+     * Reports whether a port appears as the port half of an address token.
+     *
+     * <p>Both renderings the section carries are matched: {@code lsof} separates a port from its host
+     * with a colon, {@code netstat} on macOS with a dot. The trailing boundary is what stops
+     * {@code 5912} from matching inside {@code 59120}.
+     *
+     * @param section the snapshot section
+     * @param port    the port to look for
+     * @return {@code true} when the port appears as an address token
+     */
+    private static boolean portAppearsAsAnAddressIn(String section, int port) {
+        return Pattern.compile("[.:]" + port + "\\b").matcher(section).find();
+    }
+
+    /**
+     * Connects {@code client} to {@code listener} and returns the accepted peer, so the caller holds
+     * all three sockets open across the capture.
+     *
+     * @param listener the bound listener
+     * @param client   the socket to connect
+     * @return the accepted server-side socket
+     * @throws IOException if the connect or the accept fails
+     */
+    private static Socket acceptAfter(ServerSocket listener, Socket client) throws IOException {
+        client.connect(new InetSocketAddress(listener.getInetAddress(), listener.getLocalPort()),
+                (int) Duration.ofSeconds(Awaits.TEARDOWN_CEILING_SECONDS).toMillis());
+        return listener.accept();
     }
 
     @Test
