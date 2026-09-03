@@ -240,7 +240,7 @@ class GatewayEdgeRouteTest {
             try {
                 // Act
                 client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS,
-                                "/nothing")
+                        "/nothing")
                         .compose(HttpClientRequest::send);
 
                 // Assert
@@ -258,8 +258,8 @@ class GatewayEdgeRouteTest {
         void webSocketBranchReleasesThroughTheStashedGuard() throws Exception {
             // Arrange — a real upgrade against a stub upstream, so the HTTP response never ends
             HttpServer upstream = Awaits.connect(vertx.createHttpServer()
-                    .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
-                    .listen(0, LoopbackHost.ADDRESS),
+                            .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
+                            .listen(0, LoopbackHost.ADDRESS),
                     "the stub upstream WebSocket server to start listening");
             CompletableFuture<Object> stashed = new CompletableFuture<>();
             HttpServer front = startFront(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), stashed);
@@ -292,8 +292,8 @@ class GatewayEdgeRouteTest {
             // Arrange — admission_cap 2 with a websocket_relay_cap of 1, so a single established relay
             // exhausts the sub-budget while leaving one general permit for ordinary traffic
             HttpServer upstream = Awaits.connect(vertx.createHttpServer()
-                    .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
-                    .listen(0, LoopbackHost.ADDRESS),
+                            .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
+                            .listen(0, LoopbackHost.ADDRESS),
                     "the stub upstream WebSocket server to start listening");
             Router router = Router.router(vertx);
             new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
