@@ -99,9 +99,19 @@ public final class SocketSnapshot {
      */
     static final String LSOF_SUBSECTION = "  lsof -w -nP -iTCP -a -p ";
 
-    /** Opens the {@code netstat} half of a capture. Same drift argument as {@link #LSOF_SUBSECTION}. */
+    /**
+     * Opens the {@code netstat} half of a capture. Same drift argument as {@link #LSOF_SUBSECTION}.
+     * <p>
+     * Deliberately carries no argv: the flags are platform-dependent (see {@link #netstatArgs()}),
+     * and a banner that named one platform's flags would stop matching on the other — silently
+     * turning a probe that narrows a message to these rows into one that finds nothing. The argv
+     * actually used is rendered inside the section instead.
+     */
     static final String NETSTAT_SUBSECTION =
-            "  netstat -anv -p tcp (Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate):";
+            "  netstat (Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate):";
+
+    /** {@code true} on macOS, whose {@code netstat} differs from Linux's in both flags and format. */
+    private static final boolean IS_MACOS = System.getProperty("os.name", "").startsWith("Mac");
 
     private static final CuiLogger LOGGER = new CuiLogger(SocketSnapshot.class);
 
@@ -124,10 +134,18 @@ public final class SocketSnapshot {
     private static final Pattern LSOF_PORT = Pattern.compile(":(\\d{1,5})\\b");
 
     /**
-     * Matches a {@code netstat} address token, whose port is separated by a dot rather than a colon
-     * on macOS ({@code 127.0.0.1.59120}, {@code ::1.59120}).
+     * Matches a {@code netstat} address token. macOS separates the port with a dot
+     * ({@code 127.0.0.1.59120}, {@code ::1.59120}); Linux uses a colon ({@code 127.0.0.1:59120}),
+     * the same shape {@code lsof} prints.
+     * <p>
+     * Platform-selected rather than a union of both: a dot-matching pattern applied to Linux output
+     * matches the dots <em>inside</em> the IPv4 address, so {@code 127.0.0.1:59120} would yield a
+     * spurious port {@code 1}. Accepting either separator everywhere would not widen coverage, it
+     * would manufacture wrong ports.
      */
-    private static final Pattern NETSTAT_PORT = Pattern.compile("\\.(\\d{1,5})(?:\\s|$|-)");
+    private static final Pattern NETSTAT_PORT = IS_MACOS
+            ? Pattern.compile("\\.(\\d{1,5})(?:\\s|$|-)")
+            : Pattern.compile(":(\\d{1,5})\\b");
 
     /**
      * Caps the loopback fallback rendering, so a machine with many loopback services cannot paste an
@@ -153,7 +171,8 @@ public final class SocketSnapshot {
         String lsof = run(LSOF_BINARIES, "lsof",
                 "-w", "-nP", "-iTCP", "-a", "-p", String.valueOf(pid));
         Set<String> ports = portsIn(lsof, LSOF_PORT);
-        String netstat = filterToPorts(run(NETSTAT_BINARIES, "netstat", "-anv", "-p", "tcp"), ports);
+        String[] netstatArgs = netstatArgs();
+        String netstat = filterToPorts(run(NETSTAT_BINARIES, "netstat", netstatArgs), ports);
         return new StringBuilder(512)
                 .append(SECTION_HEADER)
                 .append(System.lineSeparator()).append("  pid=").append(pid)
@@ -162,8 +181,27 @@ public final class SocketSnapshot {
                 .append(System.lineSeparator()).append(indent(lsof))
                 .append(System.lineSeparator())
                 .append(NETSTAT_SUBSECTION)
+                .append(System.lineSeparator()).append("    argv: netstat ")
+                .append(String.join(" ", netstatArgs))
                 .append(System.lineSeparator()).append(indent(netstat))
                 .toString();
+    }
+
+    /**
+     * The {@code netstat} flags for this platform.
+     *
+     * <p>macOS selects the protocol with {@code -p tcp} and takes {@code -v} for the extra
+     * Recv-Q/Send-Q and process columns. Linux's {@code netstat} reads {@code -p} as
+     * <em>show-program</em> — it takes no argument there — so passing {@code -p tcp} does not select
+     * TCP and does not produce the intended table. {@code -ant} is the Linux spelling that does.
+     *
+     * <p>This divergence is why the netstat half produced no usable rows on Linux CI while passing
+     * on macOS: the invocation was macOS-only, and so was the port pattern above.
+     *
+     * @return the argv tail for this platform, never empty
+     */
+    private static String[] netstatArgs() {
+        return IS_MACOS ? new String[] {"-anv", "-p", "tcp"} : new String[] {"-ant"};
     }
 
     /**
