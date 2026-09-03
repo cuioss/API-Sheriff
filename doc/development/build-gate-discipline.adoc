@@ -572,9 +572,28 @@ was one call. Every live-socket fixture bound its ephemeral server with the sing
 `listen(0)` overload -- the dual-stack wildcard -- while the client in that same fixture dialled
 `127.0.0.1`. All *20* such sites across *9* files now bind through `LoopbackHost.ADDRESS` in
 `de.cuioss.sheriff.gateway.testsupport`, and every `Awaits` ceiling now folds a `SocketSnapshot`
-capture of the kernel's own view -- `lsof` for this pid plus `netstat -anv -p tcp` -- into its
-timeout message. A future occurrence therefore arrives with its evidence attached, instead of
-requiring another investigation to go and obtain it.
+capture of the kernel's own view -- `lsof` for this pid, plus `netstat` in whichever spelling the
+platform takes (`-anv -p tcp` on macOS, `-ant` on Linux) -- into its timeout message. A future
+occurrence therefore arrives with its evidence attached, instead of requiring another investigation
+to go and obtain it.
+
+[NOTE]
+====
+*The netstat half was macOS-only when it first landed, and CI is what caught it.* The original
+invocation and the port pattern were both macOS spellings: Linux reads `-p` as _show-program_ rather
+than as a protocol selector, and prints `127.0.0.1:59120` where macOS prints `127.0.0.1.59120`. The
+half therefore produced nothing usable on Linux.
+
+Two beliefs were wrong at once, which is why it survived local verification. The first was that
+`netstat` is absent from `ubuntu-latest` -- it is present, so the capture's availability probe
+returned true and the half ran rather than abstaining. The second was structural: the probe asserting
+the capture had worked scanned the *combined* section, so `lsof` output satisfied it on a run where
+`netstat` contributed nothing. Splitting that assertion per tool is what turned an invisible
+degradation into a red build.
+
+The general shape is the one this page keeps re-learning: a check whose green is satisfiable by a
+neighbour is not a check on the thing it names.
+====
 
 *The condition is not thereby closed.* What landed removes the measured transport-level cause. No
 post-fix rate has been measured, the quarter-of-runs figure below is a *pre-fix* rate, and the three
