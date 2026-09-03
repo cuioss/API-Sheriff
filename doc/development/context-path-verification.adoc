@@ -95,8 +95,7 @@ Build and run with no seam property at all, then drive the data plane.
 
 [source,bash]
 ----
-python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
-  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests"
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
 
 docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:ctxpath-default api-sheriff/
 ----
@@ -213,9 +212,8 @@ build seam, so a run that skips the rebuild has verified nothing about it.
 
 [source,bash]
 ----
-python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
-  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests \
-    -Dsheriff.context-path=/gw -Dsheriff.management-context-path=/mgmt"
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests \
+  -Dsheriff.context-path=/gw -Dsheriff.management-context-path=/mgmt
 
 docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:ctxpath api-sheriff/
 ----
@@ -400,6 +398,11 @@ docker rmi api-sheriff:ctxpath api-sheriff:ctxpath-default
 
 Rebuild without the seam properties before continuing other work -- `target/` otherwise holds a
 prefixed executable that no other procedure in this repository expects.
+
+[source,bash]
+----
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests
+----
 
 == Reading this runbook against a later tree
 

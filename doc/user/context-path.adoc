@@ -4,168 +4,507 @@
 :sectnums:
 
 Where the gateway serves its data plane, where it serves health and metrics, and what it costs to
-move either. The short answer is the one most readers arrive not expecting: *a context path is fixed
-when the artifact is built*, so moving it is a rebuild, never an environment variable on a running
-container. This page states the three keys involved, the build seam that changes them, the mechanism
-that makes that seam work, and the consequences a deployment inherits by choosing a non-root path.
+move either.
 
-The classification rule this page applies -- policy, deployment-bound, build-time -- is
-link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025];
-the class-by-class operator view is
-link:environment-variable-overrides.adoc[Environment-Variable Overrides].
+*A context path is fixed when the artifact is built.* Moving it is a rebuild, never an environment
+variable on a running container. Everything else on this page follows from that one fact.
 
-== The three keys
-
-The shipped `application.properties` declares all three at their current effective Quarkus defaults.
-Declaring them changes no behaviour -- it makes the acting values explicit rather than leaving them
-implicit in framework defaults, so a reader can see what is in force without knowing the framework's
-own default table.
-
-[cols="2,1,3,1", options="header"]
+[cols="1,3", options="header"]
 |===
-| Key | Shipped default | What it places | Build seam
+| If you want | Read
+
+| the definitions and the defaults
+| <<_what_the_context_path_is>>
+
+| a build under your own path, end to end
+| <<_building_with_your_own_context_path>>
+
+| why the mechanism is shaped the way it is
+| <<_how_it_works>>
+|===
+
+[[_what_the_context_path_is]]
+== What the context path is
+
+API Sheriff serves on *two* independent listeners, each with its own prefix. Both prefixes are
+declared in the shipped `application.properties`, at their current effective Quarkus defaults.
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Default | Port | What it places
 
 | `quarkus.http.root-path`
 | `/`
+| `8443`
 | The *application* context path -- the prefix beneath which the data-plane edge serves every route
   declared by `gateway.yaml` and `endpoints/*.yaml`.
-| `-Dsheriff.context-path`
 
 | `quarkus.management.root-path`
 | `/q`
-| The *management* context path -- the prefix beneath which health and metrics are served, on the
-  separate management port (`9000` by default).
-| `-Dsheriff.management-context-path`
+| `9000`
+| The *management* context path -- the prefix beneath which `health`, `health/ready`, `health/live`
+  and `metrics` are served.
 
 | `quarkus.http.non-application-root-path`
 | `q`
-| Non-application routes on the *main* HTTP port. Acts only when the management interface is
-  disabled -- see <<_when_the_third_key_acts>>.
-| none
+| `8443`
+| Non-application routes on the *main* HTTP port. Inert while the management interface is enabled --
+  see <<_when_the_third_key_acts>>.
 |===
 
-=== Absolute and relative are not the same thing here
+So a stock build answers the data plane at `https://<host>:8443/...` and the probes at
+`https://<host>:9000/q/health/ready`.
 
-`quarkus.http.non-application-root-path` is declared *non-absolute* (`q`, with no leading slash), so
-it resolves *relative* to `quarkus.http.root-path` and moves with it.
+=== The two paths are independent
 
-`quarkus.management.root-path` is an *independent absolute* key (`/q`). It does *not* move when the
-application root path moves, and that independence is the reason the two are configured separately.
-It is also the single most common surprise in this area, so it is stated again in its own section
-below: <<_the_management_interface_does_not_move_with_the_application>>.
+`quarkus.management.root-path` is an *absolute* key. It does *not* move when the application root
+path moves. A build carrying only a new application path leaves health and metrics exactly where
+your monitoring already looks, which is almost always what a deployment behind an ingress prefix
+wants. Moving the probes takes a second, separate property.
 
-[[_when_the_third_key_acts]]
-=== When the third key acts
+(`quarkus.http.non-application-root-path` is the exception: it is declared *non-absolute* -- `q`,
+with no leading slash -- so it resolves relative to `quarkus.http.root-path` and moves with it.)
 
-`quarkus.http.non-application-root-path` acts when the management interface is *disabled*. This
-stack runs with `quarkus.management.enabled=true`, and while the management interface is enabled
-every non-application route -- health, metrics -- is served by the *management* router under
-`quarkus.management.root-path` on the management port. The third key governs nothing there.
+=== Both are build-time keys
 
-Set `quarkus.management.enabled=false` and the non-application endpoints move back onto the main HTTP
-port, where they are served at `{quarkus.http.root-path}/{quarkus.http.non-application-root-path}` --
-and that is the condition under which this key places them. It is declared so that a reader meets a
-key with a documented condition rather than a key that appears to do nothing.
-
-That said, disabling the management interface to obtain a plain-HTTP probe endpoint is a trap with
-its own consequences; link:tls-edge.adoc[TLS Edge] documents why the `plain-management` TLS bucket is
-the supported route instead.
-
-== Build-time, not runtime
-
-Each of the three keys sits on a Quarkus `*BuildTimeConfig` interface, so its value is fixed at
-*augmentation* -- when the application is built, not when it starts.
-
-The practical consequence is blunt, and it is worth internalising before reaching for a container
-environment variable:
+All three sit on Quarkus `*BuildTimeConfig` interfaces, so each value is fixed at *augmentation* --
+when the application is built, not when it starts.
 
 [IMPORTANT]
 ====
-*`QUARKUS_HTTP_ROOT_PATH`, `QUARKUS_HTTP_NON_APPLICATION_ROOT_PATH` and `QUARKUS_MANAGEMENT_ROOT_PATH`
-are routing-inert against an already-built image.* Setting any of them on a container started from a
-published artifact moves nothing: the value that governs routing was fixed at augmentation, and the
-override cannot reach it. Changing a context path *always* costs a rebuild.
+*`QUARKUS_HTTP_ROOT_PATH`, `QUARKUS_MANAGEMENT_ROOT_PATH` and
+`QUARKUS_HTTP_NON_APPLICATION_ROOT_PATH` are routing-inert against an already-built image.* Setting
+any of them on a container started from a published artifact moves nothing. Changing a context path
+*always* costs a rebuild.
 
-*It is not necessarily silent, though, and this runbook does not claim it is.* The built value is
-recorded in the artifact and compared against the runtime one by
-`io.quarkus.deployment.configuration.ConfigGenerationBuildStep`'s build-time-mismatch check, which is
-governed by `quarkus.config.build-time-mismatch-at-runtime` -- left at its `warn` default here. A
-divergent override may therefore produce a startup warning naming the key. The *routing* claim above
-is measured; the absence of a log line is not, so treat a mismatch warning as expected noise rather
-than as evidence the override took effect.
+The same holds for `gateway.yaml`: the path is not there, and cannot be. That document is a *runtime*
+source read at startup, so a key already fixed at augmentation could never take effect from it.
 ====
 
-=== Why it is not in `gateway.yaml` either
+=== What choosing a non-root path changes
 
-Under ADR-0025's *policy / deployment-bound / build-time* triage the context path is a *build-time*
-knob, so it is not part of `gateway.yaml`'s neutral vocabulary. That absence is a structural
-impossibility rather than a stylistic choice: `gateway.yaml` is a *runtime* source, read at startup
-by `ConfigProducer`, so a key that was already fixed at augmentation cannot be projected from it. A
-`context_path` written in `gateway.yaml` could never take effect, and putting it there would only
-make it *look* settable. The path therefore never enters that document.
-
-== The Maven build seam
-
-The operator-facing seam for the rebuild is two Maven properties on `api-sheriff/pom.xml`. Each
-activates a profile by its own presence, so an unset property leaves the corresponding profile
-inactive and the build ships the stock default.
+Three consequences, all of them yours to handle. Each is expanded in <<_how_it_works>>.
 
 [cols="2,3", options="header"]
 |===
-| Property | Sets
+| Consequence | Short form
 
-| `-Dsheriff.context-path`
-| The application context path (`quarkus.http.root-path`).
+| Your route prefixes move too
+| Route selection matches the *raw* inbound path, prefix included. On a `/gw` build,
+  `path_prefix: /api` does *not* answer at `/gw/api` -- write `path_prefix: /gw/api`.
 
-| `-Dsheriff.management-context-path`
-| The management context path (`quarkus.management.root-path`).
+| Off-context requests lose the error envelope
+| A request outside the context path never reaches the gateway. Quarkus' main router answers it with
+  a plain `text/html` 404, not the RFC 9457 `application/problem+json` envelope.
+
+| Host-side probe wiring is not derived
+| Compose labels, scrape configs and probe URLs are declarations by the *deployment*. Nothing
+  derives them from the image.
 |===
 
-Both are optional and independent -- supply one, the other, or neither.
+Unaffected: the image's baked `HEALTHCHECK`, which is a protocol-blind TCP accept against the
+management port and reads no URL at all.
+
+[[_building_with_your_own_context_path]]
+== Building with your own context path
+
+Two routes, depending on whether you own a build or a checkout. Both produce the same thing.
+
+[cols="1,2,2", options="header"]
+|===
+| | <<_route_a_your_own_project>> | <<_route_b_from_this_repository>>
+
+| For
+| A deployer who does not clone this repository
+| Someone working in this repository
+
+| Seam
+| A POM property, inherited from the published build parent
+| A `-D` property on the command line
+
+| Application path
+| `<sheriff.context-path>`
+| `-Dsheriff.context-path`
+
+| Management path
+| `<sheriff.management-context-path>`
+| `-Dsheriff.management-context-path`
+|===
+
+Both properties are optional and independent -- supply one, the other, or neither. Supplying neither
+ships the stock `/` and `/q`.
+
+[[_route_a_your_own_project]]
+=== Route A -- your own project
+
+This is the supported route for a third party. The worked example below moves *both* paths, to `/gw`
+and `/mgmt`, and runs end to end.
+
+==== 1. The POM -- the whole of it
+
+Inherit the published build parent and set the properties. You declare no dependency, no plugin and
+no profile: the parent supplies the `api-sheriff` dependency, the Quarkus platform, the
+`quarkus-maven-plugin` binding and the `native` profile.
+
+[source,xml]
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>de.cuioss.sheriff.gateway</groupId>
+        <artifactId>api-sheriff-build-parent</artifactId>
+        <!-- The API Sheriff release you are adopting. Bumping this bumps the gateway with it:
+             the parent declares the api-sheriff dependency at ${project.parent.version}. -->
+        <version>0.2.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>my-gateway</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <properties>
+        <sheriff.context-path>/gw</sheriff.context-path>
+        <!-- Optional and independent. Omit it and health/metrics stay at /q. -->
+        <sheriff.management-context-path>/mgmt</sheriff.management-context-path>
+    </properties>
+</project>
+----
+
+==== 2. Build the native executable
+
+[source,bash]
+----
+mvn package -Pnative
+----
+
+Produces `target/my-gateway-1.0.0-SNAPSHOT-runner`.
+
+The inherited `native` profile sets `quarkus.native.container-build=true`, so the compile runs
+*inside* the Mandrel builder container and you need a container runtime rather than a local GraalVM.
+The result is a *Linux* binary: on macOS or Windows it does not execute directly, and step 3 is how
+you run it.
+
+For a JVM-mode build instead, drop `-Pnative`; the same properties apply and the result is
+`target/quarkus-app/quarkus-run.jar`.
+
+==== 3. The image
+
+The build parent ships no Dockerfile, deliberately -- base image, registry, user and filesystem
+posture, scanning and signing are deployment-owned choices. Copy this one into your project and own
+it. It is this repository's `api-sheriff/src/main/docker/Dockerfile.native`, reduced to the parts a
+consumer needs:
+
+.`Dockerfile`
+[source,dockerfile]
+----
+FROM quay.io/quarkus/quarkus-distroless-image:2.0
+
+WORKDIR /app
+
+COPY --chmod=0755 target/*-runner /app/application
+
+EXPOSE 8443 9000
+
+# Exec (JSON) form is required, not a style preference: this base carries no shell, so the string
+# form -- which Docker rewrites to CMD-SHELL -- would resolve /bin/sh and fail permanently.
+# The probe is a protocol-blind TCP accept against 127.0.0.1:9000. It carries no URL, so neither
+# context path reaches it; the management PORT does.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["/app/application", "--health-probe"]
+
+USER nonroot
+----
+
+[source,bash]
+----
+docker build -t my-gateway:1.0.0 .
+----
+
+==== 4. The configuration -- carry the prefix into `gateway.yaml`
+
+*This is the step that is easy to miss and it is what makes the build actually serve.* Route
+selection consumes the raw inbound path, so every anchor and route `path_prefix` must carry the new
+prefix. The gateway does not reconcile the two for you.
+
+The smallest configuration directory that boots is three files:
+
+.`config/gateway.yaml`
+[source,yaml]
+----
+version: 1
+metadata:
+  config_version: "my-gateway"
+
+allowed_methods: ["GET", "HEAD"]
+
+security_defaults:
+  profile: strict
+
+anchors:
+  api:
+    path_prefix: /gw/api        # <-- the context path, then your own prefix
+    type: proxy
+    access: public
+
+token_validation:
+  issuers:
+    - name: static
+      issuer: https://api-sheriff.test/ctxpath
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+----
+
+.`config/endpoints/demo.yaml`
+[source,yaml]
+----
+endpoint:
+  id: demo-api
+  enabled: true
+  base_url: UPSTREAM
+  anchor: api
+  auth:
+    require: none
+  routes:
+    - id: demo-api-get
+      match:
+        path_prefix: /gw/api    # <-- and here
+----
+
+.`config/topology.properties`
+[source,properties]
+----
+UPSTREAM=${TOPOLOGY_UPSTREAM:-http://upstream:8080}
+----
+
+[NOTE]
+====
+Three details in that document are load-bearing, and each one costs a failed boot to discover:
+
+* *A `token_validation` block is mandatory even for an all-public route set.* Omitting it aborts
+  startup with `token_validation is required to build the bearer-token validator`.
+* *Use a `source: file` JWKS* if you want to smoke-test without an identity provider -- a file loader
+  resolves synchronously.
+* *The main listener needs TLS material or an explicit opt-out.* The shipped
+  `quarkus.http.insecure-requests=redirect` refuses to boot without a certificate.
+====
+
+==== 5. Run it
+
+The smoke-test posture below is plain HTTP on both listeners, which is the smallest thing that runs.
+For the production posture -- terminated TLS on both, certificates supplied by the deployment -- see
+link:container-image.adoc[Container Image].
+
+[source,bash]
+----
+docker run -d --name my-gateway \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  -p 8080:8080 -p 9000:9000 \
+  -v "$PWD/config:/app/sheriff-config:ro" \
+  -v "$PWD/certs:/app/certificates:ro" \
+  -e SHERIFF_CONFIG_DIR=/app/sheriff-config \
+  -e QUARKUS_HTTP_INSECURE_REQUESTS=enabled \
+  -e QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management \
+  my-gateway:1.0.0
+----
+
+`QUARKUS_MANAGEMENT_TLS_CONFIGURATION_NAME=plain-management` is the named opt-out that takes the
+management interface back to plain HTTP; it is audited, and boot logs `ApiSheriff-115` at `WARNING`
+naming the port and what it costs. `certs/` holds the `test-jwks.json` the configuration names --
+it is mounted even on a plain-HTTP run, because it is named by `gateway.yaml`, not by a listener.
+
+==== 6. Verify
+
+[source,bash]
+----
+curl -i http://localhost:8080/gw/api               # in context, route matches
+curl -i http://localhost:8080/gw/no-such-route     # in context, no route
+curl -i http://localhost:8080/no-such-route        # off context
+curl -i http://localhost:9000/mgmt/health/ready    # probes, at the moved management path
+curl -i http://localhost:9000/q/health/ready       # the old management path
+docker inspect --format '{{json .State.Health}}' my-gateway
+----
+
+What these answer, and why each one matters:
+
+[cols="2,3", options="header"]
+|===
+| Request | Expected
+
+| `GET /gw/api`
+| `502`, `application/problem+json` --
+  `{"type":"urn:api-sheriff:problem:upstream","title":"Upstream","status":502}`. *A 502 here is the
+  success signal*: route selection matched and the gateway forwarded to the upstream, which the
+  smoke-test topology deliberately leaves unreachable.
+
+| `GET /gw/no-such-route`
+| `404`, `application/problem+json` -- in context, so the gateway answered deny-by-default in its
+  own RFC 9457 envelope.
+
+| `GET /no-such-route`
+| `404`, `text/html`, `<html><body><h1>Resource not found</h1></body></html>` -- off context. The
+  request never reached the gateway. Expected, not a defect; see
+  <<_off_context_requests_answer_with_a_plain_404>>.
+
+| `GET :9000/mgmt/health/ready`
+| `200`, `application/json` -- the probes moved, because the *second* property moved them.
+
+| `GET :9000/q/health/ready`
+| `404` -- the shipped default no longer answers. Omit
+  `<sheriff.management-context-path>` and this row is the `200` instead.
+
+| baked `HEALTHCHECK`
+| `"Status":"healthy"`, `"FailingStreak":0` -- unaffected by either path.
+|===
+
+*If `GET /gw/api` answers `404` with `problem+json` rather than `502`, the build is fine and step 4
+is not.* The request reached the gateway and failed route selection, which means a `path_prefix`
+still lacks the prefix.
+
+[[_route_b_from_this_repository]]
+=== Route B -- from this repository
+
+Same seam, supplied as `-D` properties. Each property activates a profile in `api-sheriff/pom.xml` by
+its own presence, so an unset property leaves that profile inactive and the build ships the stock
+default.
 
 .JVM package at a non-root application path
 [source,bash]
 ----
-python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
-  --command-args "package -pl api-sheriff -am -Dsheriff.context-path=/gw"
+./mvnw package -pl api-sheriff -am -Dsheriff.context-path=/gw
 ----
 
 .Native build moving both paths, then the image
 [source,bash]
 ----
-python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
-  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests \
-    -Dsheriff.context-path=/gw -Dsheriff.management-context-path=/mgmt"
-----
+./mvnw clean install -Pnative -pl api-sheriff -am -DskipTests \
+  -Dsheriff.context-path=/gw -Dsheriff.management-context-path=/mgmt
 
-[source,bash]
-----
 docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:gw api-sheriff/
 ----
 
-Both profiles are *inactive by default*, and that is load-bearing rather than incidental: at default
-no value is supplied, the declaration's own default is the acting one, and the build ships `/` and
-`/q` exactly as it did before the seam existed.
+The `Dockerfile.native` build context is `api-sheriff/` because the image copies `target/*-runner`
+from it -- the executable must already be built.
 
-[NOTE]
+Steps 4 to 6 of route A apply unchanged.
+
+[WARNING]
 ====
-*Maven activates a profile by property from user properties only* -- `-D` on the command line, or an
-`<activeProfiles>`/`<properties>` entry in `settings.xml`. It never activates one from a POM
-`<properties>` entry, because POM properties are resolved after profile activation has already been
-decided.
+*`-D` on the command line is the only way to activate these profiles.* Maven activates a profile by
+property from *user* properties only -- the command line, or an `<activeProfiles>`/`<properties>`
+entry in `settings.xml`. It never activates one from a POM `<properties>` entry, because POM
+properties are resolved after profile activation has already been decided.
 
-That is why a *downstream* build cannot use these properties as POM properties to configure its own
-context path, and why the published build parent
-(`de.cuioss.sheriff.gateway:api-sheriff-build-parent`) uses an unconditional property mapping instead
-of a profile. Consumers inheriting that parent are covered in
-link:downstream-parent.adoc[Rebuilding Under Your Own Context Path].
+That is why route A exists at all, and why the published build parent uses an unconditional property
+mapping rather than a profile.
 ====
 
-== Why the seam works through a carrier key
+=== The checklist: everything else that must move
 
-This is the non-obvious part, and it is the part most likely to be "simplified" away by a later
-reader, so it is stated at length. The two configurable keys are declared as *expressions over a
-carrier key* rather than as plain literals:
+A rebuilt artifact is half the job. These are *declarations by the deployment* -- nothing derives
+them from the image, and there is no mechanism by which an image reports its own context path.
+
+[cols="2,1,3", options="header"]
+|===
+| What | Moves with | Why it is not derived
+
+| Anchor and route `path_prefix` in `gateway.yaml` and `endpoints/*.yaml`
+| the *application* path
+| Route selection matches the raw inbound path; the two are configured independently.
+
+| Ingress / reverse-proxy rules, and any client base URL
+| the *application* path
+| Outside the artifact entirely.
+
+| The `de.cuioss.sheriff.management-root-path` Compose label
+| the *management* path
+| It is what host-side readiness gates *read*; it is a declaration, not a reflection of the image.
+
+| Prometheus `metrics_path` in your scrape config
+| the *management* path
+| Prometheus interpolates no environment variables into a scrape config. There is no templating
+  mechanism that reaches the value.
+
+| Orchestrator liveness/readiness probe paths
+| the *management* path
+| Same reason as the label.
+
+| The image's `HEALTHCHECK`
+| *neither* -- but it does move with the management **port**
+| The probe is a URL-free TCP accept against `9000` as a compiled-in constant.
+|===
+
+In this repository the same list is guarded rather than left to reviewer vigilance:
+`ManagementRootPathLabelIT` compares the Prometheus `metrics_path`,
+`integration-tests/scripts/verify-invalid-config-fails.sh` and `BaseIntegrationTest`'s default
+constant against the Compose label, and the release workflow asserts its own smoke-probe constant
+against the shipped declaration. See <<_the_host_side_what_derives_the_path_and_what_cannot>> for
+what that does and does not buy you.
+
+=== Do you need a multi-stage Dockerfile?
+
+*No, and adding one would nest a container build inside a container build.*
+
+The native compile *already* runs in a container. `-Pnative` sets
+`quarkus.native.container-build=true`, so `mvn package -Pnative` starts the Mandrel builder image,
+compiles inside it, and leaves a Linux executable in `target/`. The pipeline is therefore already
+two-stage -- it is just orchestrated by Maven rather than by Docker -- and the portability argument
+for multi-staging (no local GraalVM toolchain) is already paid for.
+
+What the single-stage Dockerfile buys on top of that:
+
+* The `docker build` step is seconds, not minutes, and it re-runs without recompiling.
+* The runtime stage is distroless with no build tooling in it, which is the property a multi-stage
+  build is usually adopted to obtain in the first place.
+* Your CI caches the Maven repository the way it already caches it, rather than through Docker layer
+  caching of a `mvn` invocation.
+
+If you want one self-contained `docker build` anyway -- a hermetic CI with no Maven step is the
+honest reason to -- the builder stage must set `-Dquarkus.native.container-build=false`, because
+inside the builder container there is no Docker daemon to start a nested one. That variant is not
+exercised by this repository and is not covered by its verification runbook.
+
+[[_how_it_works]]
+== How it works
+
+The mechanism, its costs, and the behaviours that surprise people. Everything here is background for
+the two sections above.
+
+=== Build-time, not runtime
+
+Each of the three keys sits on a Quarkus `*BuildTimeConfig` interface, so its value is fixed at
+augmentation. The environment variables are routing-inert against an already-built image.
+
+*It is not necessarily silent, though, and this page does not claim it is.* The built value is
+recorded in the artifact and compared against the runtime one by
+`io.quarkus.deployment.configuration.ConfigGenerationBuildStep`'s build-time-mismatch check,
+governed by `quarkus.config.build-time-mismatch-at-runtime` -- left at its `warn` default here. A
+divergent override may therefore produce a startup warning naming the key. The *routing* claim is
+measured; the absence of a log line is not, so treat a mismatch warning as expected noise rather than
+as evidence the override took effect.
+
+=== Why it is not in `gateway.yaml` either
+
+Under link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]'s
+*policy / deployment-bound / build-time* triage the context path is a *build-time* knob, so it is not
+part of `gateway.yaml`'s neutral vocabulary. That absence is a structural impossibility rather than a
+stylistic choice: `gateway.yaml` is a *runtime* source, read at startup by `ConfigProducer`, so a key
+already fixed at augmentation cannot be projected from it. A `context_path` written there could never
+take effect, and putting it there would only make it *look* settable.
+
+The class-by-class operator view of that triage is
+link:environment-variable-overrides.adoc[Environment-Variable Overrides].
+
+=== Why the seam works through a carrier key
+
+This is the non-obvious part, and the part most likely to be "simplified" away by a later reader, so
+it is stated at length. The two configurable keys are declared as *expressions over a carrier key*
+rather than as plain literals:
 
 .`api-sheriff/src/main/resources/application.properties`
 [source,properties]
@@ -184,38 +523,42 @@ quarkus.management.root-path=${quarkus.sheriff-mgmt-path:/q}
 Two facts, both established by measurement rather than by reading documentation, force that shape.
 
 *The build property must be `quarkus.`-prefixed to survive at all.* `quarkus-maven-plugin` forwards
-POM and user properties into augmentation through `getBuildSystemProperties(quarkusOnly)`, which
-keeps *only* `quarkus.`-prefixed names. A profile that set `sheriff.context-path` itself as the build
-property would be filtered out and never reach the configuration. That is why the profile maps the
-operator-facing `sheriff.*` property onto a `quarkus.*` one.
+the effective POM's properties into augmentation through `getBuildSystemProperties(quarkusOnly)`,
+called with `quarkusOnly = true`, which keeps *only* `quarkus.`-prefixed names. A profile that set
+`sheriff.context-path` itself as the build property would be filtered out and never reach the
+configuration. That is why the profile maps the operator-facing `sheriff.*` property onto a
+`quarkus.*` one.
 
 *The carrier is needed because `application.properties` outranks the forwarded property.* Forwarded
-build-system properties land at ordinal `100`; `src/main/resources/application.properties` is ordinal
-`250` and therefore *wins* for every key it declares. A build seam that set `quarkus.http.root-path`
-directly would consequently be overridden by the very declaration it was trying to change. This is
-not a theory about ordinals: with the direct mapping in place, `package -Dsheriff.context-path=/gw`
-produced *zero* occurrences of `/gw` in `generated-bytecode.jar`. The seam was inert while every
-build stayed green.
+build-system properties land in a `PropertiesConfigSource` named `Build system` at the default
+ordinal `100`; `src/main/resources/application.properties` is ordinal `250` and therefore *wins* for
+every key it declares. A build seam that set `quarkus.http.root-path` directly would consequently be
+overridden by the very declaration it was trying to change. This is not a theory about ordinals: with
+the direct mapping in place, `package -Dsheriff.context-path=/gw` produced *zero* occurrences of
+`/gw` in `generated-bytecode.jar`. The seam was inert while every build stayed green.
 
 Declaring the winning value as an *expression* inverts that. The ordinal-250 declaration still wins,
 but what it wins *with* is a reference: the carrier key resolves from whatever source supplies it --
-the ordinal-100 build-system source when the Maven seam sets it, and the expression's own inline
-default when nothing does. So the seam acts, and an unconfigured build still ships `/` and `/q`.
+the ordinal-100 build-system source when the seam sets it, and the expression's own inline default
+when nothing does. So the seam acts, and an unconfigured build still ships `/` and `/q`.
 
 [WARNING]
 ====
 *Do not flatten these declarations back to literals.* The literal form reads more obviously and
-`-Dsheriff.context-path` silently stops acting -- a default build produces the same bytes either
-way, so the regression is invisible at runtime.
+`-Dsheriff.context-path` silently stops acting -- a default build produces the same bytes either way,
+so the regression is invisible at runtime.
 
-It is not, however, invisible to the suite: two tests assert the declared form directly, and
-flattening either declaration turns them red. `ContextPathDefaultsTest` reads the RAW declared value
-out of the packaged `target/classes/application.properties` and asserts it is the expression rather
-than the resolved value, and `BuildParentContractTest.carrierFor` fails when a declaration is not an
-expression over its carrier. Those are the guards; do not remove them as redundant with this prose.
+It is not, however, invisible to the suite: two tests assert the declared form directly.
+`ContextPathDefaultsTest` reads the RAW declared value out of the packaged
+`target/classes/application.properties` and asserts it is the expression rather than the resolved
+value, and `BuildParentContractTest.carrierFor` fails when a declaration is not an expression over
+its carrier. Those are the guards; do not remove them as redundant with this prose.
 ====
 
-=== The accepted cost: two keys on a namespace that does not own them
+`quarkus.http.non-application-root-path` takes no expression: it is not part of the seam, so it stays
+a literal.
+
+==== The accepted cost: two keys on a namespace that does not own them
 
 `quarkus.sheriff-context-path` and `quarkus.sheriff-mgmt-path` are *our* key names on Quarkus'
 namespace. Quarkus owns no such keys, so they are not a real configuration surface: no validation, no
@@ -239,14 +582,11 @@ link:../development/context-path-verification.adoc#_case_3_rebuild_through_the_s
 runbook].
 
 Read that as a reason to be *more* careful with these two names, not less: there is no warning to
-catch a rename or a typo, which is exactly what `BuildParentContractTest`'s carrier-coupling assertion
-exists to catch instead.
+catch a rename or a typo, which is exactly what `BuildParentContractTest`'s carrier-coupling
+assertion exists to catch instead.
 ====
 
-`quarkus.http.non-application-root-path` takes no expression: it is not part of the seam (see
-<<_when_the_third_key_acts>>), so it stays a literal.
-
-== One measured side effect, confined to the test harness
+==== One measured side effect, confined to the test harness
 
 Quarkus normalises `quarkus.http.root-path` by prepending a `/` when the value does not already start
 with one -- and in the `@QuarkusTest` augmentation path it applies that normalisation to the *raw*
@@ -271,38 +611,107 @@ records the empty string and the effective `/` comes back from the framework's o
 exactly the implicitness this declaration exists to remove. All three costs were built and measured;
 the `//` read-back is the cheapest, and it is the one taken deliberately.
 
-[[_the_management_interface_does_not_move_with_the_application]]
-== The management interface does not move with the application
+[[_when_the_third_key_acts]]
+=== When the third key acts
 
-`quarkus.management.root-path` is an independent absolute key. Moving the application root path does
-*not* move the probe endpoints.
+`quarkus.http.non-application-root-path` acts when the management interface is *disabled*. This stack
+runs with `quarkus.management.enabled=true`, and while the management interface is enabled every
+non-application route -- health, metrics -- is served by the *management* router under
+`quarkus.management.root-path` on the management port. The third key governs nothing there.
 
-Concretely, a build carrying only `-Dsheriff.context-path=/gw`:
+Set `quarkus.management.enabled=false` and the non-application endpoints move back onto the main HTTP
+port, where they are served at `{quarkus.http.root-path}/{quarkus.http.non-application-root-path}` --
+and that is the condition under which this key places them. It is declared so that a reader meets a
+key with a documented condition rather than a key that appears to do nothing.
+
+The router registers the composed prefix either way: a `/gw` build's native executable contains
+`/gw/q/` as well as `/gw/`, inert but present.
+
+That said, disabling the management interface to obtain a plain-HTTP probe endpoint is a trap with
+its own consequences; link:tls-edge.adoc[TLS Edge] documents why the `plain-management` TLS bucket is
+the supported route instead.
+
+=== The management interface does not move with the application
+
+`quarkus.management.root-path` is an independent absolute key. Concretely, a build carrying only
+`-Dsheriff.context-path=/gw`:
 
 * serves the data plane at `https://<host>:8443/gw/...`;
 * still serves health and metrics at `https://<host>:9000/q/health`, `.../q/health/ready`,
   `.../q/health/live` and `.../q/metrics`, unchanged.
 
-Moving the probes as well takes the second property, `-Dsheriff.management-context-path=/mgmt`. The
-two are orthogonal on purpose: a deployment that relocates its public data plane behind an ingress
-prefix usually wants its operational surface to stay exactly where its monitoring already looks.
+Moving the probes as well takes the second property. The two are orthogonal on purpose: a deployment
+that relocates its public data plane behind an ingress prefix usually wants its operational surface
+to stay exactly where its monitoring already looks.
 
 The management interface's *port*, scheme and single-port constraint are separate concerns and are
-deployment-bound rather than build-time; they are covered in
-link:tls-edge.adoc[TLS Edge] and link:environment-variable-overrides.adoc[Environment-Variable
-Overrides].
+deployment-bound rather than build-time; they are covered in link:tls-edge.adoc[TLS Edge] and
+link:environment-variable-overrides.adoc[Environment-Variable Overrides].
 
-== The host side: what derives the path, and what cannot
+[[_off_context_requests_answer_with_a_plain_404]]
+=== Off-context requests answer with a plain 404
+
+Choosing a non-root application context path changes the error surface at the edge, and the change is
+easy to misread as a defect. It is not one.
+
+The gateway's data plane is a single catch-all Vert.x route registered *last* on the Quarkus main
+router (`router.route().last().handler(...)`), and that router is itself mounted beneath
+`quarkus.http.root-path`. Everything the gateway does -- deny-by-default route selection, the
+inbound-validation pipeline, the RFC 9457 `application/problem+json` error envelope -- lives inside
+that catch-all, so it only ever sees requests that fall *within* the configured context path.
+
+The consequence, for a build carrying `-Dsheriff.context-path=/gw`:
+
+[cols="2,3", options="header"]
+|===
+| Request | Answer
+
+| `GET /gw/no-such-route`
+| *In context.* The request reaches the gateway's catch-all, fails deny-by-default route selection,
+  and is answered with the gateway's own `404` carrying the RFC 9457 `application/problem+json`
+  envelope.
+
+| `GET /no-such-route`
+| *Off context.* The request never reaches the gateway at all. Quarkus' main router answers it with a
+  plain `text/html` `404` -- no `problem+json` body, no gateway error semantics, nothing in the
+  gateway's error metrics.
+|===
+
+*This is a documented consequence of choosing a non-root path, not a gap to be patched.* Restoring
+the envelope for off-context requests would mean registering a second catch-all outside the
+configured root path -- that is, deliberately serving something at a prefix the deployment said the
+gateway does not occupy, on the assumption that nothing else is ever mounted there. That assumption
+is exactly the one a context path exists to avoid making. A deployment that wants a uniform error
+shape at the edge owns that at its ingress, where it already owns the prefix.
+
+Both shapes are recorded as executed probes in
+link:../development/context-path-verification.adoc[the verification runbook].
+
+=== Route selection consumes the raw path, prefix included
+
+`GatewayEdgeRoute.buildPipelineRequest` builds its pipeline request from `HttpServerRequest.uri()` --
+the raw inbound URI -- and the route table is matched against that. It is never handed a
+root-path-relative path.
+
+So a build carrying `-Dsheriff.context-path=/gw` does *not* make `path_prefix: /api` answer at
+`/gw/api`; that request reaches the gateway and then fails deny-by-default route selection. The
+anchor and route `path_prefix` values must carry the new prefix too -- `path_prefix: /gw/api`. Both
+halves of that were measured; see
+link:../development/context-path-verification.adoc#_the_route_table_is_matched_against_the_raw_path_prefix_included[the
+verification runbook].
+
+[[_the_host_side_what_derives_the_path_and_what_cannot]]
+=== The host side: what derives the path, and what cannot
 
 A context path that only the artifact knows about is not much use to the scripts and probes that have
 to reach it. Three mechanisms bridge that gap, and they are deliberately unequal.
 
-=== The Compose label is the host-side channel
+==== The Compose label is the host-side channel
 
 Each labelled Compose service publishes its management root path as
-`de.cuioss.sheriff.management-root-path`, alongside the existing
-`de.cuioss.sheriff.management-scheme` label. Host-side bring-up gates read both, so a probe URL is
-composed from the model rather than restated in a script:
+`de.cuioss.sheriff.management-root-path`, alongside the existing `de.cuioss.sheriff.management-scheme`
+label. Host-side bring-up gates read both, so a probe URL is composed from the model rather than
+restated in a script:
 
 [source,yaml]
 ----
@@ -332,16 +741,15 @@ own literal. A future loop that starts deriving Keycloak's probe path from this 
 *value* there first -- it is the gateway's root path, not Keycloak's.
 ====
 
-=== The deliberate literals that survive
+==== The deliberate literals that survive
 
 `integration-tests/prometheus.yml` still restates the management root path in its `metrics_path`.
-Nothing can derive it there: the file is
-bind-mounted into the Prometheus container verbatim, and Prometheus interpolates no environment
-variables into a scrape config -- there is no templating mechanism that reaches the value. Changing
-the gateway's management root path therefore means editing that literal by hand.
+Nothing can derive it there: the file is bind-mounted into the Prometheus container verbatim, and
+Prometheus interpolates no environment variables into a scrape config -- there is no templating
+mechanism that reaches the value. Changing the gateway's management root path therefore means editing
+that literal by hand.
 
-Three further hand-maintained literals share that constraint, and relocating the management context
-path means editing them as well:
+Three further hand-maintained literals share that constraint:
 
 * `integration-tests/scripts/verify-invalid-config-fails.sh` -- it drives a bare `docker run` rather
   than bringing up the stack, so there is no resolved Compose model to read the label from.
@@ -355,7 +763,7 @@ assertion leg in `ManagementRootPathLabelIT` -- `prometheusScrapePathAgreesWithL
 `invalidConfigScriptRootPathAgreesWithLabel` and `baseIntegrationTestDefaultAgreesWithLabel` --
 comparing the literal against the Compose label after the same trailing-slash normalisation. Editing
 one without the others turns the integration suite red rather than producing a silently blind
-Prometheus, a case-7 failure that reads as a gateway fault, or a suite probing the wrong path.
+Prometheus, a failure that reads as a gateway fault, or a suite probing the wrong path.
 
 The fourth is asserted where it lives, because the release lane never brings the stack up and so has
 no label to compare against. Its *Assert the smoke-probe path matches the shipped management root
@@ -371,7 +779,7 @@ stack is up -- so each value must be written, and the assertions are what make w
 build failure rather than a silent drift. Prefer deriving where a resolved model exists; where one
 does not, expect to edit by hand and to be caught when you forget.
 
-=== The baked container health check is unaffected by either path
+==== The baked container health check is unaffected by either path
 
 The image's `HEALTHCHECK` is a protocol-blind TCP accept against the management port. It carries no
 URL and reads no configuration -- deliberately, so that it can answer before the application has read
@@ -383,104 +791,6 @@ The knob that *does* break it is the management *port*: the probe targets `9000`
 constant, so a deployment moving `QUARKUS_MANAGEMENT_PORT` must override the image's `HEALTHCHECK` to
 match.
 
-== Off-context requests answer with a plain 404
-
-Choosing a non-root application context path changes the error surface at the edge, and the change is
-easy to misread as a defect. It is not one.
-
-The gateway's data plane is a single catch-all Vert.x route registered *last* on the Quarkus main
-router, and that router is itself mounted beneath `quarkus.http.root-path`. Everything the gateway
-does -- deny-by-default route selection, the inbound-validation pipeline, the RFC 9457
-`application/problem+json` error envelope -- lives inside that catch-all, so it only ever sees
-requests that fall *within* the configured context path.
-
-The consequence, for a build carrying `-Dsheriff.context-path=/gw`:
-
-[cols="2,3", options="header"]
-|===
-| Request | Answer
-
-| `GET /gw/no-such-route`
-| *In context.* The request reaches the gateway's catch-all, fails deny-by-default route selection,
-  and is answered with the gateway's own `404` carrying the RFC 9457
-  `application/problem+json` envelope.
-
-| `GET /no-such-route`
-| *Off context.* The request never reaches the gateway at all. Quarkus' main router answers it with a
-  plain Vert.x `404` -- no `problem+json` body, no gateway error semantics, nothing in the gateway's
-  error metrics.
-|===
-
-*This is a documented consequence of choosing a non-root path, not a gap to be patched.* Restoring
-the envelope for off-context requests would mean registering a second catch-all outside the
-configured root path -- that is, deliberately serving something at a prefix the deployment said the
-gateway does not occupy, on the assumption that nothing else is ever mounted there. That assumption
-is exactly the one a context path exists to avoid making. A deployment that wants a uniform error
-shape at the edge owns that at its ingress, where it already owns the prefix.
-
-Both shapes are recorded as executed probes in
-link:../development/context-path-verification.adoc[the verification runbook].
-
-=== One more thing a non-root path changes: your route prefixes
-
-Route selection consumes the *raw* inbound path, prefix and all -- `GatewayEdgeRoute` builds its
-pipeline request from `HttpServerRequest.uri()`, and the route table is matched against that. It is
-never handed a root-path-relative path.
-
-So a build carrying `-Dsheriff.context-path=/gw` does *not* make `path_prefix: /api` answer at
-`/gw/api`; that request reaches the gateway and then fails deny-by-default route selection. The
-anchor and route `path_prefix` values in `gateway.yaml` must carry the new prefix too --
-`path_prefix: /gw/api`. The context path and the route table are configured independently and the
-gateway does not reconcile them for you. Both halves of that were measured; see
-link:../development/context-path-verification.adoc#_the_route_table_is_matched_against_the_raw_path_prefix_included[the
-verification runbook].
-
-== Worked example: serving at `/gw`
-
-The full end-to-end runbook, with every command and its observed response, is
-link:../development/context-path-verification.adoc[Context Path -- Verification Runbook]. The
-condensed form:
-
-.1. Build the native artifact through the seam
-[source,bash]
-----
-python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
-  --command-args "clean install -Pnative -pl api-sheriff -am -DskipTests -Dsheriff.context-path=/gw"
-----
-
-.2. Build the image
-[source,bash]
-----
-docker build -f api-sheriff/src/main/docker/Dockerfile.native -t api-sheriff:gw api-sheriff/
-----
-
-.3. Run it, then drive the data plane beneath the new prefix
-[source,bash]
-----
-curl -k https://localhost:8443/gw/api
-----
-
-.4. The management interface is where it always was
-[source,bash]
-----
-curl -k https://localhost:9000/q/health/ready
-----
-
-A deployment that also wants the probes moved adds
-`-Dsheriff.management-context-path=/mgmt` at step 1 and reads `https://localhost:9000/mgmt/health/ready`
-at step 4.
-
-== Downstream builds
-
-A consumer that cannot use `-D` on the command line -- because its own build is the thing being
-run -- inherits the published build parent
-`de.cuioss.sheriff.gateway:api-sheriff-build-parent` and sets its context path as an ordinary POM
-property. The parent maps that property unconditionally rather than through a profile, for the
-activation reason recorded above. That path, its versioning story, and what the parent does and does
-not cover -- notably that its scope ends at the native executable, and that the host-side probe
-wiring below stays the consumer's own -- are documented in
-link:downstream-parent.adoc[Rebuilding Under Your Own Context Path].
-
 == Where the rest of this lives
 
 [cols="2,3", options="header"]
@@ -488,8 +798,9 @@ link:downstream-parent.adoc[Rebuilding Under Your Own Context Path].
 | Document | What it adds
 
 | link:downstream-parent.adoc[Rebuilding Under Your Own Context Path]
-| The published build parent -- inheriting it, the one property, the versioning story, and the two
-  boundaries it deliberately does not cross (container images and host-side probe wiring).
+| The published build parent in full -- what it declares on your behalf, how it composes with
+  `cui-java-parent`, the versioning story, and the two boundaries it deliberately does not cross
+  (container images and host-side probe wiring).
 
 | link:../development/context-path-verification.adoc[Context Path -- Verification Runbook]
 | The six-case procedure that proves the seam, with the responses that were observed rather than
@@ -499,7 +810,8 @@ link:downstream-parent.adoc[Rebuilding Under Your Own Context Path].
 | The full policy / deployment-bound / build-time classification, and every knob the deployment owns.
 
 | link:container-image.adoc[Container Image]
-| Running the published image, and the baked health check's liveness semantics.
+| Running the published image in its production posture, and the baked health check's liveness
+  semantics.
 
 | link:compose-sample.adoc[Compose Sample]
 | A runnable stack, its two-layer readiness gate, and how to read the container health signal.
