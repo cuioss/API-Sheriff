@@ -134,10 +134,12 @@ class ComposeSampleForwardedTrustWiringTest {
         for (String variable : referenced) {
             assertTrue(environment.containsKey(variable),
                     () -> "a YAML config document of the sample references ${" + variable
-                            + "} but the '" + GATEWAY_SERVICE + "' service does not supply it. The"
-                            + " placeholder carries no default, so this stack fails its boot — add the"
-                            + " variable beside the placeholder rather than adding a default to the"
-                            + " document.");
+                            + "} but the '" + GATEWAY_SERVICE + "' service does not supply it. In the"
+                            + " bare ${VAR} form that fails the stack's boot outright; the sample also"
+                            + " supplies its defaulted placeholders, so that every externally-bound"
+                            + " value is readable from the compose file rather than only from the"
+                            + " document. Add the variable beside the placeholder rather than adding a"
+                            + " default to the document.");
         }
     }
 
