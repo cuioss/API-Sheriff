@@ -881,6 +881,149 @@ class ConfigLoaderTest {
                 "a schema-string inside an array item must be typed from its declared item type");
     }
 
+    // --- List-valued substitution: one variable supplies a whole schema-declared list --------------
+    // /forwarded/trusted_proxies is the mandatory CIDR allow-list ADR-0003 requires before any
+    // forwarding header is believed, and it is deployment-bound: the set genuinely differs per
+    // environment. Typing a placeholder from its declared `array` destination is what lets one variable
+    // supply the whole list, so its cardinality is no longer fixed in the mounted file.
+
+    @Test
+    void suppliesAWholeDeclaredListFromOneSubstitutedValue() throws Exception {
+        // Arrange
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded =
+                loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32,10.0.0.6/32")).load();
+
+        // Assert — the bound list, not a private return: the point is that the whole list arrived.
+        assertEquals(List.of("10.0.0.5/32", "10.0.0.6/32"),
+                loaded.gateway().forwarded().trustedProxies(),
+                "one resolved ${VAR} must supply every element of a schema-declared list");
+    }
+
+    @Test
+    void stripsEachElementOfASubstitutedList() throws Exception {
+        // Arrange — an operator writing a readable, space-separated list must not thereby ship CIDR
+        // entries with leading blanks, which no later CIDR parse would accept.
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded =
+                loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32 , 10.0.0.6/32")).load();
+
+        // Assert
+        assertEquals(List.of("10.0.0.5/32", "10.0.0.6/32"),
+                loaded.gateway().forwarded().trustedProxies(),
+                "each element of a substituted list must be stripped");
+    }
+
+    @Test
+    void suppliesAListAtAPointerThisPlanNeverNames() throws Exception {
+        // Arrange — the un-gated claim, asserted rather than described: the arm is selected by the
+        // declared `array` type alone and holds no pointer test and no key name, so it reaches
+        // tls.cipher_suites exactly as it reaches forwarded.trusted_proxies. A pointer-gated
+        // implementation restricted to the target key would fail here and nowhere else.
+        writeConfig("gateway.yaml", """
+                version: 1
+                tls:
+                  cipher_suites: "${SHERIFF_CIPHER_SUITES}"
+                """);
+
+        // Act
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_CIPHER_SUITES",
+                "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256")).load();
+
+        // Assert
+        assertEquals(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"),
+                loaded.gateway().tls().cipherSuites(),
+                "the list-valued rule keys on the declared array type alone, so it must reach every "
+                        + "array-typed pointer and not just the one this plan writes a placeholder into");
+    }
+
+    @Test
+    void refusesAnEmptyResolutionAtAListDestination() throws Exception {
+        // Arrange — the schema declares no minItems here, and
+        // acceptsForwardedBlockDeclaringEmptyTrustedProxies pins the explicit [] as legal. A validator
+        // reading the bound list therefore cannot tell "the operator wrote []" from "a variable was
+        // unset and swallowed"; the substitution site can, which is why the refusal lives there.
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("SHERIFF_TRUSTED_PROXIES", ""));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert — refused at the value's own pointer, so an operator is told which key failed.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/forwarded/trusted_proxies".equals(error.pointer())),
+                () -> "an empty resolution at a list destination must fail the boot at the value's own "
+                        + "pointer rather than yielding an empty allow-list, got: " + exception.errors());
+    }
+
+    @Test
+    void refusesADefaultedPlaceholderResolvingToEmptyAtAListDestination() throws Exception {
+        // Arrange — the ${VAR:-} shape resolves to its empty default when the variable is unset, which
+        // is precisely the silent fallback the boot-failure rule refuses. This is what makes the bare
+        // form mandatory at a list destination for the same reason it is mandatory for a secret.
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: "${SHERIFF_TRUSTED_PROXIES:-}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/forwarded/trusted_proxies".equals(error.pointer())),
+                () -> "a defaulted placeholder resolving to empty must be refused exactly as a bare one "
+                        + "resolving to empty, got: " + exception.errors());
+    }
+
+    @Test
+    void refusesABlankListElementWithoutEchoingTheResolvedValue() throws Exception {
+        // Arrange — the no-echo leg. The two tests above resolve to the empty string, against which a
+        // "no message contains the resolved value" assertion is vacuous, so the discipline is pinned
+        // here where the resolved value is non-empty and distinguishable. A blank element is refused
+        // for the same reason a wholly blank value is: it would silently shrink the allow-list.
+        writeConfig("gateway.yaml", """
+                version: 1
+                forwarded:
+                  trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+                """);
+
+        // Act
+        ConfigLoader loader = loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32,,10.0.0.6/32"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // Assert
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && "/forwarded/trusted_proxies".equals(error.pointer())),
+                () -> "a blank element must be refused rather than silently dropped, got: "
+                        + exception.errors());
+        assertTrue(exception.errors().stream()
+                        .noneMatch(error -> error.message().contains("10.0.0.5/32")),
+                () -> "no error may echo the resolved allow-list — a proxy set is topology "
+                        + "intelligence, got: " + exception.errors());
+    }
+
     // --- Destination-type walk: $ref, patternProperties, and the numeric arms ---------------------
     // The walk's indirection resolvers had no coverage at all: no test resolved a local $ref, none
     // drove a key described only by patternProperties, and neither numeric arm past the int range was

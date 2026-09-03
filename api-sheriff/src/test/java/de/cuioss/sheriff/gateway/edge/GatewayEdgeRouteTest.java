@@ -28,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.RecordComponent;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
@@ -45,6 +47,8 @@ import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
+import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -83,6 +87,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Boot-time and lifecycle contract of the public data-plane edge. The per-request serving behaviour
@@ -746,6 +751,133 @@ class GatewayEdgeRouteTest {
         private BffRuntime activeCookieRuntime() {
             return GatewayEdgeRouteBffWiringTest.activeRuntime(
                     GatewayEdgeRouteBffWiringTest.serverBinding(new InMemorySessionStore(16)));
+        }
+    }
+
+    /**
+     * The forwarded-trust allow-list supplied by one environment variable, asserted through its
+     * <em>effect</em> on the trust decision.
+     * <p>
+     * {@code forwarded.trusted_proxies} is the mandatory CIDR set ADR-0003 requires before any inbound
+     * forwarding header is believed. Each leg below drives the whole chain — write a {@code gateway.yaml}
+     * carrying a bare {@code ${VAR}}, load it through the real {@link ConfigLoader}, construct the real
+     * {@link GatewayEdgeRoute} from the bound config, and serve one real request against a stub upstream
+     * on loopback — and the two legs differ in <strong>nothing but the value the environment lookup
+     * returns</strong>. That is what makes this an assertion about the substitution reaching the trust
+     * decision, rather than an assertion about {@link de.cuioss.sheriff.gateway.forward.TcpPeerGate}:
+     * the gate is a local inside the edge's constructor, and this nest adds no accessor, no reflection
+     * and no production test-seam to see it.
+     * <p>
+     * Deleting the loader's list-valued substitution arm turns these tests red, not merely the loader's
+     * own — which is the point of asserting here rather than one layer down.
+     */
+    @Nested
+    @DisplayName("forwarded trust supplied by one environment variable")
+    class ForwardedTrustFromEnvironment {
+
+        /** A TEST-NET-3 address (RFC 5737) — never routable, so it can only have come from the header. */
+        private static final String SPOOFED_CLIENT = "203.0.113.7";
+        private static final String FORWARDED_FOR = "X-Forwarded-For";
+        private static final String LOOPBACK = "127.0.0.1";
+
+        @TempDir
+        Path configDir;
+
+        @Test
+        @DisplayName("a peer inside the ${VAR}-supplied CIDR set has its X-Forwarded-For honoured")
+        void honoursForwardedHeaderFromAPeerInsideTheSuppliedSet() throws Exception {
+            // Arrange + Act — the loopback peer this test dials from IS the supplied set
+            Observation observed = proxyOneRequestTrusting(LOOPBACK + "/32");
+
+            // Assert
+            assertTrue(observed.reached(), "the request must reach the stub upstream");
+            assertNotNull(observed.forwardedFor(),
+                    "a trusted peer's chain is regenerated, so the upstream receives X-Forwarded-For");
+            assertTrue(observed.forwardedFor().contains(SPOOFED_CLIENT),
+                    () -> "a trusted peer's inbound forwarding chain must be honoured, so the client "
+                            + "address it claimed reaches the upstream; got: " + observed.forwardedFor());
+        }
+
+        @Test
+        @DisplayName("matched negative control: the same request from a peer outside the set is ignored")
+        void ignoresForwardedHeaderFromAPeerOutsideTheSuppliedSet() throws Exception {
+            // Arrange + Act — the ONLY difference from the positive leg is this value: a TEST-NET-2
+            // range (RFC 5737) that excludes the loopback address the request actually arrives from.
+            Observation observed = proxyOneRequestTrusting("198.51.100.0/24");
+
+            // Assert — the request is still proxied (trust governs header regeneration, not routing),
+            // which is what stops this control passing vacuously on a request that never arrived.
+            assertTrue(observed.reached(),
+                    "an untrusted peer is still served — the trust decision governs which headers are "
+                            + "believed, never whether the route is reached");
+            // The spoofed claim is masked from the resolver, which then has no chain to regenerate at
+            // all — so the upstream receives no X-Forwarded-For rather than a fabricated one. Either
+            // way the security-load-bearing property is the same: the claimed address never crosses.
+            assertNull(observed.forwardedFor(),
+                    () -> "an untrusted peer's masked chain leaves nothing to regenerate; got: "
+                            + observed.forwardedFor());
+        }
+
+        /** What the stub upstream observed: whether it was reached, and the chain it was handed. */
+        private record Observation(boolean reached, @Nullable String forwardedFor) {
+        }
+
+        /**
+         * Runs one real request through a real edge whose {@code trusted_proxies} was supplied entirely
+         * by {@code trustedProxies} through a bare {@code ${VAR}}, and reports what the stub upstream
+         * observed.
+         */
+        private Observation proxyOneRequestTrusting(String trustedProxies) throws Exception {
+            Files.writeString(configDir.resolve("gateway.yaml"), """
+                    version: 1
+                    forwarded:
+                      trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
+                    """);
+            GatewayConfig loaded = new ConfigLoader(configDir, new EnvSecretResolver(
+                    name -> "SHERIFF_TRUSTED_PROXIES".equals(name) ? trustedProxies : null))
+                    .load().gateway();
+
+            // Guard — without this, a substitution that silently produced an empty set would make both
+            // legs agree (nothing is trusted) and the negative control would pass for the wrong reason.
+            assertEquals(List.of(trustedProxies.split(",")), loaded.forwarded().trustedProxies(),
+                    "the whole allow-list must have arrived from the environment before the edge is built");
+
+            AtomicReference<@Nullable String> seenByUpstream = new AtomicReference<>();
+            AtomicBoolean reached = new AtomicBoolean();
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                seenByUpstream.set(request.getHeader(FORWARDED_FOR));
+                reached.set(true);
+                request.response().end();
+            }).listen(0), "the stub upstream server to start listening");
+            Router router = Router.router(vertx);
+            new GatewayEdgeRoute(new RouteTable(List.of(proxyRoute(upstream.actualPort()))), loaded,
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
+                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
+            HttpServer front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+                    "the edge front server to start listening");
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Awaits.connect(client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(),
+                                LOOPBACK, "/t/resource")
+                                .compose(request -> request.putHeader(FORWARDED_FOR, SPOOFED_CLIENT).send()),
+                        "the edge response to the proxied GET");
+                return new Observation(reached.get(), seenByUpstream.get());
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+                Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            }
+        }
+
+        private ResolvedRoute proxyRoute(int upstreamPort) {
+            return ResolvedRoute.builder()
+                    .id("t")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/t").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("http", LOOPBACK, upstreamPort, ""))
+                    .build();
         }
     }
 
