@@ -1,0 +1,218 @@
+= ADR-0039: The distroless image's health check is answered by the application binary before boot
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: A distroless image whose only executable is the application itself answers its own HEALTHCHECK through that binary -- an exec-form check invokes it with a probe token that the entry point recognises and answers before the framework boots, by a bare TCP accept against the compiled-in management port on loopback. The probe is protocol-blind because the management scheme is deployment-bound, its logic lives in a separate testable class rather than in the untestable entry-point shim, and both images that ship the executable adopt the same mechanism and the same port.
+// tags: container-health, healthcheck, distroless, attack-surface, entry-point, liveness, probe, dual-role-binary, image-artifact
+// affects: api-sheriff, integration-tests, deployment
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Context
+
+A container image that publishes no health state is opaque to everything that reads
+container health -- `docker ps`, `compose ps`, `depends_on: condition:
+service_healthy`, `compose up --wait`, and an orchestrator's liveness probe all
+report "none" rather than a signal. Giving the image a state is normally
+unremarkable: a `HEALTHCHECK` runs a small program, and every conventional form of
+that program -- a shell one-liner, `curl`, `wget`, a `/dev/tcp` redirect -- assumes
+the image contains something to run it with.
+
+A distroless base does not, and the constraint is stronger than "no shell". The
+base carries **no executable at all**: `/usr/bin` and `/usr/sbin` are empty and
+`/bin` and `/sbin` are symlinks into them, so once the application is copied in,
+the image's entire executable set is that one binary. The constraint also reaches
+the deployment layer rather than stopping at the Dockerfile: Docker rewrites a
+Compose `healthcheck.test` **string** form into `CMD-SHELL`, which resolves
+`/bin/sh` and fails permanently, and a `healthcheck.test` **exec** form runs inside
+the same executable-less container. Relocating the declaration therefore changes
+nothing about what can be executed.
+
+That leaves an architectural fork with only three shapes -- add an executable,
+change the base, or make the executable already present answer the question -- plus
+the status quo of publishing no state at all. The choice is forced by a property of
+the base, so it is worth recording as a decision rather than as an implementation
+detail: a future contributor who reaches for `curl` in this Dockerfile is not making
+a style mistake, they are hitting a constraint whose shape is not visible from the
+file.
+
+A second constraint decides *what* the probe may say. The management interface's
+scheme is deployment-bound (ADR-0025): HTTPS once the deployment supplies
+certificate material, plain HTTP only through a named opt-out. A probe compiled into
+the image cannot know which the deployment configured, and a probe baked into a
+Dockerfile cannot read a Compose label either -- the label is available to host-side
+consumers and to nothing inside the container.
+
+== Decision
+
+**The image's own executable answers the image's own health check, before the
+framework boots.**
+
+*The check names the binary.* The `HEALTHCHECK` is an exec-form invocation of the
+application executable with a probe token. The exec form is a requirement rather
+than a style preference, for the reason above.
+
+*The branch lives in the entry point's `main`, not in the framework's run method.*
+The framework's run method is reached only once the listeners are bound, which is
+precisely the window a health check exists to cover; a branch there could never
+answer while the instance is still starting. Routing in `main` also means the
+framework is never touched on the probe path: the process recognises the token,
+answers, and exits.
+
+*The probe is a bare TCP accept on loopback against the management port.* Nothing is
+written to or read from the socket, so the answer is independent of whether that
+interface speaks HTTP or HTTPS. Protocol-blindness is not a simplification -- it is
+what makes the probe correct under a deployment-bound scheme.
+
+*The port is a compiled-in constant, not a configuration lookup.* The probe path
+reads no gateway configuration at all, which is what keeps it fast, side-effect-free
+and independent of whether configuration is resolvable. The consequence is stated
+rather than hidden: a deployment that moves the management port must override the
+image's `HEALTHCHECK` to match, and fails closed -- never healthy -- if it does not.
+
+*The probe logic is its own class, not a branch inside the entry point.* An entry
+point is inherently untestable: every path either terminates the process or hands
+control to the framework, which is why it is excluded from coverage measurement. The
+probe is the opposite -- pure, fast and exhaustively testable. Keeping them apart is
+what lets the untestable shim stay a shim while the logic that decides health is
+genuinely measured. The token match is exact against a whole argument, so an
+ordinary application argument can never be mistaken for a probe request.
+
+*Every image that ships the executable adopts the same mechanism and the same port.*
+A profiling or debugging variant built on a shell-bearing base **could** keep a
+conventional probe, and does not: two images reporting health by different means,
+against different bindings, is a divergence with no compensating benefit.
+
+*The `HEALTHCHECK` line is the single authority for the probe cadence.* A Compose
+`healthcheck:` key **overrides** the image's declaration rather than merging with
+it, so a copy in a stack file is a mirror to be kept in step and named as such, never
+a second authority. The cadence is a property of the built executable -- its
+start-period is sized from a measured boot time -- so it belongs to the image, which
+every consumer inherits.
+
+== Consequences
+
+=== Positive
+
+* The image publishes a real health state, so every consumer of container health --
+  a `docker ps` column, a `depends_on` gate, a host-side `--wait`, an orchestrator
+  probe -- reads a signal instead of "none".
+* The attack surface is unchanged. No shell, no package manager, no second binary:
+  the property the distroless base exists to provide survives the feature rather
+  than being spent on it.
+* One image serves both management schemes. The protocol-blind probe removes the
+  need for the image to know anything about the deployment's TLS posture, so there
+  is no branch on deployment shape anywhere in the image.
+* The probe cannot disturb the instance it measures. It runs in its own short-lived
+  process, binds nothing, writes nothing, reads no configuration, and only opens and
+  closes an already-listening socket.
+* Because the deciding logic is a separate pure class rather than a branch in the
+  shim, it is genuinely tested rather than excluded from measurement along with the
+  entry point.
+
+=== Negative
+
+* **The health state is liveness, not readiness.** A bare accept says the port is
+  bound, not that the instance can serve. Everything reading container health is
+  reading liveness however "healthy" reads; readiness stays asserted in the
+  readiness endpoint itself and in the host-side single-shot assertion described by
+  ADR-0031. A reader who takes a healthy container as a ready one has drawn a
+  conclusion the signal does not support.
+* **The application binary now carries a second role, so its command line is a
+  contract.** Every future argument must be distinguishable from the probe token.
+  The whole-token match is what keeps that cost at zero, and it is the property to
+  preserve if the command line grows.
+* **The management port is compiled in.** A deployment that moves it and does not
+  move the `HEALTHCHECK` never reports healthy. That is the right direction to fail,
+  but it is silent until someone reads the health column.
+
+=== Risks
+
+* The cadence exists in one authority and, where a stack restates it for operator
+  legibility, one mirror. Because Compose replaces rather than merges, a drifted
+  mirror is not a documentation defect but a silent substitution of the real probe.
+* The pre-boot branch runs before the logging manager is installed, so its only
+  diagnostic sink is the container's health log written directly to standard error.
+  A maintainer who "improves" this by routing it through the application logger
+  removes the output rather than upgrading it.
+* The base image's empty executable set is a property of the published base, not a
+  contract it owes. A base revision that added a shell would make the rejected
+  alternatives viable again. It would not make this mechanism less correct, so the
+  decision does not need re-opening on that event -- but its rationale would then
+  read as a preference rather than as a necessity, and that difference is worth
+  knowing.
+
+== Alternatives Considered
+
+**Add a statically-linked probe binary to the image.** Restores a conventional probe
+and keeps the application entry point single-purpose. Rejected because it enlarges
+exactly the surface the distroless base exists to shrink, in order to answer a
+question the binary already present can answer. A second executable is also a second
+artifact to build, pin, scan and keep updated, and it is present in every running
+container for the sake of a check that runs for milliseconds at a time.
+
+**Change to a shell-bearing base.** Immediately restores every conventional probe
+form and costs one line. Rejected on the same ground, applied to the image where it
+matters most: the trade gives up the base's entire reason for existing, and it does
+so for the production image rather than for a variant nobody deploys.
+
+**Declare the check only in the Compose stacks, leaving the image untouched.**
+Superficially attractive because it keeps a deployment concern in deployment files.
+Rejected because it does not work: the string form is rewritten to `CMD-SHELL` and
+the exec form runs in the same executable-less container, so it fails identically.
+Even where it did work it would fragment one image-level fact across every stack that
+consumes the image, and every consumer that is not a Compose stack would get nothing.
+
+**Bake the check into the shell-bearing profiling variant only, and leave the
+production image unprobed.** Cheap, and it needs no application change at all.
+Rejected because it inverts the priority: the production image is the one whose
+health an operator, an orchestrator and a `depends_on` gate actually consume, while
+the profiling variant is the one that is never deployed. It also leaves the two
+images reporting health by different mechanisms against different bindings.
+
+**Speak HTTP in the probe and read the real readiness endpoint.** Would produce a
+readiness rather than a liveness signal -- a strictly better answer, and the one a
+reader of "healthy" naturally assumes. Rejected because it cannot be made correct
+from inside the image: the management scheme is deployment-bound, so an HTTP probe
+would have to know which scheme was configured and would be wrong against the other,
+and the fact that resolves it reaches host-side consumers through a label the
+container cannot read. The weaker signal is the strongest one the image can honestly
+produce, and readiness is asserted at the layer where the deployment-bound facts are
+available.
+
+The rejected options fall into two classes. The first two buy a conventional probe by
+giving up the property the reduced base exists to provide. The last three try to
+answer the question somewhere the answer is not available -- a layer under the same
+constraint, an image nobody deploys, or a fact only the deployment holds.
+
+== Generalisation
+
+When a runtime environment is deliberately reduced to a single capability, a new
+requirement is satisfied *through* that capability rather than by restoring what the
+reduction removed.
+
+The diagnostic question is: **does this requirement need a new component, or a new
+mode of the component already present?** Where the component present can answer,
+giving it a second mode preserves the reduction; adding a component silently retracts
+it, and retracts it permanently for the sake of an intermittent need.
+
+Two corollaries follow, and both are load-bearing rather than incidental. The second
+mode must be selected unambiguously -- an exact whole-token match rather than a
+prefix or a substring -- because the component's existing input surface is now shared
+between two roles. And the second mode should be answered as early in the component's
+lifecycle as the requirement demands: a mode reachable only after the component is
+fully initialised cannot answer a question about whether initialisation has finished.
+
+== References
+
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025] -- the deployment-bound management scheme that makes the probe necessarily protocol-blind
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027] -- readiness reports a boot-time constructibility fact, which is why liveness and readiness land at effectively the same moment on this gateway
+* link:0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031] -- the host-side consumer of this health state, and the two places readiness is actually asserted
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032] -- the artifact-purity rule behind compiling the port in rather than adding a configuration surface for it
+* link:../development/integration-test-topology.adoc[Integration-Test Topology] -- the measured boot time the `--start-period` is sized from

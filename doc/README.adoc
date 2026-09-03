@@ -281,9 +281,20 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   "does the gateway know what this header means?", and the value- or mode-dependent behaviours
   (`TE: trailers`, the single re-admittable `Authorization`) live in the application rather than in
   a set literal. *(Status: proposed.)*
+
+| link:adr/0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]
+| The distroless image carries no executable other than the application itself, so its `HEALTHCHECK`
+  invokes that binary with a probe token which the entry point answers *before* the framework boots,
+  by a bare TCP accept against the compiled-in management port on loopback. The probe is
+  protocol-blind because the management scheme is deployment-bound
+  (link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]),
+  its logic lives in a separate testable class rather than in the untestable entry-point shim, and
+  the resulting health state is liveness -- readiness stays asserted where
+  link:adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031]
+  puts it. *(Status: accepted.)*
 |===
 
-NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035 are recorded in
+NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035 and ADR-0038 are recorded in
 link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
 table as a curated entry point; a missing row is index drift, never a withdrawn decision.
 
