@@ -129,4 +129,28 @@ public final class WildcardEphemeralBindSpecimen {
     public Future<NetServer> bindWildcardHostWithVariablePort(NetServer server, int port) {
         return server.listen(port, "0.0.0.0");
     }
+
+    /**
+     * The same violation with the port supplied by a <em>nested call</em>. A sweep whose argument
+     * class simply excluded parentheses would stop at the {@code (} and miss this, while the
+     * bytecode rule accepts it for the usual reason — the target is still
+     * {@code listen(int, String)}.
+     *
+     * @param server the server to bind; supplied by the caller so this specimen never creates a
+     *               {@code Vertx} instance
+     * @return the listen future, never completed because this method is never invoked
+     */
+    public Future<NetServer> bindWildcardHostWithNestedPortCall(NetServer server) {
+        return server.listen(ephemeralPort(), "0.0.0.0");
+    }
+
+    /**
+     * A stand-in port source, present only so the nested-call specimen above has a real call to
+     * nest. Never invoked.
+     *
+     * @return zero, the ephemeral-port sentinel
+     */
+    private static int ephemeralPort() {
+        return 0;
+    }
 }

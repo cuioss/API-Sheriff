@@ -66,8 +66,13 @@ import de.cuioss.tools.logging.CuiLogger;
  *   <li>{@code Recv-Q > 0} on a socket whose owning thread is parked in {@code KQueue.poll} — the
  *       bytes are sitting in the kernel receive buffer and the selector never told anyone. That is
  *       the undelivered-readiness hypothesis observed directly, not inferred.</li>
- *   <li>{@code Recv-Q == 0} and {@code Send-Q == 0} on both ends — nothing was ever put on the wire.
- *       The stall is upstream of the socket and the readiness hypothesis does not explain it.</li>
+ *   <li>{@code Recv-Q == 0} and {@code Send-Q == 0} on both ends, <em>and</em> {@code rxbytes} and
+ *       {@code txbytes} both zero — nothing was ever put on the wire. The stall is upstream of the
+ *       socket and the readiness hypothesis does not explain it. <strong>The byte counters are
+ *       required for this reading, not decoration.</strong> The queue depths are instantaneous, so
+ *       zero queues alone mean only that nothing is pending at capture time — an established
+ *       connection that transferred and consumed its data before the capture shows exactly the same
+ *       zeros. Only the cumulative counters distinguish "never sent" from "already drained".</li>
  *   <li>{@code Send-Q > 0} on the sender with {@code Recv-Q == 0} on the peer — bytes are stuck in
  *       the send buffer, which is a flow-control or window question, not a readiness one.</li>
  * </ul>
@@ -354,6 +359,12 @@ public final class SocketSnapshot {
      * still reads as a capture, and a reader must be able to tell "this is all there was" from
      * "this is as much as was kept".
      *
+     * <p>The truncation test compares the retained length against the file's actual size, never
+     * against the cap. {@code readNBytes(cap)} returns exactly {@code cap} bytes for a file of
+     * exactly that size as well as for a larger one, so testing against the cap would stamp a false
+     * truncation note on a capture that was in fact complete — the same class of overclaim this
+     * note exists to prevent, in the opposite direction.
+     *
      * @param target the capture file
      * @return the retained content, with a truncation note appended when the cap was hit
      * @throws IOException when the file cannot be read
@@ -362,10 +373,10 @@ public final class SocketSnapshot {
         try (var stream = Files.newInputStream(target)) {
             byte[] retained = stream.readNBytes(MAX_CAPTURE_BYTES);
             String text = new String(retained, StandardCharsets.UTF_8);
-            if (retained.length < MAX_CAPTURE_BYTES) {
+            long total = Files.size(target);
+            if (retained.length >= total) {
                 return text;
             }
-            long total = Files.size(target);
             return text + System.lineSeparator()
                     + "... (truncated at %d bytes of %d — the capture was larger than this diagnostic retains)"
                     .formatted(MAX_CAPTURE_BYTES, total);

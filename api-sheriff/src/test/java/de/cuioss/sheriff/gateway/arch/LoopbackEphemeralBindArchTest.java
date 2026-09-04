@@ -158,9 +158,16 @@ class LoopbackEphemeralBindArchTest {
      * <strong>The port is matched as any single argument, not as a numeric literal.</strong> The
      * exposure is decided entirely by the HOST, so {@code listen(port, "0.0.0.0")} is the same
      * defect as {@code listen(0, "0.0.0.0")} and a {@code \\d+} port would have missed it — again in
-     * a shape the bytecode rule also accepts. {@code [^,()]} spans one argument without crossing a
-     * comma or a nested call, which keeps a two-argument {@code listen} from matching across an
-     * unrelated neighbouring call. Also reported by CodeRabbit on PR #255.
+     * a shape the bytecode rule also accepts. The port alternation spans one argument — plain text,
+     * or a single level of nested parentheses so {@code listen(freePort(), "0.0.0.0")} is caught
+     * too — without crossing the argument comma, which keeps a two-argument {@code listen} from
+     * matching across an unrelated neighbouring call. Also reported by CodeRabbit on PR #255.
+     * <p>
+     * <strong>One level of nesting, stated as the limit it is.</strong> A regex cannot balance
+     * arbitrary parentheses, so a doubly-nested port expression
+     * ({@code listen(f(g()), "0.0.0.0")}) is out of this sweep's reach and always will be. That is
+     * recorded rather than papered over: this pattern is a net, not a parser, and the honest way to
+     * run it is knowing where its holes are.
      * <p>
      * <strong>Possessive quantifiers, and no {@code \\s*} beside the argument class.</strong>
      * {@code [^,()]} matches whitespace itself, so an adjacent {@code \\s*} makes the split between
@@ -171,7 +178,7 @@ class LoopbackEphemeralBindArchTest {
      * ({@code java:S8786}) on PR #255.
      */
     private static final Pattern WILDCARD_HOST_LISTEN =
-            Pattern.compile("\\.listen\\s*\\([^,()]++,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
+            Pattern.compile("\\.listen\\s*+\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
 
     private static final JavaClasses TEST_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.ONLY_INCLUDE_TESTS)
@@ -437,10 +444,11 @@ class LoopbackEphemeralBindArchTest {
             String content = Files.readString(specimen);
             long matches = WILDCARD_HOST_LISTEN.matcher(content).results().count();
 
-            assertEquals(3, matches,
-                    "The sweep must match ALL THREE deliberate violations in the specimen: the "
-                            + "single-line listen(0, \"0.0.0.0\"), the one wrapped across lines, and "
-                            + "the one whose port is a variable rather than a literal. Each was a "
+            assertEquals(4, matches,
+                    "The sweep must match ALL FOUR deliberate violations in the specimen: the "
+                            + "single-line listen(0, \"0.0.0.0\"), the one wrapped across lines, the "
+                            + "one whose port is a variable, and the one whose port is a nested "
+                            + "call. Each was a "
                             + "real bypass at some point in this guard's history, and each is a shape "
                             + "the bytecode rule also accepts — so a count below three means the "
                             + "sweep has regressed to a narrower predicate and its clean verdict over "
