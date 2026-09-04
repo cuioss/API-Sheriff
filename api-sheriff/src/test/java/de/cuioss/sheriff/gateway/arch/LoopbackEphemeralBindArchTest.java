@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.arch;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -140,6 +142,12 @@ class LoopbackEphemeralBindArchTest {
      * IPv6 {@code ::}, and the empty host. A quoted literal is the only shape this can match by
      * construction — a host held in a constant carries no literal to match, which is exactly the
      * correct usage this must not flag.
+     * <p>
+     * <strong>Applied to whole-file content, never line by line.</strong> The {@code \\s*} runs match
+     * newlines, so a wrapped call — {@code listen(}, then {@code 0,}, then {@code "0.0.0.0")} on
+     * three physical lines — is caught. A per-line scan would miss it, and the ArchUnit rule misses
+     * it too (it is still {@code listen(int, String)}), so a line-based sweep would leave the exact
+     * bypass this pair exists to close. Reported by CodeRabbit on PR #255.
      */
     private static final Pattern WILDCARD_HOST_LISTEN =
             Pattern.compile("\\.listen\\s*\\(\\s*\\d+\\s*,\\s*\"(?:0\\.0\\.0\\.0|::|)\"");
@@ -249,6 +257,24 @@ class LoopbackEphemeralBindArchTest {
         }
     }
 
+    /**
+     * The 1-based line a character offset falls on, so a whole-file match still reports a location
+     * a reader can open.
+     *
+     * @param content the file content the offset indexes into
+     * @param offset  the match's start offset
+     * @return the 1-based line number
+     */
+    private static int lineOf(String content, int offset) {
+        int line = 1;
+        for (int i = 0; i < offset; i++) {
+            if ('\n' == content.charAt(i)) {
+                line++;
+            }
+        }
+        return line;
+    }
+
     private static boolean isSingleIntParameter(CodeUnitCallTarget target) {
         var parameters = target.getRawParameterTypes();
         return parameters.size() == 1 && parameters.get(0).isEquivalentTo(int.class);
@@ -356,11 +382,11 @@ class LoopbackEphemeralBindArchTest {
         void noFixturePassesAWildcardHostLiteral() throws Exception {
             List<String> offenders = new ArrayList<>();
             for (Path source : guardedSources()) {
-                List<String> lines = Files.readAllLines(source);
-                for (int i = 0; i < lines.size(); i++) {
-                    if (WILDCARD_HOST_LISTEN.matcher(lines.get(i)).find()) {
-                        offenders.add(source.getFileName() + ":" + (i + 1) + " — " + lines.get(i).strip());
-                    }
+                String content = Files.readString(source);
+                Matcher matcher = WILDCARD_HOST_LISTEN.matcher(content);
+                while (matcher.find()) {
+                    offenders.add(source.getFileName() + ":" + lineOf(content, matcher.start())
+                            + " — " + matcher.group().replaceAll("\\s+", " "));
                 }
             }
 
@@ -386,11 +412,16 @@ class LoopbackEphemeralBindArchTest {
             assertTrue(Files.exists(specimen),
                     "The wildcard specimen source is missing at " + specimen + ", so the sweep's "
                             + "positive control is exercising nothing.");
-            assertTrue(Files.readAllLines(specimen).stream()
-                            .anyMatch(line -> WILDCARD_HOST_LISTEN.matcher(line).find()),
-                    "The sweep no longer matches the specimen's deliberate listen(0, \"0.0.0.0\") "
-                            + "call. Its clean verdict over the rest of the tree therefore proves "
-                            + "nothing — fix the pattern rather than the specimen.");
+
+            String content = Files.readString(specimen);
+            long matches = WILDCARD_HOST_LISTEN.matcher(content).results().count();
+
+            assertEquals(2, matches,
+                    "The sweep must match BOTH deliberate violations in the specimen: the "
+                            + "single-line listen(0, \"0.0.0.0\") and the one wrapped across lines. "
+                            + "Matching only one means the pattern or the whole-file read regressed "
+                            + "to a per-line scan, which leaves a wrapped call able to pass both this "
+                            + "sweep and the bytecode rule. Found " + matches + ".");
         }
 
         /**
@@ -405,8 +436,7 @@ class LoopbackEphemeralBindArchTest {
                     "de/cuioss/sheriff/gateway/arch/specimen/LoopbackEphemeralBindSpecimen.java");
 
             assertTrue(Files.exists(specimen), "The loopback specimen source is missing at " + specimen);
-            assertFalse(Files.readAllLines(specimen).stream()
-                            .anyMatch(line -> WILDCARD_HOST_LISTEN.matcher(line).find()),
+            assertFalse(WILDCARD_HOST_LISTEN.matcher(Files.readString(specimen)).find(),
                     "The sweep flags the host-bound loopback spelling, so it does not discriminate "
                             + "between a wildcard literal and a correct bind.");
         }

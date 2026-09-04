@@ -94,4 +94,24 @@ public final class WildcardEphemeralBindSpecimen {
     public Future<NetServer> bindWildcardHostViaListen(NetServer server) {
         return server.listen(0, "0.0.0.0");
     }
+
+    /**
+     * The same violation with its arguments <em>wrapped across lines</em>. A sweep that scanned one
+     * physical line at a time would miss this while still finding
+     * {@link #bindWildcardHostViaListen(NetServer)} — and would therefore report a clean tree while
+     * the bypass sat open, since the bytecode rule cannot see this shape either.
+     * <p>
+     * Kept formatted exactly as written. A formatter that joined these lines would silently retire
+     * the control; the sweep's positive control asserts on THIS method's shape, so a join shows up
+     * as a failure rather than as a quiet loss of coverage.
+     *
+     * @param server the server to bind; supplied by the caller so this specimen never creates a
+     *               {@code Vertx} instance
+     * @return the listen future, never completed because this method is never invoked
+     */
+    public Future<NetServer> bindWildcardHostAcrossLines(NetServer server) {
+        return server.listen(
+                0,
+                "0.0.0.0");
+    }
 }
