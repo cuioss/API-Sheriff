@@ -101,9 +101,11 @@ public final class WildcardEphemeralBindSpecimen {
      * {@link #bindWildcardHostViaListen(NetServer)} — and would therefore report a clean tree while
      * the bypass sat open, since the bytecode rule cannot see this shape either.
      * <p>
-     * Kept formatted exactly as written. A formatter that joined these lines would silently retire
-     * the control; the sweep's positive control asserts on THIS method's shape, so a join shows up
-     * as a failure rather than as a quiet loss of coverage.
+     * Kept formatted exactly as written, and that is enforced rather than merely asked for:
+     * {@code LoopbackEphemeralBindArchTest} carries a shape-specific assertion requiring this call
+     * to still span multiple physical lines. The violation-count assertion cannot serve that
+     * purpose — joining the call leaves the count unchanged and still passes — so a join would
+     * otherwise retire this coverage silently.
      *
      * @param server the server to bind; supplied by the caller so this specimen never creates a
      *               {@code Vertx} instance
@@ -152,5 +154,19 @@ public final class WildcardEphemeralBindSpecimen {
      */
     private static int ephemeralPort() {
         return 0;
+    }
+
+    /**
+     * The same violation with whitespace between the receiver's {@code .} and {@code listen}. Java
+     * permits it — a line break included — so a sweep anchored on the adjacent {@code .listen} would
+     * miss it, and the bytecode rule accepts it for the usual reason.
+     *
+     * @param server the server to bind; supplied by the caller so this specimen never creates a
+     *               {@code Vertx} instance
+     * @return the listen future, never completed because this method is never invoked
+     */
+    @SuppressWarnings("java:S1128") // the spacing IS the specimen; a formatter must not close it up
+    public Future<NetServer> bindWildcardHostWithSpacedSelector(NetServer server) {
+        return server . listen(0, "0.0.0.0");
     }
 }

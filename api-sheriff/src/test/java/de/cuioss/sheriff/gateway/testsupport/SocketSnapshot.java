@@ -282,12 +282,10 @@ public final class SocketSnapshot {
         if (resolved.isEmpty()) {
             return "%s unavailable (no executable at %s)".formatted(label, String.join(" or ", candidates));
         }
-        long remainingSeconds = TimeUnit.NANOSECONDS.toSeconds(deadline - System.nanoTime());
-        if (remainingSeconds <= 0) {
+        if (deadline - System.nanoTime() <= 0) {
             return "%s skipped (the capture budget of %ss was already spent by the preceding command)"
                     .formatted(label, CAPTURE_BUDGET_SECONDS);
         }
-        long budget = Math.min(COMMAND_TIMEOUT_SECONDS, remainingSeconds);
         Path target;
         try {
             target = Files.createTempFile("socket-snapshot-%s-%d-%d-".formatted(
@@ -302,9 +300,16 @@ public final class SocketSnapshot {
             Process process = builder.redirectErrorStream(true)
                     .redirectOutput(target.toFile())
                     .start();
-            if (!process.waitFor(budget, TimeUnit.SECONDS)) {
+            // Recomputed AFTER start() so process setup is charged to the shared budget rather than
+            // silently extending it, and kept in nanoseconds: a seconds conversion floors, so a
+            // remaining 900ms would become a 0-second wait and skip a command the budget still
+            // allowed.
+            long remainingNanos = Math.min(
+                    TimeUnit.SECONDS.toNanos(COMMAND_TIMEOUT_SECONDS), deadline - System.nanoTime());
+            if (remainingNanos <= 0 || !process.waitFor(remainingNanos, TimeUnit.NANOSECONDS)) {
                 process.destroyForcibly();
-                return "%s unavailable (no answer within %ss)".formatted(label, budget);
+                return "%s unavailable (no answer within %sms of the shared capture budget)"
+                        .formatted(label, TimeUnit.NANOSECONDS.toMillis(Math.max(0, remainingNanos)));
             }
             int status = process.exitValue();
             String output = readBounded(target).strip();

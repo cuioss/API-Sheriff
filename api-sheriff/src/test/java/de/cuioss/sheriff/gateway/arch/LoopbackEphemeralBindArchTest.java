@@ -142,6 +142,15 @@ class LoopbackEphemeralBindArchTest {
     private static final Pattern WHITESPACE_RUN = Pattern.compile("\\s+");
 
     /**
+     * The wrapped specimen's call, required to still contain a newline inside its argument list.
+     * Exists because the count assertion cannot see layout: joining that call onto one line leaves
+     * the violation count unchanged, so only a shape-specific check can tell that the multi-line
+     * coverage is still being exercised.
+     */
+    private static final Pattern WRAPPED_WILDCARD_CALL =
+            Pattern.compile("listen\\(\\s*\\n\\s*0,\\s*\\n\\s*\"0\\.0\\.0\\.0\"\\)");
+
+    /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
      * <p>
      * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
@@ -178,7 +187,7 @@ class LoopbackEphemeralBindArchTest {
      * ({@code java:S8786}) on PR #255.
      */
     private static final Pattern WILDCARD_HOST_LISTEN =
-            Pattern.compile("\\.listen\\s*+\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
+            Pattern.compile("\\.\\s*+listen\\s*+\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
 
     private static final JavaClasses TEST_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.ONLY_INCLUDE_TESTS)
@@ -444,16 +453,23 @@ class LoopbackEphemeralBindArchTest {
             String content = Files.readString(specimen);
             long matches = WILDCARD_HOST_LISTEN.matcher(content).results().count();
 
-            assertEquals(4, matches,
-                    "The sweep must match ALL FOUR deliberate violations in the specimen: the "
+            assertEquals(5, matches,
+                    "The sweep must match ALL FIVE deliberate violations in the specimen: the "
                             + "single-line listen(0, \"0.0.0.0\"), the one wrapped across lines, the "
-                            + "one whose port is a variable, and the one whose port is a nested "
-                            + "call. Each was a "
+                            + "one whose port is a variable, the one whose port is a nested call, and "
+                            + "the one with whitespace between the selector dot and listen. Each was a "
                             + "real bypass at some point in this guard's history, and each is a shape "
-                            + "the bytecode rule also accepts — so a count below four means the "
+                            + "the bytecode rule also accepts — so a count below five means the "
                             + "sweep has regressed to a narrower predicate and its clean verdict over "
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");
+
+            assertTrue(WRAPPED_WILDCARD_CALL.matcher(content).find(),
+                    "The wrapped specimen no longer spans multiple physical lines. The count "
+                            + "assertion above cannot detect that — joining the call leaves five "
+                            + "violations and still passes — so this shape needs its own check. "
+                            + "Without it a formatter could silently retire the multi-line coverage "
+                            + "while every count stayed green.");
         }
 
         /**

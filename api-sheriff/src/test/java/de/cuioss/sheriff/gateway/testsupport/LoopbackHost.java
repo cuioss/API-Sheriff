@@ -16,7 +16,15 @@
 package de.cuioss.sheriff.gateway.testsupport;
 
 /**
- * The single owner of the address every live-socket fixture in this module binds to and dials.
+ * The single owner of the loopback address this module's live-socket fixtures bind to and dial.
+ *
+ * <p><strong>Scope, stated precisely.</strong> This covers every fixture the loopback-bind guard
+ * selects — which is the module's test tree minus one class. {@code TlsEdgeProducerTest} is a
+ * documented class-level carve-out and deliberately keeps wildcard-bound sockets: collision holders
+ * that occupy a port so production's own wildcard bind is refused, and the {@code freePort()}
+ * probes. Those bind wildcard on purpose and must not route through this constant, so "every
+ * fixture" would be an overclaim: {@code LoopbackEphemeralBindArchTest} excludes that class
+ * entirely and enforces nothing inside it.
  *
  * <h2>Why one constant rather than a literal per site</h2>
  * A fixture that binds its ephemeral server with the single-argument {@code listen(0)} overload gets
