@@ -370,7 +370,7 @@ public final class SocketSnapshot {
             long total = Files.size(target);
             return text + System.lineSeparator()
                     + "... (truncated at %d bytes of %d — the capture was larger than this diagnostic retains)"
-                            .formatted(MAX_CAPTURE_BYTES, total);
+                    .formatted(MAX_CAPTURE_BYTES, total);
         }
     }
 
