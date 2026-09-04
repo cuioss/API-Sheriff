@@ -55,6 +55,11 @@ class ForwardPolicyStageTest {
     private static final String UNTRUSTED_PEER = "203.0.113.9";
     /** The real client the forwarding chain resolves to (never a trusted proxy). */
     private static final String CLIENT_IP = "6.6.6.6";
+    /**
+     * A second, untrusted hop appended by a proxy as a <em>repeated</em> {@code X-Forwarded-For}
+     * header rather than by extending the first instance's comma-separated value.
+     */
+    private static final String APPENDED_HOP = "198.51.100.7";
     private static final String XFF = "X-Forwarded-For";
     private static final String FORWARDED = "Forwarded";
     /** The one TE value RFC 9110 admits end-to-end, and the only one gRPC sends. */
@@ -80,6 +85,27 @@ class ForwardPolicyStageTest {
                     "regenerated X-Forwarded-For must carry the resolved client IP");
             assertFalse(result.headers().containsValue(CLIENT_IP + ", " + TRUSTED_PEER),
                     "inbound forwarding chain must never be propagated verbatim");
+        }
+
+        @Test
+        @DisplayName("a repeated X-Forwarded-For header contributes its appended hop to the chain")
+        void repeatedForwardingHeaderInstancesAreAllSeen() {
+            // Arrange — the chain arrives as TWO X-Forwarded-For headers, not one comma-joined value.
+            // RFC 9110 makes the two spellings equivalent, so the appended hop must count: resolving
+            // only the first instance would silently walk a truncated chain and attribute the request
+            // to the wrong address.
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR), Set.of(TRUSTED_CIDR));
+            PipelineRequest request = request(TRUSTED_PEER,
+                    Map.of(XFF, List.of(CLIENT_IP, APPENDED_HOP)));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), false);
+
+            // Assert — nearest hop wins across the joined chain, so the SECOND instance is the client.
+            // Asserting the first instance is absent is what makes this fail against a single-valued
+            // accessor, which would resolve CLIENT_IP and never see APPENDED_HOP at all.
+            assertEquals(List.of(APPENDED_HOP), valuesNamed(result.headers(), XFF),
+                    "the appended repeated instance must win the nearest-hop selection");
         }
 
         @Test
