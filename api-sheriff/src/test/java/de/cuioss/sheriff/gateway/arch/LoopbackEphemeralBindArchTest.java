@@ -281,8 +281,15 @@ class LoopbackEphemeralBindArchTest {
     }
 
     /**
-     * The {@code .java} sources the wildcard sweep scans: every test source except the specimen
-     * package, which carries the sweep's own deliberate violation.
+     * The {@code .java} sources the wildcard sweep scans.
+     *
+     * <p>Excludes the same two things {@link #isGuarded(JavaClass)} does, and that agreement is the
+     * point: the sweep and the bytecode rule are two halves of one guard, so a file exempt from one
+     * must be exempt from the other. The specimen package carries the sweep's own deliberate
+     * violations. {@code TlsEdgeProducerTest} is the class-level carve-out for deliberate wildcard
+     * binds — scanning it here while the rule excludes it would let the sweep reject a collision
+     * control the rule deliberately permits, so the two halves would disagree about what the guard
+     * protects.
      *
      * @return the guarded source files
      * @throws IOException when the source tree cannot be walked
@@ -294,10 +301,21 @@ class LoopbackEphemeralBindArchTest {
         try (Stream<Path> walk = Files.walk(TEST_SOURCE_ROOT)) {
             return walk.filter(Files::isRegularFile)
                     .filter(path -> path.toString().endsWith(".java"))
-                    .filter(path -> !path.toString().replace('\\', '/')
-                            .contains("/de/cuioss/sheriff/gateway/arch/specimen/"))
+                    .filter(path -> !isCarvedOutSource(path))
                     .toList();
         }
+    }
+
+    /**
+     * Whether a source path is outside the sweep's scope, mirroring {@link #isGuarded(JavaClass)}.
+     *
+     * @param path a source file
+     * @return {@code true} when the sweep must not scan it
+     */
+    private static boolean isCarvedOutSource(Path path) {
+        String normalised = path.toString().replace('\\', '/');
+        return normalised.contains("/" + SPECIMEN_PACKAGE.replace('.', '/') + "/")
+                || normalised.endsWith("/" + CARVED_OUT_TEST.replace('.', '/') + ".java");
     }
 
     /**
@@ -503,6 +521,36 @@ class LoopbackEphemeralBindArchTest {
             assertFalse(WILDCARD_HOST_LISTEN.matcher(Files.readString(specimen)).find(),
                     "The sweep flags the host-bound loopback spelling, so it does not discriminate "
                             + "between a wildcard literal and a correct bind.");
+        }
+
+        /**
+         * The sweep and the bytecode rule must exempt the same files. Without this, the sweep could
+         * scan {@code TlsEdgeProducerTest} — which the rule excludes as a class-level carve-out —
+         * and reject a wildcard-host collision control the rule deliberately permits, so the two
+         * halves of one guard would disagree about what they protect.
+         */
+        @Test
+        @DisplayName("The sweep exempts the same files the bytecode rule does")
+        void sweepScopeMatchesRuleScope() throws IOException {
+            List<Path> scanned = guardedSources();
+
+            assertAll("the sweep's scope mirrors isGuarded()",
+                    () -> assertTrue(scanned.stream().noneMatch(p -> p.toString()
+                                    .replace('\\', '/').endsWith("/TlsEdgeProducerTest.java")),
+                            "The sweep scans TlsEdgeProducerTest, which the bytecode rule carves out. "
+                                    + "A deliberate wildcard-host collision control there would be "
+                                    + "reported as an offender by one half of the guard and permitted "
+                                    + "by the other."),
+                    () -> assertTrue(scanned.stream().noneMatch(p -> p.toString()
+                                    .replace('\\', '/').contains("/arch/specimen/")),
+                            "The sweep scans the specimen package, whose whole purpose is to hold "
+                                    + "deliberate violations — every run would report them as "
+                                    + "offenders."),
+                    () -> assertTrue(scanned.stream().anyMatch(p -> p.toString()
+                                    .replace('\\', '/').endsWith("/AwaitsTest.java")),
+                            "The sweep scans neither specimen nor carve-out AND misses an ordinary "
+                                    + "fixture, so the exclusions have over-reached and the sweep is "
+                                    + "covering less than it claims."));
         }
 
         /** Non-vacuity: the sweep must actually be reading a populated source tree. */
