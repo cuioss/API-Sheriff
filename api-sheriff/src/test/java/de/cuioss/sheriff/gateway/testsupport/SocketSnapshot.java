@@ -236,6 +236,13 @@ public final class SocketSnapshot {
      * machine does exactly that — the diagnostic would then time out precisely on the machines whose
      * socket tables are most worth reading.
      *
+     * <p>The capture file is created by {@link Files#createTempFile}, never by composing a
+     * predictable name under {@code java.io.tmpdir}. A composed name is guessable, and
+     * {@code ProcessBuilder}'s output redirect follows a pre-existing symlink at that path — so on a
+     * shared temp directory another user could pre-create the name and have this process's redirect
+     * write through it. {@code createTempFile} creates the file atomically with owner-only
+     * permissions, which removes both the guess and the pre-creation window.
+     *
      * @param candidates absolute paths to try, in order
      * @param label      the command's name, used in degradation notes
      * @param arguments  the command's arguments
@@ -246,9 +253,13 @@ public final class SocketSnapshot {
         if (resolved.isEmpty()) {
             return "%s unavailable (no executable at %s)".formatted(label, String.join(" or ", candidates));
         }
-        Path target = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath()
-                .resolve("socket-snapshot-%s-%d-%d.txt".formatted(
-                        label, ProcessHandle.current().pid(), CAPTURE_SEQUENCE.incrementAndGet()));
+        Path target;
+        try {
+            target = Files.createTempFile("socket-snapshot-%s-%d-%d-".formatted(
+                    label, ProcessHandle.current().pid(), CAPTURE_SEQUENCE.incrementAndGet()), ".txt");
+        } catch (IOException cause) {
+            return "%s unavailable (could not create capture file: %s)".formatted(label, cause);
+        }
         try {
             ProcessBuilder builder = new ProcessBuilder();
             builder.command().add(resolved.get());
