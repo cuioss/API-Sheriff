@@ -142,8 +142,10 @@ class TlsEdgeProducerTest {
             // Arrange — a resolvable passthrough SNI, so the front listener genuinely attempts a bind,
             // aimed at a port this test holds open for the duration.
             //
-            // The wildcard bind here is deliberate and is the only place in the module's test tree
-            // that stays wildcard-bound. Every OTHER ephemeral listener in this tree is loopback-bound
+            // The wildcard bind here is deliberate. It is one of this class's four wildcard-bound
+            // sockets — the collision holders in this test and the two that follow it, plus the probe
+            // freePort() opens — and this class is the whole of the carve-out: every ephemeral
+            // listener in the REST of the module's test tree is loopback-bound
             // through LoopbackHost.ADDRESS, because it is dialled on loopback and a wildcard bind would
             // leave it reachable from any interface. This socket is never dialled at all — it exists
             // solely to OCCUPY the port — and what it must collide with is production's own bind:

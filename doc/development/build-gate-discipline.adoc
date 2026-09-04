@@ -618,7 +618,8 @@ unstated `N`, never as an all-clear.
 * *Do not widen the `Awaits` ceilings and do not retry-wrap or quarantine the affected fixtures.*
   The 30-second ceiling is what makes the condition visible and measurable; raising it would hide
   the phenomenon rather than address it. It is now also the *capture* point -- widening it delays
-  the one snapshot that names a foreign owner, on top of hiding the stall.
+  the socket-state snapshot, on top of hiding the stall, so the one moment the kernel's own view of
+  the stalled socket is recorded moves further from the event that prompted it.
 * *Do not change `-T1`.* It is a measured rate reduction and is still worth having; it is simply not
   a cure.
 * *Bind every new live-socket fixture through `LoopbackHost.ADDRESS`* -- never a bare `listen(0)` or
