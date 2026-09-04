@@ -148,9 +148,16 @@ class LoopbackEphemeralBindArchTest {
      * three physical lines — is caught. A per-line scan would miss it, and the ArchUnit rule misses
      * it too (it is still {@code listen(int, String)}), so a line-based sweep would leave the exact
      * bypass this pair exists to close. Reported by CodeRabbit on PR #255.
+     * <p>
+     * <strong>The port is matched as any single argument, not as a numeric literal.</strong> The
+     * exposure is decided entirely by the HOST, so {@code listen(port, "0.0.0.0")} is the same
+     * defect as {@code listen(0, "0.0.0.0")} and a {@code \\d+} port would have missed it — again in
+     * a shape the bytecode rule also accepts. {@code [^,()]+?} spans one argument without crossing a
+     * comma or a nested call, which keeps a two-argument {@code listen} from matching across an
+     * unrelated neighbouring call. Also reported by CodeRabbit on PR #255.
      */
     private static final Pattern WILDCARD_HOST_LISTEN =
-            Pattern.compile("\\.listen\\s*\\(\\s*\\d+\\s*,\\s*\"(?:0\\.0\\.0\\.0|::|)\"");
+            Pattern.compile("\\.listen\\s*\\(\\s*[^,()]+?\\s*,\\s*\"(?:0\\.0\\.0\\.0|::|)\"");
 
     private static final JavaClasses TEST_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.ONLY_INCLUDE_TESTS)
@@ -416,12 +423,15 @@ class LoopbackEphemeralBindArchTest {
             String content = Files.readString(specimen);
             long matches = WILDCARD_HOST_LISTEN.matcher(content).results().count();
 
-            assertEquals(2, matches,
-                    "The sweep must match BOTH deliberate violations in the specimen: the "
-                            + "single-line listen(0, \"0.0.0.0\") and the one wrapped across lines. "
-                            + "Matching only one means the pattern or the whole-file read regressed "
-                            + "to a per-line scan, which leaves a wrapped call able to pass both this "
-                            + "sweep and the bytecode rule. Found " + matches + ".");
+            assertEquals(3, matches,
+                    "The sweep must match ALL THREE deliberate violations in the specimen: the "
+                            + "single-line listen(0, \"0.0.0.0\"), the one wrapped across lines, and "
+                            + "the one whose port is a variable rather than a literal. Each was a "
+                            + "real bypass at some point in this guard's history, and each is a shape "
+                            + "the bytecode rule also accepts — so a count below three means the "
+                            + "sweep has regressed to a narrower predicate and its clean verdict over "
+                            + "the rest of the tree covers less than it appears to. Found "
+                            + matches + ".");
         }
 
         /**

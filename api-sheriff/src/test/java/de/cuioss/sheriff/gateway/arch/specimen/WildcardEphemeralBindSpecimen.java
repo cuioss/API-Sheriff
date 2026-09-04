@@ -114,4 +114,19 @@ public final class WildcardEphemeralBindSpecimen {
                 0,
                 "0.0.0.0");
     }
+
+    /**
+     * The same violation with a <em>non-literal port</em>. The exposure is decided entirely by the
+     * host argument, so this is the identical defect — and a sweep keyed on a numeric port literal
+     * would miss it while the bytecode rule accepts it too, since the target is still the compliant
+     * {@code listen(int, String)}.
+     *
+     * @param server the server to bind; supplied by the caller so this specimen never creates a
+     *               {@code Vertx} instance
+     * @param port   the port, deliberately a variable rather than a literal
+     * @return the listen future, never completed because this method is never invoked
+     */
+    public Future<NetServer> bindWildcardHostWithVariablePort(NetServer server, int port) {
+        return server.listen(port, "0.0.0.0");
+    }
 }
