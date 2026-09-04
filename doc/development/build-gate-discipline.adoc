@@ -603,9 +603,13 @@ unstated `N`, never as an all-clear.
 
 * *A single red edge-suite run on macOS is not evidence of a branch defect.* Establish provenance
   before acting on it -- roughly a quarter of local runs of this suite carried the stall before the
-  fix. If one appears after it, read the `SocketSnapshot` block in the timeout message first: a
-  foreign owner named there is this condition recurring, and its absence is a reason to look
-  elsewhere rather than to assume it.
+  fix. If one appears after it, read the `SocketSnapshot` block in the timeout message first. Read
+  it for what it can actually show: `lsof` runs with `-p <this pid>` and `netstat` is filtered to
+  the ports that per-process view returned, so the block is *this JVM's socket state* and cannot
+  name the foreign process that owns a colliding listener. A `SYN_SENT` with no established peer, or
+  no socket for the port at all, is the shape that points back at this condition. To identify an
+  owner you need a system-wide lookup the snapshot does not perform -- `lsof -nP -iTCP:<port>`
+  without `-p`, run by hand while the stall is live.
 * *Establish that provenance against CI, not against a local re-run.* For the 30-second stall
   signature specifically, the Linux lane is the authority: it has never reproduced that signature,
   so a red there is a real defect rather than this condition. It is *not* the authority for macOS
