@@ -121,7 +121,7 @@
              the release gate treats as blocking. So this value drifting from the reactor root's cannot
              reach a release, and no new drift mechanism was added for it. Keep it equal to the
              <version.quarkus> in ../pom.xml. -->
-        <version.quarkus>3.39.1</version.quarkus>
+        <version.quarkus>3.39.2</version.quarkus>
 
         <!-- ==== Consumer hygiene is the consumer's business ================================ -->
         <!-- A consumer inheriting this parent transitively inherits api-sheriff-parent and thereby
