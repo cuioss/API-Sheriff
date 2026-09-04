@@ -639,8 +639,12 @@ endpoint the port above serves beneath the configured management context path
 probe is a protocol-blind TCP accept and therefore reports *liveness*, whereas readiness is
 `GatewayReadinessCheck`'s answer over the management interface. One constraint follows from the
 probe being configuration-free: it targets `9000` as a compiled-in constant and does not follow
-`QUARKUS_MANAGEMENT_PORT`, so a deployment that moves the management port must override the image's
-`HEALTHCHECK` to match. What that state does and does not prove for an operator is covered in
+`QUARKUS_MANAGEMENT_PORT`, so a deployment that moves the management port makes the baked check fail
+closed -- never healthy -- and the only remedy is an image rebuilt against the new port. Overriding
+the `HEALTHCHECK` does not reach it, because the override still names the one executable the image
+carries and that binary probes the constant it was built with
+(link:adr/0039-The_distroless_images_health_check_is_answered_by_the_application_binary_before_boot.adoc[ADR-0039]).
+What that state does and does not prove for an operator is covered in
 link:user/compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
 
 [[_server_tls_key_verdicts]]
@@ -1979,10 +1983,23 @@ the sane emission default) is link:adr/0003-forwarded-headers.adoc[ADR-0003].
   resolver consumes only a header accessor and never sees the peer, so this check is API
   Sheriff code, and without it a direct client's spoofed `X-Forwarded-For` would be honored.
   Never trust-all (`0.0.0.0/0` or its IPv6 twin `::/0`) -- the canonical footgun -- and keep the list as *narrow* as
-  possible (the exact proxy addresses, not a whole `/8`): every host inside a listed range
+  possible (the exact proxy addresses, not a whole RFC 1918 block): every host inside a listed range
   that can reach the gateway directly can spoof forwarding headers. Each listed proxy must
   also *manage* the `X-Forwarded-*` family (append or strip) -- see the mixed-family
   requirement in link:adr/0003-forwarded-headers.adoc[ADR-0003].
+
+  *A broad entry warns at boot.* An entry shorter than `/16` (IPv4) or `/48` (IPv6) emits
+  `ApiSheriff-102` during startup validation -- a WARN, not a boot failure. The thresholds mark
+  the point at which one entry spans more than a single operator-provisioned network: `/16` is
+  the widest single IPv4 network in routine use (an AWS VPC's maximum, Docker's default bridge
+  `172.17.0.0/16`, the RFC 1918 `192.168.0.0/16` block), and `/48` is the canonical IPv6 site
+  allocation. So `172.16.0.0/12` and `10.0.0.0/8` warn, and `2001:db8::/32` warns.
+
+  *What is deliberately left un-warned*: an IPv4 `/16` (65,536 addresses) and an IPv6 `/48`.
+  Both are still real exposure -- every host inside them that can reach the gateway directly
+  can spoof forwarding headers -- and they are un-warned because they are *legible* exposures
+  an operator chose, not because they are safe. Warning on a routine, correct configuration is
+  how a guard gets trained into background noise. Narrow the list regardless of whether it warns.
 
   *The whole list can be supplied by one `${VAR}`.* Because this field declares an `array`, a
   placeholder written as its value is typed from that destination and split on `,`, with each
@@ -2125,6 +2142,11 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
 * The `forwarded` block is optional; when present, `forwarded.trusted_proxies` must be present
   within it (may be empty = forwarding headers are never trusted); the trust-all CIDRs `0.0.0.0/0`
   *and* `::/0` are rejected as unsafe.
+* A `forwarded.trusted_proxies` entry shorter than `/16` (IPv4) or `/48` (IPv6) emits the
+  `ApiSheriff-102` boot WARN -- it does *not* fail the boot. The thresholds mark the point at
+  which one entry spans more than a single operator-provisioned network; an IPv4 `/16` and an
+  IPv6 `/48` are deliberately left un-warned (see the
+  link:#_forwarded_headers[`trusted_proxies`] field reference).
 * A `${VAR}` written at a *list-valued* key supplies the whole list: the placeholder is typed from
   the destination's declared `array` and split on `,`, each element stripped. An *empty resolution*
   at such a key -- a value resolving to empty, the defaulted `${VAR:-}` shape, or any empty

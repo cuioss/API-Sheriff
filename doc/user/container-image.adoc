@@ -199,8 +199,10 @@ no runtime one.
 One override interacts with it. The baked probe targets port `9000` as a compiled-in constant --
 deliberately, so that it reads no configuration and can answer before the application has read any.
 Setting `QUARKUS_MANAGEMENT_PORT` to something else therefore moves the management interface without
-moving the probe, and the container will never report healthy however well it is serving. A
-deployment that moves that port must override the image's `HEALTHCHECK` to match.
+moving the probe, and the container will never report healthy however well it is serving. The only
+remedy is an image rebuilt against the new port. Overriding the `HEALTHCHECK` does not reach it,
+because the override still names the one executable the image carries and that binary probes the
+constant it was built with.
 
 The full deployment-bound knob set -- which values the deployment owns and which `gateway.yaml`
 owns -- is enumerated in link:environment-variable-overrides.adoc[Environment-variable overrides].

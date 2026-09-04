@@ -435,8 +435,9 @@ them from the image, and there is no mechanism by which an image reports its own
 | Same reason as the label.
 
 | The image's `HEALTHCHECK`
-| *neither* -- but it does move with the management **port**
-| The probe is a URL-free TCP accept against `9000` as a compiled-in constant.
+| *neither* -- but moving the management **port** breaks it
+| The probe is a URL-free TCP accept against `9000` as a compiled-in constant. It does not follow a
+  moved port; it fails closed until the image is rebuilt against the new one.
 |===
 
 In this repository the same list is guarded rather than left to reviewer vigilance:
@@ -788,8 +789,10 @@ signal, and a healthy container has not told you the gateway is ready to serve. 
 link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
 
 The knob that *does* break it is the management *port*: the probe targets `9000` as a compiled-in
-constant, so a deployment moving `QUARKUS_MANAGEMENT_PORT` must override the image's `HEALTHCHECK` to
-match.
+constant, so a deployment moving `QUARKUS_MANAGEMENT_PORT` makes the baked check fail closed -- never
+healthy -- and the only remedy is an image rebuilt against the new port. Overriding the `HEALTHCHECK`
+does not reach it, because the override still names the one executable the image carries and that
+binary probes the constant it was built with.
 
 == Where the rest of this lives
 

@@ -86,9 +86,13 @@ public final class ConfigLogMessages {
 
         /**
          * A {@code trusted_proxies} CIDR entry covers a very broad — but not total —
-         * address range (shorter than {@code /8} for IPv4 or {@code /32} for IPv6).
+         * address range (shorter than {@code /16} for IPv4 or {@code /48} for IPv6).
          * Broad proxy trust widens the set of hosts able to spoof forwarded headers,
          * so an overly broad prefix is surfaced as a boot WARN for review (D5).
+         * <p>
+         * The thresholds mark the point where one entry spans more than a single
+         * operator-provisioned network; see {@code ConfigValidator.validateForwardedTrust}
+         * for the reasoning and for what is deliberately left un-warned.
          */
         public static final LogRecord BROAD_TRUSTED_PROXY = LogRecordModel.builder()
                 .prefix(PREFIX)

@@ -90,11 +90,14 @@ own it, so the omission is discoverable rather than silent.
 a| The management interface (health and metrics). See
 link:tls-edge.adoc[TLS Edge] for why the neutral `management` block declares no port.
 
-*Moving this port also moves the target of the image's baked `HEALTHCHECK`, which does not follow
-it.* The probe is hard-coded to `9000` -- it reads no configuration at all, deliberately, so that it
-can answer before the application has read any -- so a deployment that sets this variable must
-override the image's `HEALTHCHECK` to match, or the container never reports healthy however well it
-is serving. This is the shipped-artifact rule of
+*Moving this port moves the management interface away from the target of the image's baked
+`HEALTHCHECK`, which does not follow it.* The probe is hard-coded to `9000` -- it reads no
+configuration at all, deliberately, so that it can answer before the application has read any -- so a
+deployment that sets this variable makes the baked check fail closed, and the container never reports
+healthy however well it is serving. The only remedy is an image rebuilt against the new port;
+overriding the `HEALTHCHECK` does not reach it, because the override still names the one executable
+the image carries and that binary probes the constant it was built with. This is the shipped-artifact
+rule of
 link:../adr/0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
 in its ordinary form: the image ships the default, and a deployment that names something else
 supplies what it named. See

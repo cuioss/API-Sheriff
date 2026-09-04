@@ -34,8 +34,10 @@ import java.util.Arrays;
  * {@code 9000} is the compiled-in Quarkus management-port default that {@code application.properties}
  * names. It is a constant here rather than a configuration lookup so that the probe path reads no
  * gateway configuration at all. <strong>A deployment that overrides {@code quarkus.management.port}
- * must override the image's {@code HEALTHCHECK} to match</strong>; otherwise the probe measures a
- * port nothing is bound to and the container never reports healthy.
+ * makes the baked check fail closed — never healthy — and the only remedy is an image rebuilt
+ * against the new port</strong>. Overriding the image's {@code HEALTHCHECK} does not reach it: the
+ * override still names the one executable the image carries, and that binary probes the constant it
+ * was built with (ADR-0039).
  * <p>
  * The probe never binds a port, never writes a file, never reads gateway configuration and never
  * mutates the running instance — it only connects to an already-listening socket and closes it.

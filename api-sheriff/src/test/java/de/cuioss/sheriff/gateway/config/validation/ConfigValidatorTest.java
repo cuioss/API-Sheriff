@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -709,7 +710,7 @@ class ConfigValidatorTest {
         void shouldAcceptTightlyScopedCidrs() {
             GatewayConfig gateway = validGateway()
                     .forwarded(ForwardedConfig.builder()
-                            .trustedProxies(List.of("10.0.0.0/8", "2001:db8::/32")).build())
+                            .trustedProxies(List.of("10.1.0.0/16", "2001:db8::/48")).build())
                     .build();
             EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
 
@@ -719,7 +720,47 @@ class ConfigValidatorTest {
                     () -> "well-scoped CIDRs must not fail the boot, got: " + errors);
             assertTrue(TestLoggerFactory.getTestHandler()
                             .resolveLogMessagesContaining(TestLogLevel.WARN, "very broad address range").isEmpty(),
-                    "tightly scoped CIDRs (10.0.0.0/8, 2001:db8::/32) must not emit a broad-range WARN");
+                    "tightly scoped CIDRs (10.1.0.0/16, 2001:db8::/48) must not emit a broad-range WARN");
+        }
+
+        /**
+         * Matched positive/negative controls straddling the broad-prefix threshold in both address
+         * families. The warning fires when one entry spans more than a single operator-provisioned
+         * network: broader than an IPv4 {@code /16}, or broader than an IPv6 {@code /48} site
+         * allocation. Each family carries a range just past the boundary and one exactly at it, so
+         * reverting either constant alone turns at least one case red.
+         */
+        static Stream<Arguments> broadPrefixThresholdControls() {
+            return Stream.of(
+                    Arguments.of("IPv4 /12 spans many provisioned networks", "172.16.0.0/12", true),
+                    Arguments.of("IPv4 /8 spans many provisioned networks", "10.0.0.0/8", true),
+                    Arguments.of("IPv4 /16 is one provisioned network", "172.16.0.0/16", false),
+                    Arguments.of("IPv6 /32 is broader than one site allocation", "2001:db8::/32", true),
+                    Arguments.of("IPv6 /48 is one site allocation", "2001:db8::/48", false));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("broadPrefixThresholdControls")
+        @DisplayName("Should warn only on a trusted_proxies range broader than one provisioned network")
+        void shouldApplyBroadPrefixThreshold(String label, String cidr, boolean expectWarning) {
+            GatewayConfig gateway = validGateway()
+                    .forwarded(ForwardedConfig.builder().trustedProxies(List.of(cidr)).build())
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
+                    () -> "a broad-but-not-total CIDR must not fail the boot, got: " + errors);
+            String identifier = ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY.resolveIdentifierString();
+            if (expectWarning) {
+                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, identifier);
+                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, cidr);
+            } else {
+                assertTrue(TestLoggerFactory.getTestHandler()
+                                .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
+                        () -> cidr + " is within the broad-prefix threshold and must not emit " + identifier);
+            }
         }
 
         @Test
