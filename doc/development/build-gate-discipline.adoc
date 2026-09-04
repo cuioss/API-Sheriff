@@ -570,7 +570,7 @@ is no defect" is a universal negative the budget was never shaped to establish.
 *That changed on 2026-09-03, and a fix has landed.* The defect was in the fixtures after all, and it
 was one call. Every live-socket fixture bound its ephemeral server with the single-argument
 `listen(0)` overload -- the dual-stack wildcard -- while the client in that same fixture dialled
-`127.0.0.1`. All *20* such sites across *9* files now bind through `LoopbackHost.ADDRESS` in
+`127.0.0.1`. All *22* such sites across *9* files now bind through `LoopbackHost.ADDRESS` in
 `de.cuioss.sheriff.gateway.testsupport`, and every `Awaits` ceiling now folds a `SocketSnapshot`
 capture of the kernel's own view -- `lsof` for this pid, plus `netstat` in whichever spelling the
 platform takes (`-anv -p tcp` on macOS, `-ant` on Linux) -- into its timeout message. A future

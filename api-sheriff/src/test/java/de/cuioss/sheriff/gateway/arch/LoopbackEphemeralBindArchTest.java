@@ -502,7 +502,7 @@ class LoopbackEphemeralBindArchTest {
 
             assertTrue(WRAPPED_WILDCARD_CALL.matcher(content).find(),
                     "The wrapped specimen no longer spans multiple physical lines. The count "
-                            + "assertion above cannot detect that — joining the call leaves five "
+                            + "assertion above cannot detect that — joining the call leaves four "
                             + "violations and still passes — so this shape needs its own check. "
                             + "Without it a formatter could silently retire the multi-line coverage "
                             + "while every count stayed green.");
