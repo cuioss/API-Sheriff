@@ -153,9 +153,8 @@ public final class SocketSnapshot {
      * spurious port {@code 1}. Accepting either separator everywhere would not widen coverage, it
      * would manufacture wrong ports.
      */
-    private static final Pattern NETSTAT_PORT = IS_MACOS
-            ? Pattern.compile("\\.(\\d{1,5})(?:\\s|$|-)")
-            : Pattern.compile(":(\\d{1,5})\\b");
+    private static final Pattern NETSTAT_PORT = Pattern.compile(
+            IS_MACOS ? "\\.(\\d{1,5})(?:\\s|$|-)" : ":(\\d{1,5})\\b");
 
     /**
      * Caps the loopback fallback rendering, so a machine with many loopback services cannot paste an
@@ -342,18 +341,6 @@ public final class SocketSnapshot {
     }
 
     /**
-     * The fallback view: every loopback row, capped.
-     *
-     * <p>Capping the <em>unfiltered</em> table instead would be actively misleading. {@code netstat}
-     * renders roughly newest-socket-first, so on a machine with ordinary outbound traffic the rows
-     * that matter drift past the cap within seconds and a re-sample silently loses the very pair it
-     * was taken to watch. Loopback is the whole scope of the stall under investigation, so narrowing
-     * to it keeps every relevant row inside the cap.
-     *
-     * @param lines the full rendering
-     * @return the loopback rows, capped, never {@code null}
-     */
-    /**
      * Reads at most {@link #MAX_CAPTURE_BYTES} of a capture file into memory.
      *
      * <p>The command's stdout is redirected to a file rather than a pipe, so the child can never
@@ -403,6 +390,18 @@ public final class SocketSnapshot {
                 : line.contains("127.0.0.1:") || line.contains("[::1]:") || line.contains("::1:");
     }
 
+    /**
+     * The fallback view: every loopback row, capped.
+     *
+     * <p>Capping the <em>unfiltered</em> table instead would be actively misleading. {@code netstat}
+     * renders roughly newest-socket-first, so on a machine with ordinary outbound traffic the rows
+     * that matter drift past the cap within seconds and a re-sample silently loses the very pair it
+     * was taken to watch. Loopback is the whole scope of the stall under investigation, so narrowing
+     * to it keeps every relevant row inside the cap.
+     *
+     * @param lines the full rendering
+     * @return the loopback rows, capped, never {@code null}
+     */
     private static String loopbackRows(List<String> lines) {
         List<String> loopback = lines.stream()
                 .filter(SocketSnapshot::isLoopbackRow)

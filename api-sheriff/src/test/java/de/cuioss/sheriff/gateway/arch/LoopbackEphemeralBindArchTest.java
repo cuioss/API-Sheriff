@@ -136,6 +136,12 @@ class LoopbackEphemeralBindArchTest {
     private static final Path TEST_SOURCE_ROOT = Path.of("src", "test", "java");
 
     /**
+     * Collapses a matched offender to one line for the failure message. Hoisted out of the scan loop
+     * so the pattern is compiled once rather than per offender.
+     */
+    private static final Pattern WHITESPACE_RUN = Pattern.compile("\\s+");
+
+    /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
      * <p>
      * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
@@ -152,12 +158,20 @@ class LoopbackEphemeralBindArchTest {
      * <strong>The port is matched as any single argument, not as a numeric literal.</strong> The
      * exposure is decided entirely by the HOST, so {@code listen(port, "0.0.0.0")} is the same
      * defect as {@code listen(0, "0.0.0.0")} and a {@code \\d+} port would have missed it — again in
-     * a shape the bytecode rule also accepts. {@code [^,()]+?} spans one argument without crossing a
+     * a shape the bytecode rule also accepts. {@code [^,()]} spans one argument without crossing a
      * comma or a nested call, which keeps a two-argument {@code listen} from matching across an
      * unrelated neighbouring call. Also reported by CodeRabbit on PR #255.
+     * <p>
+     * <strong>Possessive quantifiers, and no {@code \\s*} beside the argument class.</strong>
+     * {@code [^,()]} matches whitespace itself, so an adjacent {@code \\s*} makes the split between
+     * them ambiguous and the engine backtracks over every division — super-linear on a long
+     * non-matching line. The {@code \\s*} either side of the argument is therefore dropped (the class
+     * absorbs that whitespace anyway) and both remaining quantifiers are possessive, which forbids
+     * the backtracking outright rather than merely making it unlikely. Reported by Sonar
+     * ({@code java:S8786}) on PR #255.
      */
     private static final Pattern WILDCARD_HOST_LISTEN =
-            Pattern.compile("\\.listen\\s*\\(\\s*[^,()]+?\\s*,\\s*\"(?:0\\.0\\.0\\.0|::|)\"");
+            Pattern.compile("\\.listen\\s*\\([^,()]++,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
 
     private static final JavaClasses TEST_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.ONLY_INCLUDE_TESTS)
@@ -393,7 +407,7 @@ class LoopbackEphemeralBindArchTest {
                 Matcher matcher = WILDCARD_HOST_LISTEN.matcher(content);
                 while (matcher.find()) {
                     offenders.add(source.getFileName() + ":" + lineOf(content, matcher.start())
-                            + " — " + matcher.group().replaceAll("\\s+", " "));
+                            + " — " + WHITESPACE_RUN.matcher(matcher.group()).replaceAll(" "));
                 }
             }
 
