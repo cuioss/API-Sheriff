@@ -23,7 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.function.UnaryOperator;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 
@@ -372,13 +372,25 @@ public final class ForwardPolicyStage {
         }
     }
 
+    /**
+     * Feeds the forwarded-header family through the resolver and merges the regenerated result.
+     * <p>
+     * The accessor hands the resolver <strong>every</strong> instance of a repeated header, not just
+     * the first: a proxy appends to the chain by adding another {@code X-Forwarded-For} header just
+     * as legitimately as by extending the comma-separated value, so a single-valued view would hide
+     * the appended hops and let the resolver walk a truncated chain.
+     * <p>
+     * An untrusted TCP peer sees the empty list for every regenerated name — the absent-header
+     * signal — so a client that reaches the gateway directly cannot seed the chain it is about to
+     * be attributed by.
+     */
     private void applyRegeneratedForwarding(PipelineRequest request, Map<String, String> headers) {
         boolean peerTrusted = peerGate.isTrustedPeer(request.peerAddress());
-        UnaryOperator<String> lookup = name -> {
+        Function<String, List<String>> lookup = name -> {
             if (!peerTrusted && isRegeneratedForwardingName(name)) {
-                return null;
+                return List.of();
             }
-            return request.firstHeader(name).orElse(null);
+            return request.headerValues(name);
         };
         ResolvedForwarding resolved = resolver.resolve(lookup);
         headers.putAll(resolved.toXForwardedHeaders());
