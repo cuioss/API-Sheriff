@@ -450,7 +450,7 @@ class LoopbackEphemeralBindArchTest {
                             + "one whose port is a variable, and the one whose port is a nested "
                             + "call. Each was a "
                             + "real bypass at some point in this guard's history, and each is a shape "
-                            + "the bytecode rule also accepts — so a count below three means the "
+                            + "the bytecode rule also accepts — so a count below four means the "
                             + "sweep has regressed to a narrower predicate and its clean verdict over "
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");

@@ -147,6 +147,17 @@ public final class SocketSnapshot {
     private static final long CAPTURE_BUDGET_SECONDS = 6;
 
     /**
+     * The IPv6 loopback as Linux {@code netstat} renders it, matched as a whole address token.
+     *
+     * <p>A bare {@code contains("::1:")} is not sufficient and is actively wrong: it also matches
+     * {@code fe80::1:49152} and {@code 2001:db8::1:49152}, so the fallback would fold non-loopback
+     * endpoints into a table that labels itself "loopback rows only". Anchoring the address to a
+     * token boundary — start of line or whitespace, and the bracketed form — keeps the label true.
+     */
+    private static final Pattern LINUX_IPV6_LOOPBACK =
+            Pattern.compile("(?:^|\\s)(?:\\[::1\\]|::1):\\d");
+
+    /**
      * Caps how much of a capture is read back onto the heap. A system-wide {@code netstat} on a
      * socket-heavy host can be large, and this diagnostic must not become the failure it reports.
      * Generous enough that an ordinary capture is never truncated.
@@ -418,7 +429,7 @@ public final class SocketSnapshot {
     private static boolean isLoopbackRow(String line) {
         return IS_MACOS
                 ? line.contains("127.0.0.1.") || line.contains("::1.")
-                : line.contains("127.0.0.1:") || line.contains("[::1]:") || line.contains("::1:");
+                : line.contains("127.0.0.1:") || LINUX_IPV6_LOOPBACK.matcher(line).find();
     }
 
     /**
