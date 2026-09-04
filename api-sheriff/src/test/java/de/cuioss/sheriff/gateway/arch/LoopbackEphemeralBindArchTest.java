@@ -99,13 +99,15 @@ import org.junit.jupiter.api.Test;
  * the negative control would fail the main rule and the guard could never be green.
  * <p>
  * <strong>Carve-out 2 — {@code de.cuioss.sheriff.gateway.tls.TlsEdgeProducerTest}.</strong> Its
- * four {@code new ServerSocket(0)} sites are the only ones in this tree that stay wildcard-bound,
- * and deliberately so: three of them hold a port precisely so that production's <em>wildcard</em>
- * bind is refused, and the fourth probes for a port that production will then wildcard-bind. None
+ * wildcard-bound sockets are the only ones in this tree that stay wildcard-bound, and deliberately
+ * so. They serve two roles: the collision holders occupy a port precisely so that production's
+ * <em>wildcard</em> bind is refused, and {@code freePort()} binds to allocate a candidate and again
+ * to re-probe it against the bind scope production will use. No count is given — it has gone stale
+ * twice already, and the carve-out is the class rather than an enumerated list of sites. None
  * is ever dialled, so none is exposed. Narrowing them to loopback would leave the wildcard free,
  * the producer's bind would succeed, and {@code failsWhenThePublicPortIsHeld} would go red on macOS
  * while staying green on Linux CI — the exact platform-divergent failure class this whole change
- * exists to remove. The full justification is recorded in place, at each of the four sites and in
+ * exists to remove. The full justification is recorded in place, at each site and in
  * the {@code freePort()} Javadoc, and is not restated here. The carve-out covers the outer class
  * <em>and its nested classes</em>, since three of the four sites live inside {@code @Nested}
  * fixtures.
@@ -531,7 +533,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("The sweep exempts the same files the bytecode rule does")
-        void sweepScopeMatchesRuleScope() throws IOException {
+        void sweepScopeMatchesRuleScope() throws Exception {
             List<Path> scanned = guardedSources();
 
             assertAll("the sweep's scope mirrors isGuarded()",
