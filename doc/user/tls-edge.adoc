@@ -229,6 +229,8 @@ See link:environment-variable-overrides.adoc[Environment-variable overrides] for
 
 One constraint travels with that override: the image's baked `HEALTHCHECK` targets `9000` as a
 compiled-in constant and does not follow `QUARKUS_MANAGEMENT_PORT`, so a deployment that moves the
-port must override the image's `HEALTHCHECK` to match or the container will never report healthy --
-see
+port makes the baked check fail closed -- the container will never report healthy -- and the only
+remedy is an image rebuilt against the new port. Overriding the `HEALTHCHECK` does not reach it,
+because the override still names the one executable the image carries and that binary probes the
+constant it was built with. See
 link:compose-sample.adoc#_reading_the_container_health_signal[Reading the container health signal].
