@@ -131,6 +131,13 @@ public final class SocketSnapshot {
     private static final long COMMAND_TIMEOUT_SECONDS = 5;
 
     /**
+     * Caps how much of a capture is read back onto the heap. A system-wide {@code netstat} on a
+     * socket-heavy host can be large, and this diagnostic must not become the failure it reports.
+     * Generous enough that an ordinary capture is never truncated.
+     */
+    private static final int MAX_CAPTURE_BYTES = 512 * 1024;
+
+    /**
      * Matches the port of an {@code lsof} address token — {@code 127.0.0.1:59120} or
      * {@code [::1]:59120}, on either side of the {@code ->} of an established pair.
      */
@@ -254,7 +261,7 @@ public final class SocketSnapshot {
                 return "%s unavailable (no answer within %ss)".formatted(label, COMMAND_TIMEOUT_SECONDS);
             }
             int status = process.exitValue();
-            String output = Files.readString(target, StandardCharsets.UTF_8).strip();
+            String output = readBounded(target).strip();
             if (output.isEmpty()) {
                 return "%s produced no output (exit=%d) — this is NOT an observation that the process "
                         .formatted(label, status)
@@ -335,9 +342,59 @@ public final class SocketSnapshot {
      * @param lines the full rendering
      * @return the loopback rows, capped, never {@code null}
      */
+    /**
+     * Reads at most {@link #MAX_CAPTURE_BYTES} of a capture file into memory.
+     *
+     * <p>The command's stdout is redirected to a file rather than a pipe, so the child can never
+     * block on a full pipe buffer and the on-disk size is bounded by {@link #COMMAND_TIMEOUT_SECONDS}
+     * of writing. What was NOT bounded was the read back: a plain {@code readString} pulls the whole
+     * file onto the heap before any line cap applies, so a socket-heavy host could turn this
+     * diagnostic into an {@code OutOfMemoryError} — replacing the {@code TimeoutException} it exists
+     * to explain with a failure of its own, which is exactly what this class promises never to do.
+     *
+     * <p>Truncation is stated in the returned text rather than left silent: a capture cut short
+     * still reads as a capture, and a reader must be able to tell "this is all there was" from
+     * "this is as much as was kept".
+     *
+     * @param target the capture file
+     * @return the retained content, with a truncation note appended when the cap was hit
+     * @throws IOException when the file cannot be read
+     */
+    private static String readBounded(Path target) throws IOException {
+        try (var stream = Files.newInputStream(target)) {
+            byte[] retained = stream.readNBytes(MAX_CAPTURE_BYTES);
+            String text = new String(retained, StandardCharsets.UTF_8);
+            if (retained.length < MAX_CAPTURE_BYTES) {
+                return text;
+            }
+            long total = Files.size(target);
+            return text + System.lineSeparator()
+                    + "... (truncated at %d bytes of %d — the capture was larger than this diagnostic retains)"
+                            .formatted(MAX_CAPTURE_BYTES, total);
+        }
+    }
+
+    /**
+     * Reports whether a {@code netstat} row carries a loopback address, in this platform's spelling.
+     *
+     * <p>Platform-aware for the same reason {@link #NETSTAT_PORT} is: macOS renders
+     * {@code 127.0.0.1.59120} and Linux {@code 127.0.0.1:59120}. A macOS-only predicate applied to
+     * Linux output discards every row, so this fallback — which is reached precisely when
+     * {@code lsof} gave no port set to filter by — would render an empty table on Linux while
+     * reporting itself as "loopback rows only".
+     *
+     * @param line one rendering row
+     * @return {@code true} when the row names a loopback address
+     */
+    private static boolean isLoopbackRow(String line) {
+        return IS_MACOS
+                ? line.contains("127.0.0.1.") || line.contains("::1.")
+                : line.contains("127.0.0.1:") || line.contains("[::1]:") || line.contains("::1:");
+    }
+
     private static String loopbackRows(List<String> lines) {
         List<String> loopback = lines.stream()
-                .filter(line -> line.contains("127.0.0.1.") || line.contains("::1."))
+                .filter(SocketSnapshot::isLoopbackRow)
                 .toList();
         List<String> capped = loopback.stream().limit(MAX_FALLBACK_LINES).toList();
         String rendered = "loopback rows only (no port set to filter by):" + System.lineSeparator()
