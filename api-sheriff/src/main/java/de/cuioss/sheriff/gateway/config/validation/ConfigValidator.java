@@ -126,8 +126,8 @@ public final class ConfigValidator {
     private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
     private static final int IPV4_BITS = 32;
     private static final int IPV6_BITS = 128;
-    private static final int BROAD_PREFIX_IPV4 = 8;
-    private static final int BROAD_PREFIX_IPV6 = 32;
+    private static final int BROAD_PREFIX_IPV4 = 16;
+    private static final int BROAD_PREFIX_IPV6 = 48;
     private static final String WILDCARD_ORIGIN = "*";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
@@ -1032,9 +1032,25 @@ public final class ConfigValidator {
      * the parsed ranges per address family must not cover the entire IPv4 or IPv6
      * space — catching a single full-space CIDR <em>and</em> complementary
      * combinations such as {@code 0.0.0.0/1} + {@code 128.0.0.0/1}. Individually very
-     * broad — but not total — prefixes (shorter than {@code /8} for IPv4 or
-     * {@code /32} for IPv6) are surfaced as a boot WARN. The parsed range set is
+     * broad — but not total — prefixes (shorter than {@code /16} for IPv4 or
+     * {@code /48} for IPv6) are surfaced as a boot WARN. The parsed range set is
      * retained for a later per-request trust decision (Plan 04) (D5).
+     * <p>
+     * Both thresholds encode one principle: <em>warn when a single entry spans more than one
+     * operator-provisioned network.</em> A range matching exactly one network an operator
+     * deliberately provisioned is a considered trust decision; anything broader is far more
+     * likely to be an RFC 1918 block pasted in whole. {@code /16} is the widest single IPv4
+     * network in routine use — an AWS VPC's maximum size, Docker's default bridge shape
+     * {@code 172.17.0.0/16}, the RFC 1918 {@code 192.168.0.0/16} block — so the warning starts
+     * one bit broader, at {@code /15}, and catches {@code 172.16.0.0/12} and {@code 10.0.0.0/8}.
+     * {@code /48} is the canonical IPv6 site allocation and the direct analogue, with
+     * {@code /64} the standard single subnet.
+     * <p>
+     * Left un-warned deliberately: an IPv4 {@code /16} (65,536 addresses) and an IPv6
+     * {@code /48}. Every host inside a trusted range that can reach the gateway directly can
+     * spoof forwarded headers, so a {@code /16} is still a real exposure — un-warned because it
+     * is a <em>legible</em> one an operator chose, not because it is safe. Warning on a routine,
+     * correct configuration is how a guard gets trained into background noise.
      */
     private static void validateForwardedTrust(GatewayConfig gateway, List<ConfigError> errors) {
         ForwardedConfig forwarded = gateway.forwarded();
