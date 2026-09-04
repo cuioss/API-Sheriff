@@ -146,9 +146,15 @@ class LoopbackEphemeralBindArchTest {
      * Exists because the count assertion cannot see layout: joining that call onto one line leaves
      * the violation count unchanged, so only a shape-specific check can tell that the multi-line
      * coverage is still being exercised.
+     * <p>
+     * Horizontal whitespace and the line break are matched separately — {@code [ \\t]*+} then
+     * {@code \\R} — rather than as {@code \\s*\\n\\s*}. {@code \\s} matches the newline too, so that
+     * spelling leaves the engine several ways to divide the same text and backtracks over each; the
+     * classes here cannot overlap, so there is nothing to backtrack. Reported by Sonar
+     * ({@code java:S8786}), the same rule that caught the sweep pattern earlier on this branch.
      */
-    private static final Pattern WRAPPED_WILDCARD_CALL =
-            Pattern.compile("listen\\(\\s*\\n\\s*0,\\s*\\n\\s*\"0\\.0\\.0\\.0\"\\)");
+    private static final Pattern WRAPPED_WILDCARD_CALL = Pattern.compile(
+            "listen\\([ \\t]*+\\R[ \\t]*+0,[ \\t]*+\\R[ \\t]*+\"0\\.0\\.0\\.0\"\\)");
 
     /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
