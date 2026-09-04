@@ -453,16 +453,26 @@ class LoopbackEphemeralBindArchTest {
             String content = Files.readString(specimen);
             long matches = WILDCARD_HOST_LISTEN.matcher(content).results().count();
 
-            assertEquals(5, matches,
-                    "The sweep must match ALL FIVE deliberate violations in the specimen: the "
+            assertEquals(4, matches,
+                    "The sweep must match ALL FOUR deliberate violations in the specimen: the "
                             + "single-line listen(0, \"0.0.0.0\"), the one wrapped across lines, the "
-                            + "one whose port is a variable, the one whose port is a nested call, and "
-                            + "the one with whitespace between the selector dot and listen. Each was a "
+                            + "one whose port is a variable, and the one whose port is a nested "
+                            + "call. Each was a "
                             + "real bypass at some point in this guard's history, and each is a shape "
-                            + "the bytecode rule also accepts — so a count below five means the "
+                            + "the bytecode rule also accepts — so a count below four means the "
                             + "sweep has regressed to a narrower predicate and its clean verdict over "
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");
+
+            assertTrue(WILDCARD_HOST_LISTEN.matcher("server . listen(0, \"0.0.0.0\")").find(),
+                    "The sweep does not match a spaced selector. Java permits `server . listen(...)`, "
+                            + "a line break included, so that spelling would pass both this sweep and "
+                            + "the bytecode rule. Asserted against a literal here rather than a source "
+                            + "specimen ON PURPOSE: the -Ppre-commit formatter closes the spacing up, "
+                            + "so a specimen carrying this shape is normalised on the next gate run "
+                            + "and its coverage disappears while the violation count stays green — "
+                            + "the same silent retirement the multi-line check below exists to catch. "
+                            + "A shape the formatter will not preserve has to be pinned in a string.");
 
             assertTrue(WRAPPED_WILDCARD_CALL.matcher(content).find(),
                     "The wrapped specimen no longer spans multiple physical lines. The count "

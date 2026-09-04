@@ -156,17 +156,4 @@ public final class WildcardEphemeralBindSpecimen {
         return 0;
     }
 
-    /**
-     * The same violation with whitespace between the receiver's {@code .} and {@code listen}. Java
-     * permits it — a line break included — so a sweep anchored on the adjacent {@code .listen} would
-     * miss it, and the bytecode rule accepts it for the usual reason.
-     *
-     * @param server the server to bind; supplied by the caller so this specimen never creates a
-     *               {@code Vertx} instance
-     * @return the listen future, never completed because this method is never invoked
-     */
-    @SuppressWarnings("java:S1128") // the spacing IS the specimen; a formatter must not close it up
-    public Future<NetServer> bindWildcardHostWithSpacedSelector(NetServer server) {
-        return server . listen(0, "0.0.0.0");
-    }
 }
