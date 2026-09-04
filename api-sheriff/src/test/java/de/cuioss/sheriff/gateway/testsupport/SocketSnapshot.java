@@ -136,6 +136,17 @@ public final class SocketSnapshot {
     private static final long COMMAND_TIMEOUT_SECONDS = 5;
 
     /**
+     * The ceiling on a whole capture, shared across both commands rather than applied to each.
+     *
+     * <p>Per-command bounds do not bound the capture: two commands at five seconds each add up to
+     * ten, so a five-second teardown ceiling could report after roughly fifteen. That inflates the
+     * very measurement the ceiling exists to make, and it does so precisely on the slow machines
+     * where the timing matters most. One deadline is taken at entry and each command receives only
+     * the time left on it.
+     */
+    private static final long CAPTURE_BUDGET_SECONDS = 6;
+
+    /**
      * Caps how much of a capture is read back onto the heap. A system-wide {@code netstat} on a
      * socket-heavy host can be large, and this diagnostic must not become the failure it reports.
      * Generous enough that an ordinary capture is never truncated.
@@ -182,11 +193,12 @@ public final class SocketSnapshot {
      */
     public static String capture() {
         long pid = ProcessHandle.current().pid();
-        String lsof = run(LSOF_BINARIES, "lsof",
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(CAPTURE_BUDGET_SECONDS);
+        String lsof = run(deadline, LSOF_BINARIES, "lsof",
                 "-w", "-nP", "-iTCP", "-a", "-p", String.valueOf(pid));
         Set<String> ports = portsIn(lsof, LSOF_PORT);
         String[] netstatArgs = netstatArgs();
-        String netstat = filterToPorts(run(NETSTAT_BINARIES, "netstat", netstatArgs), ports);
+        String netstat = filterToPorts(run(deadline, NETSTAT_BINARIES, "netstat", netstatArgs), ports);
         return new StringBuilder(512)
                 .append(SECTION_HEADER)
                 .append(System.lineSeparator()).append("  pid=").append(pid)
@@ -247,16 +259,24 @@ public final class SocketSnapshot {
      * write through it. {@code createTempFile} creates the file atomically with owner-only
      * permissions, which removes both the guess and the pre-creation window.
      *
+     * @param deadline   {@code System.nanoTime()} value the whole capture must finish by; this
+     *                   command gets whichever is smaller, its own ceiling or the time remaining
      * @param candidates absolute paths to try, in order
      * @param label      the command's name, used in degradation notes
      * @param arguments  the command's arguments
      * @return the command's combined output, or a stated degradation note
      */
-    private static String run(List<String> candidates, String label, String... arguments) {
+    private static String run(long deadline, List<String> candidates, String label, String... arguments) {
         Optional<String> resolved = binary(candidates);
         if (resolved.isEmpty()) {
             return "%s unavailable (no executable at %s)".formatted(label, String.join(" or ", candidates));
         }
+        long remainingSeconds = TimeUnit.NANOSECONDS.toSeconds(deadline - System.nanoTime());
+        if (remainingSeconds <= 0) {
+            return "%s skipped (the capture budget of %ss was already spent by the preceding command)"
+                    .formatted(label, CAPTURE_BUDGET_SECONDS);
+        }
+        long budget = Math.min(COMMAND_TIMEOUT_SECONDS, remainingSeconds);
         Path target;
         try {
             target = Files.createTempFile("socket-snapshot-%s-%d-%d-".formatted(
@@ -271,9 +291,9 @@ public final class SocketSnapshot {
             Process process = builder.redirectErrorStream(true)
                     .redirectOutput(target.toFile())
                     .start();
-            if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            if (!process.waitFor(budget, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
-                return "%s unavailable (no answer within %ss)".formatted(label, COMMAND_TIMEOUT_SECONDS);
+                return "%s unavailable (no answer within %ss)".formatted(label, budget);
             }
             int status = process.exitValue();
             String output = readBounded(target).strip();

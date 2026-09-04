@@ -623,11 +623,24 @@ unstated `N`, never as an all-clear.
 * *Do not change `-T1`.* It is a measured rate reduction and is still worth having; it is simply not
   a cure.
 * *Bind every new live-socket fixture through `LoopbackHost.ADDRESS`* -- never a bare `listen(0)` or
-  `new ServerSocket(0)` that will later be dialled on loopback.
-  `LoopbackEphemeralBindArchTest` is the fitness function that enforces this and fails the build on
-  either spelling. The four `TlsEdgeProducerTest` sites are an explicit, documented carve-out: they
-  hold a port precisely so a *wildcard* production bind is refused, they are never dialled, and
-  binding them to loopback would invert the very assertion they exist to make.
+  `new ServerSocket(0)`. `LoopbackEphemeralBindArchTest` is the fitness function that enforces this
+  and fails the build on either spelling. It rejects the bare overload outright and does *not* check
+  whether the socket is later dialled, so "it is never dialled" is not a defence at review time; it
+  is the reason a carve-out was granted, not a test the guard performs.
++
+The carve-out is `TlsEdgeProducerTest` *as a class*, its nested classes included -- not a list of
+individual sites. The guard therefore protects none of that class, and a new bare bind added
+anywhere in it will pass. Its existing wildcard binds serve two different purposes: the collision
+holders occupy a port so a *wildcard* production bind is refused, and `freePort()` wildcard-binds to
+allocate a candidate and again to re-probe it against the bind scope production will use. Both are
+recorded in place. A new fixture belongs outside this class unless it genuinely needs a wildcard
+bind, because moving it inside silently removes it from the guard.
++
+A companion source sweep in the same class catches the wildcard *host literal* -- `listen(0,
+"0.0.0.0")` -- which the bytecode rule structurally cannot see, since that call and
+`listen(0, LoopbackHost.ADDRESS)` are the same call target. The sweep is a net rather than a parser:
+it reaches one level of nested parentheses in the port argument and no further, and that limit is
+recorded next to the pattern.
 
 == Two rules about reading a check's output
 
