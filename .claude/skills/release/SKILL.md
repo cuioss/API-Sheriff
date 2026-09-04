@@ -1171,15 +1171,6 @@ authenticated check passes.
   release rather than to a code change, and its lane is known-flaky.
 - **Always pass `--repo cuioss/API-Sheriff`** to `gh`.
 - **Temporary files go under `.plan/temp/`.**
-- **Commit trailers** follow this project's convention:
-
-  ```
-  🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-  https://claude.ai/code/session_<id>
-
-  Co-authored-by: Claude Opus 5 <noreply@anthropic.com>
-  ```
 
 ## See also
 
