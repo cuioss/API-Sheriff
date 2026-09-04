@@ -245,7 +245,7 @@ class AwaitsTest {
         InetAddress loopback = InetAddress.getLoopbackAddress();
         try (ServerSocket listener = new ServerSocket(0, 1, loopback);
              Socket client = new Socket();
-             Socket _ = acceptAfter(listener, client)) {
+             var _ = acceptAfter(listener, client)) {
             TimeoutException failure = assertThrows(TimeoutException.class,
                     () -> Awaits.awaitLatch(new CountDownLatch(1), CONTROL_LABEL, CONTROL_CEILING));
 
