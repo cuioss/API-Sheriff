@@ -210,6 +210,25 @@ class LoopbackEphemeralBindArchTest {
      * the backtracking outright rather than merely making it unlikely. Reported by Sonar
      * ({@code java:S8786}) on PR #255.
      */
+    /**
+     * A wildcard host literal anywhere in a guarded source, independent of where it is used.
+     *
+     * <p>Closes the indirection the call-site pattern cannot see: a fixture that writes
+     * {@code private static final String WILDCARD_HOST = "0.0.0.0";} and then
+     * {@code listen(0, WILDCARD_HOST)} passes both halves of the guard — the bytecode rule because
+     * the target is still {@code listen(int, String)}, and the call-site sweep because no literal
+     * appears at the call. Resolving the constant would need data-flow analysis; refusing the
+     * literal outright does not, and a fixture that must bind loopback has no legitimate use for
+     * one. Verified against the tree at the time of writing: zero guarded sources contained either
+     * literal, so this starts from a clean base rather than grandfathering exceptions.
+     * <p>
+     * <strong>The empty host is deliberately absent here.</strong> {@code ""} binds every interface
+     * too, but it is ubiquitous in ordinary code, so a tree-wide sweep for it would be noise rather
+     * than a guard. It stays covered at the call site only, and that asymmetry is stated rather than
+     * left for someone to infer from the pattern. Reported by CodeRabbit on PR #255.
+     */
+    private static final Pattern WILDCARD_HOST_LITERAL = Pattern.compile("\"(?:0\\.0\\.0\\.0|::)\"");
+
     private static final Pattern WILDCARD_HOST_LISTEN = Pattern.compile(
             "\\." + SEPARATOR + "listen" + SEPARATOR
                     + "\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
@@ -334,7 +353,11 @@ class LoopbackEphemeralBindArchTest {
     private static boolean isCarvedOutSource(Path path) {
         String normalised = path.toString().replace('\\', '/');
         return normalised.contains("/" + SPECIMEN_PACKAGE.replace('.', '/') + "/")
-                || normalised.endsWith("/" + CARVED_OUT_TEST.replace('.', '/') + ".java");
+                || normalised.endsWith("/" + CARVED_OUT_TEST.replace('.', '/') + ".java")
+                // The guard's own source necessarily contains the literals it refuses — in the
+                // patterns, the assertions and the prose explaining both. Scanning itself would make
+                // it permanently red for the reason it exists.
+                || normalised.endsWith("/LoopbackEphemeralBindArchTest.java");
     }
 
     /**
@@ -576,6 +599,58 @@ class LoopbackEphemeralBindArchTest {
             assertFalse(WILDCARD_HOST_LISTEN.matcher(Files.readString(specimen)).find(),
                     "The sweep flags the host-bound loopback spelling, so it does not discriminate "
                             + "between a wildcard literal and a correct bind.");
+        }
+
+        /**
+         * Closes the constant-indirection path: a fixture can defeat the call-site sweep by holding
+         * the wildcard host in a field and passing that, which leaves no literal at the call and no
+         * distinguishable signature for the bytecode rule. Refusing the literal anywhere in a
+         * guarded source needs no data-flow analysis and costs nothing, because a fixture that must
+         * bind loopback has no legitimate use for one.
+         */
+        @Test
+        @DisplayName("No guarded fixture holds a wildcard host literal at all")
+        void noGuardedFixtureHoldsAWildcardHostLiteral() throws IOException {
+            List<String> offenders = new ArrayList<>();
+            for (Path source : guardedSources()) {
+                String content = Files.readString(source);
+                Matcher matcher = WILDCARD_HOST_LITERAL.matcher(content);
+                while (matcher.find()) {
+                    offenders.add(source.getFileName() + ":" + lineOf(content, matcher.start()));
+                }
+            }
+
+            assertTrue(offenders.isEmpty(),
+                    "A guarded fixture holds a wildcard host literal. Even where it is not passed "
+                            + "to listen() directly, holding it is how the call-site sweep gets "
+                            + "bypassed — assign it to a constant, pass the constant, and neither "
+                            + "half of this guard can see it. Bind through LoopbackHost.ADDRESS. "
+                            + "Offenders: " + offenders);
+        }
+
+        /**
+         * The tree-wide sweep's matched controls. The positive reads the specimen directly, since
+         * the specimen package is excluded from the guarded set it scans.
+         */
+        @Test
+        @DisplayName("The literal sweep finds the specimen's wildcard hosts and spares the loopback one")
+        void literalSweepDiscriminates() throws IOException {
+            Path wildcard = TEST_SOURCE_ROOT.resolve(
+                    "de/cuioss/sheriff/gateway/arch/specimen/WildcardEphemeralBindSpecimen.java");
+            Path loopback = TEST_SOURCE_ROOT.resolve(
+                    "de/cuioss/sheriff/gateway/arch/specimen/LoopbackEphemeralBindSpecimen.java");
+
+            assertAll("the tree-wide literal sweep discriminates",
+                    () -> assertTrue(WILDCARD_HOST_LITERAL.matcher(Files.readString(wildcard)).find(),
+                            "The sweep no longer finds the wildcard specimen's host literals, so its "
+                                    + "clean verdict over the rest of the tree proves nothing."),
+                    () -> assertFalse(WILDCARD_HOST_LITERAL.matcher(Files.readString(loopback)).find(),
+                            "The sweep flags the loopback specimen, so it does not discriminate "
+                                    + "between a wildcard host and a correct one."),
+                    () -> assertTrue(WILDCARD_HOST_LITERAL.matcher("\"::\"").find(),
+                            "The IPv6 wildcard literal is not matched; only 0.0.0.0 would be."),
+                    () -> assertFalse(WILDCARD_HOST_LITERAL.matcher("\"127.0.0.1\"").find(),
+                            "A loopback literal is matched as a wildcard host."));
         }
 
         /**
