@@ -61,7 +61,14 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code txbytes} — cumulative per-socket byte counters, which say whether anything was <em>ever</em>
  * transferred, where a queue depth says only what is pending right now — and {@code process:pid},
  * which is the only way to tell a socket this JVM still owns from a kernel-side remnant of one it has
- * already closed. Read alongside the queue depths macOS reports:
+ * already closed.
+ *
+ * <p><strong>The three readings below are macOS-only</strong>, because the columns they turn on are.
+ * Linux's {@code -ant} reports {@code Recv-Q} and {@code Send-Q} but neither the byte counters nor
+ * {@code process:pid}, so on Linux only the first reading is available and the second — which needs
+ * the cumulative counters to tell "never sent" from "already drained" — cannot be made at all. The
+ * rendered capture states which columns it actually has; read that line before applying any of this.
+ * On macOS, read alongside the queue depths:
  * <ul>
  *   <li>{@code Recv-Q > 0} on a socket whose owning thread is parked in {@code KQueue.poll} — the
  *       bytes are sitting in the kernel receive buffer and the selector never told anyone. That is
@@ -133,7 +140,7 @@ public final class SocketSnapshot {
     private static final String NETSTAT_COLUMNS = IS_MACOS
             ? "    Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate"
             : "    Recv-Q/Send-Q discriminate; rxbytes/txbytes and process:pid are macOS-only "
-                    + "and absent here";
+            + "and absent here";
 
     private static final CuiLogger LOGGER = new CuiLogger(SocketSnapshot.class);
 
