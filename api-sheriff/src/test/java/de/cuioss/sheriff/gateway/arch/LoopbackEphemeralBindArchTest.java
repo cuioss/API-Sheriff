@@ -159,6 +159,22 @@ class LoopbackEphemeralBindArchTest {
             "listen\\([ \\t]*+\\R[ \\t]*+0,[ \\t]*+\\R[ \\t]*+\"0\\.0\\.0\\.0\"\\)");
 
     /**
+     * Whitespace or a Java comment, as may appear between the selector dot and {@code listen}.
+     * <p>
+     * {@code server./* c *&#47;listen(0, "0.0.0.0")} is legal Java and slips a whitespace-only
+     * separator, while the bytecode rule accepts it for the usual reason — so the bypass would sit
+     * open in both halves of the guard. The block-comment branch is written
+     * {@code [^*]|\*(?!/)} so it consumes a comment without backtracking, and the alternatives
+     * cannot overlap (a comment starts with {@code /}, whitespace never does).
+     * <p>
+     * <strong>Residual limit, stated rather than implied.</strong> This tolerates a comment in the
+     * ONE position reported. A comment inside the argument list is still out of reach: closing that
+     * needs a Java lexer, which is a disproportionate amount of machinery for a guard whose primary
+     * half is the bytecode rule. Reported by CodeRabbit on PR #255.
+     */
+    private static final String SEPARATOR = "(?:[ \\t\\r\\n]|/\\*(?:[^*]|\\*(?!/))*+\\*/|//[^\\n]*+\\n)*+";
+
+    /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
      * <p>
      * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
@@ -194,22 +210,6 @@ class LoopbackEphemeralBindArchTest {
      * the backtracking outright rather than merely making it unlikely. Reported by Sonar
      * ({@code java:S8786}) on PR #255.
      */
-    /**
-     * Whitespace or a Java comment, as may appear between the selector dot and {@code listen}.
-     * <p>
-     * {@code server./* c *&#47;listen(0, "0.0.0.0")} is legal Java and slips a whitespace-only
-     * separator, while the bytecode rule accepts it for the usual reason — so the bypass would sit
-     * open in both halves of the guard. The block-comment branch is written
-     * {@code [^*]|\*(?!/)} so it consumes a comment without backtracking, and the alternatives
-     * cannot overlap (a comment starts with {@code /}, whitespace never does).
-     * <p>
-     * <strong>Residual limit, stated rather than implied.</strong> This tolerates a comment in the
-     * ONE position reported. A comment inside the argument list is still out of reach: closing that
-     * needs a Java lexer, which is a disproportionate amount of machinery for a guard whose primary
-     * half is the bytecode rule. Reported by CodeRabbit on PR #255.
-     */
-    private static final String SEPARATOR = "(?:[ \\t\\r\\n]|/\\*(?:[^*]|\\*(?!/))*+\\*/|//[^\\n]*+\\n)*+";
-
     private static final Pattern WILDCARD_HOST_LISTEN = Pattern.compile(
             "\\." + SEPARATOR + "listen" + SEPARATOR
                     + "\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
