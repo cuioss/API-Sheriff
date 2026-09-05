@@ -371,14 +371,6 @@ class LoopbackEphemeralBindArchTest {
     }
 
     /**
-     * The 1-based line a character offset falls on, so a whole-file match still reports a location
-     * a reader can open.
-     *
-     * @param content the file content the offset indexes into
-     * @param offset  the match's start offset
-     * @return the 1-based line number
-     */
-    /**
      * The host argument of every {@code listen(port, host)} call in {@code content}, as written.
      *
      * <p>Replaces the regex that used to match the whole call. A regex cannot balance parentheses,
@@ -445,6 +437,14 @@ class LoopbackEphemeralBindArchTest {
         return hosts;
     }
 
+    /**
+     * The 1-based line a character offset falls on, so a whole-file match still reports a location
+     * a reader can open.
+     *
+     * @param content the file content the offset indexes into
+     * @param offset  the match's start offset
+     * @return the 1-based line number
+     */
     private static int lineOf(String content, int offset) {
         int line = 1;
         for (int i = 0; i < offset; i++) {
