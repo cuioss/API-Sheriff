@@ -175,6 +175,25 @@ class LoopbackEphemeralBindArchTest {
     private static final String SEPARATOR = "(?:[ \\t\\r\\n]|/\\*(?:[^*]|\\*(?!/))*+\\*/|//[^\\n]*+\\n)*+";
 
     /**
+     * A wildcard host literal anywhere in a guarded source, independent of where it is used.
+     *
+     * <p>Closes the indirection the call-site pattern cannot see: a fixture that writes
+     * {@code private static final String WILDCARD_HOST = "0.0.0.0";} and then
+     * {@code listen(0, WILDCARD_HOST)} passes both halves of the guard — the bytecode rule because
+     * the target is still {@code listen(int, String)}, and the call-site sweep because no literal
+     * appears at the call. Resolving the constant would need data-flow analysis; refusing the
+     * literal outright does not, and a fixture that must bind loopback has no legitimate use for
+     * one. Verified against the tree at the time of writing: zero guarded sources contained either
+     * literal, so this starts from a clean base rather than grandfathering exceptions.
+     * <p>
+     * <strong>The empty host is deliberately absent here.</strong> {@code ""} binds every interface
+     * too, but it is ubiquitous in ordinary code, so a tree-wide sweep for it would be noise rather
+     * than a guard. It stays covered at the call site only, and that asymmetry is stated rather than
+     * left for someone to infer from the pattern. Reported by CodeRabbit on PR #255.
+     */
+    private static final Pattern WILDCARD_HOST_LITERAL = Pattern.compile("\"(?:0\\.0\\.0\\.0|::)\"");
+
+    /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
      * <p>
      * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
@@ -210,25 +229,6 @@ class LoopbackEphemeralBindArchTest {
      * the backtracking outright rather than merely making it unlikely. Reported by Sonar
      * ({@code java:S8786}) on PR #255.
      */
-    /**
-     * A wildcard host literal anywhere in a guarded source, independent of where it is used.
-     *
-     * <p>Closes the indirection the call-site pattern cannot see: a fixture that writes
-     * {@code private static final String WILDCARD_HOST = "0.0.0.0";} and then
-     * {@code listen(0, WILDCARD_HOST)} passes both halves of the guard — the bytecode rule because
-     * the target is still {@code listen(int, String)}, and the call-site sweep because no literal
-     * appears at the call. Resolving the constant would need data-flow analysis; refusing the
-     * literal outright does not, and a fixture that must bind loopback has no legitimate use for
-     * one. Verified against the tree at the time of writing: zero guarded sources contained either
-     * literal, so this starts from a clean base rather than grandfathering exceptions.
-     * <p>
-     * <strong>The empty host is deliberately absent here.</strong> {@code ""} binds every interface
-     * too, but it is ubiquitous in ordinary code, so a tree-wide sweep for it would be noise rather
-     * than a guard. It stays covered at the call site only, and that asymmetry is stated rather than
-     * left for someone to infer from the pattern. Reported by CodeRabbit on PR #255.
-     */
-    private static final Pattern WILDCARD_HOST_LITERAL = Pattern.compile("\"(?:0\\.0\\.0\\.0|::)\"");
-
     private static final Pattern WILDCARD_HOST_LISTEN = Pattern.compile(
             "\\." + SEPARATOR + "listen" + SEPARATOR
                     + "\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
@@ -634,7 +634,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("The literal sweep finds the specimen's wildcard hosts and spares the loopback one")
-        void literalSweepDiscriminates() throws Exception {
+        void literalSweepDiscriminates() {
             Path wildcard = TEST_SOURCE_ROOT.resolve(
                     "de/cuioss/sheriff/gateway/arch/specimen/WildcardEphemeralBindSpecimen.java");
             Path loopback = TEST_SOURCE_ROOT.resolve(
