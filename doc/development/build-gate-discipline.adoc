@@ -353,11 +353,16 @@ three event-loop threads* sit simultaneously at `sun.nio.ch.KQueue.poll` via
 `KQueueSelectorImpl.doSelect`. Every Vert.x thread is idle with nothing to do.
 
 *What the dumps establish, and what they do not.* At each of the two captures, no sampled Vert.x
-thread was executing. Two dumps are two instants, not a continuous observation of the stall. From
-those two instants, saturation, deadlock and a blocked handler are excluded -- the work never
-arrived rather than arriving late. That much still stands, and the measured mechanism agrees with
-it: nothing was ever queued on the fixture's listener, so there was nothing for any of those threads
-to do.
+thread was executing. Two dumps are two instants, not a continuous observation of the stall, and the
+distinction is the whole point: at *those two instants* no sampled thread was saturated, deadlocked
+or blocked in a handler. That is not the same as excluding those states for the stall's duration --
+work that ran or blocked between the captures leaves no trace in either dump.
+
+What carries the conclusion is not the dumps but the live socket capture and the E1/E2 controls,
+which observe the listener-routing mechanism directly rather than sampling for its absence. The
+dumps are consistent with that mechanism -- nothing was ever queued on the fixture's listener, so
+there was nothing for any of those threads to do -- and consistency is the right weight to give
+them.
 
 *SUPERSEDED (INFERRED 2026-09-01, refuted 2026-09-03) -- the kqueue-readiness reading.* The previous
 revision of this section took the same two dumps one step further, to *a loopback readiness event
@@ -638,9 +643,11 @@ bind, because moving it inside silently removes it from the guard.
 +
 A companion source sweep in the same class catches the wildcard *host literal* -- `listen(0,
 "0.0.0.0")` -- which the bytecode rule structurally cannot see, since that call and
-`listen(0, LoopbackHost.ADDRESS)` are the same call target. The sweep is a net rather than a parser:
-it reaches one level of nested parentheses in the port argument and no further, and that limit is
-recorded next to the pattern.
+`listen(0, LoopbackHost.ADDRESS)` are the same call target. It refuses all three wildcard host
+spellings -- IPv4 `0.0.0.0`, IPv6 `::`, and the empty host -- and tolerates whitespace between the
+selector dot and `listen`. The sweep is a net rather than a parser: its port argument accepts plain
+text and one level of nested parentheses, so `listen(freePort(), "0.0.0.0")` is caught while a
+doubly-nested port expression is not, and that limit is recorded next to the pattern.
 
 == Two rules about reading a check's output
 

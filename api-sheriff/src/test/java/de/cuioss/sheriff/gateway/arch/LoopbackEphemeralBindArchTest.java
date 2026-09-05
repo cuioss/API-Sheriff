@@ -109,7 +109,7 @@ import org.junit.jupiter.api.Test;
  * while staying green on Linux CI — the exact platform-divergent failure class this whole change
  * exists to remove. The full justification is recorded in place, at each site and in
  * the {@code freePort()} Javadoc, and is not restated here. The carve-out covers the outer class
- * <em>and its nested classes</em>, since three of the four sites live inside {@code @Nested}
+ * <em>and its nested classes</em>, since the three collision holders live inside {@code @Nested}
  * fixtures.
  * <p>
  * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in both
