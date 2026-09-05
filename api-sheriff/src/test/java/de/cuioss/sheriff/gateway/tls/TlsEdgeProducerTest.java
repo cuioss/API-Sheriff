@@ -33,6 +33,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.Vertx;
@@ -140,7 +141,22 @@ class TlsEdgeProducerTest {
         @DisplayName("refuses to boot when the public port is already held by another socket")
         void failsWhenThePublicPortIsHeld() throws Exception {
             // Arrange — a resolvable passthrough SNI, so the front listener genuinely attempts a bind,
-            // aimed at a port this test holds open for the duration
+            // aimed at a port this test holds open for the duration.
+            //
+            // The wildcard bind here is deliberate. This class is the whole of the guard's carve-out,
+            // and it wildcard-binds in two distinct roles: the collision holders (this test and the
+            // two that follow it) occupy a port so production's own wildcard bind is refused, while
+            // freePort() wildcard-binds twice more — once to allocate a candidate, once to re-probe
+            // that it is still free for the bind production will attempt. No fixed count is stated
+            // here on purpose; it went stale twice. Every ephemeral listener in the REST of the
+            // module's test tree is loopback-bound
+            // through LoopbackHost.ADDRESS, because it is dialled on loopback and a wildcard bind would
+            // leave it reachable from any interface. This socket is never dialled at all — it exists
+            // solely to OCCUPY the port — and what it must collide with is production's own bind:
+            // SniFrontListener.start() binds the wildcard via netServer.listen(publicPort)
+            // (api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/SniFrontListener.java:98).
+            // Narrowing this holder to loopback would leave the wildcard free, the producer's bind
+            // would succeed, and the control would silently stop controlling anything.
             try (ServerSocket held = new ServerSocket(0)) {
                 int port = held.getLocalPort();
                 TlsConfig tls = TlsConfig.builder()
@@ -181,6 +197,8 @@ class TlsEdgeProducerTest {
             // Arrange — no tls block at all, so the relay map is empty. The port is HELD open for the
             // whole test: a producer that tried to start the front here would be refused the bind and
             // would fail the boot, so a quiet onStartup is positive evidence that it never tried.
+            // Wildcard-bound for the same reason as failsWhenThePublicPortIsHeld — the holder has to
+            // collide with production's wildcard listen(publicPort), and it is never dialled.
             try (ServerSocket held = new ServerSocket(0)) {
                 int port = held.getLocalPort();
                 GatewayConfig config = GatewayConfig.builder().version(1).build();
@@ -206,6 +224,8 @@ class TlsEdgeProducerTest {
             // differs from noFrontListenerWhenPassthroughEmpty in the arrange that matters: a
             // passthrough entry IS declared here, and only the alias lookup empties the map. As there,
             // the port is held open so that an attempted bind would be refused and surface loudly.
+            // Wildcard-bound for the same reason as failsWhenThePublicPortIsHeld — the holder has to
+            // collide with production's wildcard listen(publicPort), and it is never dialled.
             try (ServerSocket held = new ServerSocket(0)) {
                 int port = held.getLocalPort();
                 TlsConfig tls = TlsConfig.builder()
@@ -240,6 +260,18 @@ class TlsEdgeProducerTest {
      * cases do, would defeat the very bind being asserted. It is instead narrowed by re-probing the
      * released port and retrying a bounded number of times, so a port that was taken inside the
      * window is discarded rather than handed out.
+     * <p>
+     * Both the allocation socket and the re-probe are <em>wildcard</em>-bound, and deliberately so.
+     * The port it hands back is the one
+     * {@code SniFrontListener.start()} will bind, and that bind is a wildcard one
+     * ({@code netServer.listen(publicPort)} at
+     * {@code api-sheriff/src/main/java/de/cuioss/sheriff/gateway/tls/SniFrontListener.java:98}).
+     * Probing loopback alone would answer a narrower question than the one being asked — a port free
+     * on the loopback address but already held on another interface would be reported free and then
+     * fail the producer's bind. That is why the re-probe is
+     * {@link #isFreeForWildcardBind(int)} rather than {@link #isListening(int)}: the retry has to
+     * test the same bind scope it is predicting. Nothing dials either socket; each is bound and
+     * immediately closed.
      *
      * @return a currently-free localhost port
      * @throws IOException when no free ephemeral port can be allocated within the retry budget
@@ -250,12 +282,36 @@ class TlsEdgeProducerTest {
             try (ServerSocket socket = new ServerSocket(0)) {
                 candidate = socket.getLocalPort();
             }
-            if (!isListening(candidate)) {
+            if (isFreeForWildcardBind(candidate)) {
                 return candidate;
             }
         }
         throw new IOException(
                 "no free localhost port after " + FREE_PORT_ATTEMPTS + " attempts");
+    }
+
+    /**
+     * Whether {@code port} can be taken by the <em>wildcard</em> bind the producer will perform.
+     *
+     * <p>Deliberately a bind attempt rather than a loopback connect. {@link #isListening(int)} dials
+     * {@code 127.0.0.1}, which answers a narrower question than the one this retry asks: a port free
+     * on loopback but already held on another interface passes that probe and then fails
+     * {@code SniFrontListener.start()}'s wildcard bind. Attempting the same bind the producer will
+     * attempt is the only probe whose scope matches the act it predicts.
+     *
+     * <p>The bare single-int constructor is the point here, not an oversight — it is the wildcard
+     * bind under test. This class is the guard's documented carve-out for exactly that reason.
+     *
+     * @param port the candidate port
+     * @return {@code true} when a wildcard bind of {@code port} succeeds
+     */
+    private static boolean isFreeForWildcardBind(int port) {
+        try (ServerSocket probe = new ServerSocket(port)) {
+            return probe.isBound();
+        } catch (IOException _) {
+            // A refused bind IS the answer: something holds the port on some interface.
+            return false;
+        }
     }
 
     /**
@@ -267,7 +323,7 @@ class TlsEdgeProducerTest {
      */
     private static boolean isListening(int port) {
         try (Socket probe = new Socket()) {
-            probe.connect(new InetSocketAddress("127.0.0.1", port), CONNECT_TIMEOUT_MILLIS);
+            probe.connect(new InetSocketAddress(LoopbackHost.ADDRESS, port), CONNECT_TIMEOUT_MILLIS);
             return true;
         } catch (IOException _) {
             // A refused connection IS the answer: nothing is listening on the probed port.

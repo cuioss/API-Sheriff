@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
@@ -126,7 +127,8 @@ class ReservedBodyCeilingTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+        frontServer = Awaits.connect(
+                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the edge front server to start listening");
         frontPort = frontServer.actualPort();
 
@@ -303,7 +305,7 @@ class ReservedBodyCeilingTest {
      */
     private CompletableFuture<String> sendRawAwaitingClose(String rawRequest) {
         CompletableFuture<String> closed = new CompletableFuture<>();
-        netClient.connect(frontPort, "127.0.0.1")
+        netClient.connect(frontPort, LoopbackHost.ADDRESS)
                 .onFailure(closed::completeExceptionally)
                 .onSuccess(socket -> {
                     Buffer received = Buffer.buffer();
@@ -345,7 +347,7 @@ class ReservedBodyCeilingTest {
      */
     private int post(String path, String body) throws Exception {
         RequestOptions options = new RequestOptions()
-                .setServer(SocketAddress.inetSocketAddress(frontPort, "127.0.0.1"))
+                .setServer(SocketAddress.inetSocketAddress(frontPort, LoopbackHost.ADDRESS))
                 .setHost("localhost").setPort(frontPort).setMethod(HttpMethod.POST).setURI(path);
         return Awaits.connect(client.request(options)
                 .compose(request -> request.send(Buffer.buffer(body)))
@@ -363,7 +365,7 @@ class ReservedBodyCeilingTest {
      */
     private CompletableFuture<String> sendRaw(String rawRequest) {
         CompletableFuture<String> statusLine = new CompletableFuture<>();
-        netClient.connect(frontPort, "127.0.0.1")
+        netClient.connect(frontPort, LoopbackHost.ADDRESS)
                 .onFailure(statusLine::completeExceptionally)
                 .onSuccess(socket -> {
                     readStatusLine(socket, statusLine);

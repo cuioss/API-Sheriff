@@ -46,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -99,7 +100,7 @@ class GatewayEdgePipelineTest {
                             .putHeader("X-Upstream-Echo", "hit")
                             .end(request.method().name() + " " + request.uri() + " body=" + payload);
                 }))
-                .listen(0), "the stub upstream server to start listening");
+                .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         int upstreamPort = upstreamServer.actualPort();
 
         TokenValidator tokenValidator = TokenValidator.builder()
@@ -121,7 +122,8 @@ class GatewayEdgePipelineTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+        frontServer = Awaits.connect(
+                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the edge front server to start listening");
         frontPort = frontServer.actualPort();
 
@@ -324,7 +326,7 @@ class GatewayEdgePipelineTest {
     private Response send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> requestHeaders,
             String body) throws Exception {
         RequestOptions options = new RequestOptions()
-                .setHost("127.0.0.1").setPort(frontPort).setMethod(method).setURI(uri);
+                .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setMethod(method).setURI(uri);
         CompletableFuture<Response> future = client.request(options)
                 .compose(request -> {
                     requestHeaders.forEach(request::putHeader);
@@ -369,7 +371,7 @@ class GatewayEdgePipelineTest {
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
-                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
 
@@ -381,7 +383,7 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(methods))
-                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
 

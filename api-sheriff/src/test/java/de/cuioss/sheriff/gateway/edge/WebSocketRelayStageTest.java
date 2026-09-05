@@ -57,6 +57,7 @@ import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -128,13 +129,14 @@ class WebSocketRelayStageTest {
             upstreamConnects.incrementAndGet();
             upstreamCustomHeader.set(ws.headers().get("X-Custom"));
             ws.textMessageHandler(ws::writeTextMessage);
-        }).listen(0), "the stub upstream WebSocket server to start listening");
+        }).listen(0, LoopbackHost.ADDRESS), "the stub upstream WebSocket server to start listening");
         upstreamPort = upstreamServer.actualPort();
         relayUpstreamClient = vertx.createWebSocketClient();
 
         // A definitely-closed port for the unreachable-upstream case.
         HttpServer throwaway = Awaits.connect(
-                vertx.createHttpServer().requestHandler(req -> req.response().end()).listen(0),
+                vertx.createHttpServer().requestHandler(req -> req.response().end())
+                        .listen(0, LoopbackHost.ADDRESS),
                 "the throwaway server to start listening");
         deadPort = throwaway.actualPort();
         Awaits.teardown(throwaway.close(), "the throwaway server to close");
@@ -162,7 +164,8 @@ class WebSocketRelayStageTest {
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
-        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+        frontServer = Awaits.connect(
+                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the edge front server to start listening");
         frontPort = frontServer.actualPort();
 
@@ -393,8 +396,8 @@ class WebSocketRelayStageTest {
             try {
                 // Act — deliberately not awaited: the branch under test ends no response, so the
                 // send future never completes; the release callback is the observable outcome.
-                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(), "127.0.0.1",
-                        "/relay").compose(HttpClientRequest::send);
+                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(),
+                        LoopbackHost.ADDRESS, "/relay").compose(HttpClientRequest::send);
 
                 // Assert
                 awaitReleases(releases, "the client-upgrade-failure branch releases the admission permit");
@@ -429,7 +432,7 @@ class WebSocketRelayStageTest {
 
         private WebSocket connectTo(int port) throws Exception {
             return Awaits.connect(wsClient.connect(new WebSocketConnectOptions()
-                            .setHost("127.0.0.1").setPort(port).setURI("/relay")),
+                            .setHost(LoopbackHost.ADDRESS).setPort(port).setURI("/relay")),
                     "the WebSocket upgrade against the relay-only server");
         }
     }
@@ -443,7 +446,7 @@ class WebSocketRelayStageTest {
         RouteRuntime route = RouteRuntime.builder()
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
-                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamTargetPort, ""))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
                 .effectiveWebSocketIdleTimeoutSeconds(300)
                 .build();
         WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
@@ -455,7 +458,8 @@ class WebSocketRelayStageTest {
             ctx.request().pause();
             stage.relay(ctx, route, Map.of(), Map.of(), "/", releaseAdmission);
         });
-        return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+        return Awaits.connect(
+                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the relay-only server to start listening");
     }
 
@@ -557,14 +561,14 @@ class WebSocketRelayStageTest {
 
     private WebSocket connect(String uri, String origin) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("127.0.0.1").setPort(frontPort).setURI(uri).addHeader("Origin", origin);
+                .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setURI(uri).addHeader("Origin", origin);
         return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
 
     /** Opens a handshake carrying the {@code X-Custom} header the forward-policy assertions key on. */
     private WebSocket connectWithCustomHeader(String uri) throws Exception {
         WebSocketConnectOptions options = new WebSocketConnectOptions()
-                .setHost("127.0.0.1").setPort(frontPort).setURI(uri)
+                .setHost(LoopbackHost.ADDRESS).setPort(frontPort).setURI(uri)
                 .addHeader("Origin", ALLOWED_ORIGIN).addHeader("X-Custom", "leak");
         return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to " + options.getURI());
     }
@@ -592,7 +596,7 @@ class WebSocketRelayStageTest {
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .upstream(new ResolvedUpstream("http", "127.0.0.1", upstreamPort, ""))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)
                 .effectiveForward(forward)

@@ -71,6 +71,7 @@ import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
@@ -225,7 +226,8 @@ class GatewayEdgeRouteBffWiringTest {
                     activeRuntime(serverBinding(new InMemorySessionStore(16))));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
-            front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
             client = vertx.createHttpClient();
         }
@@ -266,7 +268,7 @@ class GatewayEdgeRouteBffWiringTest {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "127.0.0.1"))
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
             return Awaits.connect(client.request(options).compose(HttpClientRequest::send),
@@ -282,7 +284,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .effectiveAllowedMethods(List.of(HttpMethod.GET))
                     .effectiveSecurityFilter(SecurityFilterConfig.builder()
                             .allowedPaths(List.of("/auth/never-matches")).build())
-                    .upstream(new ResolvedUpstream("http", "127.0.0.1", 1, ""))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, 1, ""))
                     .build();
         }
     }
@@ -339,7 +341,8 @@ class GatewayEdgeRouteBffWiringTest {
                     activeRuntime(serverBinding(store)));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
-            front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0),
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
             client = vertx.createHttpClient();
         }
@@ -385,7 +388,7 @@ class GatewayEdgeRouteBffWiringTest {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), "127.0.0.1"))
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
                     .setHost(OIDC_HOST).setPort(front.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(LOGIN_PATH + query);
             return Awaits.connect(client.request(options)

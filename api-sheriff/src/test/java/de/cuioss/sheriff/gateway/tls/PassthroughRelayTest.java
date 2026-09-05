@@ -25,6 +25,7 @@ import java.util.function.Consumer;
 
 
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayKind;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 import io.vertx.core.Vertx;
@@ -46,7 +47,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("PassthroughRelay")
 class PassthroughRelayTest {
 
-    private static final String HOST = "127.0.0.1";
+    private static final String HOST = LoopbackHost.ADDRESS;
 
     private Vertx vertx;
     private NetClient dialClient;
@@ -152,20 +153,23 @@ class PassthroughRelayTest {
             accepted.pause();
             relay.relay(accepted, prefix, backend, RelayKind.TERMINATED, "");
         });
-        return Awaits.connect(harness.listen(0), "the relay harness front to start listening").actualPort();
+        return Awaits.connect(harness.listen(0, LoopbackHost.ADDRESS),
+                "the relay harness front to start listening").actualPort();
     }
 
     private RelayTarget startEchoBackend() throws Exception {
         NetServer server = vertx.createNetServer();
         server.connectHandler(socket -> socket.handler(socket::write));
-        int port = Awaits.connect(server.listen(0), "the backend server to start listening").actualPort();
+        int port = Awaits.connect(server.listen(0, LoopbackHost.ADDRESS),
+                "the backend server to start listening").actualPort();
         return new RelayTarget(HOST, port);
     }
 
     private RelayTarget startSignalBackend(Consumer<NetSocket> wiring) throws Exception {
         NetServer server = vertx.createNetServer();
         server.connectHandler(wiring::accept);
-        int port = Awaits.connect(server.listen(0), "the backend server to start listening").actualPort();
+        int port = Awaits.connect(server.listen(0, LoopbackHost.ADDRESS),
+                "the backend server to start listening").actualPort();
         return new RelayTarget(HOST, port);
     }
 
