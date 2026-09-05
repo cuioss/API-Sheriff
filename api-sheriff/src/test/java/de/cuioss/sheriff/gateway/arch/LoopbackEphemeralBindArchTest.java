@@ -425,7 +425,7 @@ class LoopbackEphemeralBindArchTest {
                 i++;
             }
             if (0 == depth && commaAt > 0) {
-                found.add(new int[] {selector.start()});
+                found.add(new int[]{selector.start()});
                 hostsOut.add(content.substring(commaAt + 1, i - 1).trim());
             }
         }
