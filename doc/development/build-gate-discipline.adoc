@@ -407,8 +407,10 @@ which is where this page stood until 2026-09-03, and is superseded by the paragr
 correctly and for the right reason -- those fixtures hold the socket, so there is no release and no
 re-bind window to race. The measured mechanism is nevertheless *on the listener socket*, by an
 entirely different route: not reuse of a port this process released, but coexistence with a port
-another process still holds. TIME_WAIT was never involved at all, and the accepted-socket and
-client-socket forms left open above turned out not to be needed rather than to be the answer.
+another process still holds. Listener-side TIME_WAIT is therefore not involved in the measured
+mechanism -- which is the whole of what the evidence settles. The accepted-socket and client-socket
+forms left open above stayed uninstrumented to the end, so they are not refuted either; they turned
+out not to be *needed* to explain the stall, which is a different thing from being excluded.
 
 So the mirror image has a second edge. Refuting one listener-side story is what made the listener
 socket look answered-for, and the passes that followed instrumented the client, the accepted socket
@@ -573,10 +575,13 @@ instead; it audited no fixture and no gateway path. "Named no defect" is what wa
 is no defect" is a universal negative the budget was never shaped to establish.
 
 *That changed on 2026-09-03, and a fix has landed.* The defect was in the fixtures after all, and it
-was one call. Every live-socket fixture bound its ephemeral server with the single-argument
+was one call. The affected fixtures bound their ephemeral server with the single-argument
 `listen(0)` overload -- the dual-stack wildcard -- while the client in that same fixture dialled
-`127.0.0.1`. All *22* such sites across *9* files now bind through `LoopbackHost.ADDRESS` in
-`de.cuioss.sheriff.gateway.testsupport`, and every `Awaits` ceiling now folds a `SocketSnapshot`
+`127.0.0.1`. Within the *guarded* set, *22* such sites across *9* files now bind through
+`LoopbackHost.ADDRESS` in `de.cuioss.sheriff.gateway.testsupport`. That count is the guarded scope,
+not a tree-wide total: `TlsEdgeProducerTest` is an explicit class-level carve-out and still binds the
+wildcard on purpose, because the TLS edge it exercises is the production listener and pinning it to
+loopback would stop testing what ships. Every `Awaits` ceiling now folds a `SocketSnapshot`
 capture of the kernel's own view -- `lsof` for this pid, plus `netstat` in whichever spelling the
 platform takes (`-anv -p tcp` on macOS, `-ant` on Linux) -- into its timeout message. A future
 occurrence therefore arrives with its evidence attached, instead of requiring another investigation
@@ -643,11 +648,22 @@ bind, because moving it inside silently removes it from the guard.
 +
 A companion source sweep in the same class catches the wildcard *host literal* -- `listen(0,
 "0.0.0.0")` -- which the bytecode rule structurally cannot see, since that call and
-`listen(0, LoopbackHost.ADDRESS)` are the same call target. It refuses all three wildcard host
-spellings -- IPv4 `0.0.0.0`, IPv6 `::`, and the empty host -- and tolerates whitespace between the
-selector dot and `listen`. The sweep is a net rather than a parser: its port argument accepts plain
-text and one level of nested parentheses, so `listen(freePort(), "0.0.0.0")` is caught while a
-doubly-nested port expression is not, and that limit is recorded next to the pattern.
+`listen(0, LoopbackHost.ADDRESS)` are the same call target.
+
+It is an *allow-list*: the host argument must be exactly `LoopbackHost.ADDRESS`, and anything else
+fails. That is the second design. The first refused a list of known-bad spellings -- IPv4 `0.0.0.0`,
+IPv6 `::`, the empty host -- and each round of review found another way to write a wildcard that was
+on no list: a wrapped line, a variable port, a nested port call, a spaced selector, a comment, a
+constant holding the literal, and finally `"0.0." + "0.0"`, which evaluates to the wildcard while
+matching no wildcard literal at all. Inverting it ends that sequence, because an allow-list does not
+have to recognise what an expression evaluates to in order to refuse it. All 22 guarded sites already
+passed the approved constant, so the inversion grandfathered no exception.
+
+Two mechanics support it. Between the selector dot and `listen` the sweep accepts whitespace, block
+comments and line comments, so `server./* c */listen(...)` is not a way through. And the argument
+scanner is depth-aware rather than a regex -- it walks parenthesis depth while tracking string
+literals -- so a port expression at any nesting depth still yields its host argument, where the
+earlier pattern reached one level and a doubly-nested call escaped.
 
 == Two rules about reading a check's output
 

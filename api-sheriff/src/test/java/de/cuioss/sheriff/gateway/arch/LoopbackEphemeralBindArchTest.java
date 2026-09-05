@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -200,11 +201,32 @@ class LoopbackEphemeralBindArchTest {
     private static final Pattern LISTEN_SELECTOR =
             Pattern.compile("\\." + SEPARATOR + "listen" + SEPARATOR + "\\(");
 
-    /** The host spellings that bind every interface, as written in source. */
-    private static final List<String> WILDCARD_HOSTS = List.of("\"0.0.0.0\"", "\"::\"", "\"\"");
+    /**
+     * The only host argument a guarded fixture may pass to {@code listen(port, host)}.
+     *
+     * <p>An allow-list, not a deny-list, and the inversion is the point. Refusing known-bad
+     * spellings meant chasing each new way of hiding one — a wrapped line, a variable port, a
+     * nested call, a spaced selector, a comment, a constant, and finally
+     * {@code "0.0." + "0.0"}, which evaluates to the wildcard while matching no literal. Requiring
+     * the one approved expression ends the chase: anything that is not it fails, whatever it
+     * evaluates to and however it is written.
+     *
+     * <p>Verified before inverting: all 22 host arguments in the guarded fixtures were already
+     * exactly this, so the allow-list starts with no exceptions to grandfather. A fixture that
+     * genuinely needs a different host belongs in the carve-out, deliberately, rather than widening
+     * this. Reported by CodeRabbit on PR #255.
+     */
+    private static final String APPROVED_HOST = "LoopbackHost.ADDRESS";
 
     /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
+     * <p>
+     * <strong>This drives the controls, not the enforcement path.</strong> Enforcement is the
+     * {@link #APPROVED_HOST} allow-list, which refuses everything that is not the approved constant
+     * and so needs no catalogue of bad spellings. This pattern is retained because the controls need
+     * a deny-shaped matcher to assert the separator handling against — a fixed literal string, since
+     * the {@code -Ppre-commit} formatter normalises spacing and would silently erase such a shape
+     * from a source specimen.
      * <p>
      * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
      * IPv6 {@code ::}, and the empty host. A quoted literal is the only shape this can match by
@@ -566,7 +588,7 @@ class LoopbackEphemeralBindArchTest {
                 List<String> hosts = new ArrayList<>();
                 List<int[]> calls = listenHostArguments(content, hosts);
                 for (int i = 0; i < calls.size(); i++) {
-                    if (WILDCARD_HOSTS.contains(hosts.get(i))) {
+                    if (!APPROVED_HOST.equals(hosts.get(i))) {
                         offenders.add(source.getFileName() + ":" + lineOf(content, calls.get(i)[0])
                                 + " — host argument " + hosts.get(i));
                     }
@@ -610,15 +632,35 @@ class LoopbackEphemeralBindArchTest {
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");
 
-            assertAll("every wildcard host form the guard claims to reject is actually rejected",
+            assertAll("the scanner extracts the host argument whatever shape it is written in",
                     () -> assertEquals(List.of("\"0.0.0.0\""), hostsOf("s.listen(0, \"0.0.0.0\");")),
                     () -> assertEquals(List.of("\"::\""), hostsOf("s.listen(0, \"::\");")),
                     () -> assertEquals(List.of("\"\""), hostsOf("s.listen(0, \"\");")),
                     () -> assertEquals(List.of("\"127.0.0.1\""), hostsOf("s.listen(0, \"127.0.0.1\");")),
+                    () -> assertEquals(List.of("\"0.0.\" + \"0.0\""), hostsOf("s.listen(0, \"0.0.\" + \"0.0\");")),
                     () -> assertEquals(List.of("\"\""), hostsOf("s.listen(outer(inner()), \"\");"),
                             "A doubly-nested port expression with an empty host must still yield its "
                                     + "host argument. This exact shape passed the previous "
                                     + "regex-based sweep, which reached one nesting level."));
+
+            assertAll("the allow-list rejects every host that is not the approved constant",
+                    () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"0.0.0.0\");").getFirst()),
+                    () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"::\");").getFirst()),
+                    () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"\");").getFirst()),
+                    () -> assertNotEquals(APPROVED_HOST,
+                            hostsOf("s.listen(0, \"0.0.\" + \"0.0\");").getFirst(),
+                            "A host assembled by concatenation evaluates to the wildcard 0.0.0.0 while "
+                                    + "matching no wildcard literal, so the deny-list this check "
+                                    + "replaced passed it. Reported by CodeRabbit on PR #255; the "
+                                    + "allow-list rejects it because it is not the approved constant, "
+                                    + "without having to recognise what it evaluates to."),
+                    () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"127.0.0.1\");").getFirst(),
+                            "Even a correct loopback address written as a bare literal is rejected: the "
+                                    + "single-owner constant is the point, so that changing the "
+                                    + "address stays a one-line change."),
+                    () -> assertEquals(APPROVED_HOST, hostsOf("s.listen(0, LoopbackHost.ADDRESS);").getFirst(),
+                            "The one approved spelling must pass, or the allow-list fails every "
+                                    + "fixture in the tree and the guard is useless rather than strict."));
 
             assertAll("separator forms a formatter would not preserve in a source specimen",
                     () -> assertTrue(WILDCARD_HOST_LISTEN
