@@ -194,8 +194,25 @@ class LoopbackEphemeralBindArchTest {
      * the backtracking outright rather than merely making it unlikely. Reported by Sonar
      * ({@code java:S8786}) on PR #255.
      */
-    private static final Pattern WILDCARD_HOST_LISTEN =
-            Pattern.compile("\\.\\s*+listen\\s*+\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
+    /**
+     * Whitespace or a Java comment, as may appear between the selector dot and {@code listen}.
+     * <p>
+     * {@code server./* c *&#47;listen(0, "0.0.0.0")} is legal Java and slips a whitespace-only
+     * separator, while the bytecode rule accepts it for the usual reason — so the bypass would sit
+     * open in both halves of the guard. The block-comment branch is written
+     * {@code [^*]|\*(?!/)} so it consumes a comment without backtracking, and the alternatives
+     * cannot overlap (a comment starts with {@code /}, whitespace never does).
+     * <p>
+     * <strong>Residual limit, stated rather than implied.</strong> This tolerates a comment in the
+     * ONE position reported. A comment inside the argument list is still out of reach: closing that
+     * needs a Java lexer, which is a disproportionate amount of machinery for a guard whose primary
+     * half is the bytecode rule. Reported by CodeRabbit on PR #255.
+     */
+    private static final String SEPARATOR = "(?:[ \\t\\r\\n]|/\\*(?:[^*]|\\*(?!/))*+\\*/|//[^\\n]*+\\n)*+";
+
+    private static final Pattern WILDCARD_HOST_LISTEN = Pattern.compile(
+            "\\." + SEPARATOR + "listen" + SEPARATOR
+                    + "\\((?:[^,()\"]|\\([^()]*+\\))*+,\\s*+\"(?:0\\.0\\.0\\.0|::|)\"");
 
     private static final JavaClasses TEST_CLASSES = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.ONLY_INCLUDE_TESTS)
@@ -489,6 +506,21 @@ class LoopbackEphemeralBindArchTest {
                             + "sweep has regressed to a narrower predicate and its clean verdict over "
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");
+
+            assertAll("separator forms a formatter would not preserve in a source specimen",
+                    () -> assertTrue(WILDCARD_HOST_LISTEN
+                                    .matcher("server./* c */listen(0, \"0.0.0.0\")").find(),
+                            "The sweep does not match a block comment between the selector dot and "
+                                    + "listen. That is legal Java and the bytecode rule accepts it "
+                                    + "too, so the bypass would sit open in both halves of the guard."),
+                    () -> assertTrue(WILDCARD_HOST_LISTEN
+                                    .matcher("server.// c\nlisten(0, \"0.0.0.0\")").find(),
+                            "The sweep does not match a line comment before listen — the same bypass "
+                                    + "in its other spelling."),
+                    () -> assertFalse(WILDCARD_HOST_LISTEN
+                                    .matcher("server./* c */listen(0, LoopbackHost.ADDRESS)").find(),
+                            "The sweep flags a comment-interleaved LOOPBACK bind. Tolerating comments "
+                                    + "must not cost the discrimination the sweep exists for."));
 
             assertTrue(WILDCARD_HOST_LISTEN.matcher("server . listen(0, \"0.0.0.0\")").find(),
                     "The sweep does not match a spaced selector. Java permits `server . listen(...)`, "
