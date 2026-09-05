@@ -198,7 +198,11 @@ public final class SocketSnapshot {
 
     /**
      * Matches the port of an {@code lsof} address token — {@code 127.0.0.1:59120} or
-     * {@code [::1]:59120}, on either side of the {@code ->} of an established pair.
+     * {@code [::1]:59120}.
+     *
+     * <p>It matches a token wherever one appears, including the far side of the {@code ->} in an
+     * established pair. Choosing which side to read is {@link #localPortsIn}'s job, and it reads
+     * only the local one.
      *
      * <p>The lookbehind is load-bearing, not decoration. A bare {@code :(\d{1,5})} also matches the
      * {@code :1} inside {@code [::1]:49152}, so the extracted port set gains a spurious {@code 1} —
@@ -252,7 +256,7 @@ public final class SocketSnapshot {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(CAPTURE_BUDGET_SECONDS);
         String lsof = run(deadline, LSOF_BINARIES, "lsof",
                 "-w", "-nP", "-iTCP", "-a", "-p", String.valueOf(pid));
-        Set<String> ports = portsIn(lsof, LSOF_PORT);
+        Set<String> ports = localPortsIn(lsof);
         String[] netstatArgs = netstatArgs();
         String netstat = filterToPorts(run(deadline, NETSTAT_BINARIES, "netstat", netstatArgs), ports);
         return new StringBuilder(512)
@@ -398,6 +402,33 @@ public final class SocketSnapshot {
         Matcher matcher = pattern.matcher(text);
         while (matcher.find()) {
             ports.add(matcher.group(1));
+        }
+        return ports;
+    }
+
+    /**
+     * The ports of this process's <em>local</em> socket endpoints, from an {@code lsof} rendering.
+     *
+     * <p>An established row names two endpoints — {@code TCP 127.0.0.1:50000->127.0.0.1:443
+     * (ESTABLISHED)} — and only the first is a port this process holds. Reading both put the peer's
+     * port into the set that {@link #filterToPorts} joins {@code netstat} on, and because that
+     * filter accepts a match at <em>either</em> endpoint of a {@code netstat} row, any unrelated
+     * connection in the system-wide table that happened to use port 443 was then rendered under a
+     * heading claiming to show this JVM's sockets. A diagnostic that mixes in other processes'
+     * connections is worse than a short one: the whole point of the capture is to say what this
+     * process held at the moment it stalled. Reported by CodeRabbit on PR #255.
+     *
+     * <p>Truncating each line at {@code ->} is what restricts it. A listening row carries no
+     * {@code ->} and so is read whole, which is correct — its single endpoint is local.
+     *
+     * @param lsof the {@code lsof} rendering to scan
+     * @return the local ports found, in encounter order, never {@code null}
+     */
+    private static Set<String> localPortsIn(String lsof) {
+        Set<String> ports = new LinkedHashSet<>();
+        for (String line : lsof.split("\\R")) {
+            int peerAt = line.indexOf("->");
+            ports.addAll(portsIn(peerAt < 0 ? line : line.substring(0, peerAt), LSOF_PORT));
         }
         return ports;
     }

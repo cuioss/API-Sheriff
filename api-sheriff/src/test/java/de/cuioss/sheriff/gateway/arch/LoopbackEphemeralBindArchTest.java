@@ -524,6 +524,49 @@ class LoopbackEphemeralBindArchTest {
     }
 
     /**
+     * The offset of the first Java Unicode escape in a source file, or {@code -1} if it holds none.
+     *
+     * <p>The scanner above reads raw source, but javac does not: JLS 3.3 translates {@code \}{@code
+     * uXXXX} into the corresponding UTF-16 code unit as the very first step, <em>before</em> lexical
+     * analysis. So {@code server.\}{@code u006cisten(0, "")} compiles as a call to {@code listen}
+     * while matching no selector this class scans for, and the bytecode rule sees only the
+     * host-bound {@code listen(int, String)} overload it accepts. With the empty host — the one
+     * spelling the tree-wide literal sweep deliberately does not carry — that is a clean bypass of
+     * every check here. Reported by CodeRabbit on PR #255.
+     *
+     * <p>Guarded source is <strong>refused</strong> rather than decoded. Decoding would mean
+     * reimplementing a JLS translation step to keep a construct that has no legitimate use in this
+     * tree; refusing costs nothing and cannot itself be subverted. Escaping an ASCII identifier is
+     * not something anyone does by accident.
+     *
+     * <p>Only a <em>genuine</em> escape counts. Per JLS 3.3 a backslash begins one only when
+     * preceded by an even number of backslashes, so the {@code "\\}{@code u0001"} that appears in
+     * this tree's JSON and CRLF fixtures is two characters of string content and is left alone —
+     * the reason this refusal starts with no exception to grandfather.
+     *
+     * @param content a source file's full text
+     * @return the offset of the opening backslash, or {@code -1} when the file holds no escape
+     */
+    private static int unicodeEscapeIn(String content) {
+        int i = 0;
+        while (i < content.length()) {
+            if ('\\' != content.charAt(i)) {
+                i++;
+                continue;
+            }
+            int run = 0;
+            while (i + run < content.length() && '\\' == content.charAt(i + run)) {
+                run++;
+            }
+            if (1 == run % 2 && i + run < content.length() && 'u' == content.charAt(i + run)) {
+                return i + run - 1;
+            }
+            i += run;
+        }
+        return -1;
+    }
+
+    /**
      * The host arguments of every two-argument {@code listen} call in a source fragment, for the
      * controls that exercise the scanner against literal text rather than a source specimen.
      *
@@ -664,6 +707,11 @@ class LoopbackEphemeralBindArchTest {
                 String content = Files.readString(source);
                 List<String> hosts = new ArrayList<>();
                 List<int[]> calls = listenHostArguments(content, hosts);
+                int escapeAt = unicodeEscapeIn(content);
+                if (escapeAt >= 0) {
+                    offenders.add(source.getFileName() + ":" + lineOf(content, escapeAt)
+                            + " — Unicode escape in guarded source");
+                }
                 for (int i = 0; i < calls.size(); i++) {
                     if (!APPROVED_HOST.equals(hosts.get(i))) {
                         offenders.add(source.getFileName() + ":" + lineOf(content, calls.get(i)[0])
@@ -757,6 +805,26 @@ class LoopbackEphemeralBindArchTest {
                             "A close-paren inside a text block. Java 25 text blocks open with three "
                                     + "quotes, which a single-quote-at-a-time string lexer reads as "
                                     + "an empty string followed by an opening quote."));
+
+            assertAll("a Unicode-escaped selector is refused, and an escaped backslash is not",
+                    () -> assertTrue(unicodeEscapeIn("server.\\u006cisten(0, \"\");") >= 0,
+                            "javac translates \\uXXXX before lexing (JLS 3.3), so this compiles as a "
+                                    + "call to listen while matching no selector the sweep scans "
+                                    + "for. The bytecode rule sees only the host-bound overload it "
+                                    + "accepts, and the empty host is the one spelling the tree-wide "
+                                    + "literal sweep does not carry — a clean bypass of every check "
+                                    + "here. Reported by CodeRabbit on PR #255."),
+                    () -> assertEquals(-1, unicodeEscapeIn("assertTrue(m.contains(\"\\\\u000D\"));"),
+                            "An ESCAPED backslash before the u is two characters of string content, "
+                                    + "not an escape — JLS 3.3 makes a backslash eligible only when "
+                                    + "preceded by an even number of backslashes. This tree's JSON "
+                                    + "and CRLF fixtures carry exactly this shape, and flagging them "
+                                    + "would make the refusal start with exceptions to grandfather."),
+                    () -> assertEquals(-1, unicodeEscapeIn("s.listen(0, LoopbackHost.ADDRESS);"),
+                            "Ordinary source holds no escape."),
+                    () -> assertTrue(unicodeEscapeIn("x = \"\\\\\\u0041\";") >= 0,
+                            "THREE backslashes: the first two are an escaped backslash, the third is "
+                                    + "eligible and does begin an escape."));
 
             assertAll("the allow-list rejects every host that is not the approved constant",
                     () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"0.0.0.0\");").getFirst()),

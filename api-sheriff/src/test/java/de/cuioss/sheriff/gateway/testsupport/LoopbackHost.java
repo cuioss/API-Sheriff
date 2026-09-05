@@ -16,15 +16,26 @@
 package de.cuioss.sheriff.gateway.testsupport;
 
 /**
- * The single owner of the loopback address this module's live-socket fixtures bind to and dial.
+ * The single owner of the loopback host string this module's Vert.x fixtures bind to and dial.
  *
- * <p><strong>Scope, stated precisely.</strong> This covers every fixture the loopback-bind guard
- * selects — which is the module's test tree minus one class. {@code TlsEdgeProducerTest} is a
- * documented class-level carve-out and deliberately keeps wildcard-bound sockets: collision holders
- * that occupy a port so production's own wildcard bind is refused, and the {@code freePort()}
- * probes. Those bind wildcard on purpose and must not route through this constant, so "every
- * fixture" would be an overclaim: {@code LoopbackEphemeralBindArchTest} excludes that class
- * entirely and enforces nothing inside it.
+ * <p><strong>Scope, stated precisely.</strong> This is the host argument for the Vert.x
+ * {@code listen(port, host)} fixtures, and the loopback-bind guard requires exactly this constant
+ * at every one of those call sites. It is not the only way a fixture in this module reaches
+ * loopback, and two exclusions are worth naming rather than leaving to be discovered.
+ *
+ * <p>{@code TlsEdgeProducerTest} is a documented class-level carve-out that deliberately keeps
+ * wildcard-bound sockets: collision holders that occupy a port so production's own wildcard bind is
+ * refused, and the {@code freePort()} probes. Those bind wildcard on purpose and must not route
+ * through this constant — {@code LoopbackEphemeralBindArchTest} excludes that class entirely and
+ * enforces nothing inside it.
+ *
+ * <p>Fixtures that bind a {@code java.net.ServerSocket} rather than a Vert.x server are already
+ * loopback-bound by a different mechanism: {@code AwaitsTest} passes
+ * {@code InetAddress.getLoopbackAddress()} to the {@code ServerSocket(int, int, InetAddress)}
+ * constructor. That is a bound address object, not a host string, so this constant does not apply
+ * to it; what the guard enforces there is the bytecode rule refusing the bare
+ * {@code ServerSocket(int)} overload. Both routes end at loopback — only one of them can spell it
+ * with this field.
  *
  * <h2>Why one constant rather than a literal per site</h2>
  * A fixture that binds its ephemeral server with the single-argument {@code listen(0)} overload gets
@@ -52,7 +63,7 @@ package de.cuioss.sheriff.gateway.testsupport;
 public final class LoopbackHost {
 
     /**
-     * The loopback address every fixture in this module binds its ephemeral listener to and dials.
+     * The loopback address the module's Vert.x fixtures bind their ephemeral listener to and dial.
      *
      * <p>Deliberately the numeric literal rather than {@code "localhost"}: the name resolves through
      * the platform resolver and can yield either an IPv4 or an IPv6 answer, which re-introduces the

@@ -197,6 +197,14 @@ re-verify them, and they are reported as recorded rather than as re-checkable. T
 investigation, the mechanism and its controls to the 2026-09-03 one -- and each is labelled
 MEASURED, INFERRED or SUPERSEDED individually, carrying the date it belongs to.
 
+Read that rule with its one inheritance case. Inside this section the two investigations are
+interleaved, so every label states its own date, and a label spanning both names both rather than
+picking one. Elsewhere a whole section belongs to a single investigation and says so in its heading
+-- *Corroboration from an unrelated plan (2026-09-02, ...)* is the example -- and a label under such
+a heading inherits that date rather than repeating it. What is never acceptable is a bare label in
+this section, because here position on the page tells a reader nothing about which investigation is
+answerable for the sentence.
+
 The 2026-09-02 corroboration recorded further below is a third provenance class, and it is worth
 keeping distinct from the first two: it is *second-hand to this document* but *first-hand to its
 reporter* -- an unrelated plan that ran the gate on this same machine and reported what it saw.
@@ -296,7 +304,7 @@ Four controls establish that, and each states its own scope:
   handed all 179 occupied ports, and the loopback-bound arm was handed *0*. The three ports the bare
   reproducer stalled on -- 61547, 62911 and 65034 -- are all inside that occupied set.
 
-*INFERRED.* A ~1.09% per-`listen(0)` collision rate and the ~26% per-run stall rate recorded below
+*INFERRED (2026-09-03).* A ~1.09% per-`listen(0)` collision rate and the ~26% per-run stall rate recorded below
 are consistent rather than in tension, because a run performs many ephemeral binds and one collision
 is enough to stall it. Nobody counted binds per run, so this is a consistency check between two
 independently measured figures -- not a derivation of either, and not a claim that the arithmetic
@@ -319,9 +327,10 @@ classes* (`WebSocketRelayStageTest`, `GatewayEdgePipelineTest`, `GatewayEdgeRout
 ceiling essentially exactly -- 30004 to 30010 ms elapsed, i.e. no progress at all rather than slow
 progress.
 
-*MEASURED -- what this rules out.* Four readings are excluded by the data, not merely unsupported.
-The first three are excluded by the 31-run budget; the fourth is excluded by the 2026-09-03
-measurement above and carries its own provenance, because the budget could not have shown it:
+*MEASURED (2026-09-01, except as noted) -- what this rules out.* Four readings are excluded by the
+data, not merely unsupported. The first three are excluded by the 31-run budget; the fourth is
+excluded by the 2026-09-03 measurement above and carries its own provenance, because the budget
+could not have shown it:
 
 * *Not reactor parallelism.* `-T1` was in effect for every one of the 31 runs.
 * *Not cross-class co-tenancy inside the build.* Five of the stalls occurred on the arm that selected
@@ -347,7 +356,7 @@ that establishes and then never completes is exactly what acceptance by a *forei
 like -- MEASURED at `rxbytes=146 / txbytes=0` in the live capture, INFERRED for the individual
 `propagatesHalfCloseToBackend` occurrence, whose socket state was never captured.
 
-*MEASURED -- the thread dumps.* On two independent occurrences, in two different fixtures, the
+*MEASURED (2026-09-01) -- the thread dumps.* On two independent occurrences, in two different fixtures, the
 captured dump shows the awaiting thread parked in `Awaits` while the Vert.x acceptor thread *and all
 three event-loop threads* sit simultaneously at `sun.nio.ch.KQueue.poll` via
 `KQueueSelectorImpl.doSelect`. Every Vert.x thread is idle with nothing to do.
