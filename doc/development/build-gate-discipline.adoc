@@ -661,9 +661,26 @@ passed the approved constant, so the inversion grandfathered no exception.
 
 Two mechanics support it. Between the selector dot and `listen` the sweep accepts whitespace, block
 comments and line comments, so `server./* c */listen(...)` is not a way through. And the argument
-scanner is depth-aware rather than a regex -- it walks parenthesis depth while tracking string
-literals -- so a port expression at any nesting depth still yields its host argument, where the
-earlier pattern reached one level and a doubly-nested call escaped.
+scanner is depth-aware rather than a regex -- it walks parenthesis depth to the top-level comma --
+so a port expression at any nesting depth still yields its host argument, where the earlier pattern
+reached one level and a doubly-nested call escaped.
+
+Depth-awareness is only sound if every parenthesis it counts is really a delimiter, and that is the
+part the first depth-aware version got wrong. It lexed string literals and nothing else, so
+`server.listen(/* ) */ 0, "")` ended the walk on a paren inside a comment, before reaching any
+top-level comma. With no host argument recorded, the call was **skipped rather than judged** -- and a
+skipped call passes. Nothing else covered it: the bytecode rule sees a two-argument `listen` and is
+satisfied, and the tree-wide literal sweep deliberately does not carry the empty host, because `""`
+is far too common in unrelated code to refuse tree-wide. The scanner now lexes every construct in
+which a parenthesis is not a delimiter -- string literals, text blocks, character literals, block
+comments and line comments -- and each has a control.
+
+The failure is worth naming for its shape rather than its detail. A guard that cannot parse an input
+has two options, and they are not symmetric: refuse it, or ignore it. Ignoring is the tempting one,
+because an unparseable call is usually a false alarm and refusing it costs somebody a reformat. It is
+also the one that converts every gap in the lexer into a silent bypass, which is how three of these
+were reachable at once. The scanner now fails closed on the host text for the same reason -- a
+comment written inside the argument itself is refused even though the code is correct.
 
 == Two rules about reading a check's output
 

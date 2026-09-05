@@ -403,9 +403,19 @@ class LoopbackEphemeralBindArchTest {
      * instead.
      *
      * <p>Deliberately not a Java parser. It scans for the {@code listen} selector, walks the
-     * argument list tracking paren depth and string literals, and returns the text after the
-     * top-level comma. That is enough to decide the one question asked of it, and its limits are
-     * the caller's to state. Reported by CodeRabbit on PR #255.
+     * argument list counting paren depth, and returns the text after the top-level comma. What it
+     * does lex is every construct in which a {@code (} or {@code )} is not a delimiter — string
+     * literals, text blocks, character literals, block comments and line comments (see
+     * {@link #skipNonCode(String, int)}) — because each of those is otherwise a way to hide the
+     * argument list's shape from the walk. That is enough to decide the one question asked of it,
+     * and its limits are the caller's to state. Reported by CodeRabbit on PR #255.
+     *
+     * <p><strong>It fails closed on the host text.</strong> The returned argument is raw source,
+     * compared verbatim against {@link #APPROVED_HOST}, so a comment written inside the argument
+     * itself — {@code listen(0, LoopbackHost.ADDRESS /* ok *&#47;)} — is refused even though it is
+     * correct code. That direction is deliberate: for a guard, rejecting a legitimate spelling
+     * costs a reformat, while accepting an illegitimate one costs the property being guarded. Write
+     * the constant plainly.
      *
      * @param content a source file's full text
      * @return one entry per two-argument {@code listen} call: the offset of the call and the host
@@ -418,18 +428,14 @@ class LoopbackEphemeralBindArchTest {
             int i = selector.end();
             int depth = 1;
             int commaAt = -1;
-            boolean inString = false;
             while (i < content.length() && depth > 0) {
+                int afterNonCode = skipNonCode(content, i);
+                if (afterNonCode != i) {
+                    i = afterNonCode;
+                    continue;
+                }
                 char c = content.charAt(i);
-                if (inString) {
-                    if ('\\' == c) {
-                        i++;
-                    } else if ('"' == c) {
-                        inString = false;
-                    }
-                } else if ('"' == c) {
-                    inString = true;
-                } else if ('(' == c) {
+                if ('(' == c) {
                     depth++;
                 } else if (')' == c) {
                     depth--;
@@ -444,6 +450,77 @@ class LoopbackEphemeralBindArchTest {
             }
         }
         return found;
+    }
+
+    /**
+     * Skips one non-code run — string, text block, character literal, block comment, line
+     * comment — beginning at {@code start}.
+     *
+     * <p>This exists because the delimiter walk above must not read a {@code )} that is not a
+     * delimiter. Tracking string literals alone was not enough: {@code listen(/* ) *&#47; 0, "")}
+     * ends the argument scan on the comment's paren, so no host argument is recorded, the call is
+     * skipped rather than judged, and it passes. The empty host is the one spelling the tree-wide
+     * literal sweep deliberately does not carry — {@code ""} is far too common in unrelated code to
+     * refuse tree-wide — so nothing else caught it either. Reported by CodeRabbit on PR #255.
+     *
+     * @param content a source file's full text
+     * @param start   the offset to inspect
+     * @return the offset just past the non-code run, or {@code start} when none begins here
+     */
+    private static int skipNonCode(String content, int start) {
+        if (content.startsWith("\"\"\"", start)) {
+            return endOf(content, content.indexOf("\"\"\"", start + 3), 3);
+        }
+        char c = content.charAt(start);
+        if ('"' == c || '\'' == c) {
+            return skipQuoted(content, start, c);
+        }
+        if (content.startsWith("/*", start)) {
+            return endOf(content, content.indexOf("*/", start + 2), 2);
+        }
+        if (content.startsWith("//", start)) {
+            return endOf(content, content.indexOf('\n', start + 2), 1);
+        }
+        return start;
+    }
+
+    /**
+     * Resolves a closing-delimiter search to an offset, treating "not found" as end-of-input.
+     *
+     * <p>Running to the end is the deliberate reading of an unterminated run. The alternative —
+     * resuming the delimiter walk inside what is actually a comment or a literal — is what this
+     * whole helper exists to prevent, and it would make a truncated file the bypass.
+     *
+     * @param content     a source file's full text
+     * @param closerAt    the offset the closing delimiter was found at, or {@code -1}
+     * @param closerWidth the closing delimiter's length in characters
+     * @return the offset just past the closing delimiter, or the content length when unterminated
+     */
+    private static int endOf(String content, int closerAt, int closerWidth) {
+        return closerAt < 0 ? content.length() : closerAt + closerWidth;
+    }
+
+    /**
+     * Skips a quoted run — a string literal or a character literal — honouring backslash escapes.
+     *
+     * @param content a source file's full text
+     * @param start   the offset of the opening quote
+     * @param quote   the quote character that closes the run
+     * @return the offset just past the closing quote, or the content length when unterminated
+     */
+    private static int skipQuoted(String content, int start, char quote) {
+        int i = start + 1;
+        while (i < content.length()) {
+            char c = content.charAt(i);
+            if ('\\' == c) {
+                i += 2;
+            } else if (quote == c) {
+                return i + 1;
+            } else {
+                i++;
+            }
+        }
+        return content.length();
     }
 
     /**
@@ -642,6 +719,44 @@ class LoopbackEphemeralBindArchTest {
                             "A doubly-nested port expression with an empty host must still yield its "
                                     + "host argument. This exact shape passed the previous "
                                     + "regex-based sweep, which reached one nesting level."));
+
+            assertAll("a paren hidden in non-code must not be read as the argument list's end",
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(/* ) */ 0, \"\");"),
+                            "CodeRabbit's reported bypass. A block comment holding a close-paren "
+                                    + "ended the walk before any top-level comma, so NO host "
+                                    + "argument was recorded and the call was skipped rather than "
+                                    + "judged — it passed. The empty host is the one spelling the "
+                                    + "tree-wide literal sweep deliberately does not carry, because "
+                                    + "\"\" is far too common in unrelated code to refuse tree-wide, "
+                                    + "so nothing else caught it either."),
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(0 /* ) */, \"\");"),
+                            "The same comment placed after the port instead of before it. Also a "
+                                    + "real bypass: the walk ended on the comment's paren, again "
+                                    + "before the comma."),
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(f(')'), \"\");"),
+                            "A close-paren inside a character literal is not a delimiter either, and "
+                                    + "the previous lexer tracked only string literals. Third real "
+                                    + "bypass of the three."));
+
+            assertAll("constructs the old lexer mis-read but happened to refuse anyway",
+                    () -> assertEquals(1, hostsOf("s.listen(0, // )\n\"\");").size(),
+                            "A line comment before the host. This was never a bypass — the old "
+                                    + "lexer stopped on the comment's paren and read the host as "
+                                    + "\"//\", which is not the approved constant, so it was refused "
+                                    + "for the wrong reason. It is a control because being refused "
+                                    + "by accident is not the same as being read correctly, and the "
+                                    + "accident is not a property anything held in place."),
+                    () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, // )\n\"\");").getFirst(),
+                            "The extracted text carries the comment, so it is not the bare approved "
+                                    + "constant and the call is refused. That is the fail-closed "
+                                    + "direction described on the scanner."),
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(f('\\''), \"\");"),
+                            "An escaped quote inside a character literal must not end the literal "
+                                    + "early and hand the walk back a stray delimiter."),
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(g(\"\"\")\"\"\"), \"\");"),
+                            "A close-paren inside a text block. Java 25 text blocks open with three "
+                                    + "quotes, which a single-quote-at-a-time string lexer reads as "
+                                    + "an empty string followed by an opening quote."));
 
             assertAll("the allow-list rejects every host that is not the approved constant",
                     () -> assertNotEquals(APPROVED_HOST, hostsOf("s.listen(0, \"0.0.0.0\");").getFirst()),
