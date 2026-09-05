@@ -610,7 +610,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("No guarded fixture holds a wildcard host literal at all")
-        void noGuardedFixtureHoldsAWildcardHostLiteral() throws IOException {
+        void noGuardedFixtureHoldsAWildcardHostLiteral() throws Exception {
             List<String> offenders = new ArrayList<>();
             for (Path source : guardedSources()) {
                 String content = Files.readString(source);
@@ -634,7 +634,7 @@ class LoopbackEphemeralBindArchTest {
          */
         @Test
         @DisplayName("The literal sweep finds the specimen's wildcard hosts and spares the loopback one")
-        void literalSweepDiscriminates() throws IOException {
+        void literalSweepDiscriminates() throws Exception {
             Path wildcard = TEST_SOURCE_ROOT.resolve(
                     "de/cuioss/sheriff/gateway/arch/specimen/WildcardEphemeralBindSpecimen.java");
             Path loopback = TEST_SOURCE_ROOT.resolve(
