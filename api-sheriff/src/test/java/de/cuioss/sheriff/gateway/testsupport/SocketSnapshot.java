@@ -199,8 +199,16 @@ public final class SocketSnapshot {
     /**
      * Matches the port of an {@code lsof} address token — {@code 127.0.0.1:59120} or
      * {@code [::1]:59120}, on either side of the {@code ->} of an established pair.
+     *
+     * <p>The lookbehind is load-bearing, not decoration. A bare {@code :(\d{1,5})} also matches the
+     * {@code :1} inside {@code [::1]:49152}, so the extracted port set gains a spurious {@code 1} —
+     * and that false port then makes {@link #filterToPorts} retain any row containing {@code :1},
+     * i.e. unrelated IPv6 endpoints, in a table filtered to "this process's ports". Requiring the
+     * colon to follow {@code ]} or a digit admits only a port that terminates a complete address
+     * token: {@code ]:49152} and {@code 1:49152} qualify, the {@code :1} of {@code ::1} does not.
+     * Reported by CodeRabbit on PR #255.
      */
-    private static final Pattern LSOF_PORT = Pattern.compile(":(\\d{1,5})\\b");
+    private static final Pattern LSOF_PORT = Pattern.compile("(?<=[\\]\\d]):(\\d{1,5})\\b");
 
     /**
      * Matches a {@code netstat} address token. macOS separates the port with a dot
@@ -211,9 +219,14 @@ public final class SocketSnapshot {
      * matches the dots <em>inside</em> the IPv4 address, so {@code 127.0.0.1:59120} would yield a
      * spurious port {@code 1}. Accepting either separator everywhere would not widen coverage, it
      * would manufacture wrong ports.
+     * <p>
+     * The Linux arm carries the same lookbehind as {@link #LSOF_PORT} and for the same reason: it
+     * reads colon-separated addresses, so {@code ::1:49152} would otherwise yield a spurious
+     * {@code 1}. The macOS arm needs no lookbehind — its trailing context already forces the match
+     * to the end of the token, so the dots inside {@code 127.0.0.1.49152} cannot match.
      */
     private static final Pattern NETSTAT_PORT = Pattern.compile(
-            IS_MACOS ? "\\.(\\d{1,5})(?:\\s|$|-)" : ":(\\d{1,5})\\b");
+            IS_MACOS ? "\\.(\\d{1,5})(?:\\s|$|-)" : "(?<=[\\]\\d]):(\\d{1,5})\\b");
 
     /**
      * Caps the loopback fallback rendering, so a machine with many loopback services cannot paste an

@@ -194,6 +194,16 @@ class LoopbackEphemeralBindArchTest {
     private static final Pattern WILDCARD_HOST_LITERAL = Pattern.compile("\"(?:0\\.0\\.0\\.0|::)\"");
 
     /**
+     * Finds the opening parenthesis of a {@code listen(} call, tolerating whitespace and comments
+     * around the selector. Only locates the call — {@link #listenHostArguments} walks the arguments.
+     */
+    private static final Pattern LISTEN_SELECTOR =
+            Pattern.compile("\\." + SEPARATOR + "listen" + SEPARATOR + "\\(");
+
+    /** The host spellings that bind every interface, as written in source. */
+    private static final List<String> WILDCARD_HOSTS = List.of("\"0.0.0.0\"", "\"::\"", "\"\"");
+
+    /**
      * Matches a {@code listen(<port>, "<wildcard host>")} call in source text.
      * <p>
      * The wildcard hosts are the three spellings that bind every interface: IPv4 {@code 0.0.0.0},
@@ -368,6 +378,73 @@ class LoopbackEphemeralBindArchTest {
      * @param offset  the match's start offset
      * @return the 1-based line number
      */
+    /**
+     * The host argument of every {@code listen(port, host)} call in {@code content}, as written.
+     *
+     * <p>Replaces the regex that used to match the whole call. A regex cannot balance parentheses,
+     * so that pattern reached one nesting level and every deeper port expression was a bypass —
+     * {@code listen(outer(inner()), "")} passed both halves of the guard. Widening the pattern again
+     * would have added a sixth special case to a family whose general form is "hide the host behind
+     * something the regex cannot see"; counting depth to the argument comma answers the whole family
+     * instead.
+     *
+     * <p>Deliberately not a Java parser. It scans for the {@code listen} selector, walks the
+     * argument list tracking paren depth and string literals, and returns the text after the
+     * top-level comma. That is enough to decide the one question asked of it, and its limits are
+     * the caller's to state. Reported by CodeRabbit on PR #255.
+     *
+     * @param content a source file's full text
+     * @return one entry per two-argument {@code listen} call: the offset of the call and the host
+     *         argument's source text, trimmed
+     */
+    private static List<int[]> listenHostArguments(String content, List<String> hostsOut) {
+        List<int[]> found = new ArrayList<>();
+        Matcher selector = LISTEN_SELECTOR.matcher(content);
+        while (selector.find()) {
+            int i = selector.end();
+            int depth = 1;
+            int commaAt = -1;
+            boolean inString = false;
+            while (i < content.length() && depth > 0) {
+                char c = content.charAt(i);
+                if (inString) {
+                    if ('\\' == c) {
+                        i++;
+                    } else if ('"' == c) {
+                        inString = false;
+                    }
+                } else if ('"' == c) {
+                    inString = true;
+                } else if ('(' == c) {
+                    depth++;
+                } else if (')' == c) {
+                    depth--;
+                } else if (',' == c && 1 == depth && commaAt < 0) {
+                    commaAt = i;
+                }
+                i++;
+            }
+            if (0 == depth && commaAt > 0) {
+                found.add(new int[] {selector.start()});
+                hostsOut.add(content.substring(commaAt + 1, i - 1).trim());
+            }
+        }
+        return found;
+    }
+
+    /**
+     * The host arguments of every two-argument {@code listen} call in a source fragment, for the
+     * controls that exercise the scanner against literal text rather than a source specimen.
+     *
+     * @param fragment source text
+     * @return the host arguments, in call order
+     */
+    private static List<String> hostsOf(String fragment) {
+        List<String> hosts = new ArrayList<>();
+        listenHostArguments(fragment, hosts);
+        return hosts;
+    }
+
     private static int lineOf(String content, int offset) {
         int line = 1;
         for (int i = 0; i < offset; i++) {
@@ -486,10 +563,13 @@ class LoopbackEphemeralBindArchTest {
             List<String> offenders = new ArrayList<>();
             for (Path source : guardedSources()) {
                 String content = Files.readString(source);
-                Matcher matcher = WILDCARD_HOST_LISTEN.matcher(content);
-                while (matcher.find()) {
-                    offenders.add(source.getFileName() + ":" + lineOf(content, matcher.start())
-                            + " — " + WHITESPACE_RUN.matcher(matcher.group()).replaceAll(" "));
+                List<String> hosts = new ArrayList<>();
+                List<int[]> calls = listenHostArguments(content, hosts);
+                for (int i = 0; i < calls.size(); i++) {
+                    if (WILDCARD_HOSTS.contains(hosts.get(i))) {
+                        offenders.add(source.getFileName() + ":" + lineOf(content, calls.get(i)[0])
+                                + " — host argument " + hosts.get(i));
+                    }
                 }
             }
 
@@ -531,25 +611,14 @@ class LoopbackEphemeralBindArchTest {
                             + matches + ".");
 
             assertAll("every wildcard host form the guard claims to reject is actually rejected",
-                    () -> assertTrue(WILDCARD_HOST_LISTEN
-                                    .matcher("server.listen(0, \"0.0.0.0\")").find(),
-                            "IPv4 wildcard host not matched."),
-                    () -> assertTrue(WILDCARD_HOST_LISTEN
-                                    .matcher("server.listen(0, \"::\")").find(),
-                            "IPv6 wildcard host not matched. Every specimen in the source file uses "
-                                    + "0.0.0.0, so without this the :: alternative could be deleted "
-                                    + "from the pattern and every other control would stay green "
-                                    + "while the guard still claimed to reject it."),
-                    () -> assertTrue(WILDCARD_HOST_LISTEN
-                                    .matcher("server.listen(0, \"\")").find(),
-                            "Empty host not matched — same argument as the IPv6 case; an empty host "
-                                    + "binds every interface just as 0.0.0.0 does."),
-                    () -> assertFalse(WILDCARD_HOST_LISTEN
-                                    .matcher("server.listen(0, \"127.0.0.1\")").find(),
-                            "A loopback literal is flagged as a wildcard host. The three positive "
-                                    + "assertions above would all pass for a pattern that matched "
-                                    + "ANY host string, so this negative is what makes them mean "
-                                    + "something."));
+                    () -> assertEquals(List.of("\"0.0.0.0\""), hostsOf("s.listen(0, \"0.0.0.0\");")),
+                    () -> assertEquals(List.of("\"::\""), hostsOf("s.listen(0, \"::\");")),
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(0, \"\");")),
+                    () -> assertEquals(List.of("\"127.0.0.1\""), hostsOf("s.listen(0, \"127.0.0.1\");")),
+                    () -> assertEquals(List.of("\"\""), hostsOf("s.listen(outer(inner()), \"\");"),
+                            "A doubly-nested port expression with an empty host must still yield its "
+                                    + "host argument. This exact shape passed the previous "
+                                    + "regex-based sweep, which reached one nesting level."));
 
             assertAll("separator forms a formatter would not preserve in a source specimen",
                     () -> assertTrue(WILDCARD_HOST_LISTEN
