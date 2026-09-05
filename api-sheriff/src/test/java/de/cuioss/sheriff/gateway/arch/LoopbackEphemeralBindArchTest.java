@@ -507,6 +507,27 @@ class LoopbackEphemeralBindArchTest {
                             + "the rest of the tree covers less than it appears to. Found "
                             + matches + ".");
 
+            assertAll("every wildcard host form the guard claims to reject is actually rejected",
+                    () -> assertTrue(WILDCARD_HOST_LISTEN
+                                    .matcher("server.listen(0, \"0.0.0.0\")").find(),
+                            "IPv4 wildcard host not matched."),
+                    () -> assertTrue(WILDCARD_HOST_LISTEN
+                                    .matcher("server.listen(0, \"::\")").find(),
+                            "IPv6 wildcard host not matched. Every specimen in the source file uses "
+                                    + "0.0.0.0, so without this the :: alternative could be deleted "
+                                    + "from the pattern and every other control would stay green "
+                                    + "while the guard still claimed to reject it."),
+                    () -> assertTrue(WILDCARD_HOST_LISTEN
+                                    .matcher("server.listen(0, \"\")").find(),
+                            "Empty host not matched — same argument as the IPv6 case; an empty host "
+                                    + "binds every interface just as 0.0.0.0 does."),
+                    () -> assertFalse(WILDCARD_HOST_LISTEN
+                                    .matcher("server.listen(0, \"127.0.0.1\")").find(),
+                            "A loopback literal is flagged as a wildcard host. The three positive "
+                                    + "assertions above would all pass for a pattern that matched "
+                                    + "ANY host string, so this negative is what makes them mean "
+                                    + "something."));
+
             assertAll("separator forms a formatter would not preserve in a source specimen",
                     () -> assertTrue(WILDCARD_HOST_LISTEN
                                     .matcher("server./* c */listen(0, \"0.0.0.0\")").find(),

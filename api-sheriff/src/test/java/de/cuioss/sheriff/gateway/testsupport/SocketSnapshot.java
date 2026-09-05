@@ -115,11 +115,25 @@ public final class SocketSnapshot {
      * turning a probe that narrows a message to these rows into one that finds nothing. The argv
      * actually used is rendered inside the section instead.
      */
-    static final String NETSTAT_SUBSECTION =
-            "  netstat (Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate):";
+    static final String NETSTAT_SUBSECTION = "  netstat:";
+
 
     /** {@code true} on macOS, whose {@code netstat} differs from Linux's in both flags and format. */
     private static final boolean IS_MACOS = System.getProperty("os.name", "").startsWith("Mac");
+
+    /**
+     * What the netstat half actually offers on this platform, rendered under the banner.
+     *
+     * <p>The banner used to promise {@code rxbytes}, {@code txbytes} and {@code process:pid}
+     * unconditionally. Those are macOS {@code -v} columns; Linux's {@code -ant} does not produce
+     * them, so on Linux the header named discriminators the rows below it did not contain — a label
+     * asserting more than its content, which is the defect this file has now been corrected for
+     * three times.
+     */
+    private static final String NETSTAT_COLUMNS = IS_MACOS
+            ? "    Recv-Q/Send-Q, rxbytes/txbytes and process:pid discriminate"
+            : "    Recv-Q/Send-Q discriminate; rxbytes/txbytes and process:pid are macOS-only "
+                    + "and absent here";
 
     private static final CuiLogger LOGGER = new CuiLogger(SocketSnapshot.class);
 
@@ -229,6 +243,7 @@ public final class SocketSnapshot {
                 .append(System.lineSeparator()).append(indent(lsof))
                 .append(System.lineSeparator())
                 .append(NETSTAT_SUBSECTION)
+                .append(System.lineSeparator()).append(NETSTAT_COLUMNS)
                 .append(System.lineSeparator()).append("    argv: netstat ")
                 .append(String.join(" ", netstatArgs))
                 .append(System.lineSeparator()).append(indent(netstat))
