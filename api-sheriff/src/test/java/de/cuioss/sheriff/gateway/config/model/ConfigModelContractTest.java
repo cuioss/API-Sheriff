@@ -443,7 +443,8 @@ class ConfigModelContractTest {
         @Test
         void gatewayConfigBuilderMatchesConstructor() {
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
-                    List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null, null);
+                    List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null, null,
+                    null);
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .anchors(Map.of("api", anchorConfig())).build();
             assertEquals(viaCtor, viaBuilder);
@@ -469,7 +470,7 @@ class ConfigModelContractTest {
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null);
+                    null, null, null);
             assertNull(cfg.metadata());
             assertNull(cfg.tls());
             assertNull(cfg.management());
@@ -483,6 +484,7 @@ class ConfigModelContractTest {
             assertNull(cfg.tokenValidation());
             assertNull(cfg.oidc());
             assertNull(cfg.edgeHardening());
+            assertNull(cfg.egressTls());
         }
 
         @Test

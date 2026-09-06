@@ -57,6 +57,7 @@ import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
@@ -115,6 +116,9 @@ public final class ConfigLoader {
     private static final String ENABLED_FIELD = "enabled";
     private static final String ANCHORS_FIELD = "anchors";
     private static final String NAME_FIELD = "name";
+    private static final String UPSTREAM_VERIFY_HOSTNAME_FIELD = "upstream_verify_hostname";
+    private static final String JWKS_VERIFY_HOSTNAME_FIELD = "jwks_verify_hostname";
+    private static final String UPSTREAM_TLS_PROFILE_FIELD = "upstream_tls_profile";
     private static final String YAML_EXTENSION = ".yaml";
     private static final String YML_EXTENSION = ".yml";
     private static final int MAX_YAML_NESTING_DEPTH = 100;
@@ -729,6 +733,7 @@ public final class ConfigLoader {
     private static ObjectMapper buildMapper() {
         SimpleModule module = new SimpleModule();
         module.addDeserializer(UpstreamDefaultsConfig.class, new UpstreamDefaultsDeserializer());
+        module.addDeserializer(EgressTlsConfig.class, new EgressTlsDeserializer());
         return YAMLMapper.builder(hardenedYamlFactory())
                 .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
@@ -840,6 +845,44 @@ public final class ConfigLoader {
             }
             JsonNode enabled = blockNode.get(ENABLED_FIELD);
             return enabled == null || enabled.asBoolean(true);
+        }
+    }
+
+    /**
+     * Binds the flat {@code egress_tls} YAML block to {@link EgressTlsConfig}, resolving each
+     * <em>absent</em> hostname-verification flag to {@code true}.
+     * <p>
+     * The defaulting is the whole reason this deserializer exists. Jackson binds an omitted
+     * {@code boolean} to {@code false}, so a block that names only {@code upstream_tls_profile} would
+     * otherwise resolve {@code upstream_verify_hostname} to {@code false} — hostname verification
+     * silently disabled by a document that never mentions it, which is the shape of the failure the
+     * threat model's GW-06 control exists to prevent. The record's own {@code defaults()} does not
+     * close this: it is reached only when the whole block is absent, never when the block is present
+     * and a key inside it is not.
+     */
+    private static final class EgressTlsDeserializer extends JsonDeserializer<EgressTlsConfig>
+            implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public EgressTlsConfig deserialize(JsonParser parser, DeserializationContext context)
+                throws IOException {
+            JsonNode node = parser.readValueAsTree();
+            return new EgressTlsConfig(
+                    readFlag(node, UPSTREAM_VERIFY_HOSTNAME_FIELD),
+                    readFlag(node, JWKS_VERIFY_HOSTNAME_FIELD),
+                    readProfile(node));
+        }
+
+        private static boolean readFlag(JsonNode node, String field) {
+            JsonNode flag = node.get(field);
+            return flag == null || flag.asBoolean(true);
+        }
+
+        private static @Nullable String readProfile(JsonNode node) {
+            JsonNode profile = node.get(UPSTREAM_TLS_PROFILE_FIELD);
+            return profile == null || profile.isNull() ? null : profile.asText();
         }
     }
 }
