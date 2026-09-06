@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 
 
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.tls.ClientHelloSniParserTest.ClientHelloFixture;
 import de.cuioss.sheriff.gateway.tls.PassthroughRelay.RelayTarget;
 import io.vertx.core.Vertx;
@@ -43,7 +44,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("SniFrontListener")
 class SniFrontListenerTest {
 
-    private static final String HOST = "127.0.0.1";
+    private static final String HOST = LoopbackHost.ADDRESS;
     private static final String MAPPED_SNI = "api.example.com";
 
     private Vertx vertx;
@@ -162,7 +163,8 @@ class SniFrontListenerTest {
                 firstBytes.complete(accumulator.copy());
             }
         }));
-        int port = Awaits.connect(server.listen(0), "the capturing backend to start listening").actualPort();
+        int port = Awaits.connect(server.listen(0, LoopbackHost.ADDRESS),
+                "the capturing backend to start listening").actualPort();
         return new Backend(new RelayTarget(HOST, port), firstBytes);
     }
 
