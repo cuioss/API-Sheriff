@@ -104,18 +104,29 @@ Concrete exposure: unset-variable typos and mid-pipeline failures
 absent). Quoting elsewhere is clean; no unsafe temp files (the IT temp keystore cleans only on
 the success path — same generation gap).
 
-=== PER-7 — Stale port-inventory comment in verify script
+=== PER-7 — Stale port-inventory comment in verify script (RESOLVED — the drift became a build failure)
 
 [cols="1,4"]
 |===
-|Severity |LOW — Confidence HIGH — Category: doc-mismatch
-|Location |`integration-tests/scripts/verify-invalid-config-fails.sh:47-49`
+|Severity |LOW as reported — Confidence HIGH — Category: doc-mismatch
+|Location |`integration-tests/scripts/verify-invalid-config-fails.sh` (probe-port declaration)
 |===
 
-Comment says "outside the 19000-19005 block … for the six gateway instances"; the compose file
-now publishes 19000-19006 for seven instances. `MGMT_PROBE_PORT=19009` is still
-collision-free — functionally harmless mirrored-list drift of exactly the kind the repo's other
-scripts eliminated by derivation.
+As reported, the comment said "outside the 19000-19005 block … for the six gateway instances"
+while the compose file published 19000-19006 for seven, and `MGMT_PROBE_PORT=19009` was still
+collision-free — mirrored-list drift of exactly the kind the repo's other scripts eliminated by
+derivation.
+
+The margin this finding recorded as shrinking ran out. The gateway block is contiguous and
+grows by one port per instance; when the stack reached ten instances it claimed 19009, and the
+script failed with docker's `Bind for 0.0.0.0:19009 failed: port is already allocated` — the
+"functionally harmless" drift was the leading edge of a hard build failure, not a cosmetic one.
+
+Resolved by moving the probe port to 19099, far above the block rather than immediately past
+it, and by replacing the mirrored range in the comment with the positional invariant it was
+standing in for: the probe port must sit clear of the contiguous block published upward from
+19000, which grows by one per added instance. Restating a range would only reproduce the same
+staleness at the next instance.
 
 === PER-8 — One hardcoded banner target survived the derivation refactor
 

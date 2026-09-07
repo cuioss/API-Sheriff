@@ -66,6 +66,55 @@ import org.junit.jupiter.api.Test;
  * {@code invalid_grant}. It also asserts nothing about browser cookie policy — it replays a cookie
  * map, exactly as {@link BffKeycloakLoginFlow} documents.
  * <p>
+ * <strong>Reproduction outcome (2026-09-07).</strong> The suite was executed against the live stack
+ * — {@code verify -Pintegration-tests}, 130 integration tests in total, of which the five below.
+ * Two passed and three failed, and the three failures share one cause: <em>the near-expiry refresh
+ * never fires</em>.
+ * <ul>
+ *   <li>{@code mediatedTokenCarriesTheDeclaredLifespan} — PASSED. {@code exp - iat} was exactly 45,
+ *       so {@code refresh-client}'s lifespan is genuinely in effect and the near-expiry window is
+ *       reachable. This is what makes the three failures below evidence about the refresh rather
+ *       than about the fixture.</li>
+ *   <li>{@code currentOutcomeReusesTheMediatedToken} — PASSED. Inside the leeway window the bearer
+ *       is byte-identical, so the {@code CURRENT} branch behaves as specified.</li>
+ *   <li>{@code refreshedOutcomeRotatesTheMediatedToken} — FAILED. After a 22-second wait on a
+ *       45-second token with {@code leeway_seconds: 30} — 23 seconds of remaining life against a
+ *       30-second leeway, so a refresh is due — the mediated bearer came back <em>unchanged</em>.</li>
+ *   <li>{@code failedOutcomeRejectsXhrAndClearsTheSession} — FAILED. Expected 401, got <em>200</em>:
+ *       after the IdP revoked every session of the user, the mediated call inside the window still
+ *       succeeded.</li>
+ *   <li>{@code failedOutcomeRedirectsNavigationAndClearsTheSession} — FAILED. Expected 302, got
+ *       <em>200</em>, for the same reason on the navigation leg.</li>
+ * </ul>
+ * <p>
+ * <strong>No exception reproduced, and that is the finding.</strong> The hypothesis this fixture was
+ * built to chase was a thrown exception on the refresh path. None occurred. The refresh instance's
+ * {@code target/quarkus-logs/quarkus-refresh.log} is clean across the entire test window: no ERROR,
+ * no WARN, and no {@code ApiSheriff-*} or {@code TokenSheriff*} record naming a refresh attempt or a
+ * refresh failure — the only runtime entry between boot and shutdown is a single informational
+ * {@code TokenSheriffClient-1} OIDC-discovery resolution, which the login leg alone accounts for.
+ * The failure mode is therefore <em>silence</em>, not an error: a session whose access token is
+ * inside the leeway window, and whose IdP-side session has been destroyed, keeps mediating the
+ * original bearer and keeps returning 200. There is no exception type, message or log identifier to
+ * record, because none was emitted.
+ * <p>
+ * <strong>No fix is made here — this suite is characterisation only.</strong> The three failing
+ * assertions are left asserting the specified behaviour rather than the observed one, so they stay
+ * evidence of the gap instead of ratifying it.
+ * <p>
+ * <strong>Bounding the result.</strong> Exercised: the near-expiry trigger on a server-mode session
+ * with a 45-second access token; IdP-side session invalidation via admin logout; the XHR and
+ * navigation challenge legs. NOT exercised, and therefore neither confirmed nor disproved:
+ * refresh-token reuse and family revocation, cookie-mode re-seal on rotation, a refresh racing
+ * session expiry, concurrent requests coalescing onto one single-flight refresh, and an IdP
+ * returning a failure other than {@code invalid_grant}.
+ * <p>
+ * <strong>Why this verdict could not be reached earlier.</strong> Until the failsafe include pattern
+ * in {@code integration-tests/pom.xml} was corrected, the lifecycle-bound execution matched no test
+ * class at all: {@code verify -Pintegration-tests} reported {@code Tests run: 0} and BUILD SUCCESS
+ * while running no integration test. Every run of this fixture before that fix proved nothing, in
+ * either direction.
+ * <p>
  * <strong>Timing.</strong> The waits are wall-clock and deliberate: the property under test is
  * defined in terms of elapsed time against a token lifespan, so there is no state to poll for.
  * Awaitility would add a dependency without removing the wait (resolution D3), so it is not used.
