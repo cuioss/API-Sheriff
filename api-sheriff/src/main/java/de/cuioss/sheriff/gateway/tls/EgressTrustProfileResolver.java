@@ -142,6 +142,7 @@ public class EgressTrustProfileResolver {
             // wrong password or an unsupported format surfaces here as an unchecked failure. There is
             // no narrower type to catch, and every mode behind it is the same configuration error from
             // the gateway's point of view.
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
         } catch (RuntimeException loadFailure) {
             throw new GatewayException(EventType.CONFIG_INVALID,
                     "gateway.yaml names egress_tls.upstream_tls_profile '" + tlsProfile
