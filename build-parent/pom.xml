@@ -108,20 +108,16 @@
         <quarkus.package.main-class>de.cuioss.sheriff.gateway.ApiSheriffApplication</quarkus.package.main-class>
 
         <!-- ==== (2a) The Quarkus platform version ========================================== -->
-        <!-- Declared as a real property, on purpose, even though this POM also inherits it from
-             api-sheriff-parent. Maven does not propagate properties out of an IMPORTED BOM, and
-             quarkus-maven-plugin needs the value as a build extension — which is why every Quarkus
-             consumer normally has to declare it locally. Solving that once, here, on the consumer's
-             behalf is part of what this parent is for.
+        <!-- No longer declared here. It is inherited from de.cuioss:cui-quarkus-parent through
+             api-sheriff-parent, and properties inherit down the WHOLE chain - so a consumer
+             inheriting this POM still receives version.quarkus as a real property, which is what
+             quarkus-maven-plugin needs as a build extension. Solving that on the consumer's behalf
+             is still part of what this parent is for; it is simply solved one level up now, for
+             every cuioss Quarkus project at once, instead of being restated here.
 
-             The duplication is guarded rather than merely tolerated:
-             .claude/skills/release/check-quarkus-alignment.py rglobs every pom.xml under the
-             repository (not just the reactor's, so this non-reactor example is covered too) and reports
-             a property declared at two different values as "declared inconsistently", exiting 2 — which
-             the release gate treats as blocking. So this value drifting from the reactor root's cannot
-             reach a release, and no new drift mechanism was added for it. Keep it equal to the
-             <version.quarkus> in ../pom.xml. -->
-        <version.quarkus>3.39.2</version.quarkus>
+             Nothing is left to drift: the plugin version and the io.quarkus:quarkus-bom import
+             below both read that single inherited property. The local copy this block used to
+             carry - and the "declared inconsistently" guard that policed it - are obsolete. -->
 
         <!-- ==== Consumer hygiene is the consumer's business ================================ -->
         <!-- A consumer inheriting this parent transitively inherits api-sheriff-parent and thereby
@@ -293,7 +289,6 @@
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
-                <version>${version.quarkus}</version>
                 <extensions>true</extensions>
                 <executions>
                     <execution>
