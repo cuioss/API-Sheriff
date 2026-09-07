@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Hostname verification on terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream, and the declared jwks_verify_hostname key is bindable but has no production reader.
+// summary: Hostname verification on proxy-path terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three Vert.x binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream; the asset-origin fetch is a fourth terminated-egress leg on a JDK HttpClient that the block deliberately does not govern (fail-safe on hostname, fail-closed on trust), and the declared jwks_verify_hostname key is bindable but has no production reader.
 // tags: tls, egress, configuration-surface, secure-by-default, partial-relaxation, tls-trust, deployment-binding, blast-radius
 // affects: api-sheriff, integration-tests
 // supersedes:
@@ -63,12 +63,14 @@ HTTP client options and the WebSocket client options -- and both are consumed on
 is built. There is therefore no per-request override to expose, and any configuration surface scoped
 more narrowly than a client is a surface the runtime cannot honour.
 
-*Third: one of the clients is edge-wide.* Terminated egress leaves this gateway through three
-construction sites: the default HTTP client, the forced-HTTP/2 HTTP client that gRPC routes require,
-and a single WebSocket client built once for the whole edge because the dialer carries no per-route
-state. The first two are per upstream-target tuple; the third is one instance for the entire gateway.
-A setting that must reach all three cannot be scoped per route without either meaning nothing on the
-WebSocket leg or forcing one WebSocket client per route.
+*Third: one of the clients is edge-wide.* Proxy-path terminated egress leaves this gateway through
+three Vert.x construction sites: the default HTTP client, the forced-HTTP/2 HTTP client that gRPC
+routes require, and a single WebSocket client built once for the whole edge because the dialer
+carries no per-route state. The first two are per upstream-target tuple; the third is one instance
+for the entire gateway. A setting that must reach all three cannot be scoped per route without either
+meaning nothing on the WebSocket leg or forcing one WebSocket client per route. (The asset-origin
+fetch is a fourth terminated-egress leg on a JDK client and is deliberately out of this decision's
+scope -- see the decision below.)
 
 Together these facts make the placement question decidable rather than a matter of taste, and they
 also make a second gap visible. The gateway has no way to tell its egress clients which anchors to
@@ -80,9 +82,10 @@ fix their problem, and reaching for it leaves them less safe than before they tr
 == Decision
 
 *Egress TLS policy lives in a new global `egress_tls` block in `gateway.yaml`, bound once at each of
-the three client-construction sites. `upstream_verify_hostname` relaxes hostname matching only and
-never certificate-chain trust; `upstream_tls_profile` is the deployment-bound answer to a chain-trust
-problem and ships in the same release.*
+the three Vert.x client-construction sites -- and at those, not at the asset-origin JDK client.
+`upstream_verify_hostname` relaxes hostname matching only and never certificate-chain trust;
+`upstream_tls_profile` is the deployment-bound answer to a chain-trust problem and ships in the same
+release.*
 
 This is
 link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]'s
@@ -95,7 +98,7 @@ applied it to the inbound one. Both remain in force and neither is superseded.
 [source,yaml]
 ----
 egress_tls:
-  upstream_verify_hostname: true      # bound at all three egress client-construction sites
+  upstream_verify_hostname: true      # bound at all three Vert.x egress client-construction sites
   jwks_verify_hostname: true          # declared and bindable; no production reader
   upstream_tls_profile: corporate-up  # logical name only; anchors supplied by the deployment
 ----
@@ -128,7 +131,7 @@ re-derived.
 This is what makes the surface secure-by-default in the sense the threat model requires, and it is
 the difference between a configuration key and a configuration hazard.
 
-=== The setting binds at three sites, and there is no fourth
+=== The setting binds at three Vert.x client sites
 
 [cols="1,3", options="header"]
 |===
@@ -152,6 +155,32 @@ The two per-request seams -- the request options the dispatch path builds and th
 WebSocket relay builds -- are *not* in the set and take no edit. Neither type declares the field.
 This is a type-declaration fact, not a scoping choice: there is no per-request hostname-verification
 override to expose, so the surface cannot offer one.
+
+==== The asset-origin leg is a fourth terminated-egress leg, and is out of scope
+
+The three sites above are the three *Vert.x* clients, and that is the whole of what this block
+governs. It is not the whole of the gateway's terminated egress. An asset route with an `https`
+origin is fetched by `UpstreamAssetSource.httpFetcher`, which builds a JDK
+`java.net.http.HttpClient` -- a fourth terminated-egress TLS leg on the JVM default `SSLContext`.
+
+It is excluded deliberately rather than overlooked. The JDK builder declares neither of the two
+settings: hostname verification there is governed by `SSLParameters.setEndpointIdentificationAlgorithm`
+on a client-supplied `SSLContext`, and trust by that context's `TrustManager`. Binding the block to
+that leg is a different seam from the two Vert.x options types, and it is not this decision's change.
+
+The consequence is asymmetric, and stating which way it cuts is the point:
+
+* *Hostname verification is fail-safe there.* The JDK client verifies the name whatever
+  `upstream_verify_hostname` says. Turning the key off therefore cannot weaken the asset leg -- the
+  relaxation is narrower than the block's name implies, never wider.
+* *Trust is the real gap.* `upstream_tls_profile` replaces anchors on the three governed clients and
+  leaves the asset leg on the JVM default trust store. An operator whose asset origin is behind a
+  private CA finds that fetch *failing closed*, not silently insecure, and binds the anchors into the
+  JVM trust store the container runs with.
+
+A future decision may bring the asset leg under the block; until one does, the limit is stated in the
+operator documentation, in the model's javadoc, in the threat model's GW-06 entry and here, rather
+than being implied away by the word "global".
 
 Enumerating all three sites in one decision is the point. A knob bound at two of three is the
 partial-binding defect
@@ -256,9 +285,13 @@ production reader and the behaviour test that proves it acts.*
   answer, and it is a narrow one: hostname matching only, with chain trust untouched.
 * An operator whose upstream presents a private-CA certificate has a *different* supported answer, so
   the hostname knob is not the only lever in reach and is not misused as one.
-* The setting reaches every terminated egress dial, including WebSocket relays, so the surface means
-  gateway-wide what it says gateway-wide.
+* The setting reaches every proxy-path terminated egress dial, including WebSocket relays, so the
+  surface means across those clients what it says gateway-wide.
 * A present block that names only some of its keys cannot silently disable a security control.
+* Neither relaxation is silent at runtime either: a boot `WARN` reports a disabled hostname check and
+  a named trust profile, following the same warn-never-refuse rule as the broad-trusted-proxy and
+  plain-HTTP-management warnings, because both are legitimate deployments that must still be visible
+  in the log an operator reads.
 * Trust material stays out of the document operators commit, and the same `gateway.yaml` moves across
   environments that bind one profile name to different anchors.
 * The egress and server-TLS surfaces stay separately named and separately classified, so neither
@@ -278,6 +311,10 @@ production reader and the behaviour test that proves it acts.*
   a coupling between two files.
 * The configuration surface carries a key nothing reads. It is a real cost, accepted so the outbound
   vocabulary is defined once across both egress legs rather than twice with different names.
+* The block does not cover the asset-origin fetch, so "global" is true of the three Vert.x clients
+  rather than of every https connection the gateway opens. An operator whose asset origin is behind a
+  private CA cannot reach it through `upstream_tls_profile` and binds the anchors into the JVM trust
+  store instead.
 
 === Risks
 
@@ -286,8 +323,14 @@ production reader and the behaviour test that proves it acts.*
   description, the model documentation, the operator documentation and this ADR, and by naming
   PLAN-04 as the owner of both the reader and its proof.
 * *A future egress client is constructed without the setting.* The binding is enumerated per
-  construction site rather than derived, so a fourth site added later would not inherit it. Mitigated
+  construction site rather than derived, so a further site added later would not inherit it. Mitigated
   by enumerating all three sites here and by asserting the bound value on each constructed client.
+  The asset-origin JDK client is the standing instance of this, carried knowingly and scoped out
+  above rather than discovered later.
+* *"Global" is read as covering every https connection the gateway opens.* The block's name invites
+  that reading, and the asset-origin leg falsifies it. Mitigated by stating the limit and its
+  fail-safe / fail-closed directions wherever the block is documented, and by the boot warning naming
+  the asset-origin exclusion in both templates.
 * *The relaxation is read as a general TLS disable.* "Verification off" is the phrase operators will
   use, and it is broader than what the knob does. Mitigated by stating the hostname-matching-only
   scope wherever the key appears, and by an integration leg that proves an untrusted upstream is

@@ -22,9 +22,22 @@ import org.jspecify.annotations.Nullable;
  * counterpart of the server-side {@link TlsConfig} block (ADR-0040).
  * <p>
  * The block is global rather than per route because the underlying settings are
- * fixed at client construction: one of the three egress clients is the edge-wide
- * WebSocket client, which a per-route value could not bind. There is no per-route
- * override.
+ * fixed at client construction: one of the three governed egress clients is the
+ * edge-wide WebSocket client, which a per-route value could not bind. There is no
+ * per-route override.
+ * <p>
+ * <strong>The block governs the three Vert.x egress clients, not every https leg the
+ * gateway dials.</strong> The asset-origin fetch
+ * ({@code UpstreamAssetSource.httpFetcher}) builds a JDK {@code java.net.http.HttpClient},
+ * which carries neither setting: an {@code https} asset origin therefore keeps full
+ * hostname verification and the JVM default trust store whatever this block says.
+ * The two directions differ. Hostname verification is <em>fail-safe</em> there —
+ * turning {@code upstreamVerifyHostname} off cannot weaken the asset leg. Trust is
+ * the real limit: {@code upstreamTlsProfile} does not reach the asset leg either, so
+ * an operator serving assets from a private-CA origin finds that fetch failing
+ * closed rather than silently unverified, and binds those anchors into the JVM trust
+ * store instead. Governing the JDK client would need {@code SSLParameters} plumbing
+ * that ADR-0040 deliberately did not scope.
  * <p>
  * <strong>Both flags relax hostname matching only.</strong> Turning one off stops
  * the dialled name from being compared against the certificate's names; it does
@@ -41,8 +54,9 @@ import org.jspecify.annotations.Nullable;
  *
  * @param upstreamVerifyHostname whether a terminated upstream dial verifies that the
  *                               upstream certificate names the dialled host (default
- *                               {@code true}). Bound at all three egress
- *                               client-construction sites
+ *                               {@code true}). Bound at all three Vert.x egress
+ *                               client-construction sites; the JDK-client asset-origin
+ *                               leg is out of scope and always verifies
  * @param jwksVerifyHostname     whether the JWKS back-channel verifies the same
  *                               (default {@code true}). <strong>Declared and bindable,
  *                               but no production code reads it today</strong> — it is
@@ -56,7 +70,8 @@ import org.jspecify.annotations.Nullable;
  *                               trust store. The name carries no trust material; the
  *                               deployment supplies the anchors (ADR-0011). A named
  *                               profile <em>replaces</em> the client's anchors rather
- *                               than adding to them
+ *                               than adding to them, on those three clients only — the
+ *                               asset-origin leg keeps the JVM default trust store
  * @author API Sheriff Team
  * @since 1.0
  */

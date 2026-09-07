@@ -50,6 +50,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
@@ -318,13 +319,26 @@ public class GatewayEdgeRoute {
         Map<String, String> assetContentTypes = assetContentTypesOf(gatewayConfig);
 
         // The egress-TLS settings are gateway-global by necessity, not by convenience (ADR-0040):
-        // both are fixed at client construction, and one of the three clients is the edge-wide
+        // both are fixed at client construction, and one of the governed clients is the edge-wide
         // WebSocket client, which no per-route value could bind. So they are resolved ONCE here and
         // handed to every construction site below — the two clientFor branches and that WebSocket
         // client. There is no per-route override and no per-request one; Vert.x offers neither.
+        // The egress_tls block governs those three Vert.x clients and no others. It does NOT reach
+        // the asset-origin leg: UpstreamAssetSource.httpFetcher builds a JDK java.net.http.HttpClient,
+        // which carries neither of these settings, so an https asset origin keeps full hostname
+        // verification and the JVM default trust store whatever this block says.
         EgressTlsConfig egressTls = egressTlsOf(gatewayConfig);
         boolean upstreamVerifyHostname = egressTls.upstreamVerifyHostname();
         String upstreamTlsProfile = egressTls.upstreamTlsProfile();
+        // Both postures boot with a WARN and never a refusal, exactly as BROAD_TRUSTED_PROXY (102) and
+        // MANAGEMENT_PLAIN_HTTP (115) do: each is a legitimate deployment, so blocking it would be
+        // wrong — but neither may reach production silently.
+        if (!upstreamVerifyHostname) {
+            LOGGER.warn(ConfigLogMessages.WARN.EGRESS_HOSTNAME_VERIFICATION_DISABLED);
+        }
+        if (upstreamTlsProfile != null) {
+            LOGGER.warn(ConfigLogMessages.WARN.EGRESS_TRUST_PROFILE_IN_EFFECT, upstreamTlsProfile);
+        }
         // Only a NAMED profile reaches the resolver. With none named, no setTrustOptions call is made
         // at any of the three sites, so the clients keep the JVM default trust store byte-for-byte as
         // before — the resolved anchors REPLACE a client's trust rather than adding to it, so binding

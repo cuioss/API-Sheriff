@@ -799,6 +799,13 @@ presents a *private-CA* certificate has a different problem and a different answ
 `upstream_tls_profile` below -- so the hostname key is not the only lever in reach and should not be
 misused as one.
 
+*The relaxation is never silent.* A gateway that boots with `upstream_verify_hostname: false` logs
+`WARN ApiSheriff-118` once at startup, naming the scope and the remedy. It is a warning and never a
+boot refusal -- both topologies above are legitimate deployments -- and it follows the same rule as
+`ApiSheriff-102` for broad proxy trust and `ApiSheriff-115` for a plain-HTTP management port: an
+operator-selected relaxation of a security control is reported loudly and allowed. All three are
+catalogued in link:LogMessages.adoc[Log messages].
+
 [[_egress_tls_cannot_affect_passthrough]]
 ==== The key cannot affect passthrough
 
@@ -808,6 +815,11 @@ is never decrypted, and its upstream certificate is never inspected by this gate
 nothing for a verification setting to govern on that path. The scope of `egress_tls` is *terminated*
 egress, and -- exactly as with the link:#_tls_scope_limit[server-side scope limit] above -- that is a
 statement of what the setting *can* mean, not a limitation more configuration could lift.
+
+Terminated egress is the *outer* bound of the scope, not the whole of it: within terminated egress the
+block reaches the three Vert.x clients below and not the asset-origin fetch, which is a separate
+limit with a separate reason -- see link:#_egress_tls_asset_origin_limit[The block does not reach the
+asset-origin leg].
 
 [[_egress_tls_is_global]]
 ==== Why the block is global and carries no per-route override
@@ -822,6 +834,32 @@ type-declaration fact rather than a scoping preference: the two per-request seam
 options the dispatch path builds and the connect options the WebSocket relay builds) do not declare
 the field. The cost is real and worth stating plainly: a gateway with one name-mismatched upstream
 among many must relax hostname matching for *all* terminated egress or not at all.
+
+[[_egress_tls_asset_origin_limit]]
+==== The block does not reach the asset-origin leg
+
+*"Global" means those three clients, not every https connection the gateway opens.* An
+asset route with an `https` upstream origin is a fourth terminated-egress TLS leg, and
+`egress_tls` does not govern it (see link:#_asset_defaults[`asset_defaults`] for the asset surface):
+the asset fetch runs on a JDK `java.net.http.HttpClient`, whose
+builder carries neither a hostname-verification flag nor the gateway's trust profile. Governing it
+would need a separate `SSLParameters`/`SSLContext` seam, which
+link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+deliberately left out of scope.
+
+The two keys are limited in *opposite directions*, and the difference is what an operator needs:
+
+* `upstream_verify_hostname` is *fail-safe* here. The JDK client keeps full hostname checking
+  whatever the key says, so setting it to `false` cannot weaken the asset leg -- the relaxation is
+  narrower than the block's name suggests, never wider.
+* `upstream_tls_profile` is the *real* limit. It replaces the anchors on the three governed clients
+  and leaves the asset leg on the JVM default trust store. An operator serving assets from an origin
+  behind a private CA therefore sees that fetch *fail closed* (a `502` and a chain-validation error),
+  not succeed unverified. The answer is to bind those anchors into the JVM trust store the container
+  runs with; naming them in `upstream_tls_profile` will not reach the asset fetch.
+
+Both directions are stated because the alarming reading -- "a leg the security knob misses" -- is the
+wrong one. Nothing here is silently unverified; one leg is simply not configurable from this block.
 
 [[_upstream_trust_profiles]]
 ==== Trust profiles (`upstream_tls_profile`)
@@ -860,6 +898,12 @@ public certificate authorities on the upstream leg -- and the blast radius is th
 terminated-egress surface, not the one route that motivated the change. Omitting the key is the
 supported way to ask for default trust; naming a profile that also carries the public roots is the
 supported way to ask for both.
+
+Because the replacement is easy to under-estimate, a gateway that boots with a named profile logs
+`WARN ApiSheriff-119` once at startup, carrying the *logical* profile name only -- never a store
+path, a password, or any anchor material. Like `ApiSheriff-118`, it reports a deliberate posture and
+never refuses the boot. The same warning restates the asset-origin limit, since a named profile is
+exactly the case in which that limit bites.
 
 [[_upstream_trust_profile_fail_closed]]
 ===== The four resolutions, and why two of them are ordered

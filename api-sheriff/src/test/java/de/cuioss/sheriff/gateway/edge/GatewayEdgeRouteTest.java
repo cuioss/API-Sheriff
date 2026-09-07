@@ -50,6 +50,7 @@ import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -75,6 +76,10 @@ import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
@@ -918,6 +923,7 @@ class GatewayEdgeRouteTest {
      * branches are covered, and the edge-wide WebSocket client is the third site.
      */
     @Nested
+    @EnableTestLogger
     @DisplayName("gateway-global egress_tls bound at all three client-construction sites")
     class EgressTlsBinding {
 
@@ -997,6 +1003,71 @@ class GatewayEdgeRouteTest {
                             "the forced-HTTP/2 client must verify upstreams against the named anchors"),
                     () -> assertSame(anchors, capturing.webSocketOptions().getTrustOptions(),
                             "the edge-wide WebSocket client must verify upstreams against the named anchors"));
+        }
+
+        /**
+         * The boot signal for the hostname relaxation. An operator-selected relaxation of a security
+         * control must not reach production silently — the rule ApiSheriff-102 (broad trusted proxy)
+         * and ApiSheriff-115 (plain-HTTP management) already follow. Asserting the EMISSION rather
+         * than the bound flag is the point: the binding tests above already prove the flag acts, and
+         * a key that parses is not a key that announces itself.
+         */
+        @Test
+        @DisplayName("disabling upstream hostname verification WARNs at boot and never refuses it")
+        void disabledHostnameVerificationWarnsAtBoot() {
+            assertDoesNotThrow(() -> {
+                bootWith(new EgressTlsConfig(false, true, null), unconsultedTrustProfileResolver());
+            }, "a relaxed-hostname document is a legitimate deployment and must still boot");
+
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    ConfigLogMessages.WARN.EGRESS_HOSTNAME_VERIFICATION_DISABLED.resolveIdentifierString());
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    "upstream_verify_hostname is false");
+        }
+
+        @Test
+        @DisplayName("matched negative control: a document leaving verification on emits no relaxation WARN")
+        void verificationLeftOnEmitsNoWarn() {
+            bootWith(null, unconsultedTrustProfileResolver());
+
+            assertNoWarnContaining(
+                    ConfigLogMessages.WARN.EGRESS_HOSTNAME_VERIFICATION_DISABLED.resolveIdentifierString(),
+                    "a document with no egress_tls block leaves verification on and must stay silent");
+        }
+
+        /**
+         * The trust-profile boot signal. A named profile REPLACES the clients' anchors rather than
+         * adding to them, so naming one is a wider act than it looks — and the audit flagged that as
+         * likewise unlogged. The template carries the logical profile name only; no anchor material
+         * is reachable from here to leak.
+         */
+        @Test
+        @DisplayName("a named upstream_tls_profile WARNs at boot, naming the logical profile only")
+        void namedTrustProfileWarnsAtBoot() {
+            assertDoesNotThrow(() -> {
+                bootWith(new EgressTlsConfig(true, true, PROFILE),
+                        EgressTrustProfiles.binding(PROFILE, new PemTrustOptions()));
+            }, "a named profile is a deliberate posture and must still boot");
+
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    ConfigLogMessages.WARN.EGRESS_TRUST_PROFILE_IN_EFFECT.resolveIdentifierString());
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, PROFILE);
+        }
+
+        @Test
+        @DisplayName("matched negative control: no named profile emits no trust-replacement WARN")
+        void noNamedProfileEmitsNoWarn() {
+            bootWith(new EgressTlsConfig(true, true, null), unconsultedTrustProfileResolver());
+
+            assertNoWarnContaining(
+                    ConfigLogMessages.WARN.EGRESS_TRUST_PROFILE_IN_EFFECT.resolveIdentifierString(),
+                    "an omitted upstream_tls_profile leaves the JVM default trust store and must stay silent");
+        }
+
+        private void assertNoWarnContaining(String identifier, String why) {
+            assertTrue(TestLoggerFactory.getTestHandler()
+                            .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
+                    () -> why + " — found " + identifier);
         }
 
         private CapturingVertx bootWith(@Nullable EgressTlsConfig egressTls,

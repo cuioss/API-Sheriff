@@ -142,6 +142,49 @@ public final class ConfigLogMessages {
                 .identifier(116)
                 .template("Readiness probe reports validation unavailable — the gateway bearer-token validator could not be resolved. The readiness payload discloses only a fixed status token; the cause is logged here")
                 .build();
+
+        /**
+         * {@code egress_tls.upstream_verify_hostname} resolved to {@code false} at boot, so the
+         * governed egress clients no longer compare the dialled name against the upstream
+         * certificate's names.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal, for the same reason as
+         * {@link #BROAD_TRUSTED_PROXY} and {@link #MANAGEMENT_PLAIN_HTTP}: an upstream reached through
+         * an address its certificate does not name is a legitimate deployment (ADR-0040), and blocking
+         * it would be wrong. What must not happen is the relaxation reaching production silently.
+         * <p>
+         * The template states the scope rather than leaving it to be inferred, because
+         * <em>"verification off"</em> is the phrase operators reach for and is broader than what the
+         * key does: chain trust is untouched, the relaxation is gateway-wide rather than per route,
+         * and the asset-origin leg is not governed by the key at all. It names no certificate path,
+         * no anchor and no upstream address.
+         */
+        public static final LogRecord EGRESS_HOSTNAME_VERIFICATION_DISABLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(118)
+                .template("egress_tls.upstream_verify_hostname is false — terminated upstream dials no longer verify that the certificate names the dialled host. Certificate-chain trust is unaffected and an untrusted upstream is still refused. The relaxation applies to the proxy, gRPC and WebSocket egress clients rather than to one route, so every proxied upstream is relaxed, not just the one that motivated it; the asset-origin fetch is not governed by this key and keeps full hostname verification. Restore verification by removing the key or setting it back to true in gateway.yaml")
+                .build();
+
+        /**
+         * A named {@code egress_tls.upstream_tls_profile} is in effect at boot, so the governed egress
+         * clients verify upstream certificates against the deployment-bound anchors instead of the JVM
+         * default trust store.
+         * <p>
+         * A named profile <em>replaces</em> the client's anchors rather than adding to them (ADR-0040),
+         * which is the property that surprises people: an operator naming a profile that holds only
+         * their private CA thereby stops trusting public certificate authorities on the whole
+         * terminated-egress surface. That is a deliberate, legitimate posture, so it is reported and
+         * never refused.
+         * <p>
+         * The template carries the <em>logical</em> profile name only — the ADR-0011 neutral name that
+         * appears in {@code gateway.yaml}. It must never carry the deployment's store path, password,
+         * or any anchor material.
+         */
+        public static final LogRecord EGRESS_TRUST_PROFILE_IN_EFFECT = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(119)
+                .template("egress_tls.upstream_tls_profile '%s' is in effect — its anchors REPLACE the JVM default trust store on the proxy, gRPC and WebSocket egress clients, so a public certificate authority is no longer trusted on those legs unless the profile carries it too. The asset-origin fetch is not governed by this profile and keeps the JVM default trust store")
+                .build();
     }
 
     /**

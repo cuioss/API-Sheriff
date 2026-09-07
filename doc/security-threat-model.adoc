@@ -530,8 +530,11 @@ security-decision hostnames with a spec-conformant, tested routine.
 egress leg
 (link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]):
 verification is on by default, the `egress_tls.upstream_verify_hostname` relaxation is bound at all
-three egress client-construction sites, and `egress_tls.upstream_tls_profile` binds trust anchors
-through a fail-closed resolver that refuses an unbound, trust-all or anchor-free profile at boot. The
+three *Vert.x* egress client-construction sites, and `egress_tls.upstream_tls_profile` binds trust
+anchors through a fail-closed resolver that refuses an unbound, trust-all or anchor-free profile at
+boot; both postures are reported at boot by `WARN ApiSheriff-118` / `ApiSheriff-119` rather than
+taking effect silently. A *fourth* terminated-egress leg is outside that block and is recorded below
+rather than folded into the claim. The
 *assert-behaviour-not-flag* discipline this entry demands is discharged *for that key specifically*
 -- an integration-stack matched pair of gateway instances differing in exactly that one boolean makes
 a real handshake fail on one leg and succeed on the other. The *JWKS* half is *not delivered and not
@@ -567,6 +570,19 @@ place in `gateway.yaml` rather than buried per route; and the scope claim is pro
 dial above rather than asserted. The mitigation for an operator who needs a private-CA upstream is
 `egress_tls.upstream_tls_profile`, which is a different key and does not require this one -- shipping
 both together is what keeps the hostname knob from being misused as a general trust disable.
+
+*Scope limit (recorded, not a residual risk).* `egress_tls` governs the three Vert.x egress clients
+and does not reach the *asset-origin* fetch, which is a fourth terminated-egress TLS leg: an asset
+route with an `https` origin is fetched through a JDK `java.net.http.HttpClient` that carries neither
+setting. This is recorded separately from the residual risk above because it does not cut in the
+dangerous direction. Hostname verification there is *fail-safe*: the JDK client checks the name
+whatever the key says, so `upstream_verify_hostname: false` cannot weaken the asset leg, and no
+unverified dial exists to defend. The *trust* half is the real limit -- `upstream_tls_profile`
+replaces anchors on the three governed clients only, leaving the asset leg on the JVM default trust
+store, so an asset origin behind a private CA *fails closed* rather than succeeding unverified, and
+the deployment binds those anchors into the JVM trust store instead. Governing the JDK client would
+need an `SSLParameters` / `SSLContext` seam that ADR-0040 deliberately did not scope; the limit is
+stated in the operator documentation and in the model rather than left to be discovered.
 
 [#gw-07]
 === GW-07 -- Slowloris / connection & body-size exhaustion / decompression bombs
