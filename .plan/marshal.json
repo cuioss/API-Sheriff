@@ -106,15 +106,15 @@
           "review_bot_buffer_seconds": 180,
           "review_completion_poll_timeout_seconds": 600,
           "re_review_on_loopback": false,
-          "re_review_on_branch_cleanup": true,
           "re_review_await_timeout_seconds": 600,
           "re_review_on_timeout": "ask",
-          "review_rate_window_await": false,
+          "review_rate_window_await": true,
           "review_rate_window_timeout_seconds": 3600,
           "lane": "standard",
-          "required_bots": "coderabbit,pr-agent",
+          "required_bots": "coderabbit,cuioss-review-bot",
           "optional_bots": "sourcery",
-          "bot_lists_provenance": "answered"
+          "bot_lists_provenance": "answered",
+          "re_review_on_branch_cleanup": true
         },
         "default:sonar-roundtrip": {
           "touched_file_cleanup": "new_code_only",
@@ -269,7 +269,7 @@
     "pr_strategy": "compact",
     "pr_compact_max_changed_files": 150,
     "merge_queue_managed_externally": true,
-    "user_language": "auto"
+    "user_language": "en"
   },
   "providers": [
     {
@@ -349,7 +349,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.1585",
+    "provisioned_version": "0.1.1617",
     "config_seed_fingerprint": "cf572469"
   }
 }
