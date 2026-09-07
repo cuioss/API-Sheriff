@@ -592,6 +592,37 @@ class TokenValidatorProducerTest {
         }
 
         @Test
+        @DisplayName("with the flag false an UNTRUSTED JWKS chain is still refused — the relaxation is not a TLS disable")
+        void relaxedHostnameStillRefusesAnUntrustedChain() throws Exception {
+            // Arrange — the inverse fixture: its certificate NAMES the dialled address, so hostname
+            // matching cannot be what refuses this dial, and its root is never installed as an anchor.
+            // "Verification off" is the phrase operators reach for and is broader than what the key
+            // does; this is the leg that would refute that reading if the two mechanisms were coupled.
+            try (SanMismatchedJwksServer untrusted =
+                         SanMismatchedJwksServer.startUntrusted(InMemoryKeyMaterialHandler.createDefaultJwks())) {
+                IssuerConfig issuer = IssuerConfig.builder()
+                        .name("untrusted-chain")
+                        .issuer(holder.getIssuer())
+                        .jwks(IssuerConfig.Jwks.builder()
+                                .source("http")
+                                .url(untrusted.jwksUrl())
+                                .allowedEgressHosts(List.of(SanMismatchedJwksServer.dialledHost()))
+                                .build())
+                        .build();
+                TokenValidator relaxed = producerWith(new EgressTlsConfig(true, false, null), issuer,
+                        TestTlsConfigurationRegistry.empty()).gatewayTokenValidator();
+
+                // Act & Assert — chain trust is a separate mechanism and the flag does not reach it.
+                assertThrows(TokenValidationException.class,
+                        () -> relaxed.createAccessToken(AccessTokenRequest.of(holder.getRawToken())),
+                        "jwks_verify_hostname false must relax hostname matching ONLY — a JWKS endpoint "
+                                + "whose certificate does not chain to a trusted anchor must still be "
+                                + "refused, or the key is a general TLS disable rather than the narrow "
+                                + "relaxation it is documented as");
+            }
+        }
+
+        @Test
         @DisplayName("jwks_verify_hostname false collides with a per-issuer jwks.tls_profile and is refused at boot")
         void relaxedHostnameWithTlsProfileIsRefusedAtBoot() {
             // Arrange — an issuer naming a profile the deployment DOES define, so the refusal cannot be

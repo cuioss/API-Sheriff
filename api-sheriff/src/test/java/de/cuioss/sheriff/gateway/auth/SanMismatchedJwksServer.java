@@ -112,14 +112,16 @@ final class SanMismatchedJwksServer implements AutoCloseable {
 
     private final HttpsServer server;
     private final String jwksUrl;
+    private final boolean installedTrust;
     private final String previousTrustStore;
     private final String previousTrustStorePassword;
     private final String previousTrustStoreType;
 
-    private SanMismatchedJwksServer(HttpsServer server, String jwksUrl, String previousTrustStore,
-            String previousTrustStorePassword, String previousTrustStoreType) {
+    private SanMismatchedJwksServer(HttpsServer server, String jwksUrl, boolean installedTrust,
+            String previousTrustStore, String previousTrustStorePassword, String previousTrustStoreType) {
         this.server = server;
         this.jwksUrl = jwksUrl;
+        this.installedTrust = installedTrust;
         this.previousTrustStore = previousTrustStore;
         this.previousTrustStorePassword = previousTrustStorePassword;
         this.previousTrustStoreType = previousTrustStoreType;
@@ -160,8 +162,46 @@ final class SanMismatchedJwksServer implements AutoCloseable {
         System.setProperty(TRUST_STORE_PASSWORD_PROPERTY, new String(STORE_PASSWORD));
         System.setProperty(TRUST_STORE_TYPE_PROPERTY, PKCS12);
 
-        return new SanMismatchedJwksServer(server, jwksUrl, previousTrustStore,
+        return new SanMismatchedJwksServer(server, jwksUrl, true, previousTrustStore,
                 previousTrustStorePassword, previousTrustStoreType);
+    }
+
+    /**
+     * Starts a second listener whose chain is <em>not</em> trusted and whose certificate <em>does</em>
+     * name the dialled address — the exact inverse of {@link #start}, and the leg that falsifies
+     * "the knob is a general TLS disable".
+     * <p>
+     * The hostname is deliberately correct here, so hostname matching cannot be what refuses the dial.
+     * The only remaining defect is that this server's root is never installed as a trust anchor, which
+     * makes a refusal under {@code jwks_verify_hostname: false} attributable to certificate-chain
+     * validation and nothing else. Without this leg, a test suite proving only that the relaxed dial
+     * SUCCEEDS is equally consistent with the flag having disabled TLS verification wholesale.
+     * <p>
+     * It installs no trust properties and restores none, so it composes with a live {@link #start}
+     * instance rather than fighting it over the same JVM-global seam.
+     *
+     * @param jwksDocument the JWKS JSON to serve
+     * @return the running fixture; closing it stops the listener and touches no system property
+     * @throws Exception when the chain or the listener cannot be built
+     */
+    static SanMismatchedJwksServer startUntrusted(String jwksDocument) throws Exception {
+        HeldCertificate foreignRoot = new HeldCertificate.Builder()
+                .certificateAuthority(0)
+                .commonName("API Sheriff untrusted test root")
+                .duration(1, TimeUnit.HOURS)
+                .build();
+        // Names the dialled loopback address. okhttp emits an iPAddress SAN for a parsable address,
+        // which is the form an IP-literal dial is matched against — so this certificate would pass
+        // hostname verification and fails only on the anchor nobody installed.
+        HeldCertificate leaf = new HeldCertificate.Builder()
+                .signedBy(foreignRoot)
+                .commonName(LoopbackHost.ADDRESS)
+                .addSubjectAlternativeName(LoopbackHost.ADDRESS)
+                .duration(1, TimeUnit.HOURS)
+                .build();
+        HttpsServer server = startListener(serverContext(foreignRoot, leaf), jwksDocument);
+        String jwksUrl = "https://" + LoopbackHost.ADDRESS + ":" + server.getAddress().getPort() + JWKS_PATH;
+        return new SanMismatchedJwksServer(server, jwksUrl, false, null, null, null);
     }
 
     /**
@@ -185,9 +225,14 @@ final class SanMismatchedJwksServer implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
-        restore(TRUST_STORE_PROPERTY, previousTrustStore);
-        restore(TRUST_STORE_PASSWORD_PROPERTY, previousTrustStorePassword);
-        restore(TRUST_STORE_TYPE_PROPERTY, previousTrustStoreType);
+        // Only the instance that INSTALLED the trust properties restores them. An untrusted-chain
+        // instance never touched them, and clearing them here would tear down a still-live sibling's
+        // trust anchor — the JVM-global seam is shared, so ownership has to be explicit.
+        if (installedTrust) {
+            restore(TRUST_STORE_PROPERTY, previousTrustStore);
+            restore(TRUST_STORE_PASSWORD_PROPERTY, previousTrustStorePassword);
+            restore(TRUST_STORE_TYPE_PROPERTY, previousTrustStoreType);
+        }
     }
 
     private static void restore(String property, String previousValue) {
