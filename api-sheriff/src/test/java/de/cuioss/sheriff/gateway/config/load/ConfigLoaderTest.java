@@ -430,11 +430,40 @@ class ConfigLoaderTest {
 
         ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
 
-        // Binding only. No production code reads jwksVerifyHostname, so this settles that the key
-        // parses, validates and binds — never that the control it names is in force. PLAN-04 owns
-        // the reader and the behaviour test that proves it acts.
+        // Binding only, and deliberately still only that. This settles that the key parses,
+        // validates and binds — never that the control it names is in force. The behaviour half now
+        // exists and lives elsewhere: TokenValidatorProducerTest.JwksVerifyHostname dials a
+        // SAN-mismatched TLS server through the public producer path and proves the flag decides the
+        // outcome. Keeping the two apart is the point — a binding assertion that also claimed to
+        // prove the reader would be exactly the conflation
+        // doc/development/declared-limit-assertion-coverage.adoc warns about.
         assertEquals(new EgressTlsConfig(true, false, null), loaded.gateway().egressTls(),
                 "the JWKS flag binds by the same rules as its upstream peer");
+    }
+
+    @Test
+    void rejectsNonBooleanJwksVerifyHostname() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  jwks_verify_hostname: "no"
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        // The bundled schema must refuse it BEFORE bind. That ordering is the whole assertion: the
+        // record component is a primitive boolean, so a value that reached the deserializer would be
+        // coerced rather than rejected — "no" is a YAML 1.1 boolean and Jackson's asBoolean would be
+        // free to read it as false, silently relaxing hostname verification from a document the
+        // operator believes disables nothing. The JSON pointer is asserted by name rather than by
+        // the enclosing block alone, so a schema that refused the whole egress_tls object for an
+        // unrelated reason could not satisfy this.
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("jwks_verify_hostname")),
+                () -> "a non-boolean jwks_verify_hostname must be refused at schema validation, naming "
+                        + "the key's own pointer, got: " + exception.errors());
     }
 
     @Test

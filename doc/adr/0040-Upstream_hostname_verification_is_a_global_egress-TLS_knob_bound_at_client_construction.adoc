@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Hostname verification on proxy-path terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three Vert.x binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream; the asset-origin fetch is a fourth terminated-egress leg on a JDK HttpClient that the block deliberately does not govern (fail-safe on hostname, fail-closed on trust), and the declared jwks_verify_hostname key is bindable but has no production reader.
+// summary: Hostname verification on proxy-path terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three Vert.x binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream; the asset-origin fetch is a fourth terminated-egress leg on a JDK HttpClient that the block deliberately does not govern (fail-safe on hostname, fail-closed on trust), and the declared jwks_verify_hostname key is bound separately by ADR-0041 through the token-validation library's own verifyHostname passthrough.
 // tags: tls, egress, configuration-surface, secure-by-default, partial-relaxation, tls-trust, deployment-binding, blast-radius
 // affects: api-sheriff, integration-tests
 // supersedes:
@@ -99,7 +99,7 @@ applied it to the inbound one. Both remain in force and neither is superseded.
 ----
 egress_tls:
   upstream_verify_hostname: true      # bound at all three Vert.x egress client-construction sites
-  jwks_verify_hostname: true          # declared and bindable; no production reader
+  jwks_verify_hostname: true          # bound on the JWKS back-channel; see ADR-0041
   upstream_tls_profile: corporate-up  # logical name only; anchors supplied by the deployment
 ----
 
@@ -261,21 +261,33 @@ that ships only the relaxation therefore builds an incentive to misuse it.
 
 The two keys are one decision, not two, and they belong in the same block and the same release.
 
-=== The JWKS key is declared and bindable, and nothing reads it
+=== The JWKS key is declared here and bound elsewhere
 
 `jwks_verify_hostname` is declared in the schema and carried as a bound field on the configuration
-model, so a document naming it validates and boots. *No production code reads it.* It is not an
-available control and must not be described as one.
+model, so a document naming it validates and boots. This decision defines the name and its binding
+rules; it does not bind the key to behaviour, because the JWKS back-channel is not one of the three
+Vert.x clients this decision governs.
 
-The schema entry and the model field land together on purpose: the schema refuses unknown properties
-and the binder refuses unknown fields, so a key declared in only one of the two would validate and
-then refuse to boot -- a configuration the gateway advertises as valid and will not start on.
-Declaring both is what makes the reserved key harmless.
+*The key is an available control.* Its reader is the CDI producer that assembles the gateway's
+bearer-token validator, which passes the resolved value straight through to the token-validation
+library's own `verifyHostname(boolean)` builder method on every `http` JWKS source. That mechanism,
+its one refused combination with the per-issuer `jwks.tls_profile`, and the alternatives rejected
+along the way are
+link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]'s
+subject. Both decisions stay in force: this one owns the name and the block, that one owns the
+mechanism.
+
+The schema entry and the model field land together on purpose, and that reasoning is unchanged by the
+reader arriving: the schema refuses unknown properties and the binder refuses unknown fields, so a key
+declared in only one of the two would validate and then refuse to boot -- a configuration the gateway
+advertises as valid and will not start on. Declaring both is what made the key harmless while it was
+reserved, and is what keeps it bindable now.
 
 Under this project's own testing standard, a test asserting that a key parses and binds settles
-nothing about whether the control it names is in force. Binding coverage for this key is therefore a
-binding fact only, and no test or document claims the JWKS control is proven. *PLAN-04 owns both the
-production reader and the behaviour test that proves it acts.*
+nothing about whether the control it names is in force. That standard is why the two halves are kept
+apart rather than conflated: the configuration-loader test asserts binding only, and the behaviour
+half -- a dial against a server whose certificate does not name the dialled address, with a matched
+control, an untrusted-chain leg and a falsification check -- lives with the reader under ADR-0041.
 
 == Consequences
 
@@ -309,8 +321,11 @@ production reader and the behaviour test that proves it acts.*
 * A named-but-unbound profile is a hard boot failure, so every instance whose document names a
   profile must also load the binding for it. The failure is loud and names the key to set, but it is
   a coupling between two files.
-* The configuration surface carries a key nothing reads. It is a real cost, accepted so the outbound
-  vocabulary is defined once across both egress legs rather than twice with different names.
+* The configuration surface carried a key nothing read. That was a real cost, accepted so the outbound
+  vocabulary could be defined once across both egress legs rather than twice with different names --
+  and it has since been paid off: ADR-0041 landed the reader and the behaviour proof. The trade is
+  recorded rather than deleted, because the decision to name both keys up front was made while the
+  cost was live and is the reason the two names are peers today.
 * The block does not cover the asset-origin fetch, so "global" is true of the three Vert.x clients
   rather than of every https connection the gateway opens. An operator whose asset origin is behind a
   private CA cannot reach it through `upstream_tls_profile` and binds the anchors into the JVM trust
@@ -318,10 +333,13 @@ production reader and the behaviour test that proves it acts.*
 
 === Risks
 
-* *The reserved key is mistaken for an active control.* A key that parses, binds and appears in the
-  schema looks exactly like a working one. Mitigated by stating the absence of a reader in the schema
-  description, the model documentation, the operator documentation and this ADR, and by naming
-  PLAN-04 as the owner of both the reader and its proof.
+* *The reserved key is mistaken for an active control.* -- *Retired.* This risk existed only while
+  `jwks_verify_hostname` had no reader, and its mitigation was to say so in the four places the key
+  is described: the schema description, the model javadoc, the operator documentation and this ADR.
+  All four have been corrected rather than merely removed, because the failure mode a stale mitigation
+  produces is the exact inverse of the original risk -- a working control documented as inert, which
+  an operator would read as licence to ignore it. The entry is retired rather than inverted: "the key
+  might be mistaken for a control" is not a risk that has a true reading now that it *is* one.
 * *A future egress client is constructed without the setting.* The binding is enumerated per
   construction site rather than derived, so a further site added later would not inherit it. Mitigated
   by enumerating all three sites here and by asserting the bound value on each constructed client.
@@ -395,13 +413,14 @@ Declare only the key this decision binds, and name the JWKS one when its reader 
 
 Rejected because the request this decision answers is to define the outbound vocabulary once, covering
 both egress legs. Naming the second key later risks naming it differently, and the two keys' peerhood
--- the thing the prefixes exist to express -- is only visible when both are present. The cost is one
-declared key with no reader; the mitigation is stating that plainly everywhere the key appears rather
-than letting the surface imply otherwise.
+-- the thing the prefixes exist to express -- is only visible when both are present. The cost was one
+declared key with no reader, carried for exactly as long as it took ADR-0041 to land one; the
+mitigation while it was carried was stating that plainly everywhere the key appeared rather than
+letting the surface imply otherwise.
 
 === Declare the JWKS key in the schema only, without a model field
 
-Reserve the name in the schema so the vocabulary is fixed, without adding an unread field to the
+Reserve the name in the schema so the vocabulary is fixed, without adding a corresponding field to the
 configuration model.
 
 Rejected because it does not work here. The schema refuses unknown properties and the binder refuses
@@ -415,6 +434,10 @@ without its alternative, fail in one of those two directions.
 
 == References
 
+* link:0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
+  -- the mechanism that binds `jwks_verify_hostname`, the second of the two keys this decision named.
+  It amends nothing here and supersedes nothing: this decision owns the block and the vocabulary, that
+  one owns the JWKS leg's binding
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the neutral-name, deployment-bound-material boundary rule this decision applies to the upstream
   egress leg, and the trust-profile seam the egress resolver mirrors

@@ -101,7 +101,7 @@
         "jwks_verify_hostname": {
           "type": "boolean",
           "default": true,
-          "description": "Whether the JWKS back-channel verifies that the identity provider's certificate names the dialled host. DECLARED AND BINDABLE, BUT NO PRODUCTION CODE READS IT TODAY — this is not an available control, and a document setting it changes no behaviour. PLAN-04 owns both the reader and the behaviour test that proves it acts. An omitted key resolves to true, not to false."
+          "description": "Whether the JWKS back-channel verifies that the identity provider's certificate names the dialled host. Disabling it relaxes HOSTNAME MATCHING ONLY and never certificate-chain trust: an identity provider whose certificate does not chain to a trusted anchor is still refused. It governs every configured issuer's JWKS fetch and that leg only — the proxy, gRPC and WebSocket egress clients are governed separately by upstream_verify_hostname. It is MUTUALLY EXCLUSIVE with a per-issuer jwks.tls_profile: that profile supplies its own SSL context and the relaxation applies only to the default-trust-store context the JWKS client derives itself, so an issuer naming a profile while this key is false is refused at boot. Setting it to false logs ApiSheriff-120 once at startup. An omitted key resolves to true, not to false."
         },
         "upstream_tls_profile": {
           "type": "string",

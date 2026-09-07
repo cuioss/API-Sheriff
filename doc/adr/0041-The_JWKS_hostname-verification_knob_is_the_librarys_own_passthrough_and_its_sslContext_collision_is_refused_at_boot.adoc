@@ -1,0 +1,312 @@
+= ADR-0041: The JWKS hostname-verification knob is the library's own passthrough, and its sslContext collision is refused at boot
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Hostname verification on the JWKS back-channel is bound by passing egress_tls.jwks_verify_hostname straight through to the token-validation library's own verifyHostname(boolean) builder method rather than by fabricating a trust manager locally; because the library refuses verifyHostname(false) combined with a caller-supplied sslContext, and a per-issuer jwks.tls_profile supplies exactly such a context, the gateway refuses that one combination itself at boot with a CONFIG_INVALID naming both of its own keys and the issuer, ahead of the library's IllegalArgumentException; the knob relaxes hostname matching only, chain trust stays reachable through the ADR-0011 profile seam, and the two controls stay orthogonal per issuer.
+// tags: tls, egress, jwks, token-validation, configuration-surface, partial-relaxation, upstream-passthrough, fail-closed, boot-validation, mutual-exclusion
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+defined the outbound vocabulary for both egress legs at once and bound one of them. It named
+`jwks_verify_hostname` as `upstream_verify_hostname`'s peer, declared it in the schema and on the
+configuration model, and stated plainly that nothing read it. That is a reserved key, not a control:
+a document naming it validates and boots, and the setting applies to nothing.
+
+This decision binds it. The question it has to answer is not *whether* to bind it — ADR-0040 settled
+that — but *through which mechanism*, and the answer is forced by a property of the JWKS leg that the
+upstream leg does not have.
+
+*The JWKS back-channel is not one of the three Vert.x clients.* It is reached through the
+token-validation library, which builds a JDK `java.net.http.HttpClient` behind its own HTTP-handler
+abstraction. None of ADR-0040's three construction sites is involved, and none of its bindings
+reaches this leg. So the mechanism question is genuinely open rather than inherited.
+
+Three facts about that library settle it.
+
+*First: the library grew the passthrough.* Its JWKS loader-config builder and its well-known
+discovery-config builder each carry a `verifyHostname(boolean)` method. Neither builder carried one
+in the previous release; both do now. The setting is forwarded to the shared HTTP-handler builder,
+which is where the relaxation is actually implemented.
+
+*Second: the relaxation is implemented by substituting a trust manager on a context the handler
+derives itself.* With the flag off, the handler builds an SSL context from
+`TrustManagerFactory.init((KeyStore) null)` — the JVM default trust store — and wraps each resulting
+`X509ExtendedTrustManager` in a delegating one that forwards chain validation unchanged while
+dropping the socket- and engine-aware overloads that perform the identity check. Certificate-chain
+validation is untouched; the endpoint-identity comparison is the only thing removed. This is a
+*partial* relaxation in the precise sense
+link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029]
+and ADR-0040 use the term.
+
+*Third — and this is the constraint everything else follows from: the library refuses the relaxation
+on a caller-supplied context.* Both builders raise `IllegalArgumentException` from `build()` when
+`verifyHostname(false)` is combined with `sslContext(...)`, and both raise it ahead of the
+endpoint-source check, so it is the first thing a caller hears about. The reasoning is sound and is
+the direct consequence of the second fact: the relaxation swaps the trust manager of a context the
+handler *derived*, so there is nothing to relax inside a context the caller built. Honouring the flag
+on a caller-supplied context would mean silently rebuilding it, which is worse than refusing.
+
+That refusal collides with an existing gateway feature. Under
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+an issuer may name a per-issuer `jwks.tls_profile`, and the gateway resolves that logical name to a
+concrete `SSLContext` which it hands to exactly the builder method the library refuses to combine
+with the relaxation. So the two controls — a global hostname flag and a per-issuer trust profile —
+are mutually exclusive per issuer, by a property of the library rather than by anything this gateway
+chose.
+
+== Decision
+
+*`egress_tls.jwks_verify_hostname` is bound by passing it straight through to the token-validation
+library's own `verifyHostname(boolean)` builder method, on every `http` JWKS source, on both the true
+and the false path. The one combination the library refuses — the relaxation together with a
+per-issuer `jwks.tls_profile` — is refused by the gateway first, at boot, with a `CONFIG_INVALID`
+naming both of its own keys and the offending issuer.*
+
+=== The passthrough is the mechanism, and it is called unconditionally
+
+The producer resolves the flag once, when the bean is constructed, and passes the resolved value to
+`verifyHostname` for every `http` JWKS source it builds. Resolving once rather than per issuer
+matches the key's scope: it is gateway-global and has no per-issuer override, so a per-issuer lookup
+would only invite one to be invented.
+
+Passing the value on the *true* path as well — rather than calling the method only when relaxing — is
+what makes the key's effect independent of the library's own default. A gateway that called nothing
+in the default case would silently follow an upstream default change, which is precisely the drift
+link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+requires be adopted deliberately and visibly rather than inherited.
+
+=== The collision is refused by the gateway, in the gateway's own vocabulary
+
+An issuer that names `jwks.tls_profile` while `egress_tls.jwks_verify_hostname` is false fails boot
+with a `CONFIG_INVALID` naming both keys, the profile and the issuer.
+
+The refusal is the gateway's, not the library's, and the difference is the whole point of this
+section. Left to the library, the operator gets an `IllegalArgumentException` from a builder they
+have never heard of, phrased in terms of `sslContext(...)` and `verifyHostname(false)` — two symbols
+that appear nowhere in `gateway.yaml`. That violates the boundary rule ADR-0011 states and ADR-0040
+reapplies: *config neutral, material deployment-supplied, diagnostics concrete.* Diagnostics naming
+concrete runtime keys are correct; diagnostics naming a third-party builder's method signature are
+not, because the operator cannot act on them. The gateway therefore checks the combination itself,
+before touching the builder, and reports it in the vocabulary the operator wrote.
+
+It is a *refusal* rather than a warning, and that asymmetry against ADR-0040's warn-never-refuse
+posture is deliberate. A broad trusted-proxy range, a plain-HTTP management port and a disabled
+upstream hostname check are all legitimate deployments that must merely be visible. This is not a
+deployment at all — it is a configuration with no coherent meaning, which the library will reject one
+layer down whatever the gateway does. The only choice is which error the operator sees.
+
+=== The two controls stay orthogonal, and the seam stays intact
+
+`jwks.tls_profile` answers chain trust; `jwks_verify_hostname` answers hostname matching. They remain
+two separate questions with two separate surfaces, exactly as ADR-0040 separated them for the
+upstream leg — and the mutual exclusion is a per-issuer constraint on combining them, never a merge
+of the two into one control.
+
+Nothing about ADR-0011's neutral-name seam changes. The trust-profile resolver keeps its four
+fail-closed refusals byte for byte: an omitted profile is never resolved, a named-but-unbound profile
+fails boot, a trust-all profile is refused ahead of the anchor-free check, and an anchor-free profile
+is refused. The new knob relaxes hostname matching and reaches none of them. An issuer that needs
+private-CA anchors keeps naming a profile and keeps verifying hostnames; an issuer that needs the
+hostname relaxation reaches its anchors through the JVM default trust store the container is built
+with.
+
+=== The scope claim is proven by a dial, not asserted
+
+ADR-0040 established that a "hostname matching only" claim is worth exactly as much as the dial that
+would refute it. The same standard applies here, at unit level, against a local HTTPS server:
+
+* A *matched control* runs the same server, the same certificate, the same issuer and the same key
+  material through the public producer path twice, differing only in the flag. The default posture
+  refuses the fetch; the relaxed posture completes it and validates a real token. Chain trust is made
+  to succeed on both legs — the fixture's own root is installed as a trust anchor — so hostname
+  matching is the single remaining discriminator.
+* An *omitted-block leg* proves that a document declaring no `egress_tls` at all resolves to
+  verification on, rather than to the boolean type default.
+* An *untrusted-chain leg* dials a second server whose certificate correctly names the dialled
+  address but whose root is not an anchor, with the flag *off*. It must still be refused. This is the
+  leg that would refute the scope claim if the two mechanisms were coupled, and it is the direct
+  analogue of ADR-0040's third integration leg.
+* A *falsification check* confirms the tests are not vacuous: deleting the `verifyHostname` call from
+  the producer turns the relaxed leg of the matched controls red.
+
+The collision refusal carries its own matched control — the same false flag without a profile must
+assemble cleanly — so the boot failure is attributable to the combination rather than to the flag.
+
+=== What this decision does not decide
+
+The library's discovery-config builder carries the same `verifyHostname` passthrough, so a
+well-known-discovery JWKS source could be governed by the same key. The gateway's issuer model has no
+discovery source today, so there is nothing to bind. This is recorded as the standing risk below
+rather than pre-emptively bound.
+
+The snapshot repository the build now declares is a *consequence* of depending on a release of the
+token-validation library that carries the passthrough, not a decision this record makes. The
+passthrough exists only in an unreleased version, Maven Central serves no snapshots, and a clean
+build agent with an empty local cache therefore cannot resolve the BOM without the declaration. It is
+removable the moment the dependency names a release version, and the declaration says so in place.
+Pinning a single timestamped snapshot build was considered as a way to avoid the declaration and
+rejected: a timestamped coordinate is still a snapshot coordinate served from the same repository, so
+it does not make the artifact resolvable without it — it only exchanges a reproducibility argument
+for one that does not hold.
+
+== Consequences
+
+=== Positive
+
+* The declared key becomes an available control, and its behaviour is proven by a dial rather than by
+  a parse assertion — closing the gap ADR-0040 opened deliberately and named an owner for.
+* No TLS code is written. The relaxation is the library's own, on the library's own derived context,
+  so this gateway holds no trust-manager implementation of its own and inherits any correction the
+  library makes.
+* The two JWKS controls stay orthogonal, so ADR-0011's neutral-name seam and its four fail-closed
+  refusals are untouched, and an operator's `jwks.tls_profile` keeps meaning exactly what it meant.
+* The one incoherent combination fails at boot rather than at the first bearer request, and fails
+  naming keys the operator actually wrote.
+* Calling the passthrough on both paths makes the gateway's posture independent of the library's
+  default, so an upstream default change surfaces as a deliberate adoption rather than as silent
+  drift.
+
+=== Negative
+
+* *The flag is global while the profile is per issuer, and the mutual exclusion is felt at the finer
+  grain.* A gateway with several issuers, one of which needs the hostname relaxation, must turn the
+  flag off globally — and every *other* issuer that names a `jwks.tls_profile` then fails boot. The
+  two controls are not at the same scope, so the collision is not confined to the issuer that
+  motivated the relaxation. There is no per-issuer hostname override to reach for, because ADR-0040
+  placed the key at block scope where the runtime could honour it.
+* *The refusal names two keys at two different scopes.* An operator reads a message about a global
+  block key and a per-issuer key in one breath, and has to understand both surfaces to act on it.
+  Naming only one would be worse — the collision is between them — but the message is unavoidably
+  more demanding than a single-key error.
+* The gateway carries a check whose only reason to exist is a constraint one layer down. If the
+  library ever lifts the restriction, this refusal becomes a gateway-imposed limit rather than a
+  translated one, and would have to be removed deliberately.
+* The build depends on an unreleased version of the token-validation library and declares a snapshot
+  repository to resolve it. Both are temporary and both are removable together, but until then the
+  build reaches a repository whose coordinates are not immutable.
+
+=== Risks
+
+* *The relaxation is read as a general TLS disable.* "Verification off" is the phrase operators
+  reach for, and it is broader than what the key does. Mitigated by stating the hostname-matching-only
+  scope wherever the key appears — schema description, model javadoc, operator documentation and the
+  boot warning — by a `WARN` that reports the relaxed posture once per boot rather than letting it
+  reach production silently, and by the untrusted-chain leg above, which fails the dial with the flag
+  off and would go green if the claim were false.
+* *The discovery branch is ungoverned.* The library's discovery-config builder carries the same
+  passthrough and this decision binds only the direct JWKS source. Should a discovery source be added
+  to the issuer model without binding the flag, the surface would read as covering the JWKS
+  back-channel while one branch of it silently kept the default — the partial-binding failure class
+  link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
+  exists to prevent, and the exact shape ADR-0040 recorded for a future egress client. Mitigated by
+  naming the branch here so adding a discovery source is a decision to extend this binding rather
+  than an omission to discover later.
+* *The mutual exclusion is discovered at boot rather than at authoring time.* The schema cannot
+  express a constraint between a global block key and a per-issuer one, so a document carrying the
+  collision validates and then fails to start. Mitigated by the refusal being loud, naming both keys
+  and the issuer, and by the constraint being stated in the schema description of the key and in the
+  operator documentation.
+* *An operator relaxes the hostname check when chain trust was the real problem.* This is ADR-0040's
+  manufactured-misuse risk on the JWKS leg. Mitigated by `jwks.tls_profile` already existing as the
+  chain-trust answer, and by the collision refusal, which makes reaching for the wrong lever *while*
+  the right one is configured a boot failure rather than a silent downgrade.
+
+== Alternatives Considered
+
+=== Hand-roll a delegating `X509ExtendedTrustManager` in the gateway
+
+Build the relaxation locally: derive a context, wrap each trust manager in a delegating
+`X509ExtendedTrustManager` that forwards chain validation and drops the identity check, and hand the
+result to `sslContext(...)`. This is the mechanism the library uses internally, so it demonstrably
+works, and it would sidestep the builder guard entirely because the gateway would be supplying a
+context rather than setting the flag.
+
+Rejected, and the reason it *would* work is the reason it must not be done. Passing a caller-built
+context is exactly what the guard exists to refuse, so this alternative is not a different mechanism —
+it is a way of defeating a safety check by satisfying its letter. The gateway would then own a
+security-critical trust-manager implementation whose correctness is invisible in review (the defect
+mode is a forwarded overload that silently validates nothing), which it would have to keep correct
+against every future JDK and library change, and which would diverge from the library's own version
+the moment that one is corrected. Writing TLS verification code to avoid calling a method that does
+it for you is the wrong trade in a security gateway.
+
+=== Derive a relaxed `SSLContext` from the named profile's trust material
+
+Answer the collision instead of refusing it: when an issuer names a `jwks.tls_profile` *and* the flag
+is false, resolve the profile's anchors, build a context from them, wrap its trust managers to drop
+the identity check, and pass that. Both controls would then apply to the same issuer and the mutual
+exclusion would disappear.
+
+Rejected on the same grounds as the alternative above, plus one of its own. It is the same
+hand-rolled trust manager, so it carries the same ownership of security-critical code — and it also
+makes the gateway's behaviour *diverge from the library's contract* rather than merely bypass a
+check. Two issuers configured identically would then verify hostnames differently depending on which
+code path built their context, which is a worse property than the honest refusal. The combination is
+genuinely rare — it requires an IdP that both presents a private-CA certificate and is reached at an
+address that certificate does not name — and the correct answer for that deployment is to fix the
+certificate or the name, not to relax two independent controls at once.
+
+=== Petition upstream to lift the guard
+
+Ask the token-validation library to allow `verifyHostname(false)` together with a caller-supplied
+`sslContext`, relaxing whatever context it is given.
+
+Rejected because the guard is correct and this gateway should not be asking for it to be weakened.
+The library cannot relax a context it did not build without rebuilding it — silently discarding the
+caller's key managers, protocols and parameters — and a library that quietly reconstructs a
+caller-supplied `SSLContext` is a worse library. ADR-0022's posture is that an upstream
+security-hardening decision is adopted and documented rather than argued down or patched around; the
+same posture applies to a guard as to a tightened default. Requesting the change would also make this
+gateway's correctness depend on a third party accepting a weakening, which is a poor place to put a
+security property.
+
+The unifying principle across these alternatives: a relaxation that the library implements on a
+context it controls stays the library's to implement. Every rejected option moves security-critical
+TLS code into this gateway in order to widen the relaxation's reach, and the collision refusal is the
+smaller price.
+
+== References
+
+* link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+  -- the decision that defined the `egress_tls` block and both key names, bound the upstream leg, and
+  left this key declared with no reader. It stays in force and is amended in place rather than
+  superseded
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the neutral-name seam that owns `jwks.tls_profile`, whose resolver and four fail-closed refusals
+  this decision leaves untouched, and whose config-neutral / diagnostics-concrete boundary rule is why
+  the collision is reported in the gateway's own vocabulary
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+  -- the posture behind calling the passthrough on both paths, and behind adopting the builder guard
+  rather than petitioning it away
+* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
+  -- the partial-binding failure class the ungoverned discovery branch would fall into
+* link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029]
+  -- the partial-relaxation pattern this knob repeats on the JWKS leg
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
+  -- the boundary posture toward the same library's extension, whose unqualified beans are excluded
+  rather than configured; this decision consumes that library's builder API on the same terms
+* link:../configuration.adoc[Configuration reference] -- the `egress_tls.jwks_verify_hostname` field
+  contract, the legitimate topologies for the relaxation, and the collision with `jwks.tls_profile`
+* link:../security-threat-model.adoc[Security threat model] -- the JWKS back-channel entries this key
+  governs
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] -- the
+  deletion discriminator that makes a declared-but-unread key a silent security no-op, and the reason
+  the binding assertion and the behaviour assertion are kept separate

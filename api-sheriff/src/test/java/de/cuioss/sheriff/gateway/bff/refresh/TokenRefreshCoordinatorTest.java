@@ -114,7 +114,18 @@ class TokenRefreshCoordinatorTest {
         Map<String, ClaimValue> claims = new HashMap<>();
         claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString("sub-1"));
         AccessTokenContent rotatedAccess = new AccessTokenContent(claims, ROTATED_ACCESS);
-        return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true);
+        // token-sheriff 0.9.5 widened RotationResult with grantedScope + scopeDelta. Both are set to
+        // the "the IdP declared no scope on the refresh response" pair here — a null grantedScope
+        // (the component is nullable; only scopeDelta is requireNonNull) with UNDECLARED — because
+        // that is the neutral value for THESE tests: every case below exercises refresh scheduling,
+        // single-flight coordination and session rebinding, none of which reads either component.
+        // Picking EQUAL instead would assert a scope comparison the fixture never performs.
+        // NOT adopted deliberately, and recorded rather than implied: nothing in the gateway reads
+        // scopeDelta yet, so a NARROWED or BROADENED scope on refresh is currently unobserved. That
+        // is a real signal this bump made available and a behaviour change well outside this plan's
+        // scope (JWKS hostname verification); it needs its own plan and its own assertions.
+        return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true,
+                null, RotationResult.ScopeDelta.UNDECLARED);
     }
 
     private static void awaitRelease(CountDownLatch latch) {
