@@ -35,6 +35,7 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -123,7 +124,8 @@ class ReservedBodyCeilingTest {
 
         GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert());
+                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                EgressTrustProfiles.unconsulted());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

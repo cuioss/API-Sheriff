@@ -340,7 +340,7 @@ class SheriffMetricsTest {
                 @Nullable TokenValidationConfig tokenValidation, @Nullable OidcConfig oidc) {
             return new GatewayConfig(1, metadata, null, null, null,
                     null, null, null, null, null, null, tokenValidation, oidc,
-                    null);
+                    null, null);
         }
     }
 

@@ -55,6 +55,10 @@ import org.jspecify.annotations.Nullable;
  * @param oidc             the confidential-client settings, {@code null} when omitted
  * @param edgeHardening    the admission-budget settings ({@code admission_cap} and the WebSocket
  *                         relay sub-budget), {@code null} when omitted — the documented defaults then apply
+ * @param egressTls        the global outbound-TLS settings — upstream hostname verification and the
+ *                         upstream trust-profile name (ADR-0040), {@code null} when omitted so
+ *                         {@link EgressTlsConfig#defaults()} applies. Disjoint from {@code tls},
+ *                         which is the server-side surface (ADR-0025)
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -74,7 +78,8 @@ Map<String, AnchorConfig> anchors,
 @Nullable ForwardedConfig forwarded,
 @Nullable TokenValidationConfig tokenValidation,
 @Nullable OidcConfig oidc,
-@Nullable EdgeHardeningConfig edgeHardening) {
+@Nullable EdgeHardeningConfig edgeHardening,
+@Nullable EgressTlsConfig egressTls) {
 
     /**
      * Canonical constructor defensively copying {@code allowedMethods} and

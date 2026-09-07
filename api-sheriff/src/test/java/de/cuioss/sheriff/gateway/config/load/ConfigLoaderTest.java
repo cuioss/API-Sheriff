@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.load;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -37,6 +38,7 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -372,6 +374,85 @@ class ConfigLoaderTest {
                         .anyMatch(error -> error.pointer().contains("tls_profile")),
                 () -> "expected a schema violation for a non-string tls_profile, got: "
                         + exception.errors());
+    }
+
+    @Test
+    void omittedEgressTlsBlockBindsNullAndResolvesToVerificationOn() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertAll("omitted egress_tls",
+                () -> assertNull(loaded.gateway().egressTls(),
+                        "an omitted block binds to null so the documented defaults apply"),
+                () -> assertEquals(new EgressTlsConfig(true, true, null), EgressTlsConfig.defaults(),
+                        "the block an omitted egress_tls resolves to keeps both hostname-verification "
+                                + "flags on and names no trust profile"));
+    }
+
+    @Test
+    void egressTlsBlockNamingOnlyTheTrustProfileKeepsBothFlagsTrue() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  upstream_tls_profile: corporate-up
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(new EgressTlsConfig(true, true, "corporate-up"), loaded.gateway().egressTls(),
+                "a present block that names no flag must leave both flags on — Jackson's own binding "
+                        + "would resolve an absent boolean to false and silently disable hostname "
+                        + "verification from a document that never mentions it");
+    }
+
+    @Test
+    void bindsUpstreamVerifyHostnameFalse() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  upstream_verify_hostname: false
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        assertEquals(new EgressTlsConfig(false, true, null), loaded.gateway().egressTls(),
+                "an explicit false binds false, and neither sibling key is disturbed by it");
+    }
+
+    @Test
+    void bindsJwksVerifyHostnameFalse() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  jwks_verify_hostname: false
+                """);
+
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+
+        // Binding only. No production code reads jwksVerifyHostname, so this settles that the key
+        // parses, validates and binds — never that the control it names is in force. PLAN-04 owns
+        // the reader and the behaviour test that proves it acts.
+        assertEquals(new EgressTlsConfig(true, false, null), loaded.gateway().egressTls(),
+                "the JWKS flag binds by the same rules as its upstream peer");
+    }
+
+    @Test
+    void rejectsUnknownKeyInsideEgressTls() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                egress_tls:
+                  verify_hostname: false
+                """);
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                && error.pointer().contains("egress_tls")),
+                () -> "an unprefixed verify_hostname is a plausible operator abbreviation and must be "
+                        + "refused rather than silently ignored, got: " + exception.errors());
     }
 
     @Test

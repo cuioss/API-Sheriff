@@ -1,0 +1,440 @@
+= ADR-0040: Upstream hostname verification is a global egress-TLS knob bound at client construction
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Hostname verification on proxy-path terminated egress is a global egress_tls block rather than a server-TLS key or a per-route one, because the runtime fixes the setting at client construction and one of the three Vert.x binding sites is the edge-wide WebSocket client; the knob relaxes hostname matching only and never certificate-chain trust, so a deployment-bound upstream_tls_profile ships alongside it as the correct answer to a private-CA upstream; the asset-origin fetch is a fourth terminated-egress leg on a JDK HttpClient that the block deliberately does not govern (fail-safe on hostname, fail-closed on trust), and the declared jwks_verify_hostname key is bindable but has no production reader.
+// tags: tls, egress, configuration-surface, secure-by-default, partial-relaxation, tls-trust, deployment-binding, blast-radius
+// affects: api-sheriff, integration-tests
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Proposed
+
+== Context
+
+A gateway that terminates TLS on the way out has to be told which upstream certificates it will
+accept. Two independent questions hide inside that sentence, and conflating them is the failure this
+decision exists to prevent:
+
+* *Does the certificate chain to an anchor I trust?* -- certificate-chain validation, answered by the
+  trust anchors the client holds.
+* *Does the certificate name the host I dialled?* -- hostname matching, answered by comparing the
+  dialled name against the certificate's subject alternative names.
+
+Both are on by default and both should stay on in every deployment that can satisfy them. But a
+gateway is routinely placed next to upstreams that can satisfy the first and not the second: an
+internal service reachable only by a container name, a cluster DNS name, or an address its
+certificate was never issued for. There is no configuration surface for either question today, so
+such a deployment has no answer at all.
+
+Three structural facts settle the shape of the surface before any naming question arises.
+
+*First: the two questions are separately implemented, and relaxing one cannot relax the other.* On
+the runtime this gateway is built on, the client-side hostname-verification flag is not a
+verification switch at all -- it is a mapping onto an algorithm name. `setVerifyHost(false)` becomes
+an empty `hostnameVerificationAlgorithm` string, and an empty algorithm string causes exactly one
+thing to happen further down: the SSL engine's parameters are configured *without* a call to
+`setEndpointIdentificationAlgorithm`. That single omitted call is the entire scope of the flag.
+Certificate-chain trust is reached through wholly separate fields -- a `trustAll` flag and a
+`trustOptions` carrier holding the anchors -- and the hostname flag never touches the
+`X509TrustManager`. So the relaxation is a *partial* one in the precise sense
+link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029]
+and
+link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]
+use the term: it turns off one named leg and leaves every other leg standing.
+
+*Second: the setting is fixed at client construction and is unreachable from a request.* The
+per-request option types the gateway already uses to carry the upstream host, port, TLS flag and URI
+declare no hostname-verification field and no SSL-options field; neither does the WebSocket connect
+options type that extends them. The flag exists on exactly two option types in the runtime -- the
+HTTP client options and the WebSocket client options -- and both are consumed once, when the client
+is built. There is therefore no per-request override to expose, and any configuration surface scoped
+more narrowly than a client is a surface the runtime cannot honour.
+
+*Third: one of the clients is edge-wide.* Proxy-path terminated egress leaves this gateway through
+three Vert.x construction sites: the default HTTP client, the forced-HTTP/2 HTTP client that gRPC
+routes require, and a single WebSocket client built once for the whole edge because the dialer
+carries no per-route state. The first two are per upstream-target tuple; the third is one instance
+for the entire gateway. A setting that must reach all three cannot be scoped per route without either
+meaning nothing on the WebSocket leg or forcing one WebSocket client per route. (The asset-origin
+fetch is a fourth terminated-egress leg on a JDK client and is deliberately out of this decision's
+scope -- see the decision below.)
+
+Together these facts make the placement question decidable rather than a matter of taste, and they
+also make a second gap visible. The gateway has no way to tell its egress clients which anchors to
+trust: no upstream truststore surface exists, and nothing sets a trust-all flag anywhere. An operator
+whose internal upstream presents a private-CA certificate is failing chain validation, not hostname
+matching -- and once a hostname knob ships, that knob is the only lever they can reach. It will not
+fix their problem, and reaching for it leaves them less safe than before they tried.
+
+== Decision
+
+*Egress TLS policy lives in a new global `egress_tls` block in `gateway.yaml`, bound once at each of
+the three Vert.x client-construction sites -- and at those, not at the asset-origin JDK client.
+`upstream_verify_hostname` relaxes hostname matching only and never certificate-chain trust;
+`upstream_tls_profile` is the deployment-bound answer to a chain-trust problem and ships in the same
+release.*
+
+This is
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]'s
+neutral-name ruling applied to the outbound direction, as
+link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
+applied it to the inbound one. Both remain in force and neither is superseded.
+
+=== A new global block, named for its direction
+
+[source,yaml]
+----
+egress_tls:
+  upstream_verify_hostname: true      # bound at all three Vert.x egress client-construction sites
+  jwks_verify_hostname: true          # declared and bindable; no production reader
+  upstream_tls_profile: corporate-up  # logical name only; anchors supplied by the deployment
+----
+
+The block is global because that is the only scope the runtime can honour, and it is directional
+because egress and ingress are opposite concerns that must not share a block. `tls` is the
+server-TLS surface ADR-0025 classifies; `egress_tls` is its outbound counterpart, and the two are
+disjoint by construction.
+
+Every key carries a surface prefix, and the asymmetry is deliberate rather than an oversight:
+
+* `upstream_verify_hostname` and `jwks_verify_hostname` are *peers*, not a general rule and an
+  exception. A bare `verify_hostname` beside a prefixed `jwks_verify_hostname` would read as "the
+  general one, plus the JWKS special case", which is the wrong model -- they are two independent
+  egress legs with two independent settings.
+* `upstream_tls_profile` is deliberately not `tls_profile`. A per-issuer `tls_profile` already exists
+  on the JWKS surface under ADR-0011, and an unprefixed name here would invite the reading that it
+  also covers the JWKS back-channel. It does not. The prefix closes that reading at the name.
+
+=== An omitted key resolves to the secure value, not to the type default
+
+A boolean bound by the configuration mapper's ordinary rules resolves to `false` when its key is
+absent. That would mean an operator writing a block naming only the trust profile silently gets
+hostname verification *off*, from a document that never mentions it -- a security control disabled by
+a key nobody wrote. A dedicated deserializer therefore resolves each absent flag to `true`, so an
+omitted block and a present-but-partial block both leave verification on. The gateway already solves
+this problem once for the upstream-defaults block and the same mechanism is reused rather than
+re-derived.
+
+This is what makes the surface secure-by-default in the sense the threat model requires, and it is
+the difference between a configuration key and a configuration hazard.
+
+=== The setting binds at three Vert.x client sites
+
+[cols="1,3", options="header"]
+|===
+| Construction site | Why it is in the set
+
+| The default HTTP client
+| Carries every terminated proxy dial that is not gRPC.
+
+| The forced-HTTP/2 HTTP client
+| gRPC routes require HTTP/2 end to end and get their own client; it is a separate construction
+  expression and would otherwise keep the hardcoded default.
+
+| The edge-wide WebSocket client
+| WebSocket relays do not dial through the route's HTTP client. One client serves the whole edge, and
+  its own options type carries the same flag on the same code path. Left unbound, every `wss://`
+  relay would silently keep default verification while the operator believed the knob applied
+  gateway-wide.
+|===
+
+The two per-request seams -- the request options the dispatch path builds and the connect options the
+WebSocket relay builds -- are *not* in the set and take no edit. Neither type declares the field.
+This is a type-declaration fact, not a scoping choice: there is no per-request hostname-verification
+override to expose, so the surface cannot offer one.
+
+==== The asset-origin leg is a fourth terminated-egress leg, and is out of scope
+
+The three sites above are the three *Vert.x* clients, and that is the whole of what this block
+governs. It is not the whole of the gateway's terminated egress. An asset route with an `https`
+origin is fetched by `UpstreamAssetSource.httpFetcher`, which builds a JDK
+`java.net.http.HttpClient` -- a fourth terminated-egress TLS leg on the JVM default `SSLContext`.
+
+It is excluded deliberately rather than overlooked. The JDK builder declares neither of the two
+settings: hostname verification there is governed by `SSLParameters.setEndpointIdentificationAlgorithm`
+on a client-supplied `SSLContext`, and trust by that context's `TrustManager`. Binding the block to
+that leg is a different seam from the two Vert.x options types, and it is not this decision's change.
+
+The consequence is asymmetric, and stating which way it cuts is the point:
+
+* *Hostname verification is fail-safe there.* The JDK client verifies the name whatever
+  `upstream_verify_hostname` says. Turning the key off therefore cannot weaken the asset leg -- the
+  relaxation is narrower than the block's name implies, never wider.
+* *Trust is the real gap.* `upstream_tls_profile` replaces anchors on the three governed clients and
+  leaves the asset leg on the JVM default trust store. An operator whose asset origin is behind a
+  private CA finds that fetch *failing closed*, not silently insecure, and binds the anchors into the
+  JVM trust store the container runs with.
+
+A future decision may bring the asset leg under the block; until one does, the limit is stated in the
+operator documentation, in the model's javadoc, in the threat model's GW-06 entry and here, rather
+than being implied away by the word "global".
+
+Enumerating all three sites in one decision is the point. A knob bound at two of three is the
+partial-binding defect
+link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
+exists to prevent on the inbound side, and it fails in the dangerous direction: the surface reads as
+gateway-wide while one leg silently ignores it.
+
+=== The knob relaxes hostname matching only
+
+Disabling `upstream_verify_hostname` turns off the comparison between the dialled name and the
+certificate's names. It does *not* turn off certificate-chain validation, does not accept a
+self-signed certificate, and does not accept a certificate issued by an untrusted authority. Chain
+trust is explicitly out of the knob's scope, and an upstream whose certificate does not chain to a
+trusted anchor is still refused with the knob off.
+
+The knob also cannot affect passthrough. A connection relayed opaquely at L4 by the SNI front
+listener of
+link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+is never decrypted and its certificate is never inspected by this gateway, so there is nothing for a
+verification setting to govern. The scope is terminated egress, and that is a statement of what the
+setting *can* mean rather than a limitation more code could lift.
+
+Because the scope claim is the whole security argument, it is proven by a real handshake rather than
+asserted: the integration stack carries a matched pair of gateway instances differing in exactly this
+one boolean, plus a third leg that dials an untrusted upstream with the knob *off* and must still
+fail. That third leg is the dial that would refute this section if the two mechanisms were coupled.
+
+=== The trust profile is the deployment-bound answer, on ADR-0011's seam
+
+`upstream_tls_profile` names a logical trust profile in the gateway's own vocabulary and carries no
+material. A single resolver maps that name onto the concrete trust anchors the runtime holds and
+hands the resulting trust options to the egress clients -- the egress sibling of the JWKS trust
+resolver, on the identical boundary rule: *config neutral, material deployment-supplied, diagnostics
+concrete.* No path, password or anchor appears in `gateway.yaml` or its schema.
+
+The resolver's posture is fail-closed in four distinct ways, and the ordering of the middle two is
+load-bearing:
+
+[cols="1,3", options="header"]
+|===
+| Condition | Behaviour
+
+| The key is omitted
+| The resolver is never consulted, no trust options are set, and the clients keep the JVM default
+  trust store -- byte-for-byte today's behaviour.
+
+| Named, but the deployment defines no such profile
+| Boot fails, with a message naming the concrete deployment key to set. Never a silent fallback to
+  default trust.
+
+| Named, and the profile is configured to trust everything
+| Refused -- and refused *ahead of* the anchor-free check below, because a trust-everything profile
+  does carry trust options and would otherwise pass that check and yield a client accepting any
+  certificate.
+
+| Named, but the profile carries no trust material
+| Refused. It would verify against the JVM default store rather than against the anchors the name
+  promises, which is not what the operator asked for.
+|===
+
+The resolver returns the runtime's own trust-options type rather than converting to a generic one,
+because the egress client options consume that type directly and a conversion layer would buy
+nothing.
+
+*A named profile replaces the client's anchors; it does not add to them.* That is the correct
+semantic for a named profile and it is stated plainly wherever the key is documented, because it
+surprises people: an operator who names a profile holding only their private CA stops trusting public
+certificate authorities on the upstream leg. The blast radius is the whole terminated-egress surface,
+not one route.
+
+=== The relaxation and the trust knob ship together, deliberately
+
+Shipping `upstream_verify_hostname` without `upstream_tls_profile` would leave the relaxation as the
+only reachable answer to a private-CA upstream. It is the wrong answer -- a PKIX path-building failure
+is not a name mismatch, and turning off hostname matching does not fix it -- so the operator ends up
+having disabled a control that was not their problem and still not reaching their upstream. A gateway
+that ships only the relaxation therefore builds an incentive to misuse it.
+
+The two keys are one decision, not two, and they belong in the same block and the same release.
+
+=== The JWKS key is declared and bindable, and nothing reads it
+
+`jwks_verify_hostname` is declared in the schema and carried as a bound field on the configuration
+model, so a document naming it validates and boots. *No production code reads it.* It is not an
+available control and must not be described as one.
+
+The schema entry and the model field land together on purpose: the schema refuses unknown properties
+and the binder refuses unknown fields, so a key declared in only one of the two would validate and
+then refuse to boot -- a configuration the gateway advertises as valid and will not start on.
+Declaring both is what makes the reserved key harmless.
+
+Under this project's own testing standard, a test asserting that a key parses and binds settles
+nothing about whether the control it names is in force. Binding coverage for this key is therefore a
+binding fact only, and no test or document claims the JWKS control is proven. *PLAN-04 owns both the
+production reader and the behaviour test that proves it acts.*
+
+== Consequences
+
+=== Positive
+
+* An operator whose upstream certificate does not name the address the gateway dials has a supported
+  answer, and it is a narrow one: hostname matching only, with chain trust untouched.
+* An operator whose upstream presents a private-CA certificate has a *different* supported answer, so
+  the hostname knob is not the only lever in reach and is not misused as one.
+* The setting reaches every proxy-path terminated egress dial, including WebSocket relays, so the
+  surface means across those clients what it says gateway-wide.
+* A present block that names only some of its keys cannot silently disable a security control.
+* Neither relaxation is silent at runtime either: a boot `WARN` reports a disabled hostname check and
+  a named trust profile, following the same warn-never-refuse rule as the broad-trusted-proxy and
+  plain-HTTP-management warnings, because both are legitimate deployments that must still be visible
+  in the log an operator reads.
+* Trust material stays out of the document operators commit, and the same `gateway.yaml` moves across
+  environments that bind one profile name to different anchors.
+* The egress and server-TLS surfaces stay separately named and separately classified, so neither
+  ADR-0025's verdict table nor this block has to describe traffic in the other direction.
+
+=== Negative
+
+* The setting is global with no per-route override. A gateway with one name-mismatched upstream among
+  many must relax hostname matching for all terminated egress or not at all. This is a property of
+  where the runtime fixes the setting, not a simplification that more code could remove.
+* Configuring a private-CA upstream requires editing two places -- the profile name in `gateway.yaml`
+  and the binding in deployment configuration. That indirection is the price of portability and
+  secret separation, and is the same one ADR-0011 pays.
+* A named profile's anchors are exclusive, so naming one is a wider act than it looks.
+* A named-but-unbound profile is a hard boot failure, so every instance whose document names a
+  profile must also load the binding for it. The failure is loud and names the key to set, but it is
+  a coupling between two files.
+* The configuration surface carries a key nothing reads. It is a real cost, accepted so the outbound
+  vocabulary is defined once across both egress legs rather than twice with different names.
+* The block does not cover the asset-origin fetch, so "global" is true of the three Vert.x clients
+  rather than of every https connection the gateway opens. An operator whose asset origin is behind a
+  private CA cannot reach it through `upstream_tls_profile` and binds the anchors into the JVM trust
+  store instead.
+
+=== Risks
+
+* *The reserved key is mistaken for an active control.* A key that parses, binds and appears in the
+  schema looks exactly like a working one. Mitigated by stating the absence of a reader in the schema
+  description, the model documentation, the operator documentation and this ADR, and by naming
+  PLAN-04 as the owner of both the reader and its proof.
+* *A future egress client is constructed without the setting.* The binding is enumerated per
+  construction site rather than derived, so a further site added later would not inherit it. Mitigated
+  by enumerating all three sites here and by asserting the bound value on each constructed client.
+  The asset-origin JDK client is the standing instance of this, carried knowingly and scoped out
+  above rather than discovered later.
+* *"Global" is read as covering every https connection the gateway opens.* The block's name invites
+  that reading, and the asset-origin leg falsifies it. Mitigated by stating the limit and its
+  fail-safe / fail-closed directions wherever the block is documented, and by the boot warning naming
+  the asset-origin exclusion in both templates.
+* *The relaxation is read as a general TLS disable.* "Verification off" is the phrase operators will
+  use, and it is broader than what the knob does. Mitigated by stating the hostname-matching-only
+  scope wherever the key appears, and by an integration leg that proves an untrusted upstream is
+  still refused with the knob off.
+* *A profile that turns out to trust everything.* A deployment-side profile configured to accept any
+  certificate would silently defeat the whole surface. Mitigated by refusing such a profile at boot,
+  ahead of the anchor-free check that it would otherwise pass.
+* *The control pair drifts and proves nothing.* Two nearly-identical gateway instances can diverge in
+  ways that make the observed difference attributable to something other than the knob. Mitigated by
+  a fast wiring guard that asserts the two documents differ in exactly that one key, and by both legs
+  naming the same trust profile so chain trust succeeds on both.
+
+== Alternatives Considered
+
+=== Put the knob in the existing `tls` block
+
+`gateway.yaml` already has a `tls` block, and adding one more key to it is the smallest possible
+change.
+
+Rejected because `tls` is the *server*-TLS surface. Its keys are inbound policy -- the protocol floor,
+the cipher allowlist, ALPN, passthrough SNI, mTLS -- and ADR-0025 classifies exactly that surface, with
+a per-key verdict table that describes it as server-side. An egress key there would merge two opposite
+traffic directions into one block whose own decision record defines it as one of them, and would
+falsify that verdict table at the same time.
+
+=== Put the knob on the per-upstream or upstream-defaults surface
+
+Scope the setting per route or per endpoint, so a gateway with one name-mismatched upstream relaxes
+verification only for that upstream. This is the more precise surface and was seriously considered.
+
+Rejected on two independent grounds.
+
+*Architecturally unbindable.* The edge-wide WebSocket client is a single instance for the whole
+gateway. A per-route value has no coherent meaning there, and honouring it would force one WebSocket
+client per route -- a far larger change, and one that contradicts the reason a single dialer exists.
+
+*Silent-reset footgun.* The upstream-defaults block is declarable at global and endpoint scope, and an
+endpoint declaration replaces the global one wholesale with no field merging. An endpoint file
+declaring upstream defaults for retry alone would silently reset a security knob it never mentions --
+the same class of failure as an omitted key binding to `false`, arriving by a different route.
+
+=== Expose a per-request hostname-verification override
+
+Let each dial decide, which would give per-route precision without a per-route configuration block.
+
+Rejected because there is nothing to call. The per-request option types declare no such field, and the
+setting is consumed once when the client is built. This is not a cost/benefit judgement -- the override
+does not exist to expose.
+
+=== Ship `upstream_verify_hostname` alone and defer the trust profile
+
+Deliver the narrower change first and add the trust surface when an operator asks for it.
+
+Rejected because it is not merely incomplete, it is actively harmful. Without a trust knob, the
+hostname knob is the only lever an operator with a private-CA upstream can reach; it does not solve
+their problem, and reaching for it disables a control that was working. Shipping the relaxation alone
+manufactures the misuse.
+
+=== Drop `jwks_verify_hostname` until it has a reader
+
+Declare only the key this decision binds, and name the JWKS one when its reader lands.
+
+Rejected because the request this decision answers is to define the outbound vocabulary once, covering
+both egress legs. Naming the second key later risks naming it differently, and the two keys' peerhood
+-- the thing the prefixes exist to express -- is only visible when both are present. The cost is one
+declared key with no reader; the mitigation is stating that plainly everywhere the key appears rather
+than letting the surface imply otherwise.
+
+=== Declare the JWKS key in the schema only, without a model field
+
+Reserve the name in the schema so the vocabulary is fixed, without adding an unread field to the
+configuration model.
+
+Rejected because it does not work here. The schema refuses unknown properties and the binder refuses
+unknown fields, so a schema-only key validates and then fails to bind -- the gateway would advertise a
+document as valid and refuse to boot on it. Reserving a name in this configuration system means
+declaring it in both places or in neither.
+
+The unifying principle across these alternatives: a relaxation earns its place by being *narrow* and by
+shipping with the control that makes it unnecessary. Options that widen the relaxation, or that ship it
+without its alternative, fail in one of those two directions.
+
+== References
+
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the neutral-name, deployment-bound-material boundary rule this decision applies to the upstream
+  egress leg, and the trust-profile seam the egress resolver mirrors
+* link:0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]
+  -- the server-TLS classification that owns the `tls` block, and the reason an egress key does not
+  belong in it
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
+  -- the L4 passthrough relay that decrypts nothing, and therefore cannot be governed by any
+  egress-verification setting
+* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
+  -- the partial-binding failure class that makes enumerating all three construction sites part of the
+  decision
+* link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029]
+  -- the partial-relaxation-that-is-necessarily-gateway-wide pattern this knob repeats on the outbound
+  side
+* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]
+  -- the sibling partial-disable whose retained legs are enumerated for the same reason this one's are
+* link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]
+  -- the absence model that makes an omitted trust-profile name distinguishable from any string
+* link:../configuration.adoc[Configuration reference] -- the `egress_tls` field contracts, the
+  legitimate topologies for the relaxation, and the deployment binding for the trust profile
+* link:../security-threat-model.adoc[Security threat model] -- GW-06, which requires upstream
+  certificate verification by default and demands a behaviour test rather than a flag-parse assertion

@@ -19,7 +19,7 @@ neither.
 
 == The Enumerated Surface
 
-The declared surface is *thirteen files* under `integration-tests/src/main/docker/`.
+The declared surface is *sixteen files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -32,17 +32,19 @@ disk without touching this table and the guard fails.
 | Surface | Count | Files
 
 | `sheriff-config*/gateway.yaml`
-| 5
+| 7
 | `sheriff-config/gateway.yaml` (base), `sheriff-config-cookie/gateway.yaml`,
+  `sheriff-config-egress-verify-off/gateway.yaml`,
+  `sheriff-config-egress-verify-on/gateway.yaml`,
   `sheriff-config-mtls/gateway.yaml`, `sheriff-config-passthrough-empty/gateway.yaml`,
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 7
+| 8
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/secure.yaml`,
-  `sheriff-config/endpoints/websocket.yaml`
+  `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/websocket.yaml`
 
 | `sheriff-config/topology.properties`
 | 1
@@ -50,9 +52,9 @@ disk without touching this table and the guard fails.
 |===
 // end::inventory[]
 
-Only the base directory carries `endpoints/` and `topology.properties`; the four overlay
+Only the base directory carries `endpoints/` and `topology.properties`; the six overlay
 directories replace `gateway.yaml` and nothing else, which is why the endpoints tree resolves
-identically for all seven booted gateway instances.
+identically for all nine booted gateway instances.
 
 *No limit-shaped key lives outside this surface.* The sweep is a key-name pattern, applied to
 declared key names only -- never to raw file text, so the descriptors' extensive prose comments
@@ -62,11 +64,13 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all thirteen files it returns hits in exactly ten of them:
+Over all sixteen files it returns hits in exactly twelve of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
 * `sheriff-config-cookie/gateway.yaml`
+* `sheriff-config-egress-verify-off/gateway.yaml`
+* `sheriff-config-egress-verify-on/gateway.yaml`
 * `sheriff-config-mtls/gateway.yaml`
 * `sheriff-config-passthrough-empty/gateway.yaml`
 * `sheriff-config-ws-admission/gateway.yaml`
@@ -77,21 +81,28 @@ Over all thirteen files it returns hits in exactly ten of them:
 * `sheriff-config/endpoints/websocket.yaml`
 // end::limit-bearing[]
 
-The remaining three -- `sheriff-config/endpoints/assets.yaml`,
-`sheriff-config/endpoints/assets-secure.yaml` and `sheriff-config/topology.properties` -- declare
-none. That complement is the other half of the same claim, so asserting the ten exactly asserts
-both halves at once.
+The remaining four -- `sheriff-config/endpoints/assets.yaml`,
+`sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/untrusted.yaml` and
+`sheriff-config/topology.properties` -- declare none. That complement is the other half of the same
+claim, so asserting the twelve exactly asserts both halves at once.
+
+`sheriff-config/endpoints/untrusted.yaml` is the newest of the four and is limit-free by
+construction rather than by accident: it is the egress hostname-verification pair's chain-trust
+control (ADR-0040), and its single route declares only a match prefix, because the assertion it
+backs is about whether the TLS dial completes at all. A `forward` allow/deny list or a body cap
+there would be inert configuration that nonetheless made the file limit-bearing and owed a Coverage
+Matrix row.
 
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the ten limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the twelve limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-ten. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+twelve. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -106,6 +117,19 @@ the *base document only* and is inherited by the overlays as the omitted-key def
 the `×4` rows are **not** re-cited as `×5`. It is not an independently authored descriptor: it is a
 verbatim copy of the base document with the `tls.passthrough_sni` block -- and only that block --
 removed, so every key the base declares it also declares, at the base's own relative order.
+
+The two `sheriff-config-egress-verify-*/gateway.yaml` overlays are outside it on the same reasoning,
+and for the same reason the `×4` rows are not re-cited as `×6`. Each is the base document with
+`tls.passthrough_sni` removed and one `egress_tls` block added, so every key the base declares it
+also declares.
+
+Their `egress_tls` block adds *no* limit-shaped key: neither `upstream_verify_hostname` nor
+`upstream_tls_profile` matches any alternative in the sweep pattern above. Both files are
+limit-bearing purely on the base keys they inherit (`anchors.upload.security_filter.max_body_bytes`,
+`allowed_methods`, `session.ttl_seconds`, `refresh.leeway_seconds`), which is why they need no
+Coverage Matrix row of their own -- the base citation already covers every limit they declare. The
+pair is a single-variable matched control whose two members differ only in the *value* of a key the
+sweep does not match at all.
 
 *Fourteen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
 `csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *seven* base-only
@@ -523,14 +547,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (thirteen files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (sixteen files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the ten limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the twelve limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the ten/three partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the twelve/four partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -539,7 +563,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the thirteen files, add its row here in the same change --
+When you add a limit-shaped key to any of the sixteen files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix

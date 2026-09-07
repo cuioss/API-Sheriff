@@ -25,6 +25,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.yaml.snakeyaml.Yaml;
@@ -50,10 +51,15 @@ import org.junit.jupiter.api.Test;
  * reaches readiness after a five-minute native build.
  * <p>
  * The instance set is <strong>derived from the parsed compose model</strong>, never enumerated. A
- * hand-maintained list of six could not fire for the very case the guard exists for: a seventh
- * gateway instance added later that sets {@code QUARKUS_PROFILE=it} and forgets the config location.
- * Because a derived set can also silently become empty, the derivation asserts its own non-emptiness
- * before looping — otherwise every assertion below would pass vacuously.
+ * hand-maintained list could not fire for the very case the guard exists for: a gateway instance
+ * added later that sets {@code QUARKUS_PROFILE=it} and forgets the config location. That case is not
+ * hypothetical — the set has grown to nine since this guard was written, and it covered each new
+ * instance without an edit here. Because a derived set can also silently become empty, the derivation
+ * asserts its own non-emptiness before looping — otherwise every assertion below would pass vacuously.
+ * <p>
+ * The binding is asserted as LIST MEMBERSHIP rather than whole-value equality, because
+ * {@code QUARKUS_CONFIG_LOCATIONS} is comma-separated and two instances legitimately load a second
+ * location beside this one — see {@link #configLocations(String)}.
  * <p>
  * It parses the committed descriptors only — it starts no container and reaches no network.
  *
@@ -75,7 +81,7 @@ class ItProfileConfigBindingWiringTest {
     private static final String LOCATIONS_VARIABLE = "QUARKUS_CONFIG_LOCATIONS";
     /** The container-side path of the mounted file, as the already-mounted certificates/ volume exposes it. */
     private static final String MOUNTED_PATH = "/app/certificates/benchmark-idp-trust.properties";
-    private static final String LOCATIONS_BINDING = LOCATIONS_VARIABLE + "=" + MOUNTED_PATH;
+    private static final String LOCATIONS_PREFIX = LOCATIONS_VARIABLE + "=";
 
     private static final String BUCKET_PREFIX = "quarkus.tls.benchmark-idp.trust-store.p12.";
 
@@ -85,15 +91,17 @@ class ItProfileConfigBindingWiringTest {
     @Test
     @DisplayName("every it-profile gateway instance binds the mounted trust file")
     void everyItProfileInstanceBindsTheMountedTrustFile() throws Exception {
-        // Arrange — derived from the compose file itself, so a seventh instance added there is
-        // covered without a manual edit here. The derivation asserts its own non-emptiness.
+        // Arrange — derived from the compose file itself, so a new instance added there is covered
+        // without a manual edit here. The derivation asserts its own non-emptiness.
         List<String> itServices = itProfileServices();
 
         // Act + Assert
         for (String service : itServices) {
-            assertTrue(environment(service).contains(LOCATIONS_BINDING),
-                    () -> service + " sets " + IT_PROFILE + " but must also set " + LOCATIONS_BINDING
-                            + " — gateway.yaml names jwks.tls_profile: benchmark-idp, and an "
+            List<String> locations = configLocations(service);
+            assertTrue(locations.contains(MOUNTED_PATH),
+                    () -> service + " sets " + IT_PROFILE + " but must also load " + MOUNTED_PATH
+                            + " via " + LOCATIONS_VARIABLE + " (it loads " + locations
+                            + ") — gateway.yaml names jwks.tls_profile: benchmark-idp, and an "
                             + "unresolved bucket aborts boot in JwksTrustProfileResolver.resolve()");
         }
     }
@@ -101,7 +109,7 @@ class ItProfileConfigBindingWiringTest {
     @Test
     @DisplayName("every it-profile gateway instance switches file logging on")
     void everyItProfileInstanceEnablesFileLogging() throws Exception {
-        // Arrange — same derived set, same reason: a seventh instance is covered without an edit here.
+        // Arrange — same derived set, same reason: a new instance is covered without an edit here.
         List<String> itServices = itProfileServices();
 
         // Act + Assert — the shipped artifact now defaults quarkus.log.file.enabled to false, so a
@@ -212,6 +220,34 @@ class ItProfileConfigBindingWiringTest {
         return services().keySet().stream()
                 .filter(name -> name.startsWith("api-sheriff"))
                 .sorted()
+                .toList();
+    }
+
+    /**
+     * The config locations a service loads, as a list of individual paths.
+     * <p>
+     * {@code QUARKUS_CONFIG_LOCATIONS} is a comma-separated LIST, not a single path, so membership is
+     * the only faithful question to ask of it. Seven instances load exactly one location; the two
+     * {@code api-sheriff-egress-verify-*} instances load a second one beside it
+     * ({@code it-upstream-trust.properties}, which binds the {@code it-upstream} egress trust profile
+     * their overlays name). An exact whole-value equality check would read that legitimate second
+     * entry as a missing binding.
+     * <p>
+     * Splitting and asking for MEMBERSHIP is what keeps the guard honest in both directions. It admits
+     * any number of additional locations, and it still fails an instance that drops the benchmark-idp
+     * file — which a substring search over the raw environment would not, since such a search passes
+     * on any entry that merely mentions the path.
+     *
+     * @param service the compose service name
+     * @return the declared locations in order, or an empty list when the service declares none
+     */
+    private static List<String> configLocations(String service) throws IOException {
+        return environment(service).stream()
+                .filter(entry -> entry.startsWith(LOCATIONS_PREFIX))
+                .flatMap(entry -> Arrays.stream(
+                        entry.substring(LOCATIONS_PREFIX.length()).split(",")))
+                .map(String::strip)
+                .filter(location -> !location.isEmpty())
                 .toList();
     }
 

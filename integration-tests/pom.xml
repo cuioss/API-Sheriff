@@ -278,6 +278,24 @@
                                              compose stack writes the instance log the WARN
                                              assertion greps. -->
                                         <test.plain.mgmt.management.port>19005</test.plain.mgmt.management.port>
+                                        <!-- Egress hostname-verification matched control pair
+                                             (ADR-0040). Both instances dial the SAME
+                                             mismatched-tls-backend, whose certificate deliberately
+                                             does not cover the dialled service name, and differ in
+                                             exactly one gateway.yaml key:
+                                             egress_tls.upstream_verify_hostname. The verify-on
+                                             instance (10450) must refuse the upstream; the
+                                             verify-off instance (10451) must reach it. Two ports
+                                             rather than one because the knob is fixed at client
+                                             construction and so is a property of the whole gateway
+                                             process — a single instance could only ever exhibit one
+                                             side of the control. Without these, the pair would fall
+                                             back to the primary instance on 10443, which dials the
+                                             plain-HTTP go-httpbin and therefore performs no
+                                             hostname verification at all: BOTH legs would pass and
+                                             the test would assert nothing. -->
+                                        <test.egress.verify.on.port>10450</test.egress.verify.on.port>
+                                        <test.egress.verify.off.port>10451</test.egress.verify.off.port>
                                         <test.log.dir>${project.build.directory}/quarkus-logs</test.log.dir>
                                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                                     </systemPropertyVariables>

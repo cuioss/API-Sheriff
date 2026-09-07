@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The CHAIN-TRUST control of the egress hostname-verification matched pair (ADR-0040), exercised by
+# UpstreamHostnameVerificationIT's third leg against the api-sheriff-egress-verify-off instance.
+#
+# The pair's first two legs vary egress_tls.upstream_verify_hostname over an upstream whose
+# certificate is TRUSTED but MISNAMED. They establish that the knob changes the outcome; on their own
+# they do not establish WHAT it relaxed. A relaxation that had quietly disabled certificate
+# verification wholesale would produce exactly the same two observations. This route is what
+# distinguishes the two: it dials an origin whose certificate chains to nothing the pair trusts while
+# its SAN does cover the dialled name, so hostname matching succeeds and chain trust is the only
+# thing left to fail. The verify-OFF instance must still refuse it.
+#
+# base_url resolves the UNTRUSTED_UPSTREAM alias, which topology.properties points at
+# passthrough-backend — a backend that generates its own self-signed certificate at container start
+# and therefore cannot be an anchor of any committed truststore. That untrustedness is structural
+# rather than a value someone could tighten by accident.
+#
+# WHY THE ROUTE SITS UNDER /proxy RATHER THAN AT /untrusted. This file is mounted into ALL NINE
+# gateway instances, seven of which overlay only gateway.yaml. A top-level /untrusted path would need
+# its own anchor, and ADR-0007 requires every anchor a route resolves to be declared in the
+# gateway document — so the anchor would have to be added to all seven gateway.yaml documents or those
+# instances would boot-fail. Worse, two of those seven are the matched pair itself, whose whole value
+# rests on differing in exactly one scalar; every edit applied to both is another chance for them to
+# drift apart. Reusing the existing 'api' anchor (path_prefix /proxy, access: public) costs nothing
+# here: the route is addressed by the IT, never by a human, so the path only has to be unambiguous.
+# endpoints/assets.yaml reuses an existing anchor for the same reason and records the same rationale.
+#
+# The seven instances that do not exercise this route are unaffected: they resolve the alias to the
+# same origin and simply never dial it. The route declares require: none because the 'api' anchor is
+# access: public and carries no auth block (ADR-0013).
+endpoint:
+  id: untrusted
+  enabled: true
+  base_url: UNTRUSTED_UPSTREAM
+  anchor: api
+  auth:
+    require: none
+  routes:
+    # No forward block, and that is deliberate rather than an omission: the assertion is about
+    # whether the TLS dial completes at all, so nothing about the forwarded request shape matters and
+    # a forward posture here would be inert configuration a reader has to rule out. The route also
+    # declares no upstream.path — the alias resolves to a base-path-free origin and the dial fails
+    # during the handshake, before any request line is written.
+    - id: untrusted-chain-control
+      anchor: api
+      match:
+        path_prefix: /proxy/untrusted

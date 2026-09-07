@@ -41,8 +41,9 @@
             <artifactId>cui-java-tools</artifactId>
         </dependency>
         <!-- cui-http: inbound security filtering (de.cuioss.http.security) and the
-             forwarded-header resolver (de.cuioss.http.forwarded); version 2.1.0 managed
-             by cui-java-bom's ${version.cui.http} -->
+             forwarded-header resolver (de.cuioss.http.forwarded); version 3.0, resolved
+             through ${version.cui.http}, which the root pom overrides above the
+             cui-java-bom-managed 2.2 -->
         <dependency>
             <groupId>de.cuioss</groupId>
             <artifactId>cui-http</artifactId>
@@ -173,7 +174,7 @@
         </dependency>
         <!-- cui-http attack databases (generators classifier) driving the adversarial
              pipeline tests; classifier variant is not BOM-managed, so the inherited
-             ${version.cui.http} pins it to the same 2.1.0 as the main artifact -->
+             ${version.cui.http} pins it to the same 3.0 as the main artifact -->
         <dependency>
             <groupId>de.cuioss</groupId>
             <artifactId>cui-http</artifactId>

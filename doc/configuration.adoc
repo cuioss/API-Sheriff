@@ -186,6 +186,25 @@ tls:                               # TLS POLICY for the terminated listener. Neu
     enabled: false
     client_ca: /etc/sheriff/ca.pem
 
+egress_tls:                        # OUTBOUND-TLS policy for upstreams the gateway DIALS (ADR-0040).
+                                   #   Disjoint from the `tls` block above, which governs the
+                                   #   certificate the gateway PRESENTS to clients. Global rather
+                                   #   than per route because these bind at egress client
+                                   #   construction. Omit the block, or any key in it, to take the
+                                   #   secure defaults shown -- an omitted key never resolves to
+                                   #   false.
+  upstream_verify_hostname: true   # default true. false relaxes HOSTNAME MATCHING ONLY: an upstream
+                                   #   whose certificate does not chain to a trusted anchor is still
+                                   #   refused, and passthrough is untouched (never decrypted)
+  jwks_verify_hostname: true       # DECLARED AND BINDABLE, but NO PRODUCTION CODE READS IT. Setting
+                                   #   it changes no behaviour; it is not an available control.
+                                   #   PLAN-04 owns both the reader and the behaviour test
+  upstream_tls_profile: corporate-upstream   # OPTIONAL logical trust profile for terminated upstream
+                                   #   dials. Names a profile, never material: the deployment binds
+                                   #   the anchors via quarkus.tls.<name>.trust-store.* (ADR-0011).
+                                   #   REPLACES the client's anchors rather than adding to them.
+                                   #   Omit to keep the JVM default trust store
+
 management:                        # TLS policy for the management interface (health/metrics on
                                    #   their own port). POLICY ONLY -- this block declares NO
                                    #   port; the port is deployment-bound (see "management")
@@ -719,6 +738,224 @@ promoted into `gateway.yaml` -- it arrives through `quarkus.http.ssl.certificate
 link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
 do. The full operator-facing split of what stays deployment-bound versus what `gateway.yaml` owns is
 in link:user/environment-variable-overrides.adoc[Environment-variable overrides].
+
+[[_egress_tls]]
+=== `egress_tls`
+
+Everything above this heading governs the certificate the gateway *presents*. This block governs the
+certificates it *accepts* -- outbound TLS policy for the upstreams it dials
+(link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]).
+The two surfaces are named separately and classified separately precisely so neither has to describe
+traffic in the other direction, and the block is optional: omit it, or any key inside it, and the
+defaults below apply.
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `upstream_verify_hostname`
+| Whether a *terminated* upstream dial verifies that the upstream's certificate names the host the
+  gateway dialled. *Defaults to `true`* -- an omitted key resolves to the secure value, never to the
+  type default. Setting it to `false` relaxes *hostname matching only*; see the scope statement
+  below, which is the whole security argument for the key.
+
+| `jwks_verify_hostname`
+| Reserved for the JWKS back-channel. It is declared in the schema and bound on the configuration
+  model, so a document naming it validates and boots -- and *no production code reads it*. See
+  link:#_jwks_verify_hostname_reads_nothing_today[The JWKS key is reserved, not available] below.
+
+| `upstream_tls_profile`
+| *Optional.* The logical name of the trust profile whose anchors verify terminated upstream
+  certificates. Omitted, the egress clients keep the JVM default trust store. Named, it *replaces*
+  those anchors rather than adding to them -- see
+  link:#_upstream_trust_profiles[Trust profiles (`upstream_tls_profile`)] below.
+|===
+
+[[_egress_tls_hostname_scope]]
+==== What disabling hostname verification does and does not do
+
+`upstream_verify_hostname: false` turns off exactly one comparison: dialled name against the names
+the upstream's certificate carries. It does *not* turn off certificate-chain validation, does not
+admit a self-signed certificate, and does not admit a certificate issued by an authority the gateway
+does not trust. An upstream that fails to chain to a trusted anchor is still refused with the knob
+off.
+
+That distinction matters because *"verification off"* is the phrase operators reach for, and it is
+broader than what the key does. The scope is not asserted here and taken on trust: the integration
+stack carries a matched pair of gateway instances differing in this one boolean, plus a third leg
+that dials an *untrusted* upstream against the relaxed instance and must still fail. That third leg
+is the dial that would refute this paragraph if the two mechanisms were coupled.
+
+Two legitimate topologies motivate the key, and neither is a request to stop verifying certificates:
+
+* An upstream reached through an address the certificate does not name -- a service dialled by its
+  Kubernetes service name, its container alias, or an internal load-balancer address, while the
+  certificate names the public hostname it was issued for.
+* A migration in which the upstream's certificate is issued and rotated by a party who cannot add the
+  gateway's dialled name to the SAN on the gateway's schedule.
+
+In both cases chain trust is intact and only the name comparison fails. An operator whose upstream
+presents a *private-CA* certificate has a different problem and a different answer --
+`upstream_tls_profile` below -- so the hostname key is not the only lever in reach and should not be
+misused as one.
+
+*The relaxation is never silent.* A gateway that boots with `upstream_verify_hostname: false` logs
+`WARN ApiSheriff-118` once at startup, naming the scope and the remedy. It is a warning and never a
+boot refusal -- both topologies above are legitimate deployments -- and it follows the same rule as
+`ApiSheriff-102` for broad proxy trust and `ApiSheriff-115` for a plain-HTTP management port: an
+operator-selected relaxation of a security control is reported loudly and allowed. All three are
+catalogued in link:LogMessages.adoc[Log messages].
+
+[[_egress_tls_cannot_affect_passthrough]]
+==== The key cannot affect passthrough
+
+A connection relayed opaquely at L4 by the SNI front listener
+(link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017])
+is never decrypted, and its upstream certificate is never inspected by this gateway. There is
+nothing for a verification setting to govern on that path. The scope of `egress_tls` is *terminated*
+egress, and -- exactly as with the link:#_tls_scope_limit[server-side scope limit] above -- that is a
+statement of what the setting *can* mean, not a limitation more configuration could lift.
+
+Terminated egress is the *outer* bound of the scope, not the whole of it: within terminated egress the
+block reaches the three Vert.x clients below and not the asset-origin fetch, which is a separate
+limit with a separate reason -- see link:#_egress_tls_asset_origin_limit[The block does not reach the
+asset-origin leg].
+
+[[_egress_tls_is_global]]
+==== Why the block is global and carries no per-route override
+
+Both settings are fixed when the egress clients are *constructed*, not when a request is dispatched.
+The gateway builds three such clients -- the default HTTP client, the forced-HTTP/2 client gRPC
+routes require, and the edge-wide WebSocket client that serves every `wss://` relay -- and the last
+of those is edge-wide by construction, so a per-route value could not be honoured on it at all.
+
+There is consequently no per-route or per-upstream override to reach for, and its absence is a
+type-declaration fact rather than a scoping preference: the two per-request seams (the request
+options the dispatch path builds and the connect options the WebSocket relay builds) do not declare
+the field. The cost is real and worth stating plainly: a gateway with one name-mismatched upstream
+among many must relax hostname matching for *all* terminated egress or not at all.
+
+[[_egress_tls_asset_origin_limit]]
+==== The block does not reach the asset-origin leg
+
+*"Global" means those three clients, not every https connection the gateway opens.* An
+asset route with an `https` upstream origin is a fourth terminated-egress TLS leg, and
+`egress_tls` does not govern it (see link:#_asset_defaults[`asset_defaults`] for the asset surface):
+the asset fetch runs on a JDK `java.net.http.HttpClient`, whose
+builder carries neither a hostname-verification flag nor the gateway's trust profile. Governing it
+would need a separate `SSLParameters`/`SSLContext` seam, which
+link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]
+deliberately left out of scope.
+
+The two keys are limited in *opposite directions*, and the difference is what an operator needs:
+
+* `upstream_verify_hostname` is *fail-safe* here. The JDK client keeps full hostname checking
+  whatever the key says, so setting it to `false` cannot weaken the asset leg -- the relaxation is
+  narrower than the block's name suggests, never wider.
+* `upstream_tls_profile` is the *real* limit. It replaces the anchors on the three governed clients
+  and leaves the asset leg on the JVM default trust store. An operator serving assets from an origin
+  behind a private CA therefore sees that fetch *fail closed* (a `502` and a chain-validation error),
+  not succeed unverified. The answer is to bind those anchors into the JVM trust store the container
+  runs with; naming them in `upstream_tls_profile` will not reach the asset fetch.
+
+Both directions are stated because the alarming reading -- "a leg the security knob misses" -- is the
+wrong one. Nothing here is silently unverified; one leg is simply not configurable from this block.
+
+[[_upstream_trust_profiles]]
+==== Trust profiles (`upstream_tls_profile`)
+
+`upstream_tls_profile` is the egress sibling of link:#_jwks_trust_profiles[`jwks.tls_profile`] and
+sits on the identical
+link:adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+boundary: *config neutral, material deployment-supplied, diagnostics concrete.* The key names a
+profile in API Sheriff's own vocabulary and carries no trust material -- no store path, no password,
+no anchor appears in `gateway.yaml` or in its schema. The deployment binds the name:
+
+[source,yaml]
+----
+egress_tls:
+  upstream_tls_profile: corporate-upstream   # internal CA on the upstream leg
+----
+
+[source,properties]
+----
+quarkus.tls.corporate-upstream.trust-store.p12.path=/etc/sheriff/corporate-ca.p12
+quarkus.tls.corporate-upstream.trust-store.p12.password=${TRUSTSTORE_PASSWORD}
+----
+
+The three things that split buys -- secrets out of the committed document, no second key-store
+implementation, and portability across environments that bind one name to different anchors -- are
+the same three the link:#_jwks_trust_profiles[JWKS trust profiles] section sets out, and are not
+restated here.
+
+[[_upstream_trust_profile_replaces]]
+===== A named profile replaces the client's anchors
+
+This is the property that surprises people, so it is stated wherever the key is documented rather
+than left to be discovered. A named profile is *these anchors*, not *these anchors in addition to the
+default ones*. An operator who names a profile holding only their private CA thereby stops trusting
+public certificate authorities on the upstream leg -- and the blast radius is the whole
+terminated-egress surface, not the one route that motivated the change. Omitting the key is the
+supported way to ask for default trust; naming a profile that also carries the public roots is the
+supported way to ask for both.
+
+Because the replacement is easy to under-estimate, a gateway that boots with a named profile logs
+`WARN ApiSheriff-119` once at startup, carrying the *logical* profile name only -- never a store
+path, a password, or any anchor material. Like `ApiSheriff-118`, it reports a deliberate posture and
+never refuses the boot. The same warning restates the asset-origin limit, since a named profile is
+exactly the case in which that limit bites.
+
+[[_upstream_trust_profile_fail_closed]]
+===== The four resolutions, and why two of them are ordered
+
+The resolver is fail-closed in four distinct ways. The middle two are ordered deliberately:
+
+[cols="1,3", options="header"]
+|===
+| Condition | Behaviour
+
+| The key is omitted
+| The resolver is never consulted, no trust options are set, and the egress clients keep the JVM
+  default trust store.
+
+| Named, but the deployment defines no such profile
+| *Boot fails*, naming the concrete deployment key to set. Never a silent fallback to default trust:
+  that would either surface later as an obscure upstream connection error, or -- if the upstream
+  happens to chain to a public CA -- quietly succeed against anchors the operator never intended.
+
+| Named, and the profile is configured to trust everything
+| *Refused* -- and refused *ahead of* the anchor-free check below. A `trust-all` bucket does carry
+  trust options, so it satisfies the anchor-free guard and would otherwise slip past it, yielding an
+  egress client that accepts any certificate.
+
+| Named, but the profile carries no trust material
+| *Refused.* It would verify against the JVM default store rather than against the anchors the name
+  promises, while `gateway.yaml` still reads as though the named anchors were in force.
+|===
+
+The runtime registers a named bucket as soon as *any* `quarkus.tls.<name>.*` key is present, so a
+bucket setting only a reload period is a real, resolvable profile with nothing in it -- which is why
+the anchor-free case needs a check of its own rather than being unreachable.
+
+[[_jwks_verify_hostname_reads_nothing_today]]
+==== The JWKS key is reserved, not available
+
+`jwks_verify_hostname` is declared in the bundled schema and carried as a bound field on the
+configuration model. A document that names it therefore *validates and boots* -- and changes nothing,
+because *no production code reads it*. It is not an available control and must not be described as
+one.
+
+The schema entry and the model field landed together on purpose. The schema refuses unknown
+properties and the binder refuses unknown fields, so a key declared in only one of the two would
+validate and then refuse to boot -- a configuration the gateway advertises as valid and will not
+start on. Declaring both is what makes the reserved key harmless.
+
+That a key parses and binds settles nothing about whether the control it names is in force (see
+link:development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage]). The
+coverage this key has today is a *binding* fact only, and no test or document claims the JWKS control
+is proven. *PLAN-04 owns both the production reader and the behaviour test that proves it acts.*
+Until then, an operator who needs the JWKS back-channel to reach an IdP behind an internal CA uses
+link:#_jwks_trust_profiles[`jwks.tls_profile`], which does act.
 
 [[_protocols]]
 === `protocol`

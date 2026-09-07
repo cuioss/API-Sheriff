@@ -22,6 +22,7 @@ import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
@@ -66,6 +67,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         Metadata.class,
         TlsConfig.class,
         TlsConfig.Mtls.class,
+        EgressTlsConfig.class,
         ManagementConfig.class,
         ManagementConfig.ManagementTls.class,
         SecurityHeadersConfig.class,

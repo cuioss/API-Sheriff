@@ -43,7 +43,9 @@ regression re-opens a known-historical hole loudly. Status values:
 API Sheriff is not implementing these controls from scratch -- two audited libraries own
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
-of the local `cui-http` (2.1.0) and `TokenSheriff` (0.9.2) trees.
+of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
+`cui-http` 3.0 -- overridden in the root `pom.xml` above the parent-managed 2.2 -- and
+`TokenSheriff` 0.9.4.
 
 *`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
@@ -525,14 +527,64 @@ it must -- not merely that the flag parsed. Verify upstream certs by default. No
 security-decision hostnames with a spec-conformant, tested routine.
 
 *Status:* PARTIAL. The accept-time SNI split and mTLS are delivered
-(link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]);
-the *fail-closed-on-empty-SNI* rule, *full-ClientHello reassembly before routing*, and
-*assert-behaviour-not-flag* discipline are not yet pinned as explicit assertions (see Gaps).
+(link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]).
+*Upstream certificate verification is delivered and behaviour-tested end to end* on the terminated
+egress leg
+(link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]):
+verification is on by default, the `egress_tls.upstream_verify_hostname` relaxation is bound at all
+three *Vert.x* egress client-construction sites, and `egress_tls.upstream_tls_profile` binds trust
+anchors through a fail-closed resolver that refuses an unbound, trust-all or anchor-free profile at
+boot; both postures are reported at boot by `WARN ApiSheriff-118` / `ApiSheriff-119` rather than
+taking effect silently. A *fourth* terminated-egress leg is outside that block and is recorded below
+rather than folded into the claim. The
+*assert-behaviour-not-flag* discipline this entry demands is discharged *for that key specifically*
+-- an integration-stack matched pair of gateway instances differing in exactly that one boolean makes
+a real handshake fail on one leg and succeed on the other. The *JWKS* half is *not delivered and not
+proven*: `egress_tls.jwks_verify_hostname` is declared in the schema and bound on the configuration
+model, and *no production code reads it*, so it is a reserved key rather than an available control
+and nothing asserts its behaviour; PLAN-04 owns both the reader and its behaviour test. The
+*fail-closed-on-empty-SNI* rule and *full-ClientHello reassembly before routing* remain unpinned (see
+Gaps), which is why this entry stays PARTIAL.
 
 *Assertion.* A fragmented/empty-SNI ClientHello does not reach a passthrough or a
 no-client-cert default -- it is terminated under the strict policy or rejected; enabling mTLS
 causes a real no-cert handshake to fail (behaviour test); a punycode host that normalizes to
-a passthrough SNI is caught by the same collision rule.
+a passthrough SNI is caught by the same collision rule. On the egress leg, a terminated dial to an
+upstream whose certificate does not name the dialled host *fails the handshake by default*, and
+succeeds only on an instance that declares `egress_tls.upstream_verify_hostname: false` -- both
+directions asserted by a real dial rather than by reading the flag back. A third dial pins the
+*scope* of that relaxation: against the relaxed instance, an upstream whose certificate chains to no
+trusted anchor is *still refused*, so the two mechanisms are proven uncoupled. No assertion covers
+`jwks_verify_hostname`, and none may be claimed for it while nothing reads it.
+
+*Residual risk (accepted).* `egress_tls.upstream_verify_hostname: false` is an operator-selectable
+relaxation of a control this entry exists to defend, so the residual risk is recorded rather than
+described away. What it gives up is bounded to *hostname matching on terminated egress*: chain trust
+is unaffected, a self-signed or untrusted-CA upstream is still refused, and passthrough -- relayed at
+L4 and never decrypted -- cannot be reached by the setting at all. What remains is real: with the
+relaxation in force, an attacker who can both redirect the gateway's upstream connection *and*
+present a certificate that chains to an anchor the gateway trusts is no longer stopped by the name
+mismatch. That is a materially harder position to reach than serving any certificate, and it is the
+whole of what the knob concedes. Three properties bound the exposure and are the basis of the
+acceptance: the default is `true` and an omitted key resolves to `true` rather than to the type
+default, so the relaxation is never reached by silence; it is global and therefore *visible* in one
+place in `gateway.yaml` rather than buried per route; and the scope claim is proven by the untrusted
+dial above rather than asserted. The mitigation for an operator who needs a private-CA upstream is
+`egress_tls.upstream_tls_profile`, which is a different key and does not require this one -- shipping
+both together is what keeps the hostname knob from being misused as a general trust disable.
+
+*Scope limit (recorded, not a residual risk).* `egress_tls` governs the three Vert.x egress clients
+and does not reach the *asset-origin* fetch, which is a fourth terminated-egress TLS leg: an asset
+route with an `https` origin is fetched through a JDK `java.net.http.HttpClient` that carries neither
+setting. This is recorded separately from the residual risk above because it does not cut in the
+dangerous direction. Hostname verification there is *fail-safe*: the JDK client checks the name
+whatever the key says, so `upstream_verify_hostname: false` cannot weaken the asset leg, and no
+unverified dial exists to defend. The *trust* half is the real limit -- `upstream_tls_profile`
+replaces anchors on the three governed clients only, leaving the asset leg on the JVM default trust
+store, so an asset origin behind a private CA *fails closed* rather than succeeding unverified, and
+the deployment binds those anchors into the JVM trust store instead. Governing the JDK client would
+need an `SSLParameters` / `SSLContext` seam that ADR-0040 deliberately did not scope; the limit is
+stated in the operator documentation and in the model rather than left to be discovered.
 
 [#gw-07]
 === GW-07 -- Slowloris / connection & body-size exhaustion / decompression bombs
@@ -1080,7 +1132,7 @@ outstanding hardening work (next section).
 | <<gw-03>> | Header CR/LF reject; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + gateway (peer gate, trust-all rejection, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
-| <<gw-06>> | Fail-closed SNI/mTLS; test behaviour not flag | ADR-0017 (front listener) | PARTIAL
+| <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed; `jwks_verify_hostname` reserved, unread) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade | ADR-0015 (bearer routes) | GAP (session routes)
@@ -1128,8 +1180,14 @@ down. Closing them is the whole point of this exercise. Each is a small, additiv
   exist (CSWSH).
 . *GW-06 -- fail-closed SNI + behaviour tests.* Make explicit: empty/fragmented SNI
   takes the strict policy or rejects (never a permissive default); the full ClientHello is
-  reassembled before SNI routing; every security-gating boolean (mTLS require, upstream
-  verify) has a *behaviour* test (a real handshake fails when it must), not just a flag-read.
+  reassembled before SNI routing; every security-gating boolean has a *behaviour* test (a real
+  handshake fails when it must), not just a flag-read. The upstream-verify boolean is *done* --
+  `egress_tls.upstream_verify_hostname` is proven by a matched pair of gateway instances plus an
+  untrusted-upstream leg that pins the relaxation's scope
+  (link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]).
+  What remains under this heading is the mTLS-require boolean, the two SNI rules above, and
+  `egress_tls.jwks_verify_hostname`, which has no production reader yet and therefore no behaviour
+  to test; PLAN-04 owns both.
 . *BFF-13 -- pin the callback parsing *usage rule* with a test.* The engine already rejects
   HPP and the gateway already calls `CallbackParameters.parse(rawQuery)` on the raw query
   (never the duplicate-blind `of(Map)`); what is missing is a test asserting a
