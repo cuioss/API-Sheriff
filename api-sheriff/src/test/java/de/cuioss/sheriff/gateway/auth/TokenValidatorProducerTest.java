@@ -517,6 +517,15 @@ class TokenValidatorProducerTest {
 
         private static final String PROFILE = "corporate-idp";
 
+        /**
+         * The offline issuer's name, chosen so it is <em>not</em> a substring of {@link #PROFILE}.
+         * The boot refusal interpolates the issuer name and the profile into one message, so an
+         * issuer named {@code corporate} would let the issuer-name assertion in
+         * {@link #relaxedHostnameWithTlsProfileIsRefusedAtBoot()} pass on the {@code corporate-idp}
+         * substring alone — green even if the issuer name were dropped from the message entirely.
+         */
+        private static final String COLLIDING_ISSUER_NAME = "colliding-issuer";
+
         private Path fixtureDir;
         private SanMismatchedJwksServer server;
         private TestTokenHolder holder;
@@ -611,10 +620,13 @@ class TokenValidatorProducerTest {
                         .build();
                 TokenValidator relaxed = producerWith(new EgressTlsConfig(true, false, null), issuer,
                         TestTlsConfigurationRegistry.empty()).gatewayTokenValidator();
+                // Built outside the lambda so the assertion below can only be satisfied by
+                // createAccessToken throwing — request construction is not the subject here.
+                AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
 
                 // Act & Assert — chain trust is a separate mechanism and the flag does not reach it.
                 assertThrows(TokenValidationException.class,
-                        () -> relaxed.createAccessToken(AccessTokenRequest.of(holder.getRawToken())),
+                        () -> relaxed.createAccessToken(request),
                         "jwks_verify_hostname false must relax hostname matching ONLY — a JWKS endpoint "
                                 + "whose certificate does not chain to a trusted anchor must still be "
                                 + "refused, or the key is a general TLS disable rather than the narrow "
@@ -647,7 +659,7 @@ class TokenValidatorProducerTest {
                     "the refusal must name the colliding per-issuer key and the profile: " + message);
             assertTrue(message.contains("egress_tls.jwks_verify_hostname"),
                     "the refusal must name the global key that collided: " + message);
-            assertTrue(message.contains("corporate"),
+            assertTrue(message.contains(COLLIDING_ISSUER_NAME),
                     "the refusal must name the offending issuer so an operator can find it: " + message);
         }
 
@@ -693,7 +705,7 @@ class TokenValidatorProducerTest {
         }
 
         private IssuerConfig offlineIssuer(IssuerConfig.Jwks jwks) {
-            return IssuerConfig.builder().name("corporate").issuer(ISSUER).jwks(jwks).build();
+            return IssuerConfig.builder().name(COLLIDING_ISSUER_NAME).issuer(ISSUER).jwks(jwks).build();
         }
 
         private TokenValidatorProducer producerWith(@Nullable EgressTlsConfig egressTls, IssuerConfig issuer,
