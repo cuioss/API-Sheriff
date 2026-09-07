@@ -11,7 +11,8 @@ reverse-engineering `integration-tests/docker-compose.yml`.
 [IMPORTANT]
 ====
 This is the *integration-test* topology. It is not a production deployment and not a recommended
-one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend and the six variant gateway
+one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend, the deliberately
+hostname-mismatched TLS backend and the eight variant gateway
 instances exist to make specific tests possible. For a deployment-shaped stack, read
 link:compose-sample.adoc[the Compose sample] instead -- it is drawn and documented separately for
 exactly this reason. No Kubernetes topology is drawn.
@@ -40,6 +41,24 @@ Two boundaries are drawn, both as heavy dashed lines with a small open circle at
   trust profile rather than the JVM default store, because Keycloak serves a self-signed certificate
   here.
 
+Two *named egress trust profiles* are declared in this stack, on the two different egress surfaces
+ADR-0040 keeps disjoint. Both follow ADR-0011's boundary rule -- the gateway document names the
+logical profile, the deployment supplies the anchors through `quarkus.tls.<name>.trust-store.*` -- and
+in both cases the material sits in the already-mounted `certificates/` directory, so neither adds a
+volume:
+
+* `benchmark-idp` binds the *JWKS back-channel* to `localhost-truststore.p12`
+  (`benchmark-idp-trust.properties`). Every one of the nine gateway instances loads it, because every
+  one names `jwks.tls_profile: benchmark-idp`.
+* `it-upstream` binds *terminated upstream dials* to `upstream-truststore.p12`
+  (`it-upstream-trust.properties`). Only the two `api-sheriff-egress-verify-*` instances load it --
+  they are the only ones naming `egress_tls.upstream_tls_profile`; the other seven name none and so
+  keep the JVM default trust store on that leg.
+
+A named profile *replaces* a client's anchors rather than adding to them, which is why
+`upstream-truststore.p12` holds only the mismatched upstream's own certificate: it is exactly the set
+those two instances may verify terminated upstreams against.
+
 === The primary gateway instance
 
 The `api-sheriff` container is drawn in full because it is the one instance that exercises the
@@ -58,9 +77,9 @@ link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
 
 === The collapsed variant group
 
-Six further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
+Eight further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
 overlaid `gateway.yaml` -- or, for `api-sheriff-plain-mgmt`, by a single environment variable -- and
-their published ports. Drawing all seven in full would bury the affordances the diagram exists to
+their published ports. Drawing all nine in full would bury the affordances the diagram exists to
 show, so they are collapsed into one annotated group that still names every instance and every port
 pair:
 
@@ -108,13 +127,54 @@ pair:
   This instance overlays a `gateway.yaml` that is the base document minus that one block, and is the
   only instance with no front listener at all: its terminated Quarkus HTTPS listener owns `8443`
   directly, so it sets no `QUARKUS_HTTP_SSL_PORT` relocation.
+
+| `api-sheriff-egress-verify-on`
+| 10450
+| 19007
+| `egress_tls.upstream_verify_hostname` is bound at Vert.x client construction and is therefore
+  process-wide, so one instance can exhibit only one side of the control. This is the positive leg:
+  it must *refuse* `mismatched-tls-backend`, whose certificate names `upstream-mismatch`.
+
+| `api-sheriff-egress-verify-off`
+| 10451
+| 19008
+| The negative leg of the same matched control, differing from its sibling in exactly one scalar
+  (`upstream_verify_hostname: false`). Both bind the `it-upstream` trust profile, so chain trust
+  succeeds on both and hostname matching is the only variable. Keeping the profile on *this* leg is
+  load-bearing: the relaxation is hostname matching only, so dropping it would make this instance
+  fail on chain trust and the knob under test would never be exercised.
 |===
+
+The two `api-sheriff-egress-verify-*` instances are the only pair in this table that must be read
+*together*. Every other row is separate because some process-wide property makes it incompatible with
+the primary instance; these two are separate from each other for that same reason, but they are also a
+single-variable matched control. Their value comes from the *difference* between them, so a change
+that touches one and not the other silently destroys the control while leaving both instances
+booting.
+
+=== The hostname-mismatched backend
+
+`mismatched-tls-backend` is an nginx serving HTTPS on `8443` with *no published host port* -- it is
+reached only by the two `api-sheriff-egress-verify-*` gateways on the Compose network. Its
+certificate's only SAN is `upstream-mismatch`, while those gateways dial it as
+`mismatched-tls-backend`. That non-overlap is the entire fixture.
+
+It differs from `passthrough-backend` in where its key material comes from, and the difference is
+deliberate rather than inconsistent. `passthrough-backend` generates a self-signed certificate at
+container start, because its certificate only has to *exist*. This one *mounts* the committed
+`upstream-mismatch.crt`/`.key` pair from `certificates/`, because its certificate must chain to the
+anchors `upstream-truststore.p12` already holds -- a freshly generated one would be untrusted, both
+legs of the control would then fail on chain trust, and the pair would prove nothing about hostname
+matching.
 
 === Mounted material
 
 Three read-only volumes are mounted into every gateway instance and are drawn as pills rather than
 boxes, because they are inert material rather than components: `certificates/`, `sheriff-config/`
-and `assets/`. The variant instances additionally overlay a single file --
+and `assets/`. That the mounted-material set is *still exactly three* is the point of recording it:
+the egress hostname-verification control added new key material and a new trust-binding properties
+file, and every one of them went into the already-mounted `certificates/` directory rather than
+bringing a fourth volume with it. The variant instances additionally overlay a single file --
 `sheriff-config-<variant>/gateway.yaml` on top of the shared `sheriff-config/` mount -- which is the
 whole mechanism by which they differ.
 
@@ -154,7 +214,7 @@ budget exists to absorb the interval between asking too early and being ready; b
 assertion runs the runtime has already reported the instance healthy, so a non-`UP` answer is a
 defect rather than an early ask, and retrying would only delay reporting it.
 
-Both layers cover all seven instances from one derivation: the service set, each instance's published
+Both layers cover all nine instances from one derivation: the service set, each instance's published
 management port, the scheme its management interface speaks and the *root path* its management
 endpoints sit beneath -- the latter two from the `de.cuioss.sheriff.management-scheme` and
 `de.cuioss.sheriff.management-root-path` labels -- are read from the resolved Compose model, so
@@ -285,9 +345,12 @@ workers on 16 cores:
 |===
 
 This table is evidence from a dated run, not a claim about today's instance set, so it is
-deliberately *not* restated as the set grows: `api-sheriff-passthrough-empty` -- the seventh
-instance -- is absent from it by design rather than by omission, and no row may be invented for it.
-The headroom argument below therefore stands on the six instances actually measured.
+deliberately *not* restated as the set grows. The instance set has since reached nine, and the three
+that postdate the run -- `api-sheriff-passthrough-empty`, `api-sheriff-egress-verify-on` and
+`api-sheriff-egress-verify-off` -- are absent from it by design rather than by omission. No row may
+be invented for any of them: a fabricated timing would turn measured evidence into an assertion while
+leaving the table looking exactly as authoritative. The headroom argument below therefore stands on
+the six instances actually measured.
 
 The live-to-ready delta is *0.00s on every instance* -- below the prober's own 100 ms resolution.
 That is not luck; it is what the previous section describes. Because the `jwks` datum is settled at
@@ -308,7 +371,7 @@ not a live-to-ready figure -- that delta is 0.00s (see above) and would justify 
 all.
 
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
-`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than seven,
+`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than nine,
 which is why the two differ. That leaves one bound duplicated per script instead of a whole retry
 budget per script, and ADR-0031 records the residual duplication rather than claiming it away.
 
@@ -337,7 +400,7 @@ to fix.*
 It is handled structurally rather than as a special case: each service declares the scheme its
 management interface speaks in a `de.cuioss.sheriff.management-scheme` label, and the layer-2
 readiness assertion adds `-k` only when that label says `https`. The scheme difference is therefore
-data, not a branch on a service name -- which is what lets one loop cover all seven instances.
+data, not a branch on a service name -- which is what lets one loop cover all nine instances.
 
 Layer 1 is unaffected either way. A bare TCP accept has no scheme to get wrong, so this instance's
 baked container probe is identical to every other instance's; the plain-HTTP downgrade is visible
@@ -383,3 +446,34 @@ The read-back obligation is unchanged and is *not* discharged by this note: re-r
 diagram back against both themes before committing any further edit to it, per the deployment
 diagram-type standard (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`). Rendered PNGs remain verification
 artifacts and are never committed.
+
+=== Diagram check for the egress hostname-verification control
+
+Unlike the readiness change above, this one *does* alter facts the diagram depicts: it adds two
+gateway instances, two published port pairs, one backend and one egress leg. The diagram was
+therefore redrawn rather than left alone.
+
+Three edits were made. The collapsed variant group is relabelled `variant instances (8)` and grows by
+two rows -- `api-sheriff-egress-verify-on` at `10450 · 19007` and `api-sheriff-egress-verify-off` at
+`10451 · 19008` -- with the enclosing rectangle and the own-bar line extent grown by two row heights
+to fit them. `mismatched-tls-backend` is drawn as a new box, annotated with the fact that carries the
+whole fixture: its certificate names `upstream-mismatch`, not the name it is dialled by. Its egress
+leg is drawn from the *variant group* rather than from the primary instance, because the primary
+never dials it -- only the matched pair does -- and it crosses the gateway-egress trust boundary like
+every other egress leg. The `<desc>` accessibility narrative carries all of it, including the reason
+the pair is one control rather than two variants.
+
+[WARNING]
+====
+*The read-back was not performed for this edit and is still owed.* The geometry above was placed by
+coordinate arithmetic against the existing elements, not by rendering the result and looking at it,
+because the environment this edit was made in had no SVG renderer. Coordinate arithmetic rules out
+the overlaps it checks for; it does not rule out the ones it did not think to check, and it says
+nothing at all about how either theme renders.
+
+Discharge it before relying on the diagram: re-render and read it back against both themes per the
+deployment diagram-type standard (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`), paying particular
+attention to the new backend box at the right edge, which sits in a 108px vertical gap between `k6`
+and `toxiproxy`, and to the new egress arrow, which crosses the L4-relay polyline. Rendered PNGs
+remain verification artifacts and are never committed.
+====

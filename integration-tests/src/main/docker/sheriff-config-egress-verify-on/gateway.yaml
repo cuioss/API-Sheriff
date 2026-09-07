@@ -1,0 +1,151 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the POSITIVE leg of the egress hostname-verification control
+# (api-sheriff-egress-verify-on in docker-compose.yml, published on 10450). It is overlay-mounted on
+# top of the shared sheriff-config directory so it replaces ONLY gateway.yaml — the endpoints/
+# subdirectory and topology.properties are shared with the primary instance, so the /proxy route
+# resolves identically here. What repoints that route at the hostname-mismatched upstream is the
+# TOPOLOGY_UPSTREAM environment variable on the service, not this file.
+#
+# This instance exists because egress_tls.upstream_verify_hostname is fixed at Vert.x client
+# construction and is therefore a property of the whole gateway process (ADR-0040). A single gateway
+# can only ever exhibit ONE side of the control, so the matched pair is two instances rather than two
+# routes on one.
+#
+# THE PAIR IS A SINGLE-VARIABLE CONTROL. This document and sheriff-config-egress-verify-off/gateway.yaml
+# differ in exactly one scalar: upstream_verify_hostname below. Every other line — including the
+# it-upstream trust profile, which makes chain trust SUCCEED on both legs — is byte-identical apart
+# from the port number in the oidc URLs, which names each instance's own published port so the
+# document is internally consistent. Keep them in lockstep: any second difference means a red
+# verify-on leg no longer isolates the hostname check, and the control silently stops proving what it
+# claims.
+#
+# The anchors, token_validation and oidc blocks are a faithful copy of the primary gateway.yaml so the
+# shared endpoints/ resolve identically and the offline it-static JWKS issuer reaches readiness without
+# Keycloak. Beyond egress_tls the only intentional difference from the primary is the absence of
+# tls.passthrough_sni (the SNI front never starts, so Quarkus terminates directly on the public port —
+# matching the mTLS, cookie and ws-admission instances).
+version: 1
+metadata:
+  config_version: "integration-test-egress-verify-on"
+allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+tls:
+  alpn: ["h2", "http/1.1"]
+# --- The point of this instance: hostname verification ON against a mismatched upstream ----------
+# upstream_verify_hostname: true is the SHIPPED DEFAULT, and stating it here is deliberate rather
+# than redundant. This file is one half of a matched pair whose only difference must be this scalar,
+# so the positive leg spells out the value it is controlling for; a reader diffing the two documents
+# sees the single variable instead of an absence they have to know the default of.
+#
+# upstream_tls_profile binds the egress clients' anchors to the it-upstream bucket, which
+# it-upstream-trust.properties points at a store holding the mismatched upstream's own certificate.
+# So the chain VERIFIES here. That is what leaves the hostname check as the only thing that can fail:
+# this instance must refuse mismatched-tls-backend because its certificate names upstream-mismatch,
+# not because the certificate is untrusted.
+egress_tls:
+  upstream_verify_hostname: true
+  upstream_tls_profile: it-upstream
+anchors:
+  api:
+    path_prefix: /proxy
+    type: proxy
+    access: public
+  bff:
+    path_prefix: /bff
+    type: proxy
+    access: public
+  bff-session:
+    path_prefix: /bff-session
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+  secure:
+    path_prefix: /secure
+    type: proxy
+    access: authenticated
+    auth:
+      require: bearer
+  graphql:
+    path_prefix: /graphql
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+  upload:
+    path_prefix: /upload
+    type: proxy
+    access: public
+    allowed_methods: ["POST"]
+    security_filter:
+      max_body_bytes: 67108864
+  ws:
+    path_prefix: /ws
+    type: proxy
+    access: public
+  grpc:
+    path_prefix: /grpc
+    type: proxy
+    access: public
+  assets-public:
+    path_prefix: /assets
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: it-static
+      issuer: https://api-sheriff.test/it
+      jwks:
+        source: file
+        file: /app/certificates/test-jwks.json
+    - name: benchmark-keycloak
+      issuer: https://keycloak:8443/realms/benchmark
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+    - name: integration-keycloak
+      issuer: https://keycloak:8443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        allowed_egress_hosts: ["keycloak"]
+        tls_profile: benchmark-idp
+# --- Server-mode BFF confidential-client block ---------------------------------------------------
+# Kept in lockstep with the primary gateway.yaml (the shared endpoints/ directory declares a
+# require: session route, and ConfigValidator refuses a session floor with no oidc block). No login
+# is ever driven against this instance; the URLs name this instance's own published port so the
+# document is internally consistent rather than silently pointing at the primary gateway.
+oidc:
+  issuer: https://keycloak:8443/realms/integration
+  client_id: integration-client
+  client_secret: ${OIDC_CLIENT_SECRET}
+  scopes: ["openid", "profile", "email"]
+  redirect_uri: https://localhost:10450/auth/callback
+  logout:
+    path: /auth/logout
+    post_logout_redirect_uri: https://localhost:10450/auth/logout/return
+    final_redirect: /
+    backchannel_path: /auth/backchannel
+  session:
+    mode: server
+    store: memory
+    ttl_seconds: 3600
+    refresh:
+      enabled: true
+      leeway_seconds: 30
+    csrf:
+      trusted_origins: ["https://localhost:10450"]
+  user_info:
+    path: /auth/userinfo
+    allowed_claims: ["sub", "preferred_username", "email", "groups"]
+    default_view: ["sub", "preferred_username"]
+  login:
+    path: /auth/login

@@ -119,6 +119,61 @@ services:
       retries: 10
       start_period: 15s
 
+  # TLS-terminated upstream whose certificate deliberately does NOT name it, backing the egress
+  # hostname-verification matched control (ADR-0040). It serves HTTPS on 8443 from the committed
+  # upstream-mismatch.crt/.key pair, whose only SAN is `upstream-mismatch` — while the two
+  # api-sheriff-egress-verify-* gateways dial it as `mismatched-tls-backend`. That non-overlap IS the
+  # fixture: it is the single condition the verify-on instance must refuse and the verify-off
+  # instance must tolerate.
+  #
+  # The material is MOUNTED from the committed certificates/ directory rather than generated at
+  # container start as passthrough-backend does. The two conventions answer different needs:
+  # passthrough-backend's certificate only has to exist, so generating it needs no fixture at all,
+  # whereas this one must chain to the anchors upstream-truststore.p12 already holds — a
+  # freshly-generated certificate would be untrusted and BOTH legs of the control would fail on chain
+  # trust, proving nothing about hostname matching.
+  #
+  # No host port is published — it is reached only by the gateways on the internal compose network.
+  mismatched-tls-backend:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./src/main/docker/certificates:/etc/nginx/certificates:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        cat > /etc/nginx/conf.d/default.conf <<'NGINX'
+        server {
+          listen 8443 ssl;
+          server_name mismatched-tls-backend;
+          ssl_certificate     /etc/nginx/certificates/upstream-mismatch.crt;
+          ssl_certificate_key /etc/nginx/certificates/upstream-mismatch.key;
+          # The gateways mount the SHARED endpoints/ directory, so their /proxy route resolves the
+          # UPSTREAM alias with go-httpbin's /anything base path appended. Answering any path with a
+          # fixed 200 keeps this backend a pure TLS fixture: the control is about whether the dial
+          # completes at all, so the response body only has to be unambiguously ours.
+          location / {
+            add_header Content-Type text/plain always;
+            return 200 "mismatched-tls-backend\n";
+          }
+        }
+        NGINX
+        exec nginx -g 'daemon off;'
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    healthcheck:
+      # Same probe shape as passthrough-backend: nginx -t validates the rendered config and the
+      # readability of the mounted key material, which is what dependents must gate on. A TLS
+      # handshake is deliberately not exercised here — for this backend a successful handshake from
+      # an arbitrary client would say nothing about the mismatch the control turns on.
+      test: ["CMD-SHELL", "nginx -t"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
   # Routable upstream backend for the proxy: /anything/* echoes the complete
   # received request as JSON, so integration tests can assert exactly what the
   # gateway forwarded. Reached by the gateway on the internal network as
@@ -232,7 +287,11 @@ services:
       # only the logical profile (jwks.tls_profile: benchmark-idp); this mounted file binds it to a
       # concrete store, so the shipped artifact carries no benchmark-idp key and no trust password in
       # any profile. Loaded from the already-mounted certificates/ volume — no new volume is added.
-      # Every QUARKUS_PROFILE=it gateway instance sets this; the value is identical across all seven.
+      # Every QUARKUS_PROFILE=it gateway instance sets this. Seven of the nine carry exactly this
+      # value; the two api-sheriff-egress-verify-* instances append a second, comma-separated entry
+      # (it-upstream-trust.properties) because they are the only instances naming an
+      # egress_tls.upstream_tls_profile. They extend the list rather than replacing it — the
+      # benchmark-idp bucket is still required there.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
       # File logging to mounted target directory. The shipped artifact ships file logging OFF, so a
       # deployment that wants a log file switches it on here — the enable flag and the path are one
@@ -264,7 +323,7 @@ services:
       # insecure-requests — so supplying these two keys converts port 9000 itself to HTTPS. Every
       # consumer of 9000 (host readiness probes, Prometheus, the k6 health benchmarks) must speak
       # TLS with -k / insecure_skip_verify, because the certificate is the self-signed localhost
-      # bundle. Six of the seven gateway instances carry this pair; api-sheriff-plain-mgmt is the one
+      # bundle. Eight of the nine gateway instances carry this pair; api-sheriff-plain-mgmt is the one
       # deliberate exception, documented at its own service definition.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -399,7 +458,7 @@ services:
       # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
       # see that service's comment for the single-port mechanism. Without it this instance's
       # management port 19001 stays plain HTTP while the primary's is HTTPS, and the host-side
-      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006) would hang.
+      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008) would hang.
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep and is
       # gated by its own http:// block.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -496,7 +555,7 @@ services:
       # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
       # see that service's comment for the single-port mechanism. Without it this instance's
       # management port 19002 stays plain HTTP while the primary's is HTTPS, and the host-side
-      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006) would hang.
+      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008) would hang.
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -599,7 +658,7 @@ services:
       # Management-interface certificate, kept in lockstep with every other instance — see the
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19003 stays plain HTTP while the others are HTTPS, and the
-      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006)
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008)
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -686,7 +745,7 @@ services:
       # Management-interface certificate, kept in lockstep with every other instance — see the
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19004 stays plain HTTP while the others are HTTPS, and the
-      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006)
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008)
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -898,7 +957,7 @@ services:
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19006 stays plain HTTP while the others are HTTPS, and the
       # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and
-      # 19006) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
+      # 19006-19008) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
@@ -942,6 +1001,212 @@ services:
         reservations:
           memory: 256M
           cpus: '1.0'
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
+  # --- The egress hostname-verification matched control, positive leg ------------------------------
+  # egress_tls.upstream_verify_hostname is bound at Vert.x client construction, so it is a property of
+  # the whole gateway process (ADR-0040) — one instance can only ever exhibit one side of the control.
+  # This pair is therefore two instances rather than two routes on one, published on 10450/10451.
+  #
+  # Both dial the SAME mismatched-tls-backend, whose certificate names upstream-mismatch and not the
+  # dialled name, and both bind the it-upstream trust profile that holds that certificate — so chain
+  # trust SUCCEEDS on both legs and the hostname check is the only variable left. This leg must refuse
+  # the upstream; the verify-off leg below must reach it.
+  #
+  # TOPOLOGY_UPSTREAM is what repoints the shared /proxy route at that backend. The overlay
+  # gateway.yaml cannot do it: endpoints/ and topology.properties are shared with the primary
+  # instance, and topology.properties resolves UPSTREAM through an in-file ${TOPOLOGY_UPSTREAM:-...}
+  # placeholder (ADR-0004 Amendment A1) precisely so a deployment can repoint it without a second
+  # copy of the endpoint descriptor.
+  #
+  # QUARKUS_CONFIG_LOCATIONS carries TWO files here, comma-separated, where every other instance
+  # carries one: this pair is the only consumer of it-upstream-trust.properties. Dropping the second
+  # entry leaves upstream_tls_profile: it-upstream naming an unbound profile, which is a hard boot
+  # failure by the resolver's fail-closed contract — not a silent fallback to default trust.
+  #
+  # The memory limit is 256M rather than the 512M the suite-serving instances carry. These two serve
+  # exactly one assertion each against a fixed 200-byte upstream response, never the IT suite, so the
+  # larger budget would only reserve host memory the pair cannot use. ADR-0012's equal-budget rule
+  # binds the benchmark-compared instances (the primary and passthrough-empty arms); it does not reach
+  # a pair that is never benchmarked and is compared only against each other, on equal budgets.
+  api-sheriff-egress-verify-on:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597). This is the JVM DEFAULT
+    # store and is unrelated to the it-upstream profile below, which binds the Vert.x egress clients'
+    # anchors: the resolved profile REPLACES those clients' trust and never consults this one.
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
+
+    ports:
+      - "10450:8443"  # External test port for the verify-on leg (test.egress.verify.on.port)
+      - "19007:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      # Two config locations, not one — see the service comment. The first is the benchmark-idp trust
+      # bucket every it-profile instance carries; the second binds the it-upstream profile this
+      # instance's overlay names.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties,/app/certificates/it-upstream-trust.properties
+      - QUARKUS_LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/logs/quarkus-egress-verify-on.log
+      # Repoint the shared /proxy route at the hostname-mismatched TLS upstream — see the service
+      # comment for why this is an environment variable rather than an overlay concern. Identical on
+      # both legs of the pair: the upstream is the constant, the knob is the variable.
+      - TOPOLOGY_UPSTREAM=https://mismatched-tls-backend:8443
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19007 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness wait in start-integration-container.sh would hang.
+      # api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
+      # (oidc.client_secret) resolves to via EnvSecretResolver — kept in lockstep with the primary
+      # api-sheriff service, whose gateway.yaml carries the same oidc block.
+      - OIDC_CLIENT_SECRET=integration-secret
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+      # The only instances that gate on this backend. Its listener must be up before the assertion
+      # runs, or a connection refusal would be indistinguishable from the hostname refusal under test.
+      mismatched-tls-backend:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the verify-on variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-egress-verify-on/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '2.0'
+        reservations:
+          memory: 128M
+          cpus: '0.5'
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
+  # --- The egress hostname-verification matched control, negative leg ------------------------------
+  # Byte-identical to api-sheriff-egress-verify-on above apart from the overlay path, the two published
+  # ports, the log file name and the container name. The behavioural difference lives entirely in the
+  # overlaid gateway.yaml, which differs from its sibling in exactly one scalar
+  # (egress_tls.upstream_verify_hostname: false).
+  #
+  # It keeps the it-upstream trust profile rather than dropping it, and that is load-bearing: the
+  # relaxation is HOSTNAME MATCHING ONLY, so this instance still refuses an untrusted chain. Dropping
+  # the profile would make this leg fail on chain trust instead, and the pair would then read as a
+  # working control while the knob under test was never exercised.
+  api-sheriff-egress-verify-off:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597).
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
+
+    ports:
+      - "10451:8443"  # External test port for the verify-off leg (test.egress.verify.off.port)
+      - "19008:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      # Two config locations, in lockstep with the verify-on leg — see that service's comment.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties,/app/certificates/it-upstream-trust.properties
+      - QUARKUS_LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/logs/quarkus-egress-verify-off.log
+      # Identical to the verify-on leg: the upstream is the constant of this control, the
+      # hostname-verification knob is the variable.
+      - TOPOLOGY_UPSTREAM=https://mismatched-tls-backend:8443
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19008 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness wait in start-integration-container.sh would hang.
+      # api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid gateway.yaml
+      # (oidc.client_secret) resolves to via EnvSecretResolver.
+      - OIDC_CLIENT_SECRET=integration-secret
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+      mismatched-tls-backend:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the verify-off variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-egress-verify-off/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '2.0'
+        reservations:
+          memory: 128M
+          cpus: '0.5'
     # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
     # healthcheck: key here; the image carries exactly one executable, so only the exec form is
     # available and only the image can carry it.
