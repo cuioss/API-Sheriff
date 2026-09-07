@@ -96,8 +96,11 @@ class EgressTrustProfileResolverTest {
         GatewayException thrown = assertThrows(GatewayException.class, () -> resolver.resolve(profile));
 
         String message = thrown.getMessage();
-        assertAllDiagnosticMarkers(message, "egress_tls.upstream_tls_profile",
-                "quarkus.tls." + profile + ".trust-store");
+        assertTrue(message.contains("egress_tls.upstream_tls_profile"),
+                () -> "the diagnostic must name the gateway.yaml key the operator actually wrote, got: "
+                        + message);
+        assertTrue(message.contains("quarkus.tls." + profile + ".trust-store"),
+                () -> "the diagnostic must name the concrete runtime key that binds it, got: " + message);
     }
 
     @Test
@@ -183,13 +186,6 @@ class EgressTrustProfileResolverTest {
         StubRegistry registry = new StubRegistry();
         registry.register(profile, configuration);
         return new EgressTrustProfileResolver(registry);
-    }
-
-    private static void assertAllDiagnosticMarkers(String message, String... markers) {
-        for (String marker : markers) {
-            assertTrue(message.contains(marker),
-                    () -> "the diagnostic must contain '" + marker + "', got: " + message);
-        }
     }
 
     /**
