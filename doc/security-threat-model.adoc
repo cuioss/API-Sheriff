@@ -626,8 +626,9 @@ countable item rather than left to be inferred from a green suite. Closing it me
 descriptor pair for the JWKS leg, which needs an IdP fixture whose certificate does not name the
 dialled host; it is recorded, not scheduled.
 
-*Scope limit (recorded, not a residual risk).* `egress_tls` governs the three Vert.x egress clients
-and does not reach the *asset-origin* fetch, which is a fourth terminated-egress TLS leg: an asset
+*Scope limit (recorded, not a residual risk).* `egress_tls`'s *upstream* settings govern the three
+Vert.x egress clients, and `jwks_verify_hostname` governs the JWKS back-channel; neither reaches the
+*asset-origin* fetch, which is a further terminated-egress TLS leg: an asset
 route with an `https` origin is fetched through a JDK `java.net.http.HttpClient` that carries neither
 setting. This is recorded separately from the residual risk above because it does not cut in the
 dangerous direction. Hostname verification there is *fail-safe*: the JDK client checks the name
