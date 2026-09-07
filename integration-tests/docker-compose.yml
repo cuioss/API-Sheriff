@@ -111,9 +111,14 @@ services:
       - api-sheriff
     restart: unless-stopped
     healthcheck:
-      # /dev/tcp readiness probe on the TLS port; nginx:alpine ships /bin/sh but the ssl handshake
-      # is not exercised here — a TCP accept is sufficient to gate dependents on listener readiness.
-      test: ["CMD-SHELL", "test -f /etc/nginx/passthrough-backend.crt && nginx -t"]
+      # Two independent properties, both required. `nginx -t` proves the rendered config parses and
+      # the key material is readable; the `nc -z` probe proves the TLS port actually ACCEPTS
+      # connections. Config validity does not imply an accepting listener, and dependents gate on
+      # service_healthy, so a config-only probe would release them against a socket that still
+      # refuses. busybox `nc` is the probe: the image ships no bash, so the /dev/tcp redirection form
+      # is not available under its /bin/sh. The ssl handshake is deliberately not exercised — a TCP
+      # accept is what listener readiness means here.
+      test: ["CMD-SHELL", "test -f /etc/nginx/passthrough-backend.crt && nginx -t && nc -z -w 2 127.0.0.1 8443"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -164,11 +169,16 @@ services:
       - api-sheriff
     restart: unless-stopped
     healthcheck:
-      # Same probe shape as passthrough-backend: nginx -t validates the rendered config and the
-      # readability of the mounted key material, which is what dependents must gate on. A TLS
-      # handshake is deliberately not exercised here — for this backend a successful handshake from
-      # an arbitrary client would say nothing about the mismatch the control turns on.
-      test: ["CMD-SHELL", "nginx -t"]
+      # Same probe shape as passthrough-backend: `nginx -t` validates the rendered config and the
+      # readability of the mounted key material, then `nc -z` proves the TLS port ACCEPTS
+      # connections. The second half is load-bearing for this backend in particular. Both
+      # api-sheriff-egress-verify-* gateways gate on service_healthy here, so a config-only probe
+      # could release them against a socket that still refuses — and that refusal reaches the
+      # verify-on leg as exactly the 502 the hostname-verification control expects. The control would
+      # then report success while proving nothing about hostname matching: a false pass, not a flake.
+      # A TLS handshake is still deliberately not exercised — for this backend a successful handshake
+      # from an arbitrary client would say nothing about the mismatch the control turns on.
+      test: ["CMD-SHELL", "nginx -t && nc -z -w 2 127.0.0.1 8443"]
       interval: 5s
       timeout: 3s
       retries: 10

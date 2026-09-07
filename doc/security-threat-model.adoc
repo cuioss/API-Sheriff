@@ -43,7 +43,9 @@ regression re-opens a known-historical hole loudly. Status values:
 API Sheriff is not implementing these controls from scratch -- two audited libraries own
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
-of the local `cui-http` (2.1.0) and `TokenSheriff` (0.9.2) trees.
+of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
+`cui-http` 3.0 -- overridden in the root `pom.xml` above the parent-managed 2.2 -- and
+`TokenSheriff` 0.9.4.
 
 *`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes

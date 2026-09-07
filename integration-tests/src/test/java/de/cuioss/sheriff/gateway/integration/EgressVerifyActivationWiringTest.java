@@ -94,8 +94,16 @@ class EgressVerifyActivationWiringTest {
     private static final String TRUST_STORE_PASSWORD_KEY = "quarkus.tls.it-upstream.trust-store.p12.password";
     private static final String EXPECTED_TRUST_STORE = "/app/certificates/upstream-truststore.p12";
 
-    private static final String VERIFY_ON_SERVICE = "api-sheriff-egress-verify-on";
-    private static final String VERIFY_OFF_SERVICE = "api-sheriff-egress-verify-off";
+    /**
+     * The compose service-name prefix every member of the egress-verify family carries. The family is
+     * DERIVED from the parsed compose document through this prefix rather than enumerated, so a leg
+     * added later is swept by the overlay, trust-binding and origin-gating assertions without an edit
+     * here — an enumerated pair cannot see a new instance that bypasses all three.
+     */
+    private static final String EGRESS_VERIFY_SERVICE_PREFIX = "api-sheriff-egress-verify-";
+
+    private static final String VERIFY_ON_SERVICE = EGRESS_VERIFY_SERVICE_PREFIX + "on";
+    private static final String VERIFY_OFF_SERVICE = EGRESS_VERIFY_SERVICE_PREFIX + "off";
 
     /** The shared config-directory mount both legs carry beneath their own single-file overlay. */
     private static final String SHARED_CONFIG_MOUNT = "./src/main/docker/sheriff-config:/app/sheriff-config:ro";
@@ -217,21 +225,28 @@ class EgressVerifyActivationWiringTest {
         // shared mount and the file mount must be present: without the shared mount the endpoints tree
         // is absent and the instance boots with no routes; without the file mount it silently runs the
         // BASE gateway.yaml, which declares no egress_tls at all and would make both legs behave
-        // identically. Asserting the exact pair also catches a swap, which would invert the control.
+        // identically. The sweep runs over the DERIVED family, so a leg added later cannot bypass it,
+        // and deriving the expected overlay directory from each service's OWN name is what catches a
+        // swap — which would otherwise invert the control.
+        for (String service : egressVerifyServices(services)) {
+            List<String> mounts = volumes(services, service);
+            assertTrue(mounts.contains(SHARED_CONFIG_MOUNT),
+                    service + " must mount the shared config directory " + SHARED_CONFIG_MOUNT
+                            + " (mounts: " + mounts + ")");
+            assertTrue(mounts.contains(overlayMountFor(service)),
+                    service + " must overlay its OWN gateway.yaml: " + overlayMountFor(service)
+                            + " (mounts: " + mounts + ")");
+        }
+
+        // The two legs the ITs actually address stay named explicitly on top of the sweep, so a
+        // failure reports the concrete missing mount for a known leg rather than only a set mismatch.
         List<String> onMounts = volumes(services, VERIFY_ON_SERVICE);
         List<String> offMounts = volumes(services, VERIFY_OFF_SERVICE);
-
-        assertTrue(onMounts.contains(SHARED_CONFIG_MOUNT),
-                VERIFY_ON_SERVICE + " must mount the shared config directory " + SHARED_CONFIG_MOUNT
+        assertTrue(onMounts.contains(overlayMountFor(VERIFY_ON_SERVICE)),
+                VERIFY_ON_SERVICE + " must overlay " + overlayMountFor(VERIFY_ON_SERVICE)
                         + " (mounts: " + onMounts + ")");
-        assertTrue(onMounts.contains(overlayMount("on")),
-                VERIFY_ON_SERVICE + " must overlay its OWN gateway.yaml: " + overlayMount("on")
-                        + " (mounts: " + onMounts + ")");
-        assertTrue(offMounts.contains(SHARED_CONFIG_MOUNT),
-                VERIFY_OFF_SERVICE + " must mount the shared config directory " + SHARED_CONFIG_MOUNT
-                        + " (mounts: " + offMounts + ")");
-        assertTrue(offMounts.contains(overlayMount("off")),
-                VERIFY_OFF_SERVICE + " must overlay its OWN gateway.yaml: " + overlayMount("off")
+        assertTrue(offMounts.contains(overlayMountFor(VERIFY_OFF_SERVICE)),
+                VERIFY_OFF_SERVICE + " must overlay " + overlayMountFor(VERIFY_OFF_SERVICE)
                         + " (mounts: " + offMounts + ")");
     }
 
@@ -247,13 +262,19 @@ class EgressVerifyActivationWiringTest {
         // failure this catches is not quiet — the overlay names upstream_tls_profile: it-upstream, and
         // an unbound profile aborts boot by the resolver's fail-closed contract — but it costs a
         // native build and a container that never reaches readiness to discover.
-        for (String service : List.of(VERIFY_ON_SERVICE, VERIFY_OFF_SERVICE)) {
+        for (String service : egressVerifyServices(services)) {
             List<String> locations = configLocations(services, service);
             assertTrue(locations.contains(MOUNTED_TRUST_BINDING),
                     service + " must load " + MOUNTED_TRUST_BINDING + " via " + LOCATIONS_VARIABLE
                             + " (it loads " + locations + ") — its overlay names " + TLS_PROFILE_KEY
                             + ": " + EXPECTED_TLS_PROFILE + ", and an unbound profile aborts boot");
         }
+
+        // The two known legs named explicitly on top of the derived sweep.
+        assertTrue(configLocations(services, VERIFY_ON_SERVICE).contains(MOUNTED_TRUST_BINDING),
+                VERIFY_ON_SERVICE + " must load " + MOUNTED_TRUST_BINDING);
+        assertTrue(configLocations(services, VERIFY_OFF_SERVICE).contains(MOUNTED_TRUST_BINDING),
+                VERIFY_OFF_SERVICE + " must load " + MOUNTED_TRUST_BINDING);
     }
 
     @Test
@@ -327,12 +348,18 @@ class EgressVerifyActivationWiringTest {
         assertTrue(offUntrusted.contains(UNTRUSTED_ORIGIN_SERVICE), UNTRUSTED_VARIABLE + " must name "
                 + UNTRUSTED_ORIGIN_SERVICE + ", whose certificate is generated at container start and"
                 + " therefore chains to nothing any committed truststore holds, was: " + offUntrusted);
-        for (String service : List.of(VERIFY_ON_SERVICE, VERIFY_OFF_SERVICE)) {
+        for (String service : egressVerifyServices(services)) {
             assertTrue(dependsOn(services, service).contains(UNTRUSTED_ORIGIN_SERVICE),
                     service + " must gate on " + UNTRUSTED_ORIGIN_SERVICE + " — a refusal from a"
                             + " listener that is not up yet reads exactly like the chain-trust refusal"
                             + " the third leg asserts, and the control would pass without dialling");
         }
+
+        // The two known legs named explicitly on top of the derived sweep.
+        assertTrue(dependsOn(services, VERIFY_ON_SERVICE).contains(UNTRUSTED_ORIGIN_SERVICE),
+                VERIFY_ON_SERVICE + " must gate on " + UNTRUSTED_ORIGIN_SERVICE);
+        assertTrue(dependsOn(services, VERIFY_OFF_SERVICE).contains(UNTRUSTED_ORIGIN_SERVICE),
+                VERIFY_OFF_SERVICE + " must gate on " + UNTRUSTED_ORIGIN_SERVICE);
     }
 
     @Test
@@ -365,13 +392,45 @@ class EgressVerifyActivationWiringTest {
     // --- helpers ---------------------------------------------------------------------------------
 
     /**
-     * The single-file overlay mount for one leg.
+     * Every compose service whose name places it in the egress-verify family, derived from the parsed
+     * document by {@link #EGRESS_VERIFY_SERVICE_PREFIX} rather than enumerated. A leg added later is
+     * therefore swept by the overlay, trust-binding and origin-gating assertions with no edit here.
+     * <p>
+     * The derived set is asserted NON-EMPTY, and asserted to still contain both known legs. A pattern
+     * that stopped matching — a service rename, a family renamed wholesale — would otherwise leave
+     * every loop over this set iterating nothing and passing vacuously, which is the failure mode a
+     * derived population introduces and an enumerated one cannot have.
      *
-     * @param leg {@code on} or {@code off}
+     * @param services the parsed services block
+     * @return the matching service names, in name order
+     */
+    private static Set<String> egressVerifyServices(Map<String, Object> services) {
+        Set<String> matched = new TreeSet<>();
+        for (String name : services.keySet()) {
+            if (name.startsWith(EGRESS_VERIFY_SERVICE_PREFIX)) {
+                matched.add(name);
+            }
+        }
+        assertFalse(matched.isEmpty(), "no compose service name starts with '"
+                + EGRESS_VERIFY_SERVICE_PREFIX + "' — every derived sweep would then iterate an empty"
+                + " set and pass vacuously; declared services were " + services.keySet());
+        assertTrue(matched.containsAll(List.of(VERIFY_ON_SERVICE, VERIFY_OFF_SERVICE)),
+                "the derived egress-verify family must still contain both legs the ITs address ("
+                        + VERIFY_ON_SERVICE + ", " + VERIFY_OFF_SERVICE + "), was: " + matched);
+        return matched;
+    }
+
+    /**
+     * The single-file overlay mount one egress-verify service must carry, with the overlay directory
+     * derived from that service's OWN name. Deriving rather than passing the leg is what makes a
+     * swapped pair fail: each service is checked against the overlay its name claims.
+     *
+     * @param service a compose service name carrying {@link #EGRESS_VERIFY_SERVICE_PREFIX}
      * @return the expected compose volume entry
      */
-    private static String overlayMount(String leg) {
-        return "./src/main/docker/sheriff-config-egress-verify-" + leg
+    private static String overlayMountFor(String service) {
+        return "./src/main/docker/sheriff-config-egress-verify-"
+                + service.substring(EGRESS_VERIFY_SERVICE_PREFIX.length())
                 + "/gateway.yaml:/app/sheriff-config/gateway.yaml:ro";
     }
 

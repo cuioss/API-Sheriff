@@ -77,12 +77,13 @@ link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
 
 === The collapsed variant group
 
-Eight further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
-overlaid `gateway.yaml`, their published ports, and -- for some instances -- their environment. The
-per-instance environment differences are named where they matter below; do not read this sentence as
-an exhaustive list. Drawing all nine in full would bury the affordances the diagram exists to
-show, so they are collapsed into one annotated group that still names every instance and every port
-pair:
+Eight further gateway instances run the *same* `api-sheriff:distroless` image and differ only in
+configuration: their published ports, an overlaid `gateway.yaml` *where one applies*, and -- for
+some instances -- their environment. Neither lever is universal: `api-sheriff-plain-mgmt` overlays no
+`gateway.yaml` at all and is configured by a single environment variable. The per-instance
+differences are named where they matter below; do not read this sentence as an exhaustive list.
+Drawing all nine in full would bury the affordances the diagram exists to show, so they are collapsed
+into one annotated group that still names every instance and every port pair:
 
 [cols="2,1,1,3"]
 |===
@@ -146,12 +147,21 @@ pair:
   fail on chain trust and the knob under test would never be exercised.
 |===
 
-The two `api-sheriff-egress-verify-*` instances are the only pair in this table that must be read
-*together*. Every other row is separate because some process-wide property makes it incompatible with
-the primary instance; these two are separate from each other for that same reason, but they are also a
-single-variable matched control. Their value comes from the *difference* between them, so a change
-that touches one and not the other silently destroys the control while leaving both instances
-booting.
+The two `api-sheriff-egress-verify-*` instances are one matched pair in this table that must be read
+*together*. `api-sheriff-cookie` and `api-sheriff-cookie-2` are the other, and the two pairs are
+matched controls of opposite shape:
+
+* the *cookie-portability* pair shares only the sealing key and is otherwise unrelated, and its claim
+  is that the two legs *agree* -- a cookie sealed by one instance is accepted by the other, which is a
+  two-instance fact rather than an inference drawn from one process;
+* the *egress hostname-verification* pair is identical apart from one scalar
+  (`upstream_verify_hostname`), and its claim is that the two legs *disagree* -- verify-on refuses
+  `mismatched-tls-backend`, verify-off admits it.
+
+Every remaining row is separate only because some process-wide property makes it incompatible with
+the primary instance. Both pairs draw their value from the relationship between their members, so a
+change that touches one leg and not the other silently destroys the control while leaving both
+instances booting.
 
 === The hostname-mismatched backend
 
