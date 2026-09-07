@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -22,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,6 +33,7 @@ import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -51,6 +54,7 @@ import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -65,7 +69,9 @@ import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -73,15 +79,21 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
+import io.vertx.core.http.WebSocketClientOptions;
 import io.vertx.core.http.WebSocketConnectOptions;
+import io.vertx.core.net.PemTrustOptions;
+import io.vertx.core.net.TrustOptions;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
+import lombok.experimental.Delegate;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -100,6 +112,9 @@ import org.junit.jupiter.api.io.TempDir;
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — boot-time assembly, catch-all registration, and graceful drain")
 class GatewayEdgeRouteTest {
+
+    /** The logical trust-profile name the egress-TLS binding tests bind and assert against. */
+    private static final String PROFILE = "corporate-up";
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -299,7 +314,8 @@ class GatewayEdgeRouteTest {
             new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
-                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
+                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                    unconsultedTrustProfileResolver()).registerRoutes(router);
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -858,7 +874,8 @@ class GatewayEdgeRouteTest {
             Router router = Router.router(vertx);
             new GatewayEdgeRoute(new RouteTable(List.of(proxyRoute(upstream.actualPort()))), loaded,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert()).registerRoutes(router);
+                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                    unconsultedTrustProfileResolver()).registerRoutes(router);
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -885,6 +902,112 @@ class GatewayEdgeRouteTest {
                     .effectiveAllowedMethods(List.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LOOPBACK, upstreamPort, ""))
                     .build();
+        }
+    }
+
+    /**
+     * The three egress client-construction sites and the gateway-global {@code egress_tls} values
+     * they bind (ADR-0040). The assertions read the options objects actually handed to Vert.x rather
+     * than the constructed clients, because a client exposes neither setting — and reading the
+     * arguments is what makes these tests about the WIRING: a site that stopped passing the resolved
+     * values would go red here, which an assertion on a freshly-built options object would not.
+     * <p>
+     * A route table of one HTTP and one gRPC route produces exactly two {@code HttpClient}s — the
+     * assembler keys its client cache on (scheme, host, port, forced-h2) — so both {@code clientFor}
+     * branches are covered, and the edge-wide WebSocket client is the third site.
+     */
+    @Nested
+    @DisplayName("gateway-global egress_tls bound at all three client-construction sites")
+    class EgressTlsBinding {
+
+        @Test
+        @DisplayName("hostname verification is on at all three sites for a document with no egress_tls block")
+        void verificationOnByDefaultAtAllThreeSites() {
+            CapturingVertx capturing = bootWith(null, unconsultedTrustProfileResolver());
+
+            assertAll("every constructed client verifies the upstream hostname",
+                    () -> assertTrue(capturing.plainHttpOptions().isVerifyHost(),
+                            "the default HTTP client must verify the upstream hostname"),
+                    () -> assertTrue(capturing.forcedHttp2Options().isVerifyHost(),
+                            "the forced-HTTP/2 client must verify the upstream hostname"),
+                    () -> assertTrue(capturing.webSocketOptions().isVerifyHost(),
+                            "the edge-wide WebSocket client must verify the upstream hostname"));
+        }
+
+        @Test
+        @DisplayName("upstream_verify_hostname: false reaches all three sites")
+        void verificationOffReachesAllThreeSites() {
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null),
+                    unconsultedTrustProfileResolver());
+
+            assertAll("the relaxation reaches every constructed client",
+                    () -> assertFalse(capturing.plainHttpOptions().isVerifyHost(),
+                            "the default HTTP client must carry the relaxed setting"),
+                    () -> assertFalse(capturing.forcedHttp2Options().isVerifyHost(),
+                            "the forced-HTTP/2 client must carry the relaxed setting"),
+                    () -> assertFalse(capturing.webSocketOptions().isVerifyHost(),
+                            "the edge-wide WebSocket client must carry the relaxed setting — a wss:// "
+                                    + "relay reads it from nowhere else"));
+        }
+
+        @Test
+        @DisplayName("with no profile configured no trust options are set at any site")
+        void noProfileLeavesTrustOptionsUnsetAtAllThreeSites() {
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null),
+                    unconsultedTrustProfileResolver());
+
+            assertAll("an unnamed profile leaves every client on the JVM default trust store",
+                    () -> assertNull(capturing.plainHttpOptions().getTrustOptions(),
+                            "no profile named means no setTrustOptions call on the default client"),
+                    () -> assertNull(capturing.forcedHttp2Options().getTrustOptions(),
+                            "no profile named means no setTrustOptions call on the forced-HTTP/2 client"),
+                    () -> assertNull(capturing.webSocketOptions().getTrustOptions(),
+                            "no profile named means no setTrustOptions call on the WebSocket client"));
+        }
+
+        @Test
+        @DisplayName("the default client differs from bare HttpClientOptions in verifyHost alone")
+        void defaultClientDiffersFromBareOptionsInVerifyHostOnly() {
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null),
+                    unconsultedTrustProfileResolver());
+
+            HttpClientOptions restored =
+                    new HttpClientOptions(capturing.plainHttpOptions()).setVerifyHost(true);
+
+            assertEquals(new HttpClientOptions().toJson(), restored.toJson(),
+                    "restoring verifyHost to its default must leave an object indistinguishable from a "
+                            + "bare new HttpClientOptions() — the restructure that introduced the options "
+                            + "object must not have changed the protocol version, the client-level SSL "
+                            + "flag, h2-upgrade negotiation, or anything else");
+        }
+
+        @Test
+        @DisplayName("a configured profile's resolved trust options reach all three sites")
+        void configuredProfileReachesAllThreeSites() {
+            TrustOptions anchors = new PemTrustOptions();
+
+            CapturingVertx capturing = bootWith(new EgressTlsConfig(true, true, PROFILE),
+                    EgressTrustProfiles.binding(PROFILE, anchors));
+
+            assertAll("the resolved anchors reach every constructed client",
+                    () -> assertSame(anchors, capturing.plainHttpOptions().getTrustOptions(),
+                            "the default HTTP client must verify upstreams against the named anchors"),
+                    () -> assertSame(anchors, capturing.forcedHttp2Options().getTrustOptions(),
+                            "the forced-HTTP/2 client must verify upstreams against the named anchors"),
+                    () -> assertSame(anchors, capturing.webSocketOptions().getTrustOptions(),
+                            "the edge-wide WebSocket client must verify upstreams against the named anchors"));
+        }
+
+        private CapturingVertx bootWith(@Nullable EgressTlsConfig egressTls,
+                EgressTrustProfileResolver resolver) {
+            CapturingVertx capturing = new CapturingVertx(vertx);
+            RouteTable table = new RouteTable(List.of(
+                    route("h", Protocol.HTTP, Require.NONE),
+                    route("g", Protocol.GRPC, Require.NONE)));
+            new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).egressTls(egressTls).build(),
+                    new SingletonInstance<>(tokenValidator), capturing, virtualThreadExecutor, hardening,
+                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), resolver);
+            return capturing;
         }
     }
 
@@ -937,7 +1060,12 @@ class GatewayEdgeRouteTest {
 
     private GatewayEdgeRoute newEdge(RouteTable table) {
         return new GatewayEdgeRoute(table, gatewayConfig, new SingletonInstance<>(tokenValidator), vertx,
-                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert());
+                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                unconsultedTrustProfileResolver());
+    }
+
+    private static EgressTrustProfileResolver unconsultedTrustProfileResolver() {
+        return EgressTrustProfiles.unconsulted();
     }
 
     /**
@@ -1001,6 +1129,78 @@ class GatewayEdgeRouteTest {
         @Override
         public Iterator<T> iterator() {
             return List.of(value).iterator();
+        }
+    }
+
+    /**
+     * A {@link Vertx} that records the options object handed to each client factory and otherwise
+     * delegates everything to the real instance, so the edge boots for real while the arguments it
+     * passed stay readable. Delegation rather than a hand-written stub: {@code Vertx} is a wide
+     * interface, only two of its methods are of interest, and every other call must reach the real
+     * runtime — {@code @Delegate} expresses exactly that and cannot drift as the interface grows.
+     */
+    private static final class CapturingVertx implements Vertx {
+
+        @Delegate(excludes = CapturedFactories.class)
+        private final Vertx delegate;
+
+        private final List<HttpClientOptions> httpClientOptions = new ArrayList<>();
+        private final List<WebSocketClientOptions> webSocketClientOptions = new ArrayList<>();
+
+        private CapturingVertx(Vertx delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public HttpClient createHttpClient(HttpClientOptions options) {
+            httpClientOptions.add(options);
+            return delegate.createHttpClient(options);
+        }
+
+        @Override
+        public WebSocketClient createWebSocketClient(WebSocketClientOptions options) {
+            webSocketClientOptions.add(options);
+            return delegate.createWebSocketClient(options);
+        }
+
+        /** @return the options of the default (HTTP/1.1 with h2 upgrade) client */
+        HttpClientOptions plainHttpOptions() {
+            return httpOptionsWhere(false);
+        }
+
+        /** @return the options of the gRPC route's forced-HTTP/2 client */
+        HttpClientOptions forcedHttp2Options() {
+            return httpOptionsWhere(true);
+        }
+
+        /** @return the options of the single edge-wide WebSocket client */
+        WebSocketClientOptions webSocketOptions() {
+            assertEquals(1, webSocketClientOptions.size(),
+                    "the edge builds exactly one WebSocket client, for the whole edge");
+            return webSocketClientOptions.getFirst();
+        }
+
+        /**
+         * Selects the captured HTTP options by branch rather than by call order, so the assertions
+         * name the client they mean instead of depending on the order the assembler happens to walk
+         * the route table in.
+         */
+        private HttpClientOptions httpOptionsWhere(boolean forcedHttp2) {
+            List<HttpClientOptions> matching = httpClientOptions.stream()
+                    .filter(options -> (options.getProtocolVersion() == HttpVersion.HTTP_2) == forcedHttp2)
+                    .toList();
+            assertEquals(1, matching.size(),
+                    () -> "expected exactly one " + (forcedHttp2 ? "forced-HTTP/2" : "default")
+                            + " client, captured " + httpClientOptions.size() + " client(s) in total");
+            return matching.getFirst();
+        }
+
+        /** The two factory methods {@link CapturingVertx} implements itself rather than delegating. */
+        private interface CapturedFactories {
+
+            HttpClient createHttpClient(HttpClientOptions options);
+
+            WebSocketClient createWebSocketClient(WebSocketClientOptions options);
         }
     }
 

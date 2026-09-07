@@ -52,6 +52,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpo
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -85,6 +86,7 @@ import de.cuioss.sheriff.gateway.pipeline.VerbGateStage;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
@@ -99,6 +101,8 @@ import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.WebSocketClientOptions;
+import io.vertx.core.net.TrustOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -266,12 +270,17 @@ public class GatewayEdgeRoute {
      *                              the carved-out OIDC paths. The {@linkplain BffRuntime#inert() inert}
      *                              runtime (a bearer-only or cookie-mode gateway) leaves the bearer
      *                              path and the empty reserved registry unchanged.
+     * @param egressTrustProfileResolver the seam binding {@code egress_tls.upstream_tls_profile}'s
+     *                              logical name to the deployment's trust anchors. Consulted once at
+     *                              boot, and only when the document names a profile; a gateway that
+     *                              names none never reaches it and keeps the JVM default trust store
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
-            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime) {
+            SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
+            EgressTrustProfileResolver egressTrustProfileResolver) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
@@ -307,10 +316,27 @@ public class GatewayEdgeRoute {
         // every asset source the assembler builds — so the request path performs no config lookup
         // and the sources hold an immutable map rather than a live view of configuration.
         Map<String, String> assetContentTypes = assetContentTypesOf(gatewayConfig);
+
+        // The egress-TLS settings are gateway-global by necessity, not by convenience (ADR-0040):
+        // both are fixed at client construction, and one of the three clients is the edge-wide
+        // WebSocket client, which no per-route value could bind. So they are resolved ONCE here and
+        // handed to every construction site below — the two clientFor branches and that WebSocket
+        // client. There is no per-route override and no per-request one; Vert.x offers neither.
+        EgressTlsConfig egressTls = egressTlsOf(gatewayConfig);
+        boolean upstreamVerifyHostname = egressTls.upstreamVerifyHostname();
+        String upstreamTlsProfile = egressTls.upstreamTlsProfile();
+        // Only a NAMED profile reaches the resolver. With none named, no setTrustOptions call is made
+        // at any of the three sites, so the clients keep the JVM default trust store byte-for-byte as
+        // before — the resolved anchors REPLACE a client's trust rather than adding to it, so binding
+        // an unrequested profile would silently narrow what every terminated upstream dial trusts.
+        TrustOptions upstreamTrustOptions = upstreamTlsProfile == null
+                ? null
+                : egressTrustProfileResolver.resolve(upstreamTlsProfile);
+
         RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
         this.routes = assembler.assemble(routeTable,
                 filter -> securityPostureFor(filter, globalProfile),
-                target -> clientFor(vertx, target),
+                target -> clientFor(vertx, target, upstreamVerifyHostname, upstreamTrustOptions),
                 this::guardFor,
                 asset -> assetSourceFor(asset, assetContentTypes));
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
@@ -359,8 +385,16 @@ public class GatewayEdgeRoute {
         this.originValidationStage = new OriginValidationStage();
         // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
         // the dedicated client, and the dialer carries no per-route state — the upstream host, port,
-        // TLS flag and URI all ride on the per-dial WebSocketConnectOptions.
-        this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(),
+        // TLS flag and URI all ride on the per-dial WebSocketConnectOptions. It does carry the
+        // gateway-global egress-TLS values, because WebSocketConnectOptions declares neither a
+        // hostname-verification nor a trust field: a wss:// relay honours them only if they are bound
+        // here, at client construction.
+        WebSocketClientOptions webSocketClientOptions =
+                new WebSocketClientOptions().setVerifyHost(upstreamVerifyHostname);
+        if (upstreamTrustOptions != null) {
+            webSocketClientOptions.setTrustOptions(upstreamTrustOptions);
+        }
+        this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(webSocketClientOptions),
                 upstreamFailureMapper, gatewayEventCounter);
         this.grpcStatusMapper = new GrpcStatusMapper();
 
@@ -1282,14 +1316,37 @@ public class GatewayEdgeRoute {
     }
 
     /**
+     * Resolves the global {@code egress_tls} block into the settings every egress client is built
+     * with. An absent block yields {@link EgressTlsConfig#defaults()} — both flags on, no profile —
+     * which is exactly the pre-existing behaviour: hostname verification enabled and the JVM default
+     * trust store. An absent KEY inside a present block is resolved to {@code true} one layer
+     * earlier, by {@code ConfigLoader}'s {@code EgressTlsDeserializer}, so this method never sees the
+     * primitive {@code false} Jackson would otherwise bind.
+     */
+    private static EgressTlsConfig egressTlsOf(GatewayConfig gatewayConfig) {
+        EgressTlsConfig egressTls = gatewayConfig.egressTls();
+        return egressTls == null ? EgressTlsConfig.defaults() : egressTls;
+    }
+
+    /**
      * Builds the shared Vert.x client for an upstream-target tuple. A gRPC route's tuple carries the
      * {@code forcedHttp2} flag, so it gets a client forced to HTTP/2 (h2 over TLS with ALPN, or
      * prior-knowledge h2c in cleartext) — gRPC requires HTTP/2 end-to-end. Every other tuple gets the
      * default client (HTTP/1.1 with h2 upgrade negotiation).
+     * <p>
+     * Both branches now construct from an options object so both bind the gateway-global egress-TLS
+     * settings. The default branch's object is a bare {@code new HttpClientOptions()} — by
+     * construction the same defaults the no-arg {@code createHttpClient()} used — carrying
+     * {@code setVerifyHost}, and {@code setTrustOptions} only under a configured profile, and
+     * <em>nothing else</em>: no protocol version, no client-level SSL flag, no change to h2-upgrade
+     * negotiation. A route's TLS is still selected per request ({@code DispatchStage}), so a
+     * client-level flag here would change behaviour rather than preserve it.
      */
-    private static HttpClient clientFor(Vertx vertx, RouteRuntimeAssembler.UpstreamTarget target) {
+    private static HttpClient clientFor(Vertx vertx, RouteRuntimeAssembler.UpstreamTarget target,
+            boolean verifyHostname, @Nullable TrustOptions trustOptions) {
         if (!target.forcedHttp2()) {
-            return vertx.createHttpClient();
+            return vertx.createHttpClient(
+                    egressTlsBound(new HttpClientOptions(), verifyHostname, trustOptions));
         }
         HttpClientOptions options = new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2);
         if ("https".equalsIgnoreCase(target.scheme())) {
@@ -1298,7 +1355,23 @@ public class GatewayEdgeRoute {
             // Prior-knowledge h2c: skip the HTTP/1.1 Upgrade dance and speak HTTP/2 in cleartext.
             options.setHttp2ClearTextUpgrade(false);
         }
-        return vertx.createHttpClient(options);
+        return vertx.createHttpClient(egressTlsBound(options, verifyHostname, trustOptions));
+    }
+
+    /**
+     * Applies the gateway-global egress-TLS settings to an HTTP client options object, so both
+     * {@link #clientFor} branches bind them identically rather than each spelling the pair out.
+     * {@code setTrustOptions} is applied only when a profile was configured: a named profile
+     * <em>replaces</em> the client's anchors, so passing {@code null} unconditionally is not the same
+     * no-op as omitting the call.
+     */
+    private static HttpClientOptions egressTlsBound(HttpClientOptions options, boolean verifyHostname,
+            @Nullable TrustOptions trustOptions) {
+        options.setVerifyHost(verifyHostname);
+        if (trustOptions != null) {
+            options.setTrustOptions(trustOptions);
+        }
+        return options;
     }
 
     /**
