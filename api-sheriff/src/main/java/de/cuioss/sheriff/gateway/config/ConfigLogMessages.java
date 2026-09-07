@@ -185,6 +185,30 @@ public final class ConfigLogMessages {
                 .identifier(119)
                 .template("egress_tls.upstream_tls_profile '%s' is in effect — its anchors REPLACE the JVM default trust store on the proxy, gRPC and WebSocket egress clients, so a public certificate authority is no longer trusted on those legs unless the profile carries it too. The asset-origin fetch is not governed by this profile and keeps the JVM default trust store")
                 .build();
+
+        /**
+         * {@code egress_tls.jwks_verify_hostname} resolved to {@code false} at boot, so the JWKS
+         * back-channel no longer compares the dialled name against the IdP certificate's names.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal, for the same reason as
+         * {@link #EGRESS_HOSTNAME_VERIFICATION_DISABLED}: a JWKS endpoint reached through an address
+         * its certificate does not name is a legitimate deployment (ADR-0041), and blocking it would
+         * be wrong. What must not happen is the relaxation reaching production silently.
+         * <p>
+         * The template states the scope rather than leaving it to be inferred, because
+         * <em>"verification off"</em> is the phrase operators reach for and is broader than what the
+         * key does: chain trust is untouched, and the key is separate from
+         * {@code upstream_verify_hostname} — relaxing the JWKS leg does not relax any proxied
+         * upstream, and vice versa. It names no certificate path, no anchor and no issuer URL.
+         * <p>
+         * Emitted once per boot rather than once per issuer: the key is gateway-global, so a gateway
+         * with several issuers reports the posture once.
+         */
+        public static final LogRecord JWKS_HOSTNAME_VERIFICATION_DISABLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(120)
+                .template("egress_tls.jwks_verify_hostname is false — the JWKS back-channel no longer verifies that the IdP certificate names the dialled host. Certificate-chain trust is unaffected and an untrusted JWKS endpoint is still refused. The relaxation applies to every configured issuer's JWKS fetch and to that leg only; egress_tls.upstream_verify_hostname governs the proxy, gRPC and WebSocket egress clients separately and is unchanged by this key. An issuer naming jwks.tls_profile is refused at boot while this key is false, because the two are mutually exclusive. Restore verification by removing the key or setting it back to true in gateway.yaml")
+                .build();
     }
 
     /**

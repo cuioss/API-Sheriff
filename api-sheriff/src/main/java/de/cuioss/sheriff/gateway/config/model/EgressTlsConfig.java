@@ -26,8 +26,12 @@ import org.jspecify.annotations.Nullable;
  * edge-wide WebSocket client, which a per-route value could not bind. There is no
  * per-route override.
  * <p>
- * <strong>The block governs the three Vert.x egress clients, not every https leg the
- * gateway dials.</strong> The asset-origin fetch
+ * <strong>The block is not one switch over every https leg — read each key's own
+ * scope.</strong> {@code upstreamVerifyHostname} and {@code upstreamTlsProfile} govern
+ * the three Vert.x egress clients; {@code jwksVerifyHostname} governs the JWKS
+ * back-channel and nothing else. The two hostname keys are deliberately separate rather
+ * than one shared flag, because the legs are dialled by different clients and an operator
+ * relaxing one has no reason to relax the other. The asset-origin fetch
  * ({@code UpstreamAssetSource.httpFetcher}) builds a JDK {@code java.net.http.HttpClient},
  * which carries neither setting: an {@code https} asset origin therefore keeps full
  * hostname verification and the JVM default trust store whatever this block says.
@@ -43,7 +47,9 @@ import org.jspecify.annotations.Nullable;
  * the dialled name from being compared against the certificate's names; it does
  * <em>not</em> disable certificate-chain validation, does not accept a self-signed
  * certificate, and does not accept a certificate issued by an untrusted authority.
- * Chain trust is a separate mechanism reached through {@code upstreamTlsProfile}.
+ * Chain trust is a separate mechanism, reached per leg: {@code upstreamTlsProfile} for
+ * the Vert.x egress clients, the per-issuer {@code jwks.tls_profile} for the JWKS
+ * back-channel.
  * <p>
  * <strong>An omitted flag resolves to {@code true}, not to the primitive default.</strong>
  * Jackson would bind an absent boolean to {@code false}, so a block naming only
@@ -58,12 +64,22 @@ import org.jspecify.annotations.Nullable;
  *                               client-construction sites; the JDK-client asset-origin
  *                               leg is out of scope and always verifies
  * @param jwksVerifyHostname     whether the JWKS back-channel verifies the same
- *                               (default {@code true}). <strong>Declared and bindable,
- *                               but no production code reads it today</strong> — it is
- *                               not an available control, and a test asserting that it
- *                               binds settles nothing about whether it acts. PLAN-04
- *                               owns both the reader and the behaviour test that proves
- *                               it acts
+ *                               (default {@code true}). Read by
+ *                               {@code TokenValidatorProducer}, which resolves it once
+ *                               at bean construction and passes it to token-sheriff's
+ *                               {@code HttpJwksLoaderConfigBuilder#verifyHostname} for
+ *                               every {@code http} JWKS source, so it governs every
+ *                               configured issuer's JWKS fetch and that leg only.
+ *                               Hostname matching only: chain trust is untouched and an
+ *                               untrusted JWKS certificate is still refused. It is
+ *                               <em>mutually exclusive</em> with a per-issuer
+ *                               {@code jwks.tls_profile} — that profile supplies a
+ *                               caller-built {@code SSLContext}, and the relaxation
+ *                               applies only to the default-trust-store context the JWKS
+ *                               client derives itself, so the combination is refused at
+ *                               boot with {@code CONFIG_INVALID} rather than accepted and
+ *                               silently ignored (ADR-0041). Resolving to {@code false}
+ *                               logs {@code ApiSheriff-120} once at boot
  * @param upstreamTlsProfile     the logical name of the trust profile whose anchors
  *                               verify terminated upstream certificates, {@code null}
  *                               when omitted — the clients then keep the JVM default

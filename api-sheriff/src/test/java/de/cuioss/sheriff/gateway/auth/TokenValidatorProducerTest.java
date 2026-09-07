@@ -20,14 +20,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
 
 
+import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
@@ -45,9 +50,12 @@ import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -481,6 +489,193 @@ class TokenValidatorProducerTest {
         }
     }
 
+    /**
+     * The {@code egress_tls.jwks_verify_hostname} reader, asserted <em>behaviourally</em> against a
+     * real TLS dial.
+     * <p>
+     * <strong>Why a real server rather than a seam assertion.</strong> The flag reaches token-sheriff
+     * through {@code HttpJwksLoaderConfigBuilder#verifyHostname(boolean)} and is not readable back off
+     * the built {@link HttpJwksLoaderConfig} — and even if it were, a getter assertion would prove the
+     * value was <em>carried</em>, never that it <em>acts</em>. That distinction is the whole subject of
+     * {@code doc/development/declared-limit-assertion-coverage.adoc}: this key was declared, bindable
+     * and schema-valid for a whole release while no production code read it, and every visible signal
+     * agreed it was fine. So the assertion here is a dial against
+     * {@link SanMismatchedJwksServer}, whose certificate is trusted but names the wrong host.
+     * <p>
+     * <strong>The falsification check.</strong> Deleting the {@code .verifyHostname(verify)} call from
+     * {@link TokenValidatorProducer#toHttpJwksLoaderConfig} must turn
+     * {@link #hostnameVerificationGatesTheJwksFetch()}'s negative leg red — token-sheriff's own
+     * default verifies, so without the call the strict leg would keep failing for the right reason and
+     * the test would be vacuous only if the DEFAULT changed. It is the relaxed leg that is
+     * load-bearing: with no {@code verifyHostname} call at all it fails, which is what makes this pair
+     * evidence about the reader rather than about token-sheriff's default.
+     */
+    @Nested
+    @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+    @DisplayName("egress_tls.jwks_verify_hostname — hostname matching on the JWKS back-channel")
+    class JwksVerifyHostname {
+
+        private static final String PROFILE = "corporate-idp";
+
+        private Path fixtureDir;
+        private SanMismatchedJwksServer server;
+        private TestTokenHolder holder;
+
+        @BeforeAll
+        void startFixtureServer() throws Exception {
+            // One holder for every case below, so the two legs of the matched control share not just
+            // the same server and certificate but the same issuer identifier and the same key set.
+            holder = TestTokenGenerators.accessTokens().next();
+            fixtureDir = Files.createTempDirectory("san-mismatched-jwks");
+            server = SanMismatchedJwksServer.start(fixtureDir,
+                    InMemoryKeyMaterialHandler.createDefaultJwks());
+        }
+
+        @AfterAll
+        void stopFixtureServer() throws IOException {
+            if (server != null) {
+                server.close();
+            }
+            if (fixtureDir != null) {
+                try (Stream<Path> entries = Files.walk(fixtureDir)) {
+                    entries.sorted(Comparator.reverseOrder()).forEach(TokenValidatorProducerTest::deleteQuietly);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the flag decides a real dial: verifying refuses the SAN-mismatched JWKS host, relaxed accepts it")
+        void hostnameVerificationGatesTheJwksFetch() {
+            // Arrange — one server, one certificate, one issuer, one key set. The two validators differ
+            // in exactly one respect: the value of egress_tls.jwks_verify_hostname.
+            TokenValidator verifying = fixtureValidator(new EgressTlsConfig(true, true, null));
+            TokenValidator relaxed = fixtureValidator(new EgressTlsConfig(true, false, null));
+            AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
+
+            // Act & Assert — the negative leg: chain trust succeeds (the fixture's root is a JVM trust
+            // anchor), so the ONLY thing left to fail on is the dialled 127.0.0.1 not being named by
+            // the certificate.
+            assertThrows(TokenValidationException.class, () -> verifying.createAccessToken(request),
+                    "with jwks_verify_hostname true the JWKS fetch must fail against a certificate that "
+                            + "does not name the dialled host");
+
+            // ... and the matched positive control: the same server, the same certificate, the same
+            // issuer and the same key material succeed once the flag is false. That is what makes the
+            // refusal above attributable to hostname matching rather than to trust, egress, the JWKS
+            // document or the token.
+            AccessTokenContent accepted = assertDoesNotThrow(() -> relaxed.createAccessToken(request),
+                    "with jwks_verify_hostname false the same dial must succeed — the relaxation is "
+                            + "hostname matching only, and every other input is identical");
+            assertEquals(holder.getAudience(), accepted.getAudience(),
+                    "the token validated against keys fetched over the relaxed dial");
+        }
+
+        @Test
+        @DisplayName("an omitted egress_tls block resolves to true, not to Jackson's primitive false")
+        void omittedBlockVerifiesHostname() {
+            // Arrange — no egress_tls block at all, which is what a gateway.yaml that never mentions
+            // egress TLS produces. The producer must read EgressTlsConfig.defaults() here; reading the
+            // primitive default instead would silently relax the JWKS leg for every such document.
+            TokenValidator omitted = fixtureValidator(null);
+            TokenValidator relaxed = fixtureValidator(new EgressTlsConfig(true, false, null));
+            AccessTokenRequest request = AccessTokenRequest.of(holder.getRawToken());
+
+            // Act & Assert — the absent block behaves exactly like an explicit true ...
+            assertThrows(TokenValidationException.class, () -> omitted.createAccessToken(request),
+                    "an absent egress_tls block must verify the hostname, not silently relax it");
+
+            // ... and the control proves the refusal is the flag's doing and not an unreachable server:
+            // the same dial succeeds under an explicit false.
+            assertDoesNotThrow(() -> relaxed.createAccessToken(request),
+                    "the control must reach the same server, or the assertion above proves nothing "
+                            + "about the omitted block");
+        }
+
+        @Test
+        @DisplayName("jwks_verify_hostname false collides with a per-issuer jwks.tls_profile and is refused at boot")
+        void relaxedHostnameWithTlsProfileIsRefusedAtBoot() {
+            // Arrange — an issuer naming a profile the deployment DOES define, so the refusal cannot be
+            // confused with the unresolvable-profile refusal next door. No dial happens on this path.
+            IssuerConfig withProfile = offlineIssuer(IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(JWKS_URL)
+                    .tlsProfile(PROFILE)
+                    .build());
+            TokenValidatorProducer producer = producerWith(new EgressTlsConfig(true, false, null),
+                    withProfile, TestTlsConfigurationRegistry.with(PROFILE));
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, producer::gatewayTokenValidator);
+
+            // Assert — a configuration error naming both keys and the issuer, raised by the gateway
+            // ahead of token-sheriff's own IllegalArgumentException from build(). Asserting only the
+            // event type would not distinguish this from any other CONFIG_INVALID on the same path.
+            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType());
+            String message = thrown.getMessage();
+            assertTrue(message.contains("jwks.tls_profile") && message.contains(PROFILE),
+                    "the refusal must name the colliding per-issuer key and the profile: " + message);
+            assertTrue(message.contains("egress_tls.jwks_verify_hostname"),
+                    "the refusal must name the global key that collided: " + message);
+            assertTrue(message.contains("corporate"),
+                    "the refusal must name the offending issuer so an operator can find it: " + message);
+        }
+
+        @Test
+        @DisplayName("the same false flag without a tls_profile assembles cleanly (matched control)")
+        void relaxedHostnameWithoutTlsProfileAssembles() {
+            // Arrange — identical to the case above in every respect except the one key under test, so
+            // the refusal there is attributable to the collision rather than to the false flag itself.
+            IssuerConfig withoutProfile = offlineIssuer(IssuerConfig.Jwks.builder()
+                    .source("http")
+                    .url(JWKS_URL)
+                    .build());
+            TokenValidatorProducer producer = producerWith(new EgressTlsConfig(true, false, null),
+                    withoutProfile, TestTlsConfigurationRegistry.with(PROFILE));
+
+            // Act & Assert
+            assertDoesNotThrow(producer::gatewayTokenValidator,
+                    "jwks_verify_hostname false is a legitimate posture on its own; only the collision "
+                            + "with a per-issuer tls_profile is refused");
+        }
+
+        /**
+         * A validator whose single issuer fetches its keys from the SAN-mismatched fixture server.
+         *
+         * @param egressTls the global block to bind, or {@code null} to declare none at all
+         * @return the produced gateway validator
+         */
+        private TokenValidator fixtureValidator(@Nullable EgressTlsConfig egressTls) {
+            IssuerConfig issuer = IssuerConfig.builder()
+                    .name("san-mismatch")
+                    .issuer(holder.getIssuer())
+                    .jwks(IssuerConfig.Jwks.builder()
+                            .source("http")
+                            .url(server.jwksUrl())
+                            // Loopback is refused by the SSRF egress guard unless named, and an egress
+                            // refusal would fail BOTH legs before the handshake — collapsing the matched
+                            // control into two failures with one cause.
+                            .allowedEgressHosts(List.of(SanMismatchedJwksServer.dialledHost()))
+                            .build())
+                    .build();
+            return producerWith(egressTls, issuer, TestTlsConfigurationRegistry.empty())
+                    .gatewayTokenValidator();
+        }
+
+        private IssuerConfig offlineIssuer(IssuerConfig.Jwks jwks) {
+            return IssuerConfig.builder().name("corporate").issuer(ISSUER).jwks(jwks).build();
+        }
+
+        private TokenValidatorProducer producerWith(@Nullable EgressTlsConfig egressTls, IssuerConfig issuer,
+                TestTlsConfigurationRegistry registry) {
+            GatewayConfig config = GatewayConfig.builder()
+                    .version(1)
+                    .tokenValidation(new TokenValidationConfig(List.of(issuer)))
+                    .egressTls(egressTls)
+                    .build();
+            return new TokenValidatorProducer(config, new JwksTrustProfileResolver(registry));
+        }
+    }
+
     @Nested
     @DisplayName("onStartup — forces eager validator assembly at boot")
     class OnStartup {
@@ -534,6 +729,24 @@ class TokenValidatorProducerTest {
         // Assert
         assertEquals(List.of(), jwks.allowedEgressHosts(),
                 "an omitted allowed_egress_hosts normalizes to an empty list, never null");
+    }
+
+    /**
+     * Deletes one entry of the SAN-mismatch fixture's temp tree, turning the checked
+     * {@link IOException} into an unchecked one so the walk can be a plain {@code forEach}.
+     * <p>
+     * The fixture directory is created with {@code Files.createTempDirectory} rather than
+     * {@code @TempDir} because it must exist before the nested class's {@code @BeforeAll} runs, and a
+     * failure to clean it up is a real leak worth surfacing rather than swallowing.
+     *
+     * @param path the entry to delete
+     */
+    private static void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException("could not clean up the SAN-mismatch fixture at " + path, e);
+        }
     }
 
     private static TokenValidatorProducer producerFor(IssuerConfig issuer) {
