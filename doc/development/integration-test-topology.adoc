@@ -78,8 +78,9 @@ link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
 === The collapsed variant group
 
 Eight further gateway instances run the *same* `api-sheriff:distroless` image and differ only by an
-overlaid `gateway.yaml` -- or, for `api-sheriff-plain-mgmt`, by a single environment variable -- and
-their published ports. Drawing all nine in full would bury the affordances the diagram exists to
+overlaid `gateway.yaml`, their published ports, and -- for some instances -- their environment. The
+per-instance environment differences are named where they matter below; do not read this sentence as
+an exhaustive list. Drawing all nine in full would bury the affordances the diagram exists to
 show, so they are collapsed into one annotated group that still names every instance and every port
 pair:
 
