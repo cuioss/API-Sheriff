@@ -57,6 +57,28 @@
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false"
       }
+    },
+    {
+      "clientId": "refresh-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "refresh-secret",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "access.token.lifespan": "45"
+      }
     }
   ],
   "users": [
@@ -70,6 +92,22 @@
         {
           "type": "password",
           "value": "integration-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["user"],
+      "groups": ["/test-group"]
+    },
+    {
+      "username": "refresh-user",
+      "enabled": true,
+      "firstName": "Refresh",
+      "lastName": "User",
+      "email": "refresh@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "refresh-password",
           "temporary": false
         }
       ],

@@ -12,7 +12,7 @@ reverse-engineering `integration-tests/docker-compose.yml`.
 ====
 This is the *integration-test* topology. It is not a production deployment and not a recommended
 one. Toxiproxy, go-httpbin, grpc-echo, the passthrough backend, the deliberately
-hostname-mismatched TLS backend and the eight variant gateway
+hostname-mismatched TLS backend and the nine variant gateway
 instances exist to make specific tests possible. For a deployment-shaped stack, read
 link:compose-sample.adoc[the Compose sample] instead -- it is drawn and documented separately for
 exactly this reason. No Kubernetes topology is drawn.
@@ -48,11 +48,11 @@ in both cases the material sits in the already-mounted `certificates/` directory
 volume:
 
 * `benchmark-idp` binds the *JWKS back-channel* to `localhost-truststore.p12`
-  (`benchmark-idp-trust.properties`). Every one of the nine gateway instances loads it, because every
+  (`benchmark-idp-trust.properties`). Every one of the ten gateway instances loads it, because every
   one names `jwks.tls_profile: benchmark-idp`.
 * `it-upstream` binds *terminated upstream dials* to `upstream-truststore.p12`
   (`it-upstream-trust.properties`). Only the two `api-sheriff-egress-verify-*` instances load it --
-  they are the only ones naming `egress_tls.upstream_tls_profile`; the other seven name none and so
+  they are the only ones naming `egress_tls.upstream_tls_profile`; the other eight name none and so
   keep the JVM default trust store on that leg.
 
 A named profile *replaces* a client's anchors rather than adding to them, which is why
@@ -77,12 +77,12 @@ link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split].
 
 === The collapsed variant group
 
-Eight further gateway instances run the *same* `api-sheriff:distroless` image and differ only in
+Nine further gateway instances run the *same* `api-sheriff:distroless` image and differ only in
 configuration: their published ports, an overlaid `gateway.yaml` *where one applies*, and -- for
 some instances -- their environment. Neither lever is universal: `api-sheriff-plain-mgmt` overlays no
 `gateway.yaml` at all and is configured by a single environment variable. The per-instance
 differences are named where they matter below; do not read this sentence as an exhaustive list.
-Drawing all nine in full would bury the affordances the diagram exists to show, so they are collapsed
+Drawing all ten in full would bury the affordances the diagram exists to show, so they are collapsed
 into one annotated group that still names every instance and every port pair:
 
 [cols="2,1,1,3"]
@@ -145,6 +145,16 @@ into one annotated group that still names every instance and every port pair:
   succeeds on both and hostname matching is the only variable. Keeping the profile on *this* leg is
   load-bearing: the relaxation is hostname matching only, so dropping it would make this instance
   fail on chain trust and the knob under test would never be exercised.
+
+| `api-sheriff-refresh`
+| 10452
+| 19009
+| The access-token lifespan is a property of the *client* that mints the token, so it cannot be
+  varied per request on an existing instance. The shared realm mints a 900s token, which puts the
+  near-expiry refresh window 870s into a session -- unreachable in a test. This instance
+  authenticates as `refresh-client`, whose client-level `access.token.lifespan` is 45, moving that
+  window to 15s--45s so `BffTokenRefreshIT` can drive all three `RefreshOutcome.Kind` branches. It
+  stays in server session mode; only the minting client and the origin differ.
 |===
 
 The two `api-sheriff-egress-verify-*` instances are one matched pair in this table that must be read
@@ -202,8 +212,8 @@ copy of the first leg while still going red on the verify-off instance, which is
 The route itself lives in the shared `sheriff-config/endpoints/untrusted.yaml` under the existing
 `api` anchor rather than at a top-level `/untrusted`. A new top-level path would need a new anchor,
 and ADR-0007 requires the anchor to be declared in every gateway document that resolves the route --
-which would mean editing all seven, two of which are the matched pair whose entire value rests on
-differing in exactly one scalar. The other seven instances resolve the alias and simply never dial
+which would mean editing all eight, two of which are the matched pair whose entire value rests on
+differing in exactly one scalar. The other eight instances resolve the alias and simply never dial
 it.
 
 === Mounted material
@@ -253,7 +263,7 @@ budget exists to absorb the interval between asking too early and being ready; b
 assertion runs the runtime has already reported the instance healthy, so a non-`UP` answer is a
 defect rather than an early ask, and retrying would only delay reporting it.
 
-Both layers cover all nine instances from one derivation: the service set, each instance's published
+Both layers cover all ten instances from one derivation: the service set, each instance's published
 management port, the scheme its management interface speaks and the *root path* its management
 endpoints sit beneath -- the latter two from the `de.cuioss.sheriff.management-scheme` and
 `de.cuioss.sheriff.management-root-path` labels -- are read from the resolved Compose model, so
@@ -384,9 +394,10 @@ workers on 16 cores:
 |===
 
 This table is evidence from a dated run, not a claim about today's instance set, so it is
-deliberately *not* restated as the set grows. The instance set has since reached nine, and the three
-that postdate the run -- `api-sheriff-passthrough-empty`, `api-sheriff-egress-verify-on` and
-`api-sheriff-egress-verify-off` -- are absent from it by design rather than by omission. No row may
+deliberately *not* restated as the set grows. The instance set has since reached ten, and the four
+that postdate the run -- `api-sheriff-passthrough-empty`, `api-sheriff-egress-verify-on`,
+`api-sheriff-egress-verify-off` and `api-sheriff-refresh` -- are absent from it by design rather
+than by omission. No row may
 be invented for any of them: a fabricated timing would turn measured evidence into an assertion while
 leaving the table looking exactly as authoritative. The headroom argument below therefore stands on
 the six instances actually measured.
@@ -410,7 +421,7 @@ not a live-to-ready figure -- that delta is 0.00s (see above) and would justify 
 all.
 
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
-`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than nine,
+`--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than ten,
 which is why the two differ. That leaves one bound duplicated per script instead of a whole retry
 budget per script, and ADR-0031 records the residual duplication rather than claiming it away.
 
@@ -439,7 +450,7 @@ to fix.*
 It is handled structurally rather than as a special case: each service declares the scheme its
 management interface speaks in a `de.cuioss.sheriff.management-scheme` label, and the layer-2
 readiness assertion adds `-k` only when that label says `https`. The scheme difference is therefore
-data, not a branch on a service name -- which is what lets one loop cover all nine instances.
+data, not a branch on a service name -- which is what lets one loop cover all ten instances.
 
 Layer 1 is unaffected either way. A bare TCP accept has no scheme to get wrong, so this instance's
 baked container probe is identical to every other instance's; the plain-HTTP downgrade is visible
@@ -502,17 +513,47 @@ never dials it -- only the matched pair does -- and it crosses the gateway-egres
 every other egress leg. The `<desc>` accessibility narrative carries all of it, including the reason
 the pair is one control rather than two variants.
 
-[WARNING]
+[NOTE]
 ====
-*The read-back was not performed for this edit and is still owed.* The geometry above was placed by
-coordinate arithmetic against the existing elements, not by rendering the result and looking at it,
-because the environment this edit was made in had no SVG renderer. Coordinate arithmetic rules out
-the overlaps it checks for; it does not rule out the ones it did not think to check, and it says
-nothing at all about how either theme renders.
+*The read-back for this edit was owed for a time, and is now discharged.* When the egress control
+landed, the geometry above was placed by coordinate arithmetic against the existing elements rather
+than by rendering the result and looking at it, because the environment that edit was made in had no
+SVG renderer -- so this section carried a standing warning that the check was still owed.
 
-Discharge it before relying on the diagram: re-render and read it back against both themes per the
-deployment diagram-type standard (`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`), paying particular
-attention to the new backend box at the right edge, which sits in a 108px vertical gap between `k6`
-and `toxiproxy`, and to the new egress arrow, which crosses the L4-relay polyline. Rendered PNGs
-remain verification artifacts and are never committed.
+It was performed during the refresh-instance edit recorded below, which re-rendered the whole
+diagram against both themes. The two specific risks this warning had named were checked and are
+clear: the `mismatched-tls-backend` box sits in its vertical gap between `k6` and `toxiproxy`
+without collision, and the egress arrow crosses the L4-relay polyline as a clean line crossing with
+no label collision. Rendered PNGs remain verification artifacts and are never committed.
 ====
+
+=== Diagram check for the refresh instance
+
+This change *does* alter facts the diagram depicts: it adds one gateway instance and one published
+port pair. The diagram was therefore redrawn rather than left alone.
+
+The collapsed variant group is relabelled `variant instances (9)` and grows by one row --
+`api-sheriff-refresh` at `10452 · 19009` -- placed on the group's existing 18-pixel row pitch. The
+enclosing rectangle grows by that one row height and the own-bar line extent with it; the `viewBox`
+is unchanged. The group's new bottom edge is the number worth stating, because it is the one that
+could have gone wrong quietly: at `826` it sits inside the compose-network rectangle's bottom edge
+at `836`, which is the enclosure that actually bounds it -- not the footer caption at `880`, which
+is outside the network rectangle altogether and would have been the wrong thing to measure against.
+The `<desc>` accessibility narrative carries the new counts and names `api-sheriff-refresh` last in
+the member enumeration.
+
+One edit in the `<desc>` is not a count at all and is the reason appending a member is not purely
+additive: the sentence introducing the matched egress pair referred to its members positionally, as
+`the last two`. Appending `api-sheriff-refresh` to the enumeration silently repoints that phrase at
+the wrong instances -- the enumeration changed under a sentence that never mentioned it. It now
+names `the two api-sheriff-egress-verify-* instances` explicitly, so the reference no longer depends
+on position.
+
+*The read-back was performed for this edit.* The diagram was rendered at 1200px against both the
+GitHub light (`#ffffff`) and dark (`#0d1117`) backgrounds per the deployment diagram-type standard
+(`pm-documents:ref-svg-diagrams/standards/diagram-type-deployment.md`) and both renders were read
+back. All nine variant rows are legible on both themes at a consistent pitch, nothing is clipped at
+the `viewBox` edge, the appended row's two columns align on the same left edges as the eight above
+it, and the group's bottom edge is visibly inside the compose-network rectangle. The same pass
+discharged the older egress-control obligation recorded in the section above. Rendered PNGs are
+verification artifacts and are not committed.

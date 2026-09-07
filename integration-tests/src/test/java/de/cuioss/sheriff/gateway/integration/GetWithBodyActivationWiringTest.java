@@ -104,7 +104,17 @@ class GetWithBodyActivationWiringTest {
             // whole point of the arm; a second difference (softening security_defaults here to
             // satisfy this guard) would silently make the no-regression comparison uncontrolled.
             // So this descriptor legitimately carries the base's opt-in and is exempted by name.
-            DOCKER.resolve("sheriff-config-passthrough-empty/gateway.yaml"));
+            DOCKER.resolve("sheriff-config-passthrough-empty/gateway.yaml"),
+            // The short-token-lifespan instance backing BffTokenRefreshIT, on the same reasoning: it
+            // is the base document with tls.passthrough_sni removed and two per-instance values
+            // repointed (oidc.client_id, and the gateway origin to 10452), so it carries the base's
+            // security_defaults block verbatim. Softening that block here to satisfy this guard
+            // would not be free — the same block declares max_authorization_header_value_length:
+            // 8192, and dropping to the resolved baseline cap rejects every bearer request 400
+            // before bearer validation runs, which is precisely the mediated path the refresh suite
+            // exercises. So this descriptor legitimately carries the base's opt-in and is exempted
+            // by name rather than edited into compliance.
+            DOCKER.resolve("sheriff-config-refresh/gateway.yaml"));
 
     private static final String SECURITY_DEFAULTS_KEY = "security_defaults";
     private static final String OPT_IN_KEY = "allow_get_with_content_length_body";

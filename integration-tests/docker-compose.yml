@@ -468,7 +468,7 @@ services:
       # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
       # see that service's comment for the single-port mechanism. Without it this instance's
       # management port 19001 stays plain HTTP while the primary's is HTTPS, and the host-side
-      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008) would hang.
+      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19009) would hang.
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep and is
       # gated by its own http:// block.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
@@ -565,7 +565,7 @@ services:
       # Management-interface certificate, kept in lockstep with the primary api-sheriff service —
       # see that service's comment for the single-port mechanism. Without it this instance's
       # management port 19002 stays plain HTTP while the primary's is HTTPS, and the host-side
-      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008) would hang.
+      # readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19009) would hang.
       # api-sheriff-plain-mgmt on 19005 is the one deliberate exception to that lockstep.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -668,7 +668,7 @@ services:
       # Management-interface certificate, kept in lockstep with every other instance — see the
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19003 stays plain HTTP while the others are HTTPS, and the
-      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008)
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19009)
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -755,7 +755,7 @@ services:
       # Management-interface certificate, kept in lockstep with every other instance — see the
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19004 stays plain HTTP while the others are HTTPS, and the
-      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19008)
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and 19006-19009)
       # would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -967,7 +967,7 @@ services:
       # primary api-sheriff service's comment for the single-port mechanism. Without it this
       # instance's management port 19006 stays plain HTTP while the others are HTTPS, and the
       # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and
-      # 19006-19008) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
+      # 19006-19009) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
       - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
@@ -1238,6 +1238,110 @@ services:
         reservations:
           memory: 128M
           cpus: '0.5'
+    # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
+    # healthcheck: key here; the image carries exactly one executable, so only the exec form is
+    # available and only the image can carry it.
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+
+  # --- The short-token-lifespan instance backing the BFF refresh coverage suite -------------------
+  # The near-expiry refresh window is a function of the ACCESS TOKEN's lifespan, which is a property
+  # of the OIDC client that minted it — so it cannot be varied per request on an existing instance.
+  # The shared realm's accessTokenLifespan is 900s, which would make the refresh path unreachable in
+  # a test: with session.refresh.leeway_seconds 30, the window opens 30s before expiry, i.e. 870s
+  # into the session. This instance therefore authenticates as `refresh-client`, whose client-level
+  # access.token.lifespan attribute is 45 — putting the near-expiry window at 15s..45s, inside a
+  # test's patience.
+  #
+  # It reuses the SAME native image and overlays sheriff-config-refresh/gateway.yaml, which differs
+  # from the shared document only in oidc.client_id, the gateway origin (10452), and the removed
+  # tls.passthrough_sni block. Session mode stays `server` — the refresh path under test is the
+  # server-mode one — so no SESSION_ENCRYPTION_KEY is set; that key is cookie-mode material.
+  #
+  # It sets NO QUARKUS_HTTP_SSL_PORT, and that absence is load-bearing rather than an omission: the
+  # overlay declares no passthrough_sni, so no SNI front listener is created and the terminated
+  # Quarkus HTTPS listener keeps the public port 8443 directly. Setting the loopback relocation here
+  # would move the terminated listener off 8443 with nothing left listening on it.
+  api-sheriff-refresh:
+    image: "api-sheriff:distroless"
+    # Same JVM-default-truststore trust as every other instance — see the primary api-sheriff
+    # service's command comment for the mechanism (token-sheriff-client#597). Load-bearing here in
+    # particular: this instance's whole purpose is to drive the confidential-client REFRESH call
+    # against the self-signed IT Keycloak, and that call uses only the JVM default TrustManager.
+    command:
+      - -Djavax.net.ssl.trustStore=/app/certificates/localhost-truststore.p12
+      - -Djavax.net.ssl.trustStorePassword=localhost-trust
+      - -Djavax.net.ssl.trustStoreType=PKCS12
+    # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
+    labels:
+      de.cuioss.sheriff.management-scheme: "https"
+      de.cuioss.sheriff.management-root-path: "/q"
+
+    ports:
+      - "10452:8443"  # External test port for BffTokenRefreshIT (test.refresh.port)
+      - "19009:9000"  # Management interface (health/metrics, HTTPS — single port, see below)
+    environment:
+      - QUARKUS_PROFILE=it
+      # Deployment-supplied benchmark-idp trust bucket, in lockstep with the primary api-sheriff
+      # service — see that service's comment for the mechanism.
+      - QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties
+      - QUARKUS_LOG_FILE_ENABLED=true
+      - LOG_FILE_PATH=/logs/quarkus-refresh.log
+      # Terminate directly on the public port (no passthrough front on this instance).
+      - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      # Management-interface certificate, kept in lockstep with every other instance — see the
+      # primary api-sheriff service's comment for the single-port mechanism. Without it this
+      # instance's management port 19009 stays plain HTTP while the others are HTTPS, and the
+      # host-side readiness wait in start-integration-container.sh (https + -k for 19000-19004 and
+      # 19006-19009) would hang. api-sheriff-plain-mgmt on 19005 is the one deliberate exception.
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
+      - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PATH=/app/certificates/localhost-truststore.p12
+      - QUARKUS_TLS_DEFAULT_TRUST__STORE_P12_PASSWORD=localhost-trust
+      - SHERIFF_CONFIG_DIR=/app/sheriff-config
+      # Container-side value the bare ${OIDC_CLIENT_SECRET} reference in the overlaid refresh
+      # gateway.yaml (oidc.client_secret) resolves to via EnvSecretResolver. This is the ONE
+      # instance that does NOT carry integration-secret: its overlay names client_id
+      # refresh-client, so it must present that client's own secret or every token call is
+      # rejected invalid_client.
+      - OIDC_CLIENT_SECRET=refresh-secret
+    depends_on:
+      keycloak:
+        condition: service_started
+      go-httpbin:
+        condition: service_started
+      asset-origin:
+        condition: service_started
+      grpc-echo:
+        condition: service_healthy
+    volumes:
+      - ./src/main/docker/certificates:/app/certificates:ro
+      # Shared config dir, then overlay ONLY gateway.yaml with the short-lifespan refresh variant.
+      - ./src/main/docker/sheriff-config:/app/sheriff-config:ro
+      - ./src/main/docker/sheriff-config-refresh/gateway.yaml:/app/sheriff-config/gateway.yaml:ro
+      - ./src/main/docker/assets:/app/assets:ro
+      # The demo SPA, same read-only mount as the other server-mode instances. The overlay keeps
+      # final_redirect: /assets/demo/landing.html, which the /assets/demo directory asset route
+      # serves from this mount — without it a post-logout return would 404.
+      - ../demo-client/src/main/resources/spa:/app/demo:ro
+      - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '4.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
     # Health check: inherited from the image — the exec-form probe baked into Dockerfile.native. No
     # healthcheck: key here; the image carries exactly one executable, so only the exec form is
     # available and only the image can carry it.
