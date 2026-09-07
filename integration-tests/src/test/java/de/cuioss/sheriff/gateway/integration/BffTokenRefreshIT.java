@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 
@@ -246,7 +247,7 @@ class BffTokenRefreshIT {
     }
 
     private static boolean isClearingCookie(String setCookie) {
-        String lower = setCookie.toLowerCase(java.util.Locale.ROOT);
+        String lower = setCookie.toLowerCase(Locale.ROOT);
         return lower.contains("max-age=0")
                 || lower.contains("expires=thu, 01 jan 1970")
                 || lower.matches("^[^=]+=;.*");
