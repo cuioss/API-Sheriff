@@ -1064,6 +1064,15 @@ services:
       # comment for why this is an environment variable rather than an overlay concern. Identical on
       # both legs of the pair: the upstream is the constant, the knob is the variable.
       - TOPOLOGY_UPSTREAM=https://mismatched-tls-backend:8443
+      # The chain-trust control's dial target (endpoints/untrusted.yaml, route /proxy/untrusted).
+      # passthrough-backend generates a self-signed certificate at container start, so it chains to
+      # nothing the it-upstream profile trusts, while its SAN DOES cover the dialled name — hostname
+      # matching succeeds and chain trust is the only thing left to fail. That is what distinguishes
+      # "the knob relaxed hostname matching" from "the knob disabled verification wholesale", which
+      # the mismatched-upstream legs alone cannot tell apart. Pinned explicitly on both instances
+      # even though topology.properties carries the same default: this pair is the only consumer
+      # that asserts against the alias, so its target is stated where the assertion can see it.
+      - TOPOLOGY_UNTRUSTED=https://passthrough-backend:8443
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -1093,6 +1102,11 @@ services:
       # The only instances that gate on this backend. Its listener must be up before the assertion
       # runs, or a connection refusal would be indistinguishable from the hostname refusal under test.
       mismatched-tls-backend:
+        condition: service_healthy
+      # The chain-trust control's origin (TOPOLOGY_UNTRUSTED). Gated for the same reason as the
+      # backend above: a refusal from a listener that is not up yet would be read as the chain-trust
+      # refusal the third leg asserts, and the control would pass without ever having dialled.
+      passthrough-backend:
         condition: service_healthy
     volumes:
       - ./src/main/docker/certificates:/app/certificates:ro
@@ -1158,6 +1172,10 @@ services:
       # Identical to the verify-on leg: the upstream is the constant of this control, the
       # hostname-verification knob is the variable.
       - TOPOLOGY_UPSTREAM=https://mismatched-tls-backend:8443
+      # The chain-trust control's dial target, identical to the verify-on leg — see that service's
+      # comment. This instance is the one the third IT leg drives: with hostname matching relaxed it
+      # must STILL refuse this origin, which is what proves the relaxation did not reach chain trust.
+      - TOPOLOGY_UNTRUSTED=https://passthrough-backend:8443
       # Terminate directly on the public port (no passthrough front on this instance).
       - QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
@@ -1184,6 +1202,9 @@ services:
       grpc-echo:
         condition: service_healthy
       mismatched-tls-backend:
+        condition: service_healthy
+      # The chain-trust control's origin — gated in lockstep with the verify-on leg.
+      passthrough-backend:
         condition: service_healthy
     volumes:
       - ./src/main/docker/certificates:/app/certificates:ro

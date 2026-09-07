@@ -167,6 +167,34 @@ anchors `upstream-truststore.p12` already holds -- a freshly generated one would
 legs of the control would then fail on chain trust, and the pair would prove nothing about hostname
 matching.
 
+=== The chain-trust control, and why `passthrough-backend` is reused for it
+
+The two legs above establish that `upstream_verify_hostname` *changes the outcome*. On their own they
+do not establish *what it relaxed*: a knob that had quietly disabled certificate verification
+wholesale would produce the identical pair of observations -- a refusing verify-on leg and an
+admitting verify-off leg. A third leg is what separates the two readings, and it is the one the
+`UpstreamHostnameVerificationIT` suite drives against `api-sheriff-egress-verify-off` at
+`/proxy/untrusted`: with hostname matching relaxed, that instance must *still* refuse an origin whose
+certificate chains to nothing it trusts.
+
+The origin is `passthrough-backend`, reached through the `UNTRUSTED_UPSTREAM` alias which both
+instances pin with `TOPOLOGY_UNTRUSTED`. Reusing it rather than adding a tenth service is what makes
+the control cheap *and* what makes it hard to break: that backend generates its own self-signed
+certificate at container start, so it can never become an anchor of a committed truststore -- the
+untrustedness is structural rather than a property that could drift. The other half is equally
+load-bearing and runs the opposite way: its SAN *does* cover the dialled name
+(`DNS:passthrough-backend`), so hostname matching succeeds and chain trust is the only thing left
+that can fail. Point this leg at `mismatched-tls-backend` instead and it degenerates into a second
+copy of the first leg while still going red on the verify-off instance, which is why
+`EgressVerifyActivationWiringTest` asserts the two dial targets differ.
+
+The route itself lives in the shared `sheriff-config/endpoints/untrusted.yaml` under the existing
+`api` anchor rather than at a top-level `/untrusted`. A new top-level path would need a new anchor,
+and ADR-0007 requires the anchor to be declared in every gateway document that resolves the route --
+which would mean editing all seven, two of which are the matched pair whose entire value rests on
+differing in exactly one scalar. The other seven instances resolve the alias and simply never dial
+it.
+
 === Mounted material
 
 Three read-only volumes are mounted into every gateway instance and are drawn as pills rather than

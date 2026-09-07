@@ -19,7 +19,7 @@ neither.
 
 == The Enumerated Surface
 
-The declared surface is *fifteen files* under `integration-tests/src/main/docker/`.
+The declared surface is *sixteen files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -40,11 +40,11 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 7
+| 8
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/secure.yaml`,
-  `sheriff-config/endpoints/websocket.yaml`
+  `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/websocket.yaml`
 
 | `sheriff-config/topology.properties`
 | 1
@@ -64,7 +64,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all fifteen files it returns hits in exactly twelve of them:
+Over all sixteen files it returns hits in exactly twelve of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -81,10 +81,17 @@ Over all fifteen files it returns hits in exactly twelve of them:
 * `sheriff-config/endpoints/websocket.yaml`
 // end::limit-bearing[]
 
-The remaining three -- `sheriff-config/endpoints/assets.yaml`,
-`sheriff-config/endpoints/assets-secure.yaml` and `sheriff-config/topology.properties` -- declare
-none. That complement is the other half of the same claim, so asserting the twelve exactly asserts
-both halves at once.
+The remaining four -- `sheriff-config/endpoints/assets.yaml`,
+`sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/untrusted.yaml` and
+`sheriff-config/topology.properties` -- declare none. That complement is the other half of the same
+claim, so asserting the twelve exactly asserts both halves at once.
+
+`sheriff-config/endpoints/untrusted.yaml` is the newest of the four and is limit-free by
+construction rather than by accident: it is the egress hostname-verification pair's chain-trust
+control (ADR-0040), and its single route declares only a match prefix, because the assertion it
+backs is about whether the TLS dial completes at all. A `forward` allow/deny list or a body cap
+there would be inert configuration that nonetheless made the file limit-bearing and owed a Coverage
+Matrix row.
 
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
@@ -540,14 +547,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (thirteen files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (sixteen files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the ten limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the twelve limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the ten/three partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the twelve/four partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -556,7 +563,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the thirteen files, add its row here in the same change --
+When you add a limit-shaped key to any of the sixteen files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
