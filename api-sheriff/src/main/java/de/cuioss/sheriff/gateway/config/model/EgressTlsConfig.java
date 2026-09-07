@@ -43,6 +43,19 @@ import org.jspecify.annotations.Nullable;
  * store instead. Governing the JDK client would need {@code SSLParameters} plumbing
  * that ADR-0040 deliberately did not scope.
  * <p>
+ * <strong>One further leg: the BFF OIDC back-channel.</strong> The {@code ClientConfiguration}
+ * built in {@code BffRuntimeProducer} is what {@code DiscoveryResolver},
+ * {@code TokenEndpointClient} and {@code RefreshFlow} dial the identity provider with —
+ * discovery, the authorization-code exchange and refresh — presenting the client secret under
+ * {@code CLIENT_SECRET_BASIC}. Neither key in this block is bound at its construction, so it is
+ * enumerated here for the same reason the asset leg is: the scope claim above is a closed list,
+ * and a leg left out of it would read as governed. It is not silently unverified — the
+ * library's {@code ClientConfiguration} default verifies the hostname, so the leg matches the
+ * secure default of the keys that do not reach it. What is absent is a <em>local</em> pin on
+ * that upstream default; the threat model records it as a countable remainder rather than
+ * binding a posture here, because that would be a behavioural change on the authentication
+ * back-channel.
+ * <p>
  * <strong>Both flags relax hostname matching only.</strong> Turning one off stops
  * the dialled name from being compared against the certificate's names; it does
  * <em>not</em> disable certificate-chain validation, does not accept a self-signed
@@ -71,15 +84,19 @@ import org.jspecify.annotations.Nullable;
  *                               every {@code http} JWKS source, so it governs every
  *                               configured issuer's JWKS fetch and that leg only.
  *                               Hostname matching only: chain trust is untouched and an
- *                               untrusted JWKS certificate is still refused. It is
- *                               <em>mutually exclusive</em> with a per-issuer
- *                               {@code jwks.tls_profile} — that profile supplies a
- *                               caller-built {@code SSLContext}, and the relaxation
+ *                               untrusted JWKS certificate is still refused. On an
+ *                               {@code http}-sourced issuer it is <em>mutually exclusive</em>
+ *                               with a per-issuer {@code jwks.tls_profile} — that profile
+ *                               supplies a caller-built {@code SSLContext}, and the relaxation
  *                               applies only to the default-trust-store context the JWKS
  *                               client derives itself, so the combination is refused at
  *                               boot with {@code CONFIG_INVALID} rather than accepted and
- *                               silently ignored (ADR-0041). Resolving to {@code false}
- *                               logs {@code ApiSheriff-120} once at boot
+ *                               silently ignored (ADR-0041). The {@code http} qualifier is
+ *                               exact: a {@code file}-sourced issuer opens no TLS connection,
+ *                               so it reaches no such collision and none is refused there —
+ *                               and its {@code jwks.tls_profile} has no TLS leg to act on.
+ *                               Resolving to {@code false} logs {@code ApiSheriff-120} once
+ *                               at boot
  * @param upstreamTlsProfile     the logical name of the trust profile whose anchors
  *                               verify terminated upstream certificates, {@code null}
  *                               when omitted — the clients then keep the JVM default

@@ -127,10 +127,15 @@ public class TokenValidatorProducer {
      *
      * @return the gateway {@link TokenValidator}
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when {@code token_validation} is
-     *                          absent, an issuer declares no usable JWKS source, an issuer names
-     *                          a {@code jwks.tls_profile} the deployment does not define, or an issuer
-     *                          names a {@code jwks.tls_profile} while
-     *                          {@code egress_tls.jwks_verify_hostname} is {@code false}
+     *                          absent, an issuer declares no usable JWKS source, an
+     *                          {@code http}-sourced issuer names a {@code jwks.tls_profile} the
+     *                          deployment does not define, or an {@code http}-sourced issuer names a
+     *                          {@code jwks.tls_profile} while
+     *                          {@code egress_tls.jwks_verify_hostname} is {@code false}. Both
+     *                          {@code tls_profile} conditions are reached only from the
+     *                          {@code http} branch of {@code applyJwks}: a {@code file} source
+     *                          opens no TLS connection, so neither the profile resolution nor the
+     *                          hostname-posture collision exists on that leg
      */
     @Produces
     @ApplicationScoped

@@ -199,7 +199,7 @@ egress_tls:                        # OUTBOUND-TLS policy for upstreams the gatew
   jwks_verify_hostname: true       # default true. false relaxes HOSTNAME MATCHING ONLY on the JWKS
                                    #   back-channel: an IdP whose certificate does not chain to a
                                    #   trusted anchor is still refused. Refused at boot when an
-                                   #   issuer also names jwks.tls_profile (ADR-0041)
+                                   #   http-sourced issuer also names jwks.tls_profile (ADR-0041)
   upstream_tls_profile: corporate-upstream   # OPTIONAL logical trust profile for terminated upstream
                                    #   dials. Names a profile, never material: the deployment binds
                                    #   the anchors via quarkus.tls.<name>.trust-store.* (ADR-0011).
@@ -766,7 +766,8 @@ defaults below apply.
   type default. Setting it to `false` relaxes *hostname matching only*, on every configured issuer's
   JWKS fetch and on that leg alone; see
   link:#_jwks_verify_hostname_reads_nothing_today[What disabling JWKS hostname verification does and
-  does not do] below, which also covers the one combination refused at boot.
+  does not do] below, which also covers the one combination refused at boot -- an `http`-sourced
+  issuer that also names `jwks.tls_profile`.
 
 | `upstream_tls_profile`
 | *Optional.* The logical name of the trust profile whose anchors verify terminated upstream
@@ -981,10 +982,20 @@ upstream leg, `ApiSheriff-102` for broad proxy trust and `ApiSheriff-115` for a 
 port. All are catalogued in link:LogMessages.adoc[Log messages].
 
 [[_jwks_verify_hostname_profile_collision]]
-===== It is mutually exclusive with an issuer's `jwks.tls_profile`
+===== It is mutually exclusive with an `http`-sourced issuer's `jwks.tls_profile`
 
-An issuer that names link:#_jwks_trust_profiles[`jwks.tls_profile`] while `jwks_verify_hostname` is
-`false` *fails boot* with a configuration error naming both keys, the profile and the issuer.
+An issuer whose JWKS source is `http` and that names
+link:#_jwks_trust_profiles[`jwks.tls_profile`] while `jwks_verify_hostname` is `false` *fails boot*
+with a configuration error naming both keys, the profile and the issuer.
+
+*The `http` qualifier is exact, not defensive phrasing.* The refusal is raised on the `http` branch
+of the JWKS source dispatch, at the point the loader config is built -- the only place a
+caller-supplied `SSLContext` and the hostname posture are ever combined. A `file`-sourced issuer
+reads its keys off disk and opens no TLS connection at all, so it never reaches that point: such an
+issuer boots cleanly with both keys set, and its `jwks.tls_profile` simply has no TLS leg to act on.
+That is not a gap to close with a validation rule ahead of the dispatch -- there is no collision to
+refuse on a leg that performs no TLS -- but it is worth knowing before writing `jwks.tls_profile` on
+a `file` source and expecting it to govern anything.
 
 The two are not alternatives to each other and the refusal is not a preference. The hostname
 relaxation is implemented by substituting a trust manager on an SSL context the JWKS client derives
@@ -995,7 +1006,7 @@ the pair would mean silently ignoring one of the two keys, so the gateway refuse
 
 The practical consequence is worth stating plainly, because it bites at a different grain than the
 key itself: the flag is *global* and the profile is *per issuer*, so turning the flag off fails boot
-for every issuer naming a profile, not only the one that motivated the relaxation. An operator whose
+for every `http`-sourced issuer naming a profile, not only the one that motivated the relaxation. An operator whose
 IdP needs *both* private-CA anchors and a relaxed hostname check has no supported combination; the
 answer is to fix the certificate's names, or to bind those anchors into the JVM default trust store
 the container runs with and drop the profile for that issuer.
