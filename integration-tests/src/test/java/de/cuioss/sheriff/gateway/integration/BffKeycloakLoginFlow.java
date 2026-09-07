@@ -96,6 +96,18 @@ final class BffKeycloakLoginFlow {
      */
     static final String COOKIE_GATEWAY_PEER_ORIGIN = "https://localhost:10446";
 
+    /**
+     * Browser-facing origin of the <em>short-token-lifespan</em> gateway instance
+     * ({@code api-sheriff-refresh}, published host port {@code 10452 -> } container {@code 8443}).
+     * <p>
+     * The access-token lifespan is a property of the client that mints the token, so it cannot be
+     * varied per request on an existing instance. This one authenticates as {@code refresh-client},
+     * whose client-level {@code access.token.lifespan} is 45 seconds, which is what brings the
+     * near-expiry refresh window ({@code leeway_seconds: 30}, so 15s..45s) within reach of a test.
+     * {@code BffTokenRefreshIT} drives this origin.
+     */
+    static final String REFRESH_GATEWAY_ORIGIN = "https://localhost:10452";
+
     /** The container-internal Keycloak authority the {@code integration} realm frontendUrl pins. */
     static final String KEYCLOAK_INTERNAL_AUTHORITY = "keycloak:8443";
 
@@ -107,6 +119,20 @@ final class BffKeycloakLoginFlow {
 
     /** The seeded test user's password. */
     static final String PASSWORD = "integration-password";
+
+    /**
+     * The seeded test user dedicated to the refresh suite (see {@code integration-realm.json}).
+     * <p>
+     * {@code BffTokenRefreshIT} forces the {@code FAILED} refresh branch by revoking the logged-in
+     * user's sessions through the Keycloak admin API. That revocation is realm-wide for the user it
+     * names, so driving it against {@link #USERNAME} would destroy the sessions every other
+     * {@code Bff*IT} suite establishes. This second identity is what keeps the destructive step
+     * isolated to the refresh suite.
+     */
+    static final String REFRESH_USERNAME = "refresh-user";
+
+    /** The refresh-suite test user's password. */
+    static final String REFRESH_PASSWORD = "refresh-password";
 
     /** Matches the Keycloak username/password form's {@code login-actions/authenticate} action URL. */
     private static final Pattern FORM_ACTION =
@@ -180,6 +206,30 @@ final class BffKeycloakLoginFlow {
      * @return the established gateway {@link Session}
      */
     static Session login(String startPath, String gatewayOrigin, Map<String, String> initialGatewayCookies) {
+        return login(startPath, gatewayOrigin, initialGatewayCookies, USERNAME, PASSWORD);
+    }
+
+    /**
+     * Runs the full auth-code flow authenticating as a named realm user rather than the default
+     * {@link #USERNAME}.
+     * <p>
+     * The credentials are a parameter for the same reason the origin is: a suite that revokes the
+     * logged-in user's sessions realm-wide needs an identity no other suite shares, so
+     * {@code BffTokenRefreshIT} authenticates as {@link #REFRESH_USERNAME}. The flow itself is
+     * identical — only the credentials posted in step 3 differ.
+     *
+     * @param startPath     the gateway path to navigate to (a require:session route)
+     * @param gatewayOrigin the browser-facing gateway origin to drive
+     * @param username      the realm username to authenticate as
+     * @param password      that user's password
+     * @return the established gateway {@link Session}
+     */
+    static Session login(String startPath, String gatewayOrigin, String username, String password) {
+        return login(startPath, gatewayOrigin, Map.of(), username, password);
+    }
+
+    private static Session login(String startPath, String gatewayOrigin,
+            Map<String, String> initialGatewayCookies, String username, String password) {
         Map<String, String> gatewayCookies = new HashMap<>(initialGatewayCookies);
         Map<String, String> keycloakCookies = new HashMap<>();
 
@@ -206,8 +256,8 @@ final class BffKeycloakLoginFlow {
         // gateway redirect_uri (/auth/callback) with the authorization code + state in the QUERY STRING.
         Response credentials = keycloak(keycloakCookies)
                 .contentType("application/x-www-form-urlencoded")
-                .formParam("username", USERNAME)
-                .formParam("password", PASSWORD)
+                .formParam("username", username)
+                .formParam("password", password)
                 .redirects().follow(false)
                 .when().post(formAction)
                 .then().statusCode(302).extract().response();

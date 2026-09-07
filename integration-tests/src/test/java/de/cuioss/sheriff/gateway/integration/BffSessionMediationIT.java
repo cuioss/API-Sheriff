@@ -101,9 +101,10 @@ class BffSessionMediationIT extends BaseIntegrationTest {
         // server-side session. The transparent near-expiry refresh (leeway_seconds: 30) only re-drives
         // the RefreshFlow when the mediated token is within its leeway of expiry; the integration realm's
         // 900s access-token lifespan keeps the token well inside its validity for both requests, so this
-        // asserts the always-available continuity path rather than forcing a refresh (a forced-refresh
-        // trigger needs a short access-token-lifespan realm client and is validated by the native+Docker
-        // IT run, not asserted with a wall-clock wait here).
+        // asserts the always-available continuity path rather than forcing a refresh. Forcing the refresh
+        // needs a client whose access-token lifespan is short enough to reach the window; that is what
+        // BffTokenRefreshIT does, against the dedicated api-sheriff-refresh instance and its 45s
+        // refresh-client.
         Session session = BffKeycloakLoginFlow.login("/bff-session/get");
 
         for (int request = 0; request < 2; request++) {
