@@ -196,9 +196,10 @@ egress_tls:                        # OUTBOUND-TLS policy for upstreams the gatew
   upstream_verify_hostname: true   # default true. false relaxes HOSTNAME MATCHING ONLY: an upstream
                                    #   whose certificate does not chain to a trusted anchor is still
                                    #   refused, and passthrough is untouched (never decrypted)
-  jwks_verify_hostname: true       # DECLARED AND BINDABLE, but NO PRODUCTION CODE READS IT. Setting
-                                   #   it changes no behaviour; it is not an available control.
-                                   #   PLAN-04 owns both the reader and the behaviour test
+  jwks_verify_hostname: true       # default true. false relaxes HOSTNAME MATCHING ONLY on the JWKS
+                                   #   back-channel: an IdP whose certificate does not chain to a
+                                   #   trusted anchor is still refused. Refused at boot when an
+                                   #   issuer also names jwks.tls_profile (ADR-0041)
   upstream_tls_profile: corporate-upstream   # OPTIONAL logical trust profile for terminated upstream
                                    #   dials. Names a profile, never material: the deployment binds
                                    #   the anchors via quarkus.tls.<name>.trust-store.* (ADR-0011).
@@ -760,9 +761,12 @@ defaults below apply.
   below, which is the whole security argument for the key.
 
 | `jwks_verify_hostname`
-| Reserved for the JWKS back-channel. It is declared in the schema and bound on the configuration
-  model, so a document naming it validates and boots -- and *no production code reads it*. See
-  link:#_jwks_verify_hostname_reads_nothing_today[The JWKS key is reserved, not available] below.
+| Whether the *JWKS back-channel* verifies that the identity provider's certificate names the host the
+  gateway dialled. *Defaults to `true`* -- an omitted key resolves to the secure value, never to the
+  type default. Setting it to `false` relaxes *hostname matching only*, on every configured issuer's
+  JWKS fetch and on that leg alone; see
+  link:#_jwks_verify_hostname_reads_nothing_today[What disabling JWKS hostname verification does and
+  does not do] below, which also covers the one combination refused at boot.
 
 | `upstream_tls_profile`
 | *Optional.* The logical name of the trust profile whose anchors verify terminated upstream
@@ -938,24 +942,72 @@ bucket setting only a reload period is a real, resolvable profile with nothing i
 the anchor-free case needs a check of its own rather than being unreachable.
 
 [[_jwks_verify_hostname_reads_nothing_today]]
-==== The JWKS key is reserved, not available
+==== What disabling JWKS hostname verification does and does not do
 
-`jwks_verify_hostname` is declared in the bundled schema and carried as a bound field on the
-configuration model. A document that names it therefore *validates and boots* -- and changes nothing,
-because *no production code reads it*. It is not an available control and must not be described as
-one.
+`jwks_verify_hostname: false` turns off exactly one comparison on the JWKS back-channel: dialled name
+against the names the identity provider's certificate carries. It does *not* turn off
+certificate-chain validation, does not admit a self-signed certificate, and does not admit a
+certificate issued by an authority the gateway does not trust. An IdP that fails to chain to a
+trusted anchor is still refused with the knob off.
 
-The schema entry and the model field landed together on purpose. The schema refuses unknown
-properties and the binder refuses unknown fields, so a key declared in only one of the two would
-validate and then refuse to boot -- a configuration the gateway advertises as valid and will not
-start on. Declaring both is what makes the reserved key harmless.
+That distinction matters because *"verification off"* is the phrase operators reach for, and it is
+broader than what the key does. The scope is not asserted here and taken on trust: the test suite
+dials a local IdP whose certificate deliberately does not name the dialled address, and asserts both
+directions of a matched control -- the default posture refuses the fetch, the relaxed posture
+completes it, with the same server, the same certificate, the same issuer and the same key material
+on both legs. A third leg dials an IdP whose chain is *untrusted* with the flag off and must still
+fail; that is the dial that would refute this paragraph if the two mechanisms were coupled.
+
+*The key governs the JWKS leg and only the JWKS leg.* It is
+link:#_egress_tls_hostname_scope[`upstream_verify_hostname`]'s peer, not a sub-case of it: relaxing
+the JWKS back-channel relaxes no proxied upstream, and relaxing the proxy leg relaxes no JWKS fetch.
+Within the JWKS leg it is gateway-wide -- it applies to every configured issuer's fetch, because the
+key lives on the global block and has no per-issuer override.
+
+Two legitimate topologies motivate the key, and neither is a request to stop verifying certificates:
+
+* An IdP reached through an address its certificate does not name -- a cluster-internal service name,
+  a container alias, or an internal load-balancer address, while the certificate names the public
+  issuer hostname it was issued for.
+* A split-horizon deployment in which the gateway resolves the issuer's hostname to an internal
+  address and dials it directly, while the certificate is issued for the externally-resolvable name.
+
+In both cases chain trust is intact and only the name comparison fails.
+
+*The relaxation is never silent.* A gateway that boots with `jwks_verify_hostname: false` logs
+`WARN ApiSheriff-120` once at startup -- once per boot, not once per issuer -- naming the scope and the
+remedy. It is a warning and never a boot refusal, following the same rule as `ApiSheriff-118` for the
+upstream leg, `ApiSheriff-102` for broad proxy trust and `ApiSheriff-115` for a plain-HTTP management
+port. All are catalogued in link:LogMessages.adoc[Log messages].
+
+[[_jwks_verify_hostname_profile_collision]]
+===== It is mutually exclusive with an issuer's `jwks.tls_profile`
+
+An issuer that names link:#_jwks_trust_profiles[`jwks.tls_profile`] while `jwks_verify_hostname` is
+`false` *fails boot* with a configuration error naming both keys, the profile and the issuer.
+
+The two are not alternatives to each other and the refusal is not a preference. The hostname
+relaxation is implemented by substituting a trust manager on an SSL context the JWKS client derives
+itself from the JVM default trust store; a named trust profile supplies a context the gateway built
+instead, and there is nothing in a caller-supplied context for the relaxation to act on. Accepting
+the pair would mean silently ignoring one of the two keys, so the gateway refuses it outright
+(link:adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]).
+
+The practical consequence is worth stating plainly, because it bites at a different grain than the
+key itself: the flag is *global* and the profile is *per issuer*, so turning the flag off fails boot
+for every issuer naming a profile, not only the one that motivated the relaxation. An operator whose
+IdP needs *both* private-CA anchors and a relaxed hostname check has no supported combination; the
+answer is to fix the certificate's names, or to bind those anchors into the JVM default trust store
+the container runs with and drop the profile for that issuer.
+
+An operator who needs the JWKS back-channel to reach an IdP behind an internal CA -- and whose
+certificate names the dialled host correctly -- keeps using `jwks.tls_profile` and leaves this key
+alone.
 
 That a key parses and binds settles nothing about whether the control it names is in force (see
-link:development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage]). The
-coverage this key has today is a *binding* fact only, and no test or document claims the JWKS control
-is proven. *PLAN-04 owns both the production reader and the behaviour test that proves it acts.*
-Until then, an operator who needs the JWKS back-channel to reach an IdP behind an internal CA uses
-link:#_jwks_trust_profiles[`jwks.tls_profile`], which does act.
+link:development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage]). The two
+halves are deliberately kept apart for this key: the configuration-loader test asserts *binding*, and
+the behaviour assertions above are what settle that the control acts.
 
 [[_protocols]]
 === `protocol`

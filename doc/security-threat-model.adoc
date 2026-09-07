@@ -45,7 +45,8 @@ large parts of the catalogue, and the residual gateway work is exactly the part 
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
 of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
 `cui-http` 3.0 -- overridden in the root `pom.xml` above the parent-managed 2.2 -- and
-`TokenSheriff` 0.9.4.
+`TokenSheriff` 0.9.5-SNAPSHOT, resolved from the snapshot repository the root `pom.xml` declares for
+as long as the JWKS hostname-verification passthrough is unreleased.
 
 *`cui-http` (inbound filtering + forwarded resolution) provides:* per-component path
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
@@ -539,12 +540,19 @@ taking effect silently. A *fourth* terminated-egress leg is outside that block a
 rather than folded into the claim. The
 *assert-behaviour-not-flag* discipline this entry demands is discharged *for that key specifically*
 -- an integration-stack matched pair of gateway instances differing in exactly that one boolean makes
-a real handshake fail on one leg and succeed on the other. The *JWKS* half is *not delivered and not
-proven*: `egress_tls.jwks_verify_hostname` is declared in the schema and bound on the configuration
-model, and *no production code reads it*, so it is a reserved key rather than an available control
-and nothing asserts its behaviour; PLAN-04 owns both the reader and its behaviour test. The
+a real handshake fail on one leg and succeed on the other. The *JWKS* half is now *delivered and
+behaviour-proven* as well
+(link:adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]):
+`egress_tls.jwks_verify_hostname` is read by the token-validator producer and passed through to the
+JWKS client's own hostname-verification setting on every `http` source, on both the true and the
+false path, so the gateway's posture does not follow an upstream default change; the relaxed posture
+is reported at boot by `WARN ApiSheriff-120`; and the one incoherent combination -- the relaxation
+together with an issuer's per-issuer `jwks.tls_profile`, which supplies an SSL context the relaxation
+cannot act on -- is *refused at boot* with a configuration error naming both keys and the issuer,
+rather than silently ignoring one of them. The
 *fail-closed-on-empty-SNI* rule and *full-ClientHello reassembly before routing* remain unpinned (see
-Gaps), which is why this entry stays PARTIAL.
+Gaps), which is why this entry stays PARTIAL -- the verdict is unchanged and only its reason has
+narrowed, from three outstanding items to two.
 
 *Assertion.* A fragmented/empty-SNI ClientHello does not reach a passthrough or a
 no-client-cert default -- it is terminated under the strict policy or rejected; enabling mTLS
@@ -554,8 +562,13 @@ upstream whose certificate does not name the dialled host *fails the handshake b
 succeeds only on an instance that declares `egress_tls.upstream_verify_hostname: false` -- both
 directions asserted by a real dial rather than by reading the flag back. A third dial pins the
 *scope* of that relaxation: against the relaxed instance, an upstream whose certificate chains to no
-trusted anchor is *still refused*, so the two mechanisms are proven uncoupled. No assertion covers
-`jwks_verify_hostname`, and none may be claimed for it while nothing reads it.
+trusted anchor is *still refused*, so the two mechanisms are proven uncoupled. The same three-legged
+shape now covers `jwks_verify_hostname`: a JWKS fetch from an identity provider whose certificate
+does not name the dialled host *fails by default* and succeeds only with the key set to `false` --
+both directions by real handshake against one server, one certificate, one issuer and one key set,
+with the flag as the single difference -- and a third dial pins the scope, refusing an IdP whose
+chain reaches no trusted anchor while the flag is off. A falsification check backs the pair: removing
+the production passthrough turns the relaxed leg red.
 
 *Residual risk (accepted).* `egress_tls.upstream_verify_hostname: false` is an operator-selectable
 relaxation of a control this entry exists to defend, so the residual risk is recorded rather than
@@ -572,6 +585,37 @@ place in `gateway.yaml` rather than buried per route; and the scope claim is pro
 dial above rather than asserted. The mitigation for an operator who needs a private-CA upstream is
 `egress_tls.upstream_tls_profile`, which is a different key and does not require this one -- shipping
 both together is what keeps the hostname knob from being misused as a general trust disable.
+
+*Residual risk (accepted) -- the JWKS leg.* `egress_tls.jwks_verify_hostname: false` is the same
+class of operator-selectable relaxation on a different leg, and it is recorded separately because
+what it concedes is not the same thing. What it gives up is bounded to *hostname matching on the JWKS
+back-channel*: chain trust is unaffected and an IdP whose certificate reaches no trusted anchor is
+still refused. What remains is more serious than its upstream sibling, and saying so is the point of
+recording it. The JWKS document carries the *signing keys every bearer token is validated against*,
+so an attacker who can both redirect the gateway's JWKS fetch *and* present a certificate chaining to
+an anchor the gateway trusts can serve their own key set -- and every token the gateway then accepts
+is one they minted. On the upstream leg the equivalent position yields one proxied connection; here
+it yields the authentication decision itself. Four properties bound the exposure and are the basis of
+the acceptance: the default is `true` and an omitted key resolves to `true`, so the relaxation is
+never reached by silence; it is reported at boot by `WARN ApiSheriff-120`, so it cannot reach
+production unremarked; token-sheriff's SSRF egress guard still constrains which hosts the JWKS fetch
+may reach at all, so redirecting it is not merely a DNS answer away; and the scope claim is proven by
+the untrusted-chain dial above rather than asserted. The mitigation for an operator whose IdP is
+behind an internal CA is `jwks.tls_profile`, which is a different key answering the chain-trust
+question -- and, on this leg, the two are *mutually exclusive per issuer* and the combination is
+refused at boot, so an operator cannot reach for both at once and end up with neither.
+
+*Countable remainder -- no deployment-activation guard on this key.* Both hostname keys are proven at
+the level they are asserted at, and those levels differ. `upstream_verify_hostname` is proven by an
+integration-stack matched pair, so a *deployed descriptor* actually turns the relaxation on and the
+`*ActivationWiringTest` family pins that it does. `jwks_verify_hostname` is proven at *unit* level
+against a local server: that settles `config -> behaviour` and does not settle that any shipped
+descriptor exercises either posture. Per
+link:development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage], a unit
+test structurally cannot reach that second question, so the absence is written down here as a
+countable item rather than left to be inferred from a green suite. Closing it means an integration
+descriptor pair for the JWKS leg, which needs an IdP fixture whose certificate does not name the
+dialled host; it is recorded, not scheduled.
 
 *Scope limit (recorded, not a residual risk).* `egress_tls` governs the three Vert.x egress clients
 and does not reach the *asset-origin* fetch, which is a fourth terminated-egress TLS leg: an asset
@@ -1132,7 +1176,7 @@ outstanding hardening work (next section).
 | <<gw-03>> | Header CR/LF reject; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + gateway (peer gate, trust-all rejection, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / token-sheriff `EgressPolicy` | COVERED
-| <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed; `jwks_verify_hostname` reserved, unread) | PARTIAL
+| <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade | ADR-0015 (bearer routes) | GAP (session routes)
@@ -1185,9 +1229,11 @@ down. Closing them is the whole point of this exercise. Each is a small, additiv
   `egress_tls.upstream_verify_hostname` is proven by a matched pair of gateway instances plus an
   untrusted-upstream leg that pins the relaxation's scope
   (link:adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040]).
-  What remains under this heading is the mTLS-require boolean, the two SNI rules above, and
-  `egress_tls.jwks_verify_hostname`, which has no production reader yet and therefore no behaviour
-  to test; PLAN-04 owns both.
+  `egress_tls.jwks_verify_hostname` is likewise *done* -- read by the token-validator producer and
+  proven by the same three-legged shape at unit level, with its collision against a per-issuer
+  `jwks.tls_profile` refused at boot
+  (link:adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]).
+  What remains under this heading is the mTLS-require boolean and the two SNI rules above.
 . *BFF-13 -- pin the callback parsing *usage rule* with a test.* The engine already rejects
   HPP and the gateway already calls `CallbackParameters.parse(rawQuery)` on the raw query
   (never the duplicate-blind `of(Map)`); what is missing is a test asserting a
