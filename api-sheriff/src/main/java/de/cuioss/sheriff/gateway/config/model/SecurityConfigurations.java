@@ -44,7 +44,7 @@ public class SecurityConfigurations {
 
     /**
      * Returns a {@link SecurityConfigurationBuilder} carrying every component of {@code preset}, so a
-     * caller overriding one dimension leaves the other twenty-three on the preset's values. Copies the
+     * caller overriding one dimension leaves the other twenty-five on the preset's values. Copies the
      * record's full component set deliberately: an omitted component would silently fall back to the
      * {@code defaults()} policy the builder starts from.
      *
@@ -76,6 +76,8 @@ public class SecurityConfigurations {
                 .allowedHeaderNames(preset.allowedHeaderNames())
                 .blockedHeaderNames(preset.blockedHeaderNames())
                 .allowedContentTypes(preset.allowedContentTypes())
-                .blockedContentTypes(preset.blockedContentTypes());
+                .blockedContentTypes(preset.blockedContentTypes())
+                .blockedPathPatterns(preset.blockedPathPatterns())
+                .blockedParameterNames(preset.blockedParameterNames());
     }
 }

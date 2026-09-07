@@ -61,7 +61,7 @@
 
     <properties>
         <!-- Project-owned pin, not an override: the resolved parent chain
-             (de.cuioss:cui-java-parent:1.5.10 -> de.cuioss:cui-java-bom:1.5.10) declares no
+             (de.cuioss:cui-java-parent:1.6.2 -> de.cuioss:cui-java-bom:1.6.2) declares no
              Quarkus version at all, so this property is the single source of truth for the
              Quarkus platform. It feeds the io.quarkus:quarkus-bom import below and the
              Quarkus build tooling, which is why the value has to be maintained here.
@@ -70,6 +70,27 @@
              convergence (see the token-sheriff-bom comment below), and cui-java-bom aligns
              its JUnit Jupiter version to whatever the Quarkus BOM ships. -->
         <version.quarkus>3.39.1</version.quarkus>
+        <!-- OVERRIDE, not a pin — read the distinction, because the two have opposite
+             lifecycles. The resolved parent chain already MANAGES cui-http: cui-java-bom:1.6.2
+             sets version.cui.http to 2.2 and manages de.cuioss:cui-http at
+             that property. Redeclaring the property here wins by ordinary inheritance (the
+             child's properties are interpolated into the inherited dependencyManagement entry)
+             and moves the whole reactor to 3.0.
+
+             3.0 grows de.cuioss.http.security.config.SecurityConfiguration from 24 record
+             components to 26, adding blockedPathPatterns and blockedParameterNames. This project
+             copies that record component-by-component in exactly one place —
+             SecurityConfigurations.builderSeededFrom — and GatewayEdgeRouteTest's
+             copiedByBuilderSeededFrom tripwire asserts the two counts are EQUAL. All three
+             therefore move in ONE commit: no intermediate ordering is green, and a copy that
+             silently dropped a component would revert that dimension to the defaults() policy
+             the builder starts from.
+
+             REMOVAL CONDITION: delete this property once the resolved parent manages cui-http at
+             >= 3.0. Leaving it in place after that point turns an override into a stale pin that
+             would hold the reactor BACK on 3.0 while the parent moved on — the failure mode this
+             comment exists to prevent. -->
+        <version.cui.http>3.0</version.cui.http>
         <version.token-sheriff>0.9.4</version.token-sheriff>
         <version.json-schema-validator>3.0.7</version.json-schema-validator>
         <!-- Default empty argLine for JaCoCo compatibility - JaCoCo will override this when active -->

@@ -512,10 +512,11 @@ class GatewayEdgeRouteTest {
         }
 
         /**
-         * Semantic drift guard for {@code GatewayEdgeRoute.builderSeededFrom}, which mirrors the
-         * third-party {@link SecurityConfiguration} record component-by-component. A component the
-         * copy drops silently reverts to the {@code defaults()} policy as soon as a route declares
-         * any {@code security_filter} limit — a posture regression with no other failing test.
+         * Semantic drift guard for {@code SecurityConfigurations.builderSeededFrom} — the single
+         * seam {@code GatewayEdgeRoute} seeds through — which mirrors the third-party
+         * {@link SecurityConfiguration} record component-by-component. A component the copy drops
+         * silently reverts to the {@code defaults()} policy as soon as a route declares any
+         * {@code security_filter} limit — a posture regression with no other failing test.
          */
         @Test
         @DisplayName("round-trips every preset component when an override restates the preset's own value")
@@ -533,8 +534,8 @@ class GatewayEdgeRouteTest {
         @Test
         @DisplayName("fails when the cui-http SecurityConfiguration record grows a component the copy does not know")
         void tripwiresOnSecurityConfigurationComponentDrift() {
-            // Arrange — the number of components GatewayEdgeRoute.builderSeededFrom copies
-            int copiedByBuilderSeededFrom = 24;
+            // Arrange — the number of components SecurityConfigurations.builderSeededFrom copies
+            int copiedByBuilderSeededFrom = 26;
 
             // Act
             int declaredComponents = SecurityConfiguration.class.getRecordComponents().length;
