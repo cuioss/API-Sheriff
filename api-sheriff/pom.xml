@@ -173,12 +173,10 @@
             <scope>test</scope>
         </dependency>
         <!-- cui-http attack databases (generators classifier) driving the adversarial
-             pipeline tests; classifier variant is not BOM-managed, so the inherited
-             ${version.cui.http} pins it to the same 3.0 as the main artifact -->
+             pipeline tests; cui-java-bom manages the classifier alongside the main jar. -->
         <dependency>
             <groupId>de.cuioss</groupId>
             <artifactId>cui-http</artifactId>
-            <version>${version.cui.http}</version>
             <classifier>generators</classifier>
             <scope>test</scope>
         </dependency>
@@ -234,7 +232,6 @@
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit</artifactId>
-            <version>1.5.0</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
