@@ -209,6 +209,36 @@ public final class ConfigLogMessages {
                 .identifier(120)
                 .template("egress_tls.jwks_verify_hostname is false — the JWKS back-channel no longer verifies that the IdP certificate names the dialled host. Certificate-chain trust is unaffected and an untrusted JWKS endpoint is still refused. The relaxation applies to every configured issuer's JWKS fetch and to that leg only; egress_tls.upstream_verify_hostname governs the proxy, gRPC and WebSocket egress clients separately and is unchanged by this key. An issuer naming jwks.tls_profile is refused at boot while this key is false, because the two are mutually exclusive. Restore verification by removing the key or setting it back to true in gateway.yaml")
                 .build();
+
+        /**
+         * The terminated <em>main</em> listener resolved to plain HTTP at startup — no server key
+         * material reached it, so no HTTPS listener was started.
+         * <p>
+         * Like {@link #MANAGEMENT_PLAIN_HTTP} this reports the <em>observed effective state</em>
+         * rather than a declared intention: the audit inspects the key material the listener
+         * actually resolved, across all three routes the recorder evaluates, so the warning cannot
+         * drift away from reality when the activation route changes. It is the authoritative report
+         * where the declared and the resolved view of key material disagree.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: a plain-HTTP main listener behind a
+         * TLS-terminating boundary is a legitimate deployment, and blocking it would be wrong. What
+         * must not happen is that it arrives silently, since every HTTPS client of the gateway fails
+         * against a listener that quietly stopped terminating TLS.
+         * <p>
+         * The live ADR-0017 edge topology rides in this same record rather than in a second one, so
+         * an operator reading the downgrade also learns whether an accept-time front listener sits
+         * in front of the port being reported.
+         * <p>
+         * The template names the port and the topology only; it must never carry a store path, a
+         * password, or any anchor material. The remedy names all three routes by which key material
+         * can be supplied, because the audit observes the effective state and cannot tell which one
+         * a deployment intended to use.
+         */
+        public static final LogRecord TERMINATED_LISTENER_PLAIN_HTTP = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(121)
+                .template("Terminated main listener is serving PLAIN HTTP on port %s — no server key material resolved, so no HTTPS listener was started and every HTTPS client of this gateway will fail against it. Live edge topology: %s. Expose the plain port only behind a TLS-terminating boundary; restore HTTPS by supplying server key material through exactly one of quarkus.http.tls-configuration-name, a default quarkus.tls.key-store.* bucket, or quarkus.http.ssl.certificate.* — the material stays deployment-supplied and is never named in gateway.yaml (ADR-0025)")
+                .build();
     }
 
     /**

@@ -18,6 +18,9 @@ package de.cuioss.sheriff.gateway.tls;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
+import java.util.Optional;
+
 
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -26,6 +29,7 @@ import io.quarkus.runtime.StartupEvent;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.tls.BaseTlsConfiguration;
 import io.quarkus.tls.TlsConfiguration;
+import io.quarkus.tls.TlsConfigurationRegistry;
 import io.vertx.core.net.KeyCertOptions;
 import io.vertx.core.net.PemKeyCertOptions;
 import jakarta.enterprise.event.Event;
@@ -47,11 +51,23 @@ import org.junit.jupiter.api.Test;
  * {@code quarkus.http.ssl.certificate.*}, so the default TLS registry bucket carries no key material,
  * and no management certificate is configured. That is the same shape the opt-out produces, which is
  * why the positive case needs no override.
+ * <p>
+ * <strong>The default-bucket regression.</strong> {@link #defaultBucketWithKeyMaterialIsNotPlainHttp()}
+ * pins the false positive this audit used to carry: it was built on {@code TlsConfiguration.from},
+ * which never consults the registry's default bucket, while the recorder does — so a populated
+ * default {@code quarkus.tls.key-store.*} bucket produced a management listener on HTTPS that this
+ * audit reported as plain HTTP. The audit is constructed directly there rather than booted, because
+ * the regression is about which registry lookups the audit performs and a stub registry is the only
+ * way to present a populated default bucket without adding key material to the shipped test boot —
+ * which {@code application.properties} forbids by name. The startup-event test above remains the
+ * proof that the observer path itself works.
  */
 @QuarkusTest
 @EnableTestLogger
 @DisplayName("Management plain-HTTP audit")
 class ManagementPlainHttpAuditTest {
+
+    private static final int MANAGEMENT_PORT = 9000;
 
     @Inject
     Event<StartupEvent> startupEvent;
@@ -66,29 +82,69 @@ class ManagementPlainHttpAuditTest {
     }
 
     @Test
-    @DisplayName("A resolved configuration carrying no key material means plain HTTP")
-    void keyLessResolvedConfigurationMeansPlainHttp() {
-        assertTrue(ManagementPlainHttpAudit.resolvesToPlainHttp(keyLessConfiguration(), true),
-                "selecting a key-less bucket replaces the deployment's certificate rather than adding "
-                        + "to it, so the listener ends up with no key material even when a certificate "
-                        + "is configured");
+    @DisplayName("A default bucket carrying key material is not reported as plain HTTP")
+    void defaultBucketWithKeyMaterialIsNotPlainHttp() {
+        ManagementPlainHttpAudit audit = auditOver(defaultBucketRegistry(keyBearingConfiguration()),
+                Optional.empty());
+
+        assertFalse(audit.auditManagementTls(),
+                "the recorder takes the default registry bucket whenever it carries key material, so "
+                        + "the listener is on HTTPS and reporting plain HTTP is a false positive");
     }
 
     @Test
-    @DisplayName("A resolved configuration carrying key material means HTTPS")
-    void keyBearingResolvedConfigurationMeansHttps() {
-        assertFalse(ManagementPlainHttpAudit.resolvesToPlainHttp(keyBearingConfiguration(), false),
-                "a bucket that carries key material keeps the management listener on HTTPS");
+    @DisplayName("A key-less default bucket with no management certificate still means plain HTTP")
+    void keyLessDefaultBucketStillMeansPlainHttp() {
+        ManagementPlainHttpAudit audit = auditOver(defaultBucketRegistry(keyLessConfiguration()),
+                Optional.empty());
+
+        assertTrue(audit.auditManagementTls(),
+                "the positive control for the case above — a default bucket without key material is "
+                        + "not a fallback the recorder takes, so nothing terminates the port");
     }
 
     @Test
-    @DisplayName("With no resolved configuration the management certificate decides")
-    void withoutAResolvedConfigurationTheCertificateDecides() {
-        assertFalse(ManagementPlainHttpAudit.resolvesToPlainHttp(null, true),
-                "quarkus.management.ssl.certificate.* alone still produces HTTPS — this is the shipped "
-                        + "default posture and it must not warn");
-        assertTrue(ManagementPlainHttpAudit.resolvesToPlainHttp(null, false),
-                "no bucket and no certificate leaves nothing to terminate with");
+    @DisplayName("A key-less default bucket with a management certificate means HTTPS")
+    void keyLessDefaultBucketWithCertificateMeansHttps() {
+        ManagementPlainHttpAudit audit = auditOver(defaultBucketRegistry(keyLessConfiguration()),
+                Optional.of(List.of("management.crt")));
+
+        assertFalse(audit.auditManagementTls(),
+                "quarkus.management.ssl.certificate.* alone still produces HTTPS — the shipped "
+                        + "posture for a TLS-terminated management port, which must not warn");
+    }
+
+    private static ManagementPlainHttpAudit auditOver(TlsConfigurationRegistry registry,
+            Optional<List<String>> certificateFiles) {
+        return new ManagementPlainHttpAudit(registry, Optional.empty(), certificateFiles,
+                MANAGEMENT_PORT);
+    }
+
+    /**
+     * A registry holding only a default bucket — the shape the F1 regression turns on, since the
+     * audit selects no configuration name.
+     *
+     * @param fallback the configuration returned as the default bucket
+     * @return a registry over that single answer
+     */
+    private static TlsConfigurationRegistry defaultBucketRegistry(TlsConfiguration fallback) {
+        return new TlsConfigurationRegistry() {
+
+            @Override
+            public Optional<TlsConfiguration> get(String name) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<TlsConfiguration> getDefault() {
+                return Optional.of(fallback);
+            }
+
+            @Override
+            public void register(String name, TlsConfiguration configuration) {
+                throw new UnsupportedOperationException("the audit never registers");
+            }
+        };
     }
 
     private static TlsConfiguration keyLessConfiguration() {

@@ -23,7 +23,6 @@ import java.util.Optional;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.StartupEvent;
-import io.quarkus.tls.TlsConfiguration;
 import io.quarkus.tls.TlsConfigurationRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -42,6 +41,18 @@ import org.jspecify.annotations.Nullable;
  * A configuration key can be renamed, superseded, or silently ignored, and an audit keyed on one
  * would then report a comfortable fiction. The resolved key material cannot: if there is none, the
  * port is plain, whatever route got it there.
+ * <p>
+ * <strong>The default-bucket leg, and the false positive that used to live here.</strong> The
+ * verdict comes from the shared {@link ResolvedServerTlsMaterial} discriminator, which re-derives
+ * all three legs of {@code HttpServerOptionsUtils#getTlsConfiguration} — including the one this
+ * audit previously missed. It was built on {@code TlsConfiguration.from}, an SPI helper that
+ * returns empty for an absent configuration name and <em>never consults the registry's default
+ * bucket</em>; the recorder does consult it, and takes it whenever it carries key material. A
+ * deployment that populated a default {@code quarkus.tls.key-store.*} bucket therefore got a
+ * management listener on HTTPS while this audit reported plain HTTP. That is the silent-upgrade
+ * path {@code application.properties} documents as upstream quarkus-43380 — and an audit built to
+ * catch silent downgrades was blind to it in the opposite direction. Sharing one discriminator with
+ * {@link TerminatedListenerTlsAudit} is what keeps the fix from having to be made twice.
  * <p>
  * <strong>Why a WARN and never a boot refusal.</strong> A plain-HTTP management port behind a trusted
  * network boundary is a legitimate deployment, and the gateway must not block it. But because Quarkus'
@@ -111,36 +122,16 @@ public class ManagementPlainHttpAudit {
      * @return {@code true} when the management interface resolved to plain HTTP
      */
     public boolean auditManagementTls() {
-        // TlsConfiguration.from is a Quarkus API that both takes and returns an Optional, so the
-        // nullable field is re-wrapped and the result unwrapped at this single call site rather
-        // than either being stored or propagated as an Optional.
-        Optional<TlsConfiguration> resolved = TlsConfiguration.from(registry,
-                Optional.ofNullable(tlsConfigurationName));
-        boolean plain = resolvesToPlainHttp(resolved.orElse(null), managementCertificateConfigured);
+        // The nullable field is re-wrapped at this single call site rather than being stored or
+        // propagated as an Optional; the shared discriminator takes the Optional the recorder's own
+        // helper takes.
+        boolean plain = ResolvedServerTlsMaterial.resolvesToPlainHttp(registry,
+                Optional.ofNullable(tlsConfigurationName), managementCertificateConfigured);
         if (plain) {
             LOGGER.warn(ConfigLogMessages.WARN.MANAGEMENT_PLAIN_HTTP, managementPort);
         } else {
             LOGGER.debug("Management interface resolved to HTTPS on port %s", managementPort);
         }
         return plain;
-    }
-
-    /**
-     * Decides whether the resolved TLS state leaves the management listener on plain HTTP, mirroring
-     * the recorder's own test: a selected TLS configuration that carries no key material replaces the
-     * deployment's certificate rather than adding to it, so the listener ends up with no key/cert and
-     * the recorder swaps in the plain options.
-     *
-     * @param resolved               the TLS configuration the management interface resolved to,
-     *                               {@code null} when none applies
-     * @param certificateConfigured  whether {@code quarkus.management.ssl.certificate.files} supplies
-     *                               a chain
-     * @return {@code true} when no key material reaches the management listener
-     */
-    static boolean resolvesToPlainHttp(@Nullable TlsConfiguration resolved, boolean certificateConfigured) {
-        if (resolved != null) {
-            return resolved.getKeyStoreOptions() == null;
-        }
-        return !certificateConfigured;
     }
 }
