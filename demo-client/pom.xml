@@ -49,14 +49,6 @@
              same reasoning is recorded at integration-tests/pom.xml, where it was established. -->
         <skipPublishing>true</skipPublishing>
 
-        <!-- ==== Node toolchain ============================================================ -->
-        <!-- Pinned so every developer and CI run uses one toolchain. frontend-maven-plugin
-             downloads it into target/ (installDirectory below), which the root .gitignore already
-             covers through its **/target pattern — no new ignore rule is needed for the toolchain. -->
-        <node.version>v22.14.0</node.version>
-        <npm.version>10.9.2</npm.version>
-        <version.frontend-maven-plugin>2.0.2</version.frontend-maven-plugin>
-
         <!-- ==== The opt-in switch ========================================================= -->
         <!-- Defaults to SKIP. Every execution in the e2e-demo profile carries this as its <skip>,
              and the profile itself flips it to false. Two layers on purpose: the profile means a
@@ -178,8 +170,8 @@
                                     <goal>install-node-and-npm</goal>
                                 </goals>
                                 <configuration>
-                                    <nodeVersion>${node.version}</nodeVersion>
-                                    <npmVersion>${npm.version}</npmVersion>
+                                    <nodeVersion>${frontend.node.version}</nodeVersion>
+                                    <npmVersion>${frontend.npm.version}</npmVersion>
                                 </configuration>
                             </execution>
                             <execution>
