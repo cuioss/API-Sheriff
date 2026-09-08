@@ -1683,7 +1683,12 @@ ignored when no route's effective auth is `require: session`.
 
 | `session.refresh.enabled` / `leeway_seconds`
 | Transparent refresh: when the access token is within `leeway_seconds` of expiry, refresh it
-  (with rotation) during the request.
+  (with rotation) during the request. `enabled` defaults to `true` -- omitting the key, or the
+  whole `refresh` block, leaves refresh on. Setting it to `false` switches off the entire path:
+  the refresh token the code exchange returned is *not* retained on the session (so in cookie
+  mode nothing extra is sealed into the browser cookie), and no refresh coordinator is
+  assembled, so the gateway mediates the token it was issued until `session.ttl_seconds`
+  expires and never re-contacts the IdP mid-session.
 
 | `session.refresh.on_failure`
 | What happens to the *request during which* refresh fails; the session is destroyed either

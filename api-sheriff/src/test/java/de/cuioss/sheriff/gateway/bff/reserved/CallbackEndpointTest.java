@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.reserved;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -49,6 +50,7 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -79,6 +81,7 @@ class CallbackEndpointTest {
     private static final String SUBJECT = "user-sub-1";
     private static final String RAW_ACCESS_TOKEN = "raw-access-token";
     private static final String RAW_ID_TOKEN = "raw-id-token";
+    private static final String RAW_REFRESH_TOKEN = "raw-refresh-token";
     private static final String IDP_SID = "idp-sid-9";
 
     private PendingAuthorizationStore.InMemory pendingStore;
@@ -110,6 +113,16 @@ class CallbackEndpointTest {
     }
 
     private static CodeExchange successfulExchange() {
+        return exchangeReturning(RAW_REFRESH_TOKEN);
+    }
+
+    /**
+     * A successful exchange whose result carries {@code refreshToken} — the third component the
+     * engine's {@code AuthenticationResult} returns. Parameterising it is what lets the session
+     * assertions cover both the granted case and the {@code null} case an authorization server that
+     * issues no refresh token produces, without duplicating the claim fixtures.
+     */
+    private static CodeExchange exchangeReturning(@Nullable String refreshToken) {
         Map<String, ClaimValue> accessClaims = new HashMap<>();
         accessClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
         AccessTokenContent access = new AccessTokenContent(accessClaims, RAW_ACCESS_TOKEN);
@@ -121,7 +134,8 @@ class CallbackEndpointTest {
                 "auth_time", ClaimValue.forPlainString("1721730000")));
         IdTokenContent id = new IdTokenContent(idClaims, RAW_ID_TOKEN);
 
-        AuthorizationCodeFlow.AuthenticationResult result = new AuthorizationCodeFlow.AuthenticationResult(access, id);
+        AuthorizationCodeFlow.AuthenticationResult result =
+                new AuthorizationCodeFlow.AuthenticationResult(access, id, refreshToken);
         return (context, params) -> result;
     }
 
@@ -138,7 +152,8 @@ class CallbackEndpointTest {
         idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
         IdTokenContent id = new IdTokenContent(idClaims, "x".repeat(16_384));
 
-        AuthorizationCodeFlow.AuthenticationResult result = new AuthorizationCodeFlow.AuthenticationResult(access, id);
+        AuthorizationCodeFlow.AuthenticationResult result =
+                new AuthorizationCodeFlow.AuthenticationResult(access, id, RAW_REFRESH_TOKEN);
         return (context, params) -> result;
     }
 
@@ -323,6 +338,49 @@ class CallbackEndpointTest {
             assertEquals(SUBJECT, sessionRecord.sub());
             assertEquals(IDP_SID, sessionRecord.sid());
             assertEquals(T0.plus(SESSION_TTL), sessionRecord.expiresAt(), "the session TTL is absolute from login");
+        }
+
+        /**
+         * The refresh token is the component whose omission made the near-expiry refresh silently
+         * never fire: {@code TokenRefreshCoordinator.refresh} returns on its first guard when
+         * {@code session.refreshToken()} is null, before any logging, so a session created without it
+         * mediates its original token until the absolute TTL and is never re-validated against the
+         * IdP. Asserting it here is what keeps the exchange's third component wired into the session.
+         */
+        @Test
+        @DisplayName("Should seed the session with the refresh token the exchange returned")
+        void shouldSeedRefreshTokenFromExchange() {
+            CallbackOutcome outcome = endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+
+            SessionRecord sessionRecord = storedSessionOf(outcome);
+
+            assertEquals(RAW_REFRESH_TOKEN, sessionRecord.refreshToken(),
+                    "without the exchange's refresh token on the session the coordinator short-circuits "
+                            + "on its null guard and no refresh can ever run");
+        }
+
+        /**
+         * The matched negative control: an authorization server that grants no refresh token is a
+         * normal outcome, not an error, so the login must still complete and simply leave the
+         * component absent — never substitute a placeholder that would drive the coordinator past its
+         * null guard into a refresh it cannot perform.
+         */
+        @Test
+        @DisplayName("Should complete the login with a null refresh token when the IdP granted none")
+        void shouldCompleteLoginWithoutRefreshToken() {
+            CallbackEndpoint noRefreshToken = new CallbackEndpoint(exchangeReturning(null), pendingStore,
+                    bindingCodec, sessionBinding, SESSION_TTL);
+
+            CallbackOutcome outcome = noRefreshToken.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+
+            assertTrue(outcome.isRedirect(), "a refresh token the IdP never issued is not a login failure");
+            assertNull(storedSessionOf(outcome).refreshToken(),
+                    "an absent grant stays absent on the session rather than becoming a placeholder");
+        }
+
+        private SessionRecord storedSessionOf(CallbackOutcome outcome) {
+            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(sessionId, T0).orElseThrow();
         }
 
         @Test

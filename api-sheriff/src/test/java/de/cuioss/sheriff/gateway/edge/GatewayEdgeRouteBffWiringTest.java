@@ -577,7 +577,10 @@ class GatewayEdgeRouteBffWiringTest {
                 Map<String, ClaimValue> idClaims = new HashMap<>();
                 idClaims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
                 IdTokenContent id = new IdTokenContent(idClaims, RAW_ID_TOKEN);
-                return new AuthorizationCodeFlow.AuthenticationResult(access, id);
+                // This fixture asserts edge dispatch and the raw-query hand-off, never the refresh
+                // path, so the exchange grants no refresh token — the shape an authorization server
+                // that issues none produces, and the one that keeps this runtime's session inert.
+                return new AuthorizationCodeFlow.AuthenticationResult(access, id, null);
             }, pendingStore, bindingCodec, sessionBinding, Duration.ofHours(1));
 
             SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,

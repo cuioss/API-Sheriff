@@ -43,6 +43,7 @@ import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
+import de.cuioss.sheriff.gateway.bff.refresh.TokenRefreshCoordinator;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -175,7 +176,7 @@ class BffRuntimeProducerTest {
         @Test
         @DisplayName("Should wire the query-mode response builder into every engine authorization seam")
         void shouldWireQueryResponseModeIntoEveryAuthorizationSeam() {
-            List<AuthorizationRequestBuilder> wired = reachableAuthorizationRequestBuilders(runtime);
+            List<AuthorizationRequestBuilder> wired = reachableInstancesOf(runtime, AuthorizationRequestBuilder.class);
 
             assertFalse(wired.isEmpty(),
                     "no AuthorizationRequestBuilder was reachable from the assembled runtime — this test "
@@ -189,17 +190,26 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * Collects every {@link AuthorizationRequestBuilder} reachable from {@code root} by walking
-     * instance fields, following lambda captures so a seam held only inside a closure is still seen.
+     * Collects every instance of {@code target} reachable from {@code root} by walking instance
+     * fields, following lambda captures so a collaborator held only inside a closure is still seen.
      * <p>
      * The walk is bounded to the gateway's and the engine's own packages: it never descends into JDK
      * or container types, which keeps it away from the strongly-encapsulated {@code java.*} modules
      * and stops it wandering through collections and class loaders. A field the JVM refuses to open
      * is skipped rather than failing the walk — the caller's non-empty assertion is what guarantees
      * the result is still meaningful.
+     * <p>
+     * Every caller that asserts an <em>absence</em> MUST be paired with one asserting the matching
+     * presence, because an over-skipped walk returns the empty list too: only the positive control
+     * distinguishes "the producer did not wire it" from "the walk could not see it".
+     *
+     * @param root   the assembled object graph to search
+     * @param target the collaborator type to collect
+     * @param <T>    the collaborator type
+     * @return every reachable instance of {@code target}, in walk order
      */
-    private static List<AuthorizationRequestBuilder> reachableAuthorizationRequestBuilders(Object root) {
-        List<AuthorizationRequestBuilder> found = new ArrayList<>();
+    private static <T> List<T> reachableInstancesOf(Object root, Class<T> target) {
+        List<T> found = new ArrayList<>();
         Set<Object> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         Deque<Object> pending = new ArrayDeque<>();
         pending.push(root);
@@ -208,8 +218,8 @@ class BffRuntimeProducerTest {
             if (current == null || !seen.add(current)) {
                 continue;
             }
-            if (current instanceof AuthorizationRequestBuilder builder) {
-                found.add(builder);
+            if (target.isInstance(current)) {
+                found.add(target.cast(current));
                 continue;
             }
             for (Class<?> type = current.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
@@ -309,6 +319,79 @@ class BffRuntimeProducerTest {
             assertThrows(IllegalStateException.class, aes128::bffRuntime,
                     "an AES-128 key is refused — the codec is specified as AES-256-GCM");
         }
+    }
+
+    /**
+     * {@code oidc.session.refresh.enabled} is the switch for the whole transparent-refresh path, and
+     * this is where it is proven to <em>act</em> rather than merely parse: the key was carried in the
+     * config model and in every BFF descriptor while {@link BffRuntimeProducer} read only
+     * {@code leewaySeconds()}, so setting it to {@code false} changed nothing at all.
+     * <p>
+     * The assertion is made against the object graph the producer actually built, because the
+     * failure mode is an <em>omission</em> — a producer that silently stopped consulting the key
+     * would keep assembling a coordinator and keep every behavioural test green. The three cases
+     * below are a matched control set: the disabled case asserts an absence, and the two enabled
+     * cases (explicit {@code true}, and the omitted-key default) are what prove the walk can see a
+     * coordinator when one is wired, so the absence means "not assembled" and not "not found".
+     */
+    @Nested
+    @DisplayName("Transparent-refresh switch (oidc.session.refresh.enabled)")
+    class RefreshSwitch {
+
+        @Test
+        @DisplayName("Should assemble the refresh coordinator when refresh.enabled is true")
+        void shouldWireCoordinatorWhenEnabled() {
+            assertFalse(coordinatorsFor(refreshOidc(Boolean.TRUE)).isEmpty(),
+                    "an explicitly enabled refresh must reach the stage's refresh seam");
+        }
+
+        @Test
+        @DisplayName("Should default to enabled when the key — or the whole refresh block — is omitted")
+        void shouldDefaultToEnabled() {
+            assertAll("an absent declaration resolves the documented default: refresh on",
+                    () -> assertFalse(coordinatorsFor(refreshOidc(null)).isEmpty(),
+                            "a refresh block declaring only leeway_seconds keeps refresh on"),
+                    () -> assertFalse(coordinatorsFor(serverModeOidc()).isEmpty(),
+                            "no refresh block at all resolves the same default"));
+        }
+
+        @Test
+        @DisplayName("Should assemble no refresh coordinator at all when refresh.enabled is false")
+        void shouldOmitCoordinatorWhenDisabled() {
+            BffRuntime disabled = producer(refreshOidc(Boolean.FALSE)).bffRuntime();
+
+            assertTrue(disabled.isActive(),
+                    "turning refresh off is a policy choice, not a de-activation — the BFF stays wired");
+            assertTrue(reachableInstancesOf(disabled, TokenRefreshCoordinator.class).isEmpty(),
+                    "refresh.enabled=false must leave no coordinator in the graph; one that is present "
+                            + "but unreachable would still hold the engine RefreshFlow and the leeway");
+        }
+
+        private List<TokenRefreshCoordinator> coordinatorsFor(OidcConfig oidc) {
+            return reachableInstancesOf(producer(oidc).bffRuntime(), TokenRefreshCoordinator.class);
+        }
+    }
+
+    /**
+     * Server-mode configuration whose {@code refresh} block declares {@code leeway_seconds} and the
+     * supplied {@code enabled} value — {@code null} standing for the key being omitted, which is the
+     * case that must resolve the default.
+     */
+    private static OidcConfig refreshOidc(@Nullable Boolean enabled) {
+        OidcConfig.Session session = OidcConfig.Session.builder()
+                .mode("server")
+                .ttlSeconds(3600)
+                .refresh(OidcConfig.Refresh.builder().enabled(enabled).leewaySeconds(30).build())
+                .build();
+        return OidcConfig.builder()
+                .issuer(ISSUER)
+                .clientId("gateway-client")
+                .clientSecret("secret")
+                .scopes(List.of("openid"))
+                .redirectUri(REDIRECT_URI)
+                .session(session)
+                .login(OidcConfig.Login.builder().path("/auth/login").build())
+                .build();
     }
 
     @Nested

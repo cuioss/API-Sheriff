@@ -109,6 +109,14 @@ import jakarta.inject.Singleton;
  * {@code SameSite=Lax} binding cookie on. See that class for the reasoning and for the accepted
  * code-in-the-URL tradeoff.
  * <p>
+ * <strong>Transparent refresh is switchable.</strong> {@code oidc.session.refresh.enabled} governs
+ * the whole refresh path and is applied here, at the two points that path is constructed: the
+ * {@code CodeExchange} seam retains the exchange's refresh token only when refresh is on, and the
+ * {@link TokenRefreshCoordinator} is assembled only when refresh is on. With the switch off the
+ * stage's refresh seam degrades to the unwired binding — session unchanged, no cookies — so the
+ * gateway mediates the token it was issued until the absolute session TTL expires, and no refresh
+ * token is stored anywhere. An absent key (or an absent {@code refresh} block) means <em>on</em>.
+ * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
  * unit-testable) without a live IdP, and the discovery-dependent {@code end_session_endpoint} the
@@ -126,6 +134,13 @@ public class BffRuntimeProducer {
     private static final int DEFAULT_MAX_SESSIONS = 10_000;
     private static final int DEFAULT_MAX_PENDING = 10_000;
     private static final int DEFAULT_REFRESH_LEEWAY_SECONDS = 30;
+    /**
+     * The default for {@code oidc.session.refresh.enabled} when the key — or the whole
+     * {@code refresh} block — is omitted. Transparent refresh is the documented BFF behaviour and is
+     * what every descriptor that declares only {@code leeway_seconds} already relies on, so an
+     * absent key means <em>on</em> and only an explicit {@code false} turns the path off.
+     */
+    private static final boolean DEFAULT_REFRESH_ENABLED = true;
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
@@ -197,6 +212,13 @@ public class BffRuntimeProducer {
         Integer declaredMaxSessions = session.maxSessions();
         int maxSessions = declaredMaxSessions == null ? DEFAULT_MAX_SESSIONS : declaredMaxSessions;
         OidcConfig.Refresh refresh = session.refresh();
+        // refresh.enabled is the switch for the WHOLE transparent-refresh path, not a hint: it governs
+        // both whether the refresh token is retained at login and whether the near-expiry coordinator
+        // is assembled at all. Both applications are below; keeping them on one resolved boolean is
+        // what stops the two halves drifting into a state where a credential is stored but no
+        // machinery can ever redeem it.
+        boolean refreshEnabled = Objects.requireNonNullElse(
+                refresh == null ? null : refresh.enabled(), DEFAULT_REFRESH_ENABLED);
         Duration refreshLeeway = Duration.ofSeconds(Objects.requireNonNullElse(
                 refresh == null ? null : refresh.leewaySeconds(), DEFAULT_REFRESH_LEEWAY_SECONDS));
         OidcConfig.Csrf csrf = session.csrf();
@@ -246,33 +268,40 @@ public class BffRuntimeProducer {
                 pendingStore, bindingCookieCodec, gatewayOrigin);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation.
-        CallbackEndpoint callbackEndpoint = new CallbackEndpoint(
-                (context, params) -> authorizationCodeFlow.exchange(metadata.get(), context, params,
-                        clientAuthentication),
-                pendingStore, bindingCookieCodec, sessionBinding, sessionTtl);
+        // The engine returns the refresh token alongside the validated tokens and CallbackEndpoint
+        // seeds it into the SessionRecord, which is what makes the session refreshable: without it
+        // TokenRefreshCoordinator.refresh returns on its first guard and the near-expiry refresh
+        // silently never runs. When refresh is switched off the seam drops it HERE rather than
+        // letting it be stored and ignored — a credential the gateway will never redeem is not
+        // written to the session store, and in cookie mode is never sealed into the browser cookie.
+        CallbackEndpoint.CodeExchange codeExchange = (context, params) -> {
+            AuthorizationCodeFlow.AuthenticationResult exchanged = authorizationCodeFlow.exchange(
+                    metadata.get(), context, params, clientAuthentication);
+            return refreshEnabled
+                    ? exchanged
+                    : new AuthorizationCodeFlow.AuthenticationResult(exchanged.accessToken(),
+                    exchanged.idToken(), null);
+        };
+        CallbackEndpoint callbackEndpoint = new CallbackEndpoint(codeExchange, pendingStore, bindingCookieCodec,
+                sessionBinding, sessionTtl);
 
         // D7/D9 transparent refresh — near-expiry decision + engine RefreshFlow, session persistence.
-        TokenRefreshCoordinator refreshCoordinator = new TokenRefreshCoordinator(refreshLeeway,
+        // Assembled ONLY when refresh.enabled: with the switch off no coordinator exists and the
+        // stage's refresh seam degrades to the unwired binding SessionAuthenticationStage.TokenRefresh
+        // documents (session unchanged, no cookies), so the gateway mediates the current token
+        // verbatim until the session's absolute TTL expires.
+        SessionAuthenticationStage.TokenRefresh tokenRefresh = refreshEnabled
+                ? nearExpiryRefresh(new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 refreshToken -> refreshFlow.refresh(metadata.get(), refreshToken),
-                sessionBinding);
+                sessionBinding))
+                : (sessionRecord, cookieHeader, now) ->
+                Optional.of(new SessionBinding.BoundSession(sessionRecord, List.of()));
 
         // D4 session stage-4 runtime — binds refresh, scope enforcement, and the login-redirect seam.
         SessionAuthenticationStage sessionStage = new SessionAuthenticationStage(sessionBinding,
-                (sessionRecord, cookieHeader, now) -> {
-                    TokenRefreshCoordinator.RefreshOutcome outcome =
-                            refreshCoordinator.refresh(sessionRecord, cookieHeader, now);
-                    if (outcome.isFailure()) {
-                        // The coordinator already destroyed the session — signal it so the stage
-                        // re-drives the unauthenticated negotiation instead of mediating the
-                        // pre-refresh token of a session the gateway just revoked.
-                        return Optional.empty();
-                    }
-                    return Optional.of(new SessionBinding.BoundSession(
-                            Objects.requireNonNullElse(outcome.session(), sessionRecord),
-                            outcome.setCookieHeaders()));
-                },
+                tokenRefresh,
                 (accessToken, requiredScopes) -> tokenBridge.validateAccessToken(accessToken)
                         .providesScopes(requiredScopes),
                 (returnUrl, now) -> {
@@ -332,6 +361,31 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint);
+    }
+
+    /**
+     * Adapts the refresh coordinator to the stage's {@link SessionAuthenticationStage.TokenRefresh}
+     * seam: a {@code FAILED} outcome becomes {@link Optional#empty()} so the stage re-drives the
+     * unauthenticated negotiation instead of mediating the pre-refresh token of a session the
+     * gateway just revoked; any other outcome yields the session to mediate from plus whatever
+     * {@code Set-Cookie} the re-bind produced.
+     * <p>
+     * Extracted so the enabled and disabled bindings of the seam read as the two alternatives they
+     * are, rather than one of them being a multi-statement lambda inline in the assembly.
+     *
+     * @param coordinator the assembled near-expiry refresh coordinator
+     * @return the stage seam driving {@code coordinator}
+     */
+    private static SessionAuthenticationStage.TokenRefresh nearExpiryRefresh(TokenRefreshCoordinator coordinator) {
+        return (sessionRecord, cookieHeader, now) -> {
+            TokenRefreshCoordinator.RefreshOutcome outcome = coordinator.refresh(sessionRecord, cookieHeader, now);
+            if (outcome.isFailure()) {
+                return Optional.empty();
+            }
+            return Optional.of(new SessionBinding.BoundSession(
+                    Objects.requireNonNullElse(outcome.session(), sessionRecord),
+                    outcome.setCookieHeaders()));
+        };
     }
 
     /**

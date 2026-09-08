@@ -66,41 +66,38 @@ import org.junit.jupiter.api.Test;
  * {@code invalid_grant}. It also asserts nothing about browser cookie policy — it replays a cookie
  * map, exactly as {@link BffKeycloakLoginFlow} documents.
  * <p>
- * <strong>Reproduction outcome (2026-09-07).</strong> The suite was executed against the live stack
- * — {@code verify -Pintegration-tests}, 130 integration tests in total, of which the five below.
- * Two passed and three failed, and the three failures share one cause: <em>the near-expiry refresh
- * never fires</em>.
- * <ul>
- *   <li>{@code mediatedTokenCarriesTheDeclaredLifespan} — PASSED. {@code exp - iat} was exactly 45,
- *       so {@code refresh-client}'s lifespan is genuinely in effect and the near-expiry window is
- *       reachable. This is what makes the three failures below evidence about the refresh rather
- *       than about the fixture.</li>
- *   <li>{@code currentOutcomeReusesTheMediatedToken} — PASSED. Inside the leeway window the bearer
- *       is byte-identical, so the {@code CURRENT} branch behaves as specified.</li>
- *   <li>{@code refreshedOutcomeRotatesTheMediatedToken} — FAILED. After a 22-second wait on a
- *       45-second token with {@code leeway_seconds: 30} — 23 seconds of remaining life against a
- *       30-second leeway, so a refresh is due — the mediated bearer came back <em>unchanged</em>.</li>
- *   <li>{@code failedOutcomeRejectsXhrAndClearsTheSession} — FAILED. Expected 401, got <em>200</em>:
- *       after the IdP revoked every session of the user, the mediated call inside the window still
- *       succeeded.</li>
- *   <li>{@code failedOutcomeRedirectsNavigationAndClearsTheSession} — FAILED. Expected 302, got
- *       <em>200</em>, for the same reason on the navigation leg.</li>
- * </ul>
+ * <strong>The defect this suite reproduced, and its cause.</strong> Run against the live stack on
+ * 2026-09-07 ({@code verify -Pintegration-tests}, 130 integration tests, of which the five below),
+ * two of the five passed and three failed, and all three failures shared one cause: <em>the
+ * near-expiry refresh never fired</em>. {@code mediatedTokenCarriesTheDeclaredLifespan} and
+ * {@code currentOutcomeReusesTheMediatedToken} passed — {@code exp - iat} was exactly 45, so
+ * {@code refresh-client}'s lifespan was genuinely in effect and the near-expiry window genuinely
+ * reachable, which is what made the other three failures evidence about the refresh rather than
+ * about the fixture. {@code refreshedOutcomeRotatesTheMediatedToken} came back with an
+ * <em>unchanged</em> bearer 22 seconds into a 45-second token, and both {@code FAILED}-branch tests
+ * got {@code 200} where they expected {@code 401} and {@code 302}, after the IdP had revoked every
+ * session of the user.
  * <p>
- * <strong>No exception reproduced, and that is the finding.</strong> The hypothesis this fixture was
- * built to chase was a thrown exception on the refresh path. None occurred. The refresh instance's
- * {@code target/quarkus-logs/quarkus-refresh.log} is clean across the entire test window: no ERROR,
- * no WARN, and no {@code ApiSheriff-*} or {@code TokenSheriff*} record naming a refresh attempt or a
- * refresh failure — the only runtime entry between boot and shutdown is a single informational
- * {@code TokenSheriffClient-1} OIDC-discovery resolution, which the login leg alone accounts for.
- * The failure mode is therefore <em>silence</em>, not an error: a session whose access token is
- * inside the leeway window, and whose IdP-side session has been destroyed, keeps mediating the
- * original bearer and keeps returning 200. There is no exception type, message or log identifier to
- * record, because none was emitted.
+ * <strong>The mechanism was a missing session component, not a thrown exception.</strong> The
+ * hypothesis this fixture was built to chase was a failure on the refresh path; there was none, and
+ * the refresh instance's {@code quarkus-refresh.log} was clean across the whole window — no ERROR,
+ * no WARN, no record naming a refresh attempt at all. The reason is upstream of any logging:
+ * {@code CallbackEndpoint.completeLogin} is the only place a login creates a session, and it built
+ * the {@code SessionRecord} <em>without a refresh token</em>, because the engine's
+ * {@code AuthorizationCodeFlow.AuthenticationResult} did not carry one to seed it from.
+ * {@code TokenRefreshCoordinator.refresh} therefore returned on its very first guard —
+ * {@code session.refreshToken() == null} — before reaching the near-expiry arithmetic and before
+ * emitting anything. That single guard explains every symptom at once: the silence in the log, the
+ * unrotated bearer, and the {@code 200}s, since the refresh is the only thing that re-contacts the
+ * IdP, so a session the IdP had destroyed was never re-validated. The leeway arithmetic was never
+ * at fault.
  * <p>
- * <strong>No fix is made here — this suite is characterisation only.</strong> The three failing
- * assertions are left asserting the specified behaviour rather than the observed one, so they stay
- * evidence of the gap instead of ratifying it.
+ * <strong>Fixed.</strong> The engine gained a third {@code refreshToken} component on
+ * {@code AuthenticationResult} and populates it from the token response inside {@code exchange()};
+ * the gateway now threads it into the created {@code SessionRecord}, so the coordinator gets past
+ * its null guard and the near-expiry path runs. The five assertions below are unchanged — they
+ * asserted the specified behaviour throughout, never the observed one, so they became the
+ * regression guard for the fix without a line of them moving.
  * <p>
  * <strong>Bounding the result.</strong> Exercised: the near-expiry trigger on a server-mode session
  * with a 45-second access token; IdP-side session invalidation via admin logout; the XHR and
