@@ -1,6 +1,7 @@
 {
   "extension_defaults": {
-    "build.maven.profiles.skip": "native,quick,jfr"
+    "build.maven.profiles.skip": "native,quick,jfr",
+    "build.maven.profiles.mutating": "pre-commit"
   },
   "plan": {
     "effort": "level-3",
